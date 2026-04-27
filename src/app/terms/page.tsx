@@ -1,10 +1,7 @@
-import Header from "@/components/Header";
-import Footer from "@/components/Footer";
 
 export default function TermsPage() {
   return (
     <>
-      <Header />
       <main className="flex-1 container mx-auto px-4 py-12 max-w-3xl prose prose-slate dark:prose-invert">
         <h1>Terms of Service</h1>
         <p>Last updated: {new Date().toLocaleDateString()}</p>
@@ -24,7 +21,6 @@ export default function TermsPage() {
         <h2>5. Changes</h2>
         <p>We reserve the right to modify or replace these Terms at any time. We will try to provide at least 30 days notice prior to any new terms taking effect.</p>
       </main>
-      <Footer />
     </>
   );
 }

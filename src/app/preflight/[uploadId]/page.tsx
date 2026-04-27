@@ -2,8 +2,6 @@
 
 import { useState, useEffect } from "react";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
-import Header from "@/components/Header";
-import Footer from "@/components/Footer";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import { CheckCircle2, AlertTriangle, Loader2 } from "lucide-react";
@@ -48,7 +46,6 @@ export default function PreflightPage() {
 
   return (
     <>
-      <Header />
       <main className="flex-1 container mx-auto px-4 py-8 max-w-4xl space-y-8 pb-20">
         <div>
           <h1 className="text-3xl font-bold">Pre-flight Check</h1>
@@ -183,7 +180,6 @@ export default function PreflightPage() {
         )}
 
       </main>
-      <Footer />
     </>
   );
 }

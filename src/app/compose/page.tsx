@@ -2,8 +2,6 @@
 
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import Header from "@/components/Header";
-import Footer from "@/components/Footer";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -106,14 +104,12 @@ export default function ComposePage() {
   if (loading) {
     return (
       <>
-        <Header />
         <main className="flex-1 container mx-auto px-4 py-8 max-w-2xl space-y-8">
           <Skeleton className="h-20 w-full" />
           <Skeleton className="h-64 w-full" />
           <Skeleton className="h-10 w-full" />
           <Skeleton className="h-32 w-full" />
         </main>
-        <Footer />
       </>
     );
   }
@@ -121,20 +117,17 @@ export default function ComposePage() {
   if (error) {
     return (
       <>
-        <Header />
         <main className="flex-1 container mx-auto px-4 py-8 max-w-2xl text-center">
           <div className="bg-destructive/10 text-destructive p-4 rounded-xl">
             You've reached TikTok's daily posting limit or your account cannot post right now. Please try again later.
           </div>
         </main>
-        <Footer />
       </>
     );
   }
 
   return (
     <>
-      <Header />
       <main className="flex-1 container mx-auto px-4 py-8 max-w-2xl space-y-10 pb-20">
         
         {creatorInfo?.max_video_post_duration_sec && videoDuration > creatorInfo.max_video_post_duration_sec && (
@@ -327,8 +320,6 @@ export default function ComposePage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-      
-      <Footer />
     </>
   );
 }

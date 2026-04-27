@@ -1,10 +1,7 @@
-import Header from "@/components/Header";
-import Footer from "@/components/Footer";
 
 export default function PrivacyPage() {
   return (
     <>
-      <Header />
       <main className="flex-1 container mx-auto px-4 py-12 max-w-3xl prose prose-slate dark:prose-invert">
         <h1>Privacy Policy</h1>
         <p>Last updated: {new Date().toLocaleDateString()}</p>
@@ -29,7 +26,6 @@ export default function PrivacyPage() {
         <h2>5. Contact Us</h2>
         <p>If you have any questions about this Privacy Policy, please contact us at support@example.com.</p>
       </main>
-      <Footer />
     </>
   );
 }

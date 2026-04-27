@@ -3,8 +3,6 @@
 import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
-import Header from "@/components/Header";
-import Footer from "@/components/Footer";
 import { Button } from "@/components/ui/button";
 
 export default function PublishingStatusPage() {
@@ -64,7 +62,6 @@ export default function PublishingStatusPage() {
 
   return (
     <>
-      <Header />
       <main className="flex-1 container mx-auto px-4 py-16 max-w-xl text-center space-y-8">
         
         {status === "PUBLISH_COMPLETE" ? (
@@ -116,7 +113,6 @@ export default function PublishingStatusPage() {
         )}
 
       </main>
-      <Footer />
     </>
   );
 }

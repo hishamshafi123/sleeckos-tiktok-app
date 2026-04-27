@@ -2,8 +2,6 @@ import { redirect } from "next/navigation";
 import Link from "next/link";
 import { PrismaClient } from "@prisma/client";
 import { getSession } from "@/lib/session";
-import Header from "@/components/Header";
-import Footer from "@/components/Footer";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 
@@ -21,7 +19,6 @@ export default async function DashboardPage() {
 
   return (
     <>
-      <Header />
       <main className="flex-1 container mx-auto px-4 py-8 max-w-4xl space-y-8">
         
         <div className="bg-amber-50 border border-amber-200 text-amber-900 px-4 py-3 rounded-lg text-sm flex gap-3 items-center">
@@ -78,7 +75,6 @@ export default async function DashboardPage() {
         </div>
 
       </main>
-      <Footer />
     </>
   );
 }

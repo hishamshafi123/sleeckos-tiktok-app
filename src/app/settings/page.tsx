@@ -1,8 +1,6 @@
 "use client";
 
 import { useState } from "react";
-import Header from "@/components/Header";
-import Footer from "@/components/Footer";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -18,7 +16,6 @@ export default function SettingsPage() {
 
   return (
     <>
-      <Header />
       <main className="flex-1 container mx-auto px-4 py-8 max-w-3xl space-y-8">
         <div>
           <h1 className="text-3xl font-bold">Settings</h1>
@@ -54,8 +51,6 @@ export default function SettingsPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-      
-      <Footer />
     </>
   );
 }

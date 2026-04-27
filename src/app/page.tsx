@@ -1,12 +1,9 @@
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
-import Header from "@/components/Header";
-import Footer from "@/components/Footer";
 
 export default function LandingPage() {
   return (
     <>
-      <Header />
       <main className="flex-1 flex flex-col items-center text-center px-4 py-20">
         <div className="max-w-3xl space-y-8 mt-[-2rem]">
           <img src="/logo.png" alt="SleeckOS Logo" className="h-40 md:h-48 w-auto mx-auto object-contain" />
@@ -40,7 +37,6 @@ export default function LandingPage() {
           </div>
         </div>
       </main>
-      <Footer />
     </>
   );
 }

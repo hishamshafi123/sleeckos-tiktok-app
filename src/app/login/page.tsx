@@ -1,11 +1,8 @@
-import Header from "@/components/Header";
-import Footer from "@/components/Footer";
 import { Button } from "@/components/ui/button";
 
 export default function LoginPage() {
   return (
     <>
-      <Header />
       <main className="flex-1 flex items-center justify-center p-4">
         <div className="max-w-md w-full border rounded-2xl p-8 shadow-sm text-center space-y-6">
           <div className="space-y-2">
@@ -26,7 +23,6 @@ export default function LoginPage() {
           </p>
         </div>
       </main>
-      <Footer />
     </>
   );
 }

@@ -2,8 +2,6 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import Header from "@/components/Header";
-import Footer from "@/components/Footer";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 
@@ -47,7 +45,6 @@ export default function UploadPage() {
 
   return (
     <>
-      <Header />
       <main className="flex-1 container mx-auto px-4 py-8 max-w-3xl space-y-8">
         <div>
           <h1 className="text-3xl font-bold">Step 1: Select Video</h1>
@@ -86,7 +83,6 @@ export default function UploadPage() {
           <Button size="lg" disabled={!file} onClick={handleContinue}>Continue to Composer</Button>
         </div>
       </main>
-      <Footer />
     </>
   );
 }

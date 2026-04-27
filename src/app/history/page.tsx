@@ -1,8 +1,6 @@
 import { redirect } from "next/navigation";
 import { PrismaClient } from "@prisma/client";
 import { getSession } from "@/lib/session";
-import Header from "@/components/Header";
-import Footer from "@/components/Footer";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 
@@ -34,7 +32,6 @@ export default async function HistoryPage() {
 
   return (
     <>
-      <Header />
       <main className="flex-1 container mx-auto px-4 py-8 max-w-5xl space-y-8">
         <div>
           <h1 className="text-3xl font-bold">Publish History</h1>
@@ -96,7 +93,6 @@ export default async function HistoryPage() {
         </div>
 
       </main>
-      <Footer />
     </>
   );
 }
