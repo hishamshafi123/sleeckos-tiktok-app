@@ -1,11 +1,10 @@
 import { redirect } from "next/navigation";
 import Link from "next/link";
-import { PrismaClient } from "@prisma/client";
+import prisma from "@/lib/db";
 import { getSession } from "@/lib/session";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 
-const prisma = new PrismaClient();
 
 export default async function DashboardPage() {
   const session = await getSession();

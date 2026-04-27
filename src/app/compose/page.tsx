@@ -191,7 +191,7 @@ export default function ComposePage() {
         {/* D. Privacy */}
         <div className="space-y-2">
           <label className="font-semibold block">Who can view this video</label>
-          <Select value={privacy} onValueChange={setPrivacy}>
+          <Select value={privacy} onValueChange={(val) => setPrivacy(val || "MUTUAL_FOLLOW_FRIENDS")}>
             <SelectTrigger>
               <SelectValue placeholder="Select privacy" />
             </SelectTrigger>

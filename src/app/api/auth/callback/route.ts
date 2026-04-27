@@ -1,9 +1,9 @@
+export const dynamic = "force-dynamic";
 import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
-import { PrismaClient } from "@prisma/client";
+import prisma from "@/lib/db";
 import { setSession } from "@/lib/session";
 
-const prisma = new PrismaClient();
 
 export async function GET(request: Request) {
   const url = new URL(request.url);

@@ -1,9 +1,9 @@
+export const dynamic = "force-dynamic";
 import { NextResponse } from "next/server";
-import { PrismaClient } from "@prisma/client";
+import prisma from "@/lib/db";
 import { getSession } from "@/lib/session";
 import { checkPostStatus } from "@/lib/tiktok";
 
-const prisma = new PrismaClient();
 
 export async function POST(request: Request) {
   const session = await getSession();

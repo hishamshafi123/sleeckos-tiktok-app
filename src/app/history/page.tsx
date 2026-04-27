@@ -1,10 +1,9 @@
 import { redirect } from "next/navigation";
-import { PrismaClient } from "@prisma/client";
+import prisma from "@/lib/db";
 import { getSession } from "@/lib/session";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 
-const prisma = new PrismaClient();
 
 export default async function HistoryPage() {
   const session = await getSession();
