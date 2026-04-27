@@ -1,0 +1,56 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+model User {
+  id             String          @id @default(uuid())
+  email          String          @unique
+  createdAt      DateTime        @default(now())
+  tiktokAccounts TiktokAccount[]
+}
+
+model TiktokAccount {
+  id                     String       @id @default(uuid())
+  userId                 String
+  user                   User         @relation(fields: [userId], references: [id])
+  openId                 String       @unique
+  unionId                String?
+  username               String
+  displayName            String
+  avatarUrl              String
+  accessToken            String
+  refreshToken           String
+  accessTokenExpiresAt   DateTime
+  refreshTokenExpiresAt  DateTime
+  scopes                 String
+  connectedAt            DateTime     @default(now())
+  revokedAt              DateTime?
+  publishJobs            PublishJob[]
+}
+
+model PublishJob {
+  id                   String        @id @default(uuid())
+  tiktokAccountId      String
+  tiktokAccount        TiktokAccount @relation(fields: [tiktokAccountId], references: [id])
+  publishId            String?
+  sourceType           String        // FILE_UPLOAD | PULL_FROM_URL
+  localFilePath        String?
+  pullUrl              String?
+  caption              String
+  privacyLevel         String        // PUBLIC_TO_EVERYONE | MUTUAL_FOLLOW_FRIENDS | FOLLOWER_OF_CREATOR | SELF_ONLY
+  disableComment       Boolean       @default(false)
+  disableDuet          Boolean       @default(false)
+  disableStitch        Boolean       @default(false)
+  coverTimestampMs     Int           @default(0)
+  brandOrganicToggle   Boolean       @default(false)
+  brandContentToggle   Boolean       @default(false)
+  status               String        // INITIALIZED | UPLOADING | PROCESSING | PUBLISHED | FAILED
+  failReason           String?
+  tiktokPostUrl        String?
+  createdAt            DateTime      @default(now())
+  updatedAt            DateTime      @updatedAt
+}
