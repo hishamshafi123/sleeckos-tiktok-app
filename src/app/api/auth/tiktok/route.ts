@@ -4,20 +4,30 @@ import { cookies } from "next/headers";
 import crypto from "crypto";
 
 export async function GET(request: Request) {
+  const url = new URL(request.url);
   const state = crypto.randomBytes(16).toString("hex");
   const cookieStore = await cookies();
-  cookieStore.set("oauth_state", state, { httpOnly: true, path: "/", maxAge: 60 * 10 });
+  
+  cookieStore.set("oauth_state", state, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax",
+    maxAge: 60 * 10, // 10 minutes
+    path: "/",
+  });
 
-  const clientKey = process.env.TIKTOK_CLIENT_KEY;
-  const url = new URL(request.url);
+  const clientKey = process.env.TIKTOK_CLIENT_KEY!;
   const redirectUri = `${url.protocol}//${url.host}/api/auth/callback`;
+  
+  // Scopes required for marketplace: info, publish, and list (to check video status)
+  const scopes = "user.info.basic,video.publish,video.list";
 
-  const tiktokAuthUrl = new URL("https://www.tiktok.com/v2/auth/authorize/");
-  tiktokAuthUrl.searchParams.set("client_key", clientKey!);
-  tiktokAuthUrl.searchParams.set("scope", "user.info.basic,video.publish");
-  tiktokAuthUrl.searchParams.set("response_type", "code");
-  tiktokAuthUrl.searchParams.set("redirect_uri", redirectUri);
-  tiktokAuthUrl.searchParams.set("state", state);
+  const tiktokUrl = new URL("https://www.tiktok.com/v2/auth/authorize/");
+  tiktokUrl.searchParams.set("client_key", clientKey);
+  tiktokUrl.searchParams.set("scope", scopes);
+  tiktokUrl.searchParams.set("response_type", "code");
+  tiktokUrl.searchParams.set("redirect_uri", redirectUri);
+  tiktokUrl.searchParams.set("state", state);
 
-  return NextResponse.redirect(tiktokAuthUrl.toString());
+  return NextResponse.redirect(tiktokUrl.toString());
 }
