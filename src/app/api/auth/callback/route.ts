@@ -46,7 +46,12 @@ export async function GET(request: Request) {
     { headers: { Authorization: `Bearer ${tokenData.access_token}` } }
   );
   const userInfoData = await userInfoRes.json();
+  
+  // Log full response for debugging @unknown issue
+  console.log("TikTok User Info Data:", JSON.stringify(userInfoData));
+  
   const tiktokUser = userInfoData.data?.user || {};
+  const username = tiktokUser.username || tiktokUser.display_name?.toLowerCase().replace(/\s+/g, "_") || "unknown";
 
   // Find which logged-in user this TikTok connect belongs to by session cookie
   const sessionToken = cookieStore.get("session")?.value;
@@ -58,11 +63,12 @@ export async function GET(request: Request) {
       const key = new TextEncoder().encode(process.env.SESSION_SECRET || "super-secret-key-for-sleeckos-ugc-marketplace");
       const { payload } = await jwtVerify(sessionToken, key);
       userId = (payload as { userId: string }).userId;
-    } catch {}
+    } catch (e) {
+      console.error("Session verification failed in callback:", e);
+    }
   }
 
   if (!userId) {
-    // Fallback: create a new user (legacy flow)
     const email = `${tokenData.open_id}@tiktok.local`;
     let dbUser = await prisma.user.findUnique({ where: { email } });
     if (!dbUser) {
@@ -79,7 +85,7 @@ export async function GET(request: Request) {
       userId,
       openId: tokenData.open_id,
       unionId: tiktokUser.union_id,
-      username: tiktokUser.username || "unknown",
+      username: username,
       displayName: tiktokUser.display_name || "Unknown",
       avatarUrl: tiktokUser.avatar_url || "",
       accessToken: tokenData.access_token,
@@ -91,7 +97,7 @@ export async function GET(request: Request) {
     },
     update: {
       userId,
-      username: tiktokUser.username || "unknown",
+      username: username,
       displayName: tiktokUser.display_name || "Unknown",
       avatarUrl: tiktokUser.avatar_url || "",
       accessToken: tokenData.access_token,
@@ -104,7 +110,12 @@ export async function GET(request: Request) {
   });
 
   await prisma.auditLog.create({
-    data: { actorUserId: userId, action: "TIKTOK_ACCOUNT_CONNECTED", resourceType: "TiktokAccount", metadata: { openId: tokenData.open_id } },
+    data: { 
+      actorUserId: userId, 
+      action: "TIKTOK_ACCOUNT_CONNECTED", 
+      resourceType: "TiktokAccount", 
+      metadata: { openId: tokenData.open_id, username: username } 
+    },
   });
 
   return NextResponse.redirect(`${url.protocol}//${url.host}/c/dashboard`);
