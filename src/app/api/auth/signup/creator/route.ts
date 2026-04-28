@@ -5,37 +5,69 @@ import { createSession } from "@/lib/session";
 import bcrypt from "bcryptjs";
 
 export async function POST(req: NextRequest) {
-  const { email, password, displayName, bio, nicheTags, disclosureAgreed } = await req.json();
-  if (!email || !password || !displayName) return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
-  if (!disclosureAgreed) return NextResponse.json({ error: "You must agree to the disclosure terms" }, { status: 400 });
+  try {
+    const body = await req.json();
+    const { email, password, displayName, bio, nicheTags, disclosureAgreed } = body;
 
-  const existing = await prisma.user.findUnique({ where: { email } });
-  if (existing) return NextResponse.json({ error: "An account with this email already exists" }, { status: 400 });
+    if (!email || !password || !displayName) {
+      return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
+    }
+    if (!disclosureAgreed) {
+      return NextResponse.json({ error: "You must agree to the disclosure terms" }, { status: 400 });
+    }
 
-  const passwordHash = await bcrypt.hash(password, 12);
+    const existing = await prisma.user.findUnique({ where: { email } });
+    if (existing) {
+      return NextResponse.json({ error: "An account with this email already exists" }, { status: 400 });
+    }
 
-  const user = await prisma.user.create({
-    data: {
-      email,
-      passwordHash,
-      role: "CREATOR",
-      status: "APPROVED", // auto-approve creators in v1
-      creatorProfile: {
-        create: {
-          displayName,
-          bio: bio || "",
-          nicheTags: nicheTags || [],
-          disclosureAgreedAt: new Date(),
-          approvedAt: new Date(),
+    const passwordHash = await bcrypt.hash(password, 12);
+
+    // Let Prisma generate UUIDs automatically via the schema defaults
+    const user = await prisma.user.create({
+      data: {
+        email,
+        passwordHash,
+        role: "CREATOR",
+        status: "APPROVED",
+        creatorProfile: {
+          create: {
+            displayName,
+            bio: bio || "",
+            nicheTags: nicheTags || [],
+            contentSampleUrls: [],
+            disclosureAgreedAt: new Date(),
+            approvedAt: new Date(),
+          },
         },
       },
-    },
-  });
+    });
 
-  await prisma.auditLog.create({
-    data: { actorUserId: user.id, action: "CREATOR_SIGNUP", resourceType: "User", resourceId: user.id },
-  });
+    try {
+      await prisma.auditLog.create({
+        data: {
+          actorUserId: user.id,
+          action: "CREATOR_SIGNUP",
+          resourceType: "User",
+          resourceId: user.id,
+        },
+      });
+    } catch (auditErr) {
+      console.error("Audit log failed (non-blocking):", auditErr);
+    }
 
-  await createSession({ userId: user.id, email: user.email, role: user.role });
-  return NextResponse.json({ userId: user.id });
+    await createSession({
+      userId: user.id,
+      email: user.email,
+      role: user.role as "CREATOR" | "BRAND_OWNER" | "ADMIN",
+    });
+    
+    return NextResponse.json({ userId: user.id });
+  } catch (err: unknown) {
+    console.error("Creator signup error:", err);
+    return NextResponse.json(
+      { error: err instanceof Error ? err.message : "Signup failed. Please try again." },
+      { status: 500 }
+    );
+  }
 }

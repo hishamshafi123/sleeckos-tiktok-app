@@ -31,7 +31,15 @@ export default function CreatorSignupPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(form),
       });
-      const data = await res.json();
+      
+      const text = await res.text();
+      let data;
+      try {
+        data = text ? JSON.parse(text) : {};
+      } catch (e) {
+        throw new Error(`Server error (${res.status}): ${text.slice(0, 50)}`);
+      }
+
       if (!res.ok) throw new Error(data.error || "Signup failed");
       toast.success("Account created! Connecting your TikTok account...");
       router.push("/c/onboarding");
