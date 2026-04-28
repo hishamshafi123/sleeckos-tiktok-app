@@ -19,10 +19,7 @@ export default async function PublishingPage({ params }: { params: { id: string 
 
   if (!deliverable || deliverable.creatorUserId !== session.userId) notFound();
   
-  if (deliverable.status !== "DRAFT_APPROVED" && deliverable.status !== "READY_TO_PUBLISH") {
-    // If already published, redirect to dashboard
-    if (deliverable.status === "PUBLISHED") redirect(`/c/active/${id}`);
-    // Otherwise they shouldn't be here yet
+  if (deliverable.status !== "DRAFT_APPROVED" && deliverable.status !== "READY_TO_PUBLISH" && deliverable.status !== "PUBLISHED") {
     redirect(`/c/active/${id}`);
   }
 
@@ -31,29 +28,20 @@ export default async function PublishingPage({ params }: { params: { id: string 
 
   return (
     <div className="min-h-screen bg-[#050508] text-white">
-      <ComplDeliverablePage 
-        deliverable={deliverable} 
-        tiktokAccount={tiktokAccount} 
-      />
-    </div>
-  );
-}
-
-function ComplDeliverablePage({ deliverable, tiktokAccount }: { deliverable: any, tiktokAccount: any }) {
-  return (
-    <div className="max-w-4xl mx-auto px-4 py-12">
-      <div className="mb-10 text-center">
-        <div className="inline-flex items-center gap-2 bg-purple-500/10 border border-purple-500/20 rounded-full px-4 py-1.5 text-purple-300 text-xs font-bold mb-6 uppercase tracking-widest">
-          Compliant Composer
+      <div className="max-w-4xl mx-auto px-4 py-12">
+        <div className="mb-10 text-center">
+          <div className="inline-flex items-center gap-2 bg-purple-500/10 border border-purple-500/20 rounded-full px-4 py-1.5 text-purple-300 text-xs font-bold mb-6 uppercase tracking-widest">
+            Compliant Composer
+          </div>
+          <h1 className="text-3xl font-black mb-2">Final Review & Publish</h1>
+          <p className="text-gray-500">Your content has been approved by {deliverable.campaign.brand.tradeName}.</p>
         </div>
-        <h1 className="text-3xl font-black mb-2">Final Review & Publish</h1>
-        <p className="text-gray-500">Your content has been approved by {deliverable.campaign.brand.tradeName}.</p>
-      </div>
 
-      <CompliantComposer 
-        deliverable={deliverable} 
-        tiktokAccount={tiktokAccount} 
-      />
+        <CompliantComposer 
+          deliverable={deliverable} 
+          tiktokAccount={tiktokAccount} 
+        />
+      </div>
     </div>
   );
 }
