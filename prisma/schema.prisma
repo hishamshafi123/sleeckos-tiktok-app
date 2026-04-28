@@ -7,51 +7,239 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+enum UserRole {
+  CREATOR
+  BRAND_OWNER
+  ADMIN
+}
+
+enum UserStatus {
+  PENDING
+  APPROVED
+  SUSPENDED
+}
+
+enum BrandCategory {
+  BEAUTY
+  FASHION
+  FITNESS
+  FOOD
+  TECH
+  TRAVEL
+  LIFESTYLE
+  OTHER
+}
+
+enum BrandStatus {
+  PENDING
+  APPROVED
+  SUSPENDED
+}
+
+enum CampaignStatus {
+  DRAFT
+  PENDING_REVIEW
+  OPEN
+  CLOSED
+  COMPLETED
+  CANCELLED
+}
+
+enum ApplicationStatus {
+  SUBMITTED
+  UNDER_REVIEW
+  ACCEPTED
+  REJECTED
+  WITHDRAWN
+}
+
+enum DeliverableStatus {
+  BRIEFED
+  DRAFT_UPLOADED
+  DRAFT_APPROVED
+  DRAFT_NEEDS_CHANGES
+  READY_TO_PUBLISH
+  PUBLISHED
+  PAYOUT_PENDING
+  PAID
+  CANCELLED
+}
+
 model User {
-  id             String          @id @default(uuid())
-  email          String          @unique
-  createdAt      DateTime        @default(now())
-  tiktokAccounts TiktokAccount[]
+  id           String     @id @default(uuid())
+  email        String     @unique
+  passwordHash String?
+  role         UserRole   @default(CREATOR)
+  status       UserStatus @default(PENDING)
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  creatorProfile  CreatorProfile?
+  tiktokAccount   TiktokAccount?
+  brandOwnership  Brand?          @relation("BrandOwner")
+  applications    Application[]
+  deliverables    Deliverable[]   @relation("CreatorDeliverables")
+  auditLogs       AuditLog[]
+  approvedBrands  Brand[]         @relation("BrandApprover")
+  approvedCreators CreatorProfile[] @relation("CreatorApprover")
+}
+
+model CreatorProfile {
+  id                     String    @id @default(uuid())
+  userId                 String    @unique
+  user                   User      @relation(fields: [userId], references: [id])
+  displayName            String
+  bio                    String?
+  nicheTags              String[]
+  followerCountSnapshot  Int       @default(0)
+  followerCountUpdatedAt DateTime?
+  contentSampleUrls      String[]
+  disclosureAgreedAt     DateTime?
+  approvedAt             DateTime?
+  approvedById           String?
+  approvedBy             User?     @relation("CreatorApprover", fields: [approvedById], references: [id])
+  rejectionReason        String?
+  stripeConnectAccountId String?
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
 }
 
 model TiktokAccount {
-  id                     String       @id @default(uuid())
-  userId                 String
-  user                   User         @relation(fields: [userId], references: [id])
-  openId                 String       @unique
-  unionId                String?
-  username               String
-  displayName            String
-  avatarUrl              String
-  accessToken            String
-  refreshToken           String
-  accessTokenExpiresAt   DateTime
-  refreshTokenExpiresAt  DateTime
-  scopes                 String
-  connectedAt            DateTime     @default(now())
-  revokedAt              DateTime?
-  publishJobs            PublishJob[]
+  id                    String    @id @default(uuid())
+  userId                String    @unique
+  user                  User      @relation(fields: [userId], references: [id])
+  openId                String    @unique
+  unionId               String?
+  username              String
+  displayName           String
+  avatarUrl             String
+  accessToken           String
+  refreshToken          String
+  accessTokenExpiresAt  DateTime
+  refreshTokenExpiresAt DateTime
+  scopes                String
+  connectedAt           DateTime  @default(now())
+  revokedAt             DateTime?
 }
 
-model PublishJob {
-  id                   String        @id @default(uuid())
-  tiktokAccountId      String
-  tiktokAccount        TiktokAccount @relation(fields: [tiktokAccountId], references: [id])
+model Brand {
+  id                           String        @id @default(uuid())
+  ownerUserId                  String        @unique
+  ownerUser                    User          @relation("BrandOwner", fields: [ownerUserId], references: [id])
+  legalName                    String
+  tradeName                    String
+  registrationNumber           String?
+  website                      String
+  category                     BrandCategory
+  contactEmail                 String
+  tiktokHandle                 String?
+  brandLogoUrl                 String?
+  status                       BrandStatus   @default(PENDING)
+  approvedAt                   DateTime?
+  approvedById                 String?
+  approvedBy                   User?         @relation("BrandApprover", fields: [approvedById], references: [id])
+  rejectionReason              String?
+  bannedCategoriesAcknowledged Boolean       @default(false)
+  createdAt                    DateTime      @default(now())
+  updatedAt                    DateTime      @updatedAt
+
+  campaigns Campaign[]
+}
+
+model Campaign {
+  id                  String         @id @default(uuid())
+  brandId             String
+  brand               Brand          @relation(fields: [brandId], references: [id])
+  slug                String         @unique
+  title               String
+  description         String
+  brief               String
+  deliverableFormat   String         @default("VIDEO")
+  deliverableCount    Int            @default(1)
+  requiredHashtags    String[]
+  requiredMentions    String[]
+  payoutPerPostCents  Int
+  currency            String         @default("USD")
+  totalBudgetCents    Int
+  maxCreators         Int
+  applicationDeadline DateTime
+  deliveryDeadline    DateTime
+  minFollowerCount    Int            @default(0)
+  nicheTags           String[]
+  ageMinimum          Int            @default(18)
+  status              CampaignStatus @default(DRAFT)
+  approvedByAdminAt   DateTime?
+  coverImageUrl       String?
+  exampleVideos       String[]
+  createdAt           DateTime       @default(now())
+  updatedAt           DateTime       @updatedAt
+
+  applications Application[]
+  deliverables Deliverable[]
+}
+
+model Application {
+  id              String            @id @default(uuid())
+  campaignId      String
+  campaign        Campaign          @relation(fields: [campaignId], references: [id])
+  creatorUserId   String
+  creatorUser     User              @relation(fields: [creatorUserId], references: [id])
+  pitch           String
+  status          ApplicationStatus @default(SUBMITTED)
+  decisionAt      DateTime?
+  decidedById     String?
+  decisionNote    String?
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  deliverable Deliverable?
+
+  @@unique([campaignId, creatorUserId])
+}
+
+model Deliverable {
+  id                   String            @id @default(uuid())
+  applicationId        String            @unique
+  application          Application       @relation(fields: [applicationId], references: [id])
+  campaignId           String
+  campaign             Campaign          @relation(fields: [campaignId], references: [id])
+  creatorUserId        String
+  creatorUser          User              @relation("CreatorDeliverables", fields: [creatorUserId], references: [id])
+  status               DeliverableStatus @default(BRIEFED)
+  draftVideoUrl        String?
+  draftCaption         String?
+  draftRevisionCount   Int               @default(0)
+  brandFeedback        String?
   publishId            String?
-  sourceType           String        // FILE_UPLOAD | PULL_FROM_URL
-  localFilePath        String?
-  pullUrl              String?
-  caption              String
-  privacyLevel         String        // PUBLIC_TO_EVERYONE | MUTUAL_FOLLOW_FRIENDS | FOLLOWER_OF_CREATOR | SELF_ONLY
-  disableComment       Boolean       @default(false)
-  disableDuet          Boolean       @default(false)
-  disableStitch        Boolean       @default(false)
-  coverTimestampMs     Int           @default(0)
-  brandOrganicToggle   Boolean       @default(false)
-  brandContentToggle   Boolean       @default(false)
-  status               String        // INITIALIZED | UPLOADING | PROCESSING | PUBLISHED | FAILED
-  failReason           String?
+  tiktokVideoId        String?
   tiktokPostUrl        String?
-  createdAt            DateTime      @default(now())
-  updatedAt            DateTime      @updatedAt
+  publishedAt          DateTime?
+  payoutAt             DateTime?
+  payoutStripeId       String?
+  createdAt            DateTime          @default(now())
+  updatedAt            DateTime          @updatedAt
+
+  metrics PostMetric[]
+}
+
+model PostMetric {
+  id             String      @id @default(uuid())
+  deliverableId  String
+  deliverable    Deliverable @relation(fields: [deliverableId], references: [id])
+  viewCount      BigInt      @default(0)
+  likeCount      BigInt      @default(0)
+  commentCount   BigInt      @default(0)
+  shareCount     BigInt      @default(0)
+  fetchedAt      DateTime    @default(now())
+}
+
+model AuditLog {
+  id           String   @id @default(uuid())
+  actorUserId  String?
+  actorUser    User?    @relation(fields: [actorUserId], references: [id])
+  action       String
+  resourceType String
+  resourceId   String?
+  metadata     Json?
+  createdAt    DateTime @default(now())
 }

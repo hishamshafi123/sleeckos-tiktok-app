@@ -1,44 +1,43 @@
 import { SignJWT, jwtVerify } from "jose";
 import { cookies } from "next/headers";
 
-const secretKey = process.env.SESSION_SECRET || "super-secret-key-for-tiktok-demo-app";
+const secretKey = process.env.SESSION_SECRET || "super-secret-key-for-sleeckos-ugc-marketplace";
 const key = new TextEncoder().encode(secretKey);
 
-export async function encrypt(payload: any) {
-  return await new SignJWT(payload)
+export type SessionPayload = {
+  userId: string;
+  email: string;
+  role: "CREATOR" | "BRAND_OWNER" | "ADMIN";
+};
+
+export async function createSession(payload: SessionPayload) {
+  const token = await new SignJWT(payload)
     .setProtectedHeader({ alg: "HS256" })
-    .setIssuedAt()
-    .setExpirationTime("1 week from now")
+    .setExpirationTime("7d")
     .sign(key);
-}
-
-export async function decrypt(input: string): Promise<any> {
-  const { payload } = await jwtVerify(input, key, {
-    algorithms: ["HS256"],
+  const cookieStore = await cookies();
+  cookieStore.set("session", token, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax",
+    maxAge: 60 * 60 * 24 * 7,
+    path: "/",
   });
-  return payload;
 }
 
-export async function setSession(userId: string) {
-  const expires = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
-  const session = await encrypt({ userId, expires });
-
-  const cookieStore = await cookies();
-  cookieStore.set("session", session, { expires, httpOnly: true, path: "/" });
-}
-
-export async function getSession() {
-  const cookieStore = await cookies();
-  const session = cookieStore.get("session")?.value;
-  if (!session) return null;
+export async function getSession(): Promise<SessionPayload | null> {
   try {
-    return await decrypt(session);
-  } catch (err) {
+    const cookieStore = await cookies();
+    const token = cookieStore.get("session")?.value;
+    if (!token) return null;
+    const { payload } = await jwtVerify(token, key);
+    return payload as unknown as SessionPayload;
+  } catch {
     return null;
   }
 }
 
-export async function clearSession() {
+export async function deleteSession() {
   const cookieStore = await cookies();
-  cookieStore.set("session", "", { expires: new Date(0), path: "/" });
+  cookieStore.delete("session");
 }

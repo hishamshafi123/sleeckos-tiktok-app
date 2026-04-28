@@ -1,53 +1,51 @@
 export const dynamic = "force-dynamic";
-import { NextResponse } from "next/server";
-import prisma from "@/lib/db";
+import { NextRequest, NextResponse } from "next/server";
 import { getSession } from "@/lib/session";
-import { checkPostStatus } from "@/lib/tiktok";
+import { prisma } from "@/lib/db";
 
-
-export async function POST(request: Request) {
+export async function GET(request: NextRequest) {
   const session = await getSession();
   if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  const { publishId } = await request.json();
+  const { searchParams } = new URL(request.url);
+  const publishId = searchParams.get("publish_id");
+  const deliverableId = searchParams.get("deliverable_id");
 
-  const job = await prisma.publishJob.findFirst({
-    where: { publishId },
-    include: { tiktokAccount: true }
+  const account = await prisma.tiktokAccount.findFirst({
+    where: { userId: session.userId, revokedAt: null },
+  });
+  if (!account) return NextResponse.json({ error: "No connected account" }, { status: 400 });
+
+  if (!publishId) return NextResponse.json({ error: "Missing publish_id" }, { status: 400 });
+
+  const res = await fetch("https://open.tiktokapis.com/v2/post/publish/status/fetch/", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${account.accessToken}`, "Content-Type": "application/json; charset=UTF-8" },
+    body: JSON.stringify({ publish_id: publishId }),
   });
 
-  if (!job || job.tiktokAccount.userId !== session.userId) {
-    return NextResponse.json({ error: "Not found" }, { status: 404 });
-  }
+  const data = await res.json();
 
-  try {
-    const data = await checkPostStatus(job.tiktokAccount.accessToken, publishId);
-    
-    if (data.error && data.error.code !== "ok") {
-      return NextResponse.json({ error: data.error.message }, { status: 400 });
-    }
+  await prisma.auditLog.create({
+    data: {
+      actorUserId: session.userId,
+      action: "TIKTOK_API_CALL",
+      resourceType: "Deliverable",
+      resourceId: deliverableId || null,
+      metadata: { endpoint: "/v2/post/publish/status/fetch/", publish_id: publishId, response: data },
+    },
+  });
 
-    const newStatus = data.data.status;
-    const failReason = data.data.fail_reason;
-    const postUrl = data.data.public_post_id ? `https://www.tiktok.com/@${job.tiktokAccount.username}/video/${data.data.public_post_id}` : null;
-
-    if (job.status !== newStatus) {
-      await prisma.publishJob.update({
-        where: { id: job.id },
-        data: { 
-          status: newStatus,
-          failReason,
-          tiktokPostUrl: postUrl || job.tiktokPostUrl
-        }
-      });
-    }
-
-    return NextResponse.json({
-      status: newStatus,
-      failReason,
-      publicPostUrl: postUrl
+  if (deliverableId && data.data?.status === "PUBLISH_COMPLETE") {
+    await prisma.deliverable.update({
+      where: { id: deliverableId },
+      data: {
+        status: "PUBLISHED",
+        tiktokVideoId: data.data?.publicaly_available_post_id?.[0] || null,
+        publishedAt: new Date(),
+      },
     });
-  } catch (err: any) {
-    return NextResponse.json({ error: err.message }, { status: 500 });
   }
+
+  return NextResponse.json(data);
 }

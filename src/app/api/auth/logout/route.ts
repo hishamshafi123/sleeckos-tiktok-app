@@ -1,9 +1,8 @@
 export const dynamic = "force-dynamic";
 import { NextResponse } from "next/server";
-import { clearSession } from "@/lib/session";
+import { deleteSession } from "@/lib/session";
 
-export async function POST(request: Request) {
-  await clearSession();
-  const url = new URL(request.url);
-  return NextResponse.redirect(`${url.protocol}//${url.host}/login`);
+export async function POST() {
+  await deleteSession();
+  return NextResponse.json({ ok: true });
 }

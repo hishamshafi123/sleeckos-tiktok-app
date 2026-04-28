@@ -1,75 +1,68 @@
 export const dynamic = "force-dynamic";
-import { NextResponse } from "next/server";
-import prisma from "@/lib/db";
+import { NextRequest, NextResponse } from "next/server";
 import { getSession } from "@/lib/session";
+import { prisma } from "@/lib/db";
 import { initDirectPost } from "@/lib/tiktok";
 
-
-export async function POST(request: Request) {
+export async function POST(request: NextRequest) {
   const session = await getSession();
   if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const body = await request.json();
+  const { deliverableId, ...postData } = body;
 
   const account = await prisma.tiktokAccount.findFirst({
-    where: { userId: session.userId, revokedAt: null }
+    where: { userId: session.userId, revokedAt: null },
   });
+  if (!account) return NextResponse.json({ error: "No connected TikTok account" }, { status: 400 });
 
-  if (!account) return NextResponse.json({ error: "No connected account" }, { status: 400 });
-
-  // For the demo, we simulate FILE_UPLOAD by just initializing it
-  // In a real app we would compute exact video size and send chunk_size etc.
   const payload = {
     post_info: {
-      title: body.title,
-      privacy_level: body.privacy_level,
-      disable_comment: body.disable_comment,
-      disable_duet: body.disable_duet,
-      disable_stitch: body.disable_stitch,
-      video_cover_timestamp_ms: body.video_cover_timestamp_ms,
-      brand_content_toggle: body.brand_content_toggle,
-      brand_organic_toggle: body.brand_organic_toggle,
+      title: postData.title,
+      privacy_level: postData.privacy_level,
+      disable_comment: postData.disable_comment ?? false,
+      disable_duet: postData.disable_duet ?? false,
+      disable_stitch: postData.disable_stitch ?? false,
+      video_cover_timestamp_ms: postData.video_cover_timestamp_ms ?? 0,
+      brand_content_toggle: true, // Always forced on
+      brand_organic_toggle: false,
     },
     source_info: {
       source: "FILE_UPLOAD",
-      video_size: 5000000, // Dummy
-      chunk_size: 5000000,
-      total_chunk_count: 1
-    }
+      video_size: postData.video_size || 5000000,
+      chunk_size: postData.chunk_size || 5000000,
+      total_chunk_count: postData.total_chunk_count || 1,
+    },
   };
 
   try {
     const data = await initDirectPost(account.accessToken, payload);
-    
+
+    await prisma.auditLog.create({
+      data: {
+        actorUserId: session.userId,
+        action: "TIKTOK_API_CALL",
+        resourceType: "Deliverable",
+        resourceId: deliverableId || null,
+        metadata: { endpoint: "/v2/post/publish/video/init/", response: data },
+      },
+    });
+
     if (data.error && data.error.code !== "ok") {
       return NextResponse.json({ error: data.error.message }, { status: 400 });
     }
 
-    const publishId = data.data.publish_id;
+    const publishId = data.data?.publish_id;
 
-    await prisma.publishJob.create({
-      data: {
-        tiktokAccountId: account.id,
-        publishId,
-        sourceType: "FILE_UPLOAD",
-        caption: body.title,
-        privacyLevel: body.privacy_level,
-        disableComment: body.disable_comment,
-        disableDuet: body.disable_duet,
-        disableStitch: body.disable_stitch,
-        coverTimestampMs: body.video_cover_timestamp_ms,
-        brandContentToggle: body.brand_content_toggle,
-        brandOrganicToggle: body.brand_organic_toggle,
-        status: "INITIALIZED",
-      }
-    });
+    if (deliverableId && publishId) {
+      await prisma.deliverable.update({
+        where: { id: deliverableId },
+        data: { publishId, status: "PUBLISHED" },
+      });
+    }
 
-    // In a real app we would start uploading chunks to data.data.upload_url now.
-    // We'll update status to PUBLISHED immediately for demo purposes if we don't implement full chunk upload.
-    // Wait, the PRD requires the UI to poll the status API, so we should actually just return the publishId.
-
-    return NextResponse.json({ publishId, uploadUrl: data.data.upload_url });
-  } catch (err: any) {
-    return NextResponse.json({ error: err.message }, { status: 500 });
+    return NextResponse.json({ publishId, uploadUrl: data.data?.upload_url });
+  } catch (err: unknown) {
+    return NextResponse.json({ error: err instanceof Error ? err.message : "Unknown error" }, { status: 500 });
   }
 }

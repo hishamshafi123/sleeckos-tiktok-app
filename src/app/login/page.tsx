@@ -1,28 +1,91 @@
-import { Button } from "@/components/ui/button";
+"use client";
+import { useState } from "react";
+import { useRouter } from "next/navigation";
+import Link from "next/link";
+import { toast } from "sonner";
+import { Loader2 } from "lucide-react";
 
 export default function LoginPage() {
+  const router = useRouter();
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  const handleLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+    try {
+      const res = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Login failed");
+      
+      if (data.role === "ADMIN") router.push("/admin");
+      else if (data.role === "BRAND_OWNER") router.push("/b/dashboard");
+      else router.push("/c/dashboard");
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : "Login failed");
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
-    <>
-      <main className="flex-1 flex items-center justify-center p-4">
-        <div className="max-w-md w-full border rounded-2xl p-8 shadow-sm text-center space-y-6">
-          <div className="space-y-2">
-            <img src="/logo.png" alt="SleeckOS Logo" className="h-32 w-auto mx-auto mb-2 object-contain" />
-            <h1 className="text-2xl font-bold">Sign In</h1>
-            <p className="text-muted-foreground">Sign in with your TikTok account to start publishing.</p>
-          </div>
-          
-          <form action="/api/auth/tiktok" method="GET">
-            <Button type="submit" size="lg" className="w-full bg-black hover:bg-black/90 text-white flex items-center justify-center gap-2">
-              <svg fill="currentColor" viewBox="0 0 24 24" className="w-5 h-5"><path d="M19.59 6.69a4.83 4.83 0 0 1-3.77-4.25V2h-3.45v13.67a2.89 2.89 0 0 1-5.2 1.74 2.89 2.89 0 0 1 2.31-4.64 2.93 2.93 0 0 1 .88.13V9.4a6.84 6.84 0 0 0-1-.05A6.33 6.33 0 0 0 5 20.1a6.34 6.34 0 0 0 10.86-4.43v-7a8.16 8.16 0 0 0 4.77 1.52v-3.4a4.85 4.85 0 0 1-1.04-.1z"/></svg>
-              Continue with TikTok
-            </Button>
+    <div className="min-h-screen grid-bg flex items-center justify-center px-4">
+      <div className="w-full max-w-md">
+        <div className="text-center mb-8">
+          <Link href="/">
+            <img src="/logo.png" alt="Sleeckos" className="h-10 w-auto object-contain brightness-110 mx-auto mb-6" />
+          </Link>
+          <h1 className="text-2xl font-bold text-white">Welcome back</h1>
+          <p className="text-gray-500 mt-2 text-sm">Sign in to your Sleeckos account</p>
+        </div>
+
+        <div className="glass border border-white/8 rounded-2xl p-8">
+          <form onSubmit={handleLogin} className="space-y-5">
+            <div>
+              <label className="block text-sm font-medium text-gray-300 mb-2">Email</label>
+              <input
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                required
+                className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white placeholder-gray-600 focus:outline-none focus:border-purple-500 transition-colors text-sm"
+                placeholder="you@example.com"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-300 mb-2">Password</label>
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                required
+                className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white placeholder-gray-600 focus:outline-none focus:border-purple-500 transition-colors text-sm"
+                placeholder="••••••••"
+              />
+            </div>
+            <button
+              type="submit"
+              disabled={loading}
+              className="w-full bg-purple-600 hover:bg-purple-500 disabled:opacity-50 text-white font-semibold py-3 rounded-xl transition-all flex items-center justify-center gap-2"
+            >
+              {loading && <Loader2 className="w-4 h-4 animate-spin" />}
+              Sign in
+            </button>
           </form>
 
-          <p className="text-xs text-muted-foreground text-balance">
-            You'll be redirected to TikTok to grant permission. We'll never post without your explicit confirmation.
-          </p>
+          <div className="mt-6 pt-6 border-t border-white/5 text-center text-sm text-gray-500">
+            Don&apos;t have an account?{" "}
+            <Link href="/signup" className="text-purple-400 hover:text-purple-300 font-medium transition-colors">
+              Sign up
+            </Link>
+          </div>
         </div>
-      </main>
-    </>
+      </div>
+    </div>
   );
 }
