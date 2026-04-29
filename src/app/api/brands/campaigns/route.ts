@@ -20,12 +20,15 @@ export async function POST(req: NextRequest) {
     const campaign = await prisma.campaign.create({
       data: {
         brandId: brand.id,
+        slug: data.title.toLowerCase().replace(/[^a-z0-9]+/g, '-') + '-' + Date.now(),
         title: data.title,
         description: data.description,
         brief: data.brief,
         payoutPerPostCents: data.payoutPerPostCents,
+        totalBudgetCents: data.payoutPerPostCents * data.maxCreators,
         maxCreators: data.maxCreators,
         applicationDeadline: new Date(data.applicationDeadline),
+        deliveryDeadline: new Date(new Date(data.applicationDeadline).getTime() + 14 * 24 * 60 * 60 * 1000),
         requiredHashtags: data.requiredHashtags || [],
         requiredMentions: data.requiredMentions || [],
         status: "OPEN",
