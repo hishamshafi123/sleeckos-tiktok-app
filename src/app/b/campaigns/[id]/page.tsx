@@ -4,6 +4,7 @@ import { prisma } from "@/lib/db";
 import { notFound, redirect } from "next/navigation";
 import Link from "next/link";
 import { ArrowLeft, Users, ExternalLink, Calendar, CheckCircle } from "lucide-react";
+import BrandApplicationCard from "@/components/BrandApplicationCard";
 
 export default async function BrandCampaignDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const session = await getSession();
@@ -77,24 +78,7 @@ export default async function BrandCampaignDetailPage({ params }: { params: Prom
             ) : (
               <div className="space-y-3">
                 {campaign.applications.map((app) => (
-                  <div key={app.id} className="bg-white/5 border border-white/10 rounded-xl p-4">
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="text-sm font-bold text-white">{app.creatorUser.creatorProfile?.displayName || app.creatorUser.email}</span>
-                      <span className={`text-[10px] font-bold px-2 py-1 rounded ${
-                        app.status === 'ACCEPTED' ? 'bg-green-500/10 text-green-400' : 'bg-gray-500/10 text-gray-400'
-                      }`}>{app.status}</span>
-                    </div>
-                    {app.deliverable && (
-                       <div className="mt-3 pt-3 border-t border-white/10 flex justify-between items-center text-xs">
-                         <span className="text-purple-400">{app.deliverable.status.replace(/_/g, ' ')}</span>
-                         {app.deliverable.draftVideoUrl && (
-                           <a href={app.deliverable.draftVideoUrl} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1 text-gray-400 hover:text-white">
-                             View Draft <ExternalLink className="w-3 h-3" />
-                           </a>
-                         )}
-                       </div>
-                    )}
-                  </div>
+                  <BrandApplicationCard key={app.id} application={app} />
                 ))}
               </div>
             )}
