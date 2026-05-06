@@ -21,6 +21,7 @@ export default function CreatorDeliverableClient({ deliverable, tiktokAccount }:
   const [submitting, setSubmitting] = useState(false);
   const [publishing, setPublishing] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [postMode, setPostMode] = useState<"DIRECT" | "DRAFT">("DIRECT");
 
   // ---------- Submit Draft ----------
   const handleSubmitDraft = async () => {
@@ -39,34 +40,38 @@ export default function CreatorDeliverableClient({ deliverable, tiktokAccount }:
     finally { setSubmitting(false); }
   };
 
-  // ---------- Publish to TikTok ----------
+  // ---------- Publish / Draft to TikTok ----------
   const handlePublish = async () => {
     setPublishing(true);
     try {
-      // 1. Init post on TikTok API
       const initRes = await fetch("/api/tiktok/init-post", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           deliverableId: deliverable.id,
+          postType: postMode,
           title: caption,
           privacy_level: "PUBLIC_TO_EVERYONE",
-          brand_content_toggle: true,   // always locked on
+          brand_content_toggle: true, // always locked on for direct posts
         }),
       });
       const initData = await initRes.json();
-      if (!initRes.ok) throw new Error(initData.error ?? "TikTok init failed");
+      if (!initRes.ok) throw new Error(initData.error ?? "TikTok request failed");
 
-      // 2. Mark as published in our DB
-      const completeRes = await fetch(`/api/deliverables/${deliverable.id}/complete`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ tiktokVideoId: initData.publish_id ?? "pending" }),
-      });
-      if (!completeRes.ok) throw new Error("Failed to mark published");
-
-      toast.success("🎉 Published to TikTok with Branded Content disclosure!");
-      router.refresh();
+      if (postMode === "DRAFT") {
+        toast.success("Draft sent to your TikTok inbox! Open TikTok → Me → Drafts to publish.");
+        router.refresh();
+      } else {
+        // Mark as published in our DB
+        const completeRes = await fetch(`/api/deliverables/${deliverable.id}/complete`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ tiktokVideoId: initData.publish_id ?? "pending" }),
+        });
+        if (!completeRes.ok) throw new Error("Failed to mark published");
+        toast.success("🎉 Published to TikTok with Branded Content disclosure!");
+        router.refresh();
+      }
     } catch (e: any) { toast.error(e.message); }
     finally { setPublishing(false); }
   };
@@ -126,46 +131,93 @@ export default function CreatorDeliverableClient({ deliverable, tiktokAccount }:
     );
   }
 
-  // APPROVED STATE — show Compliant Composer
+  // APPROVED STATE — Publish Now or Save as Draft
   if (deliverable.status === "DRAFT_APPROVED" || deliverable.status === "READY_TO_PUBLISH") {
     return (
       <div className="glass border border-green-500/20 rounded-3xl overflow-hidden">
         <div className="border-b border-white/5 px-8 py-5 flex items-center gap-2">
           <CheckCircle className="w-5 h-5 text-green-400" />
-          <span className="text-white font-bold">Draft Approved — Publish Now</span>
+          <span className="text-white font-bold">Draft Approved — Ready to Post</span>
         </div>
         <div className="p-8 space-y-6">
-          <div className="bg-green-500/5 border border-green-500/10 rounded-2xl p-5">
-            <p className="text-sm text-gray-300 mb-3">The brand has approved your content. You can now publish directly to TikTok. The <strong className="text-purple-300">Branded Content</strong> toggle is mandatory and cannot be disabled.</p>
-            <div className="flex items-start gap-3 bg-amber-500/5 border border-amber-500/10 rounded-xl p-4">
-              <AlertCircle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
-              <p className="text-xs text-amber-400/80 leading-relaxed">
-                This post will be permanently labeled as a Paid Partnership. Removing the disclosure after posting violates TikTok Terms of Service.
-              </p>
-            </div>
+
+          {/* Mode toggle */}
+          <div className="grid grid-cols-2 gap-2 p-1 bg-white/5 rounded-2xl border border-white/10">
+            <button
+              type="button"
+              onClick={() => setPostMode("DIRECT")}
+              className={`py-3.5 rounded-xl text-sm font-bold transition-all flex items-center justify-center gap-2 ${
+                postMode === "DIRECT"
+                  ? "bg-white text-black shadow-lg"
+                  : "text-gray-500 hover:text-white"
+              }`}
+            >
+              <Smartphone className="w-4 h-4" />
+              Publish Now
+            </button>
+            <button
+              type="button"
+              onClick={() => setPostMode("DRAFT")}
+              className={`py-3.5 rounded-xl text-sm font-bold transition-all flex items-center justify-center gap-2 ${
+                postMode === "DRAFT"
+                  ? "bg-blue-600 text-white shadow-lg shadow-blue-500/20"
+                  : "text-gray-500 hover:text-white"
+              }`}
+            >
+              <Play className="w-4 h-4" />
+              Save as Draft
+            </button>
           </div>
 
-          {/* Compliance Toggle (locked on) */}
-          <div className="flex items-center justify-between bg-purple-500/5 border border-purple-500/20 rounded-2xl p-5">
-            <div className="flex items-center gap-3">
-              <Lock className="w-4 h-4 text-purple-400" />
-              <div>
-                <p className="text-sm font-bold text-white">Branded Content Disclosure</p>
-                <p className="text-[10px] text-gray-500 uppercase font-bold tracking-widest">Always Required</p>
+          {/* Mode description */}
+          {postMode === "DIRECT" ? (
+            <div className="space-y-4">
+              <div className="bg-green-500/5 border border-green-500/10 rounded-2xl p-5">
+                <p className="text-sm text-gray-300 mb-3">The brand has approved your content. Posting will go live immediately with the <strong className="text-purple-300">Branded Content</strong> label locked on.</p>
+                <div className="flex items-start gap-3 bg-amber-500/5 border border-amber-500/10 rounded-xl p-4">
+                  <AlertCircle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                  <p className="text-xs text-amber-400/80 leading-relaxed">This post will be permanently labeled as a Paid Partnership. Removing the disclosure after posting violates TikTok Terms of Service.</p>
+                </div>
+              </div>
+              {/* Compliance toggle (locked on) */}
+              <div className="flex items-center justify-between bg-purple-500/5 border border-purple-500/20 rounded-2xl p-5">
+                <div className="flex items-center gap-3">
+                  <Lock className="w-4 h-4 text-purple-400" />
+                  <div>
+                    <p className="text-sm font-bold text-white">Branded Content Disclosure</p>
+                    <p className="text-[10px] text-gray-500 uppercase font-bold tracking-widest">Always Required</p>
+                  </div>
+                </div>
+                <div className="w-10 h-5 bg-purple-600 rounded-full flex items-center px-0.5 shadow-[0_0_12px_rgba(147,51,234,0.4)]">
+                  <div className="w-4 h-4 bg-white rounded-full translate-x-5" />
+                </div>
               </div>
             </div>
-            <div className="w-10 h-5 bg-purple-600 rounded-full flex items-center px-0.5 shadow-[0_0_12px_rgba(147,51,234,0.4)]">
-              <div className="w-4 h-4 bg-white rounded-full translate-x-5" />
+          ) : (
+            <div className="bg-blue-500/5 border border-blue-500/15 rounded-2xl p-5 text-sm text-blue-300/80 leading-relaxed">
+              Your video will be sent to your <strong className="text-white">TikTok drafts inbox</strong>. Open TikTok on your phone, go to <strong className="text-white">Me → Drafts</strong>, make any final edits, and publish when you&apos;re ready.
+              <div className="mt-3 text-xs text-amber-400">
+                ⚠ You must manually enable the Paid Partnership label inside TikTok before publishing the draft.
+              </div>
             </div>
-          </div>
+          )}
 
           <button
             onClick={handlePublish}
             disabled={publishing || !tiktokAccount}
-            className="w-full bg-white text-black font-black py-5 rounded-2xl transition-all hover:bg-white/90 active:scale-95 flex items-center justify-center gap-3 shadow-xl shadow-white/5 disabled:opacity-40"
+            className={`w-full font-black py-5 rounded-2xl transition-all active:scale-95 flex items-center justify-center gap-3 shadow-xl disabled:opacity-40 ${
+              postMode === "DRAFT"
+                ? "bg-blue-600 hover:bg-blue-500 text-white shadow-blue-500/20"
+                : "bg-white text-black hover:bg-white/90 shadow-white/5"
+            }`}
           >
-            {publishing ? <Loader2 className="w-5 h-5 animate-spin" /> : <Smartphone className="w-5 h-5" />}
-            {publishing ? "Publishing..." : "Post to TikTok Now"}
+            {publishing ? (
+              <Loader2 className="w-5 h-5 animate-spin" />
+            ) : postMode === "DRAFT" ? (
+              <><Play className="w-5 h-5" /> Send to TikTok Drafts</>
+            ) : (
+              <><Smartphone className="w-5 h-5" /> Post to TikTok Now</>
+            )}
           </button>
 
           {!tiktokAccount && (
