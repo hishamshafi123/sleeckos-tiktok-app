@@ -29,6 +29,7 @@ export default function ComposePage() {
   const [coverTime, setCoverTime] = useState(0);
   const [showConfirm, setShowConfirm] = useState(false);
   const [videoDuration, setVideoDuration] = useState(0);
+  const [postMode, setPostMode] = useState<"DIRECT" | "DRAFT">("DIRECT");
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -72,13 +73,14 @@ export default function ComposePage() {
 
   const confirmPublish = async () => {
     setShowConfirm(false);
-    toast.info("Publishing to TikTok...");
+    toast.info(postMode === "DRAFT" ? "Sending draft to TikTok..." : "Publishing to TikTok...");
 
     try {
       const res = await fetch("/api/tiktok/init-post", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          postType: postMode,
           title: caption,
           privacy_level: privacy,
           disable_comment: !allowComment,
@@ -93,11 +95,13 @@ export default function ComposePage() {
       const data = await res.json();
       if (data.error) {
         toast.error(`Error: ${data.error}`);
+      } else if (postMode === "DRAFT") {
+        toast.success("Draft sent! Open TikTok on your phone → Me → Drafts to finish and publish.");
       } else {
         router.push(`/publishing/${data.publishId}`);
       }
     } catch (e) {
-      toast.error("Failed to publish");
+      toast.error("Failed to submit");
     }
   };
 
@@ -288,18 +292,60 @@ export default function ComposePage() {
           )}
         </div>
 
-        {/* G. Music Usage Confirmation & H. Publish button */}
+        {/* G. Post mode toggle + Publish button */}
         <div className="pt-6 border-t space-y-4">
+
+          {/* Publish Now / Save as Draft picker */}
+          <div className="grid grid-cols-2 gap-2 p-1 bg-muted/40 rounded-xl border">
+            <button
+              type="button"
+              onClick={() => setPostMode("DIRECT")}
+              className={`py-3 rounded-lg text-sm font-semibold transition-all flex items-center justify-center gap-2 ${
+                postMode === "DIRECT"
+                  ? "bg-white dark:bg-zinc-900 shadow text-foreground"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
+              </svg>
+              Publish Now
+            </button>
+            <button
+              type="button"
+              onClick={() => setPostMode("DRAFT")}
+              className={`py-3 rounded-lg text-sm font-semibold transition-all flex items-center justify-center gap-2 ${
+                postMode === "DRAFT"
+                  ? "bg-blue-600 text-white shadow shadow-blue-500/30"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4" />
+              </svg>
+              Save as Draft
+            </button>
+          </div>
+
+          {postMode === "DRAFT" && (
+            <p className="text-xs text-blue-500 text-center leading-relaxed">
+              Your video will land in your TikTok app under <strong>Me → Drafts</strong>. You can edit and publish it from there anytime.
+            </p>
+          )}
+
           <p className="text-sm text-muted-foreground text-center">
-            By posting, you agree to TikTok's <a href="https://www.tiktok.com/legal/page/global/music-usage-confirmation/en" className="underline font-medium hover:text-primary transition-colors" target="_blank" rel="noreferrer">Music Usage Confirmation</a>.
+            By posting, you agree to TikTok&apos;s{" "}
+            <a href="https://www.tiktok.com/legal/page/global/music-usage-confirmation/en" className="underline font-medium hover:text-primary transition-colors" target="_blank" rel="noreferrer">Music Usage Confirmation</a>.
           </p>
-          <Button 
-            size="lg" 
-            className="w-full text-lg h-14" 
-            disabled={!isValid()} 
+          <Button
+            size="lg"
+            className={`w-full text-lg h-14 ${
+              postMode === "DRAFT" ? "bg-blue-600 hover:bg-blue-500 text-white" : ""
+            }`}
+            disabled={!isValid()}
             onClick={handlePublish}
           >
-            Post to TikTok
+            {postMode === "DRAFT" ? "Save as Draft on TikTok" : "Post to TikTok"}
           </Button>
         </div>
 
@@ -309,9 +355,13 @@ export default function ComposePage() {
       <Dialog open={showConfirm} onOpenChange={setShowConfirm}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Confirm Publication</DialogTitle>
+            <DialogTitle>
+              {postMode === "DRAFT" ? "Save to TikTok Drafts?" : "Confirm Publication"}
+            </DialogTitle>
             <DialogDescription>
-              Post this video to @{creatorInfo?.creator_username}'s TikTok account?
+              {postMode === "DRAFT"
+                ? `Send this video to @${creatorInfo?.creator_username}'s TikTok drafts inbox? You can finish editing and publish from the TikTok app.`
+                : `Post this video to @${creatorInfo?.creator_username}'s TikTok account?`}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter className="mt-4">
