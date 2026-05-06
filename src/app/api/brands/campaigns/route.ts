@@ -24,6 +24,8 @@ export async function POST(req: NextRequest) {
         title: data.title,
         description: data.description,
         brief: data.brief,
+        deliverableFormat: data.deliverableFormat || "VIDEO",
+        deliverableCount: data.deliverableCount || 1,
         payoutPerPostCents: data.payoutPerPostCents,
         totalBudgetCents: data.payoutPerPostCents * data.maxCreators,
         maxCreators: data.maxCreators,
@@ -31,6 +33,10 @@ export async function POST(req: NextRequest) {
         deliveryDeadline: new Date(new Date(data.applicationDeadline).getTime() + 14 * 24 * 60 * 60 * 1000),
         requiredHashtags: data.requiredHashtags || [],
         requiredMentions: data.requiredMentions || [],
+        nicheTags: data.nicheTags || [],
+        minFollowerCount: data.minFollowerCount || 0,
+        ageMinimum: data.ageMinimum || 18,
+        exampleVideos: data.exampleVideos || [],
         status: "OPEN",
       }
     });
