@@ -19,8 +19,8 @@ export async function GET(request: Request) {
   const clientKey = process.env.TIKTOK_CLIENT_KEY!;
   const redirectUri = `${url.protocol}//${url.host}/api/auth/callback`;
   
-  // Scopes required for marketplace: info, publish, and list (to check video status)
-  const scopes = "user.info.basic,video.publish,video.list";
+  // Scopes required for marketplace: Login Kit + Content Posting API + User Info API
+  const scopes = "user.info.basic,video.publish,video.upload,user.info.profile,user.info.stats";
 
   const tiktokUrl = new URL("https://www.tiktok.com/v2/auth/authorize/");
   tiktokUrl.searchParams.set("client_key", clientKey);

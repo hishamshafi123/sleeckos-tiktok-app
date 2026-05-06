@@ -1,5 +1,13 @@
 const API_BASE = "https://open.tiktokapis.com/v2";
 
+export async function getUserInfo(accessToken: string, fields: string) {
+  const res = await fetch(
+    `${API_BASE}/user/info/?fields=${encodeURIComponent(fields)}`,
+    { headers: { Authorization: `Bearer ${accessToken}` } }
+  );
+  return res.json();
+}
+
 export async function getCreatorInfo(accessToken: string) {
   const res = await fetch(`${API_BASE}/post/publish/creator_info/query/`, {
     method: "POST",

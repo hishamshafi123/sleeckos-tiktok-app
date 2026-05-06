@@ -42,7 +42,7 @@ export async function GET(request: Request) {
   }
 
   const userInfoRes = await fetch(
-    "https://open.tiktokapis.com/v2/user/info/?fields=open_id,union_id,avatar_url,display_name,username",
+    "https://open.tiktokapis.com/v2/user/info/?fields=open_id,union_id,avatar_url,display_name,username,profile_web_link,profile_deep_link,bio_description,is_verified,follower_count,following_count,likes_count,video_count",
     { headers: { Authorization: `Bearer ${tokenData.access_token}` } }
   );
   const userInfoData = await userInfoRes.json();
@@ -79,6 +79,19 @@ export async function GET(request: Request) {
     await createSession({ userId, email, role: (user?.role ?? "CREATOR") as "CREATOR" | "BRAND_OWNER" | "ADMIN" });
   }
 
+  // Build shared profile/stats payload from newly granted scopes
+  const profilePayload = {
+    bioDescription:   tiktokUser.bio_description    || null,
+    isVerified:       tiktokUser.is_verified         ?? false,
+    profileWebLink:   tiktokUser.profile_web_link    || null,
+    profileDeepLink:  tiktokUser.profile_deep_link   || null,
+    followerCount:    tiktokUser.follower_count       ?? 0,
+    followingCount:   tiktokUser.following_count      ?? 0,
+    likesCount:       tiktokUser.likes_count          ?? 0,
+    videoCount:       tiktokUser.video_count          ?? 0,
+    statsUpdatedAt:   new Date(),
+  };
+
   await prisma.tiktokAccount.upsert({
     where: { openId: tokenData.open_id },
     create: {
@@ -92,8 +105,9 @@ export async function GET(request: Request) {
       refreshToken: tokenData.refresh_token || "",
       accessTokenExpiresAt: new Date(Date.now() + (tokenData.expires_in || 86400) * 1000),
       refreshTokenExpiresAt: new Date(Date.now() + (tokenData.refresh_expires_in || 86400 * 30) * 1000),
-      scopes: tokenData.scope || "user.info.basic,video.publish,video.list",
+      scopes: tokenData.scope || "user.info.basic,video.publish,video.upload,user.info.profile,user.info.stats",
       revokedAt: null,
+      ...profilePayload,
     },
     update: {
       userId,
@@ -104,8 +118,18 @@ export async function GET(request: Request) {
       refreshToken: tokenData.refresh_token || "",
       accessTokenExpiresAt: new Date(Date.now() + (tokenData.expires_in || 86400) * 1000),
       refreshTokenExpiresAt: new Date(Date.now() + (tokenData.refresh_expires_in || 86400 * 30) * 1000),
-      scopes: tokenData.scope || "user.info.basic,video.publish,video.list",
+      scopes: tokenData.scope || "user.info.basic,video.publish,video.upload,user.info.profile,user.info.stats",
       revokedAt: null,
+      ...profilePayload,
+    },
+  });
+
+  // Also sync follower count snapshot into CreatorProfile (for marketplace vetting)
+  await prisma.creatorProfile.updateMany({
+    where: { userId },
+    data: {
+      followerCountSnapshot: tiktokUser.follower_count ?? 0,
+      followerCountUpdatedAt: new Date(),
     },
   });
 

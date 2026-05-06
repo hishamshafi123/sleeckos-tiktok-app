@@ -120,6 +120,17 @@ model TiktokAccount {
   scopes                String
   connectedAt           DateTime  @default(now())
   revokedAt             DateTime?
+  // user.info.profile scope
+  bioDescription        String?
+  isVerified            Boolean   @default(false)
+  profileWebLink        String?
+  profileDeepLink       String?
+  // user.info.stats scope
+  followerCount         Int       @default(0)
+  followingCount        Int       @default(0)
+  likesCount            Int       @default(0)
+  videoCount            Int       @default(0)
+  statsUpdatedAt        DateTime?
 }
 
 model Brand {
