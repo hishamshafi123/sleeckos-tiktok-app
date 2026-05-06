@@ -2,7 +2,7 @@ export const dynamic = "force-dynamic";
 import { getSession } from "@/lib/session";
 import { prisma } from "@/lib/db";
 import Link from "next/link";
-import { TrendingUp, DollarSign, CheckCircle2, Clock, Zap } from "lucide-react";
+import { TrendingUp, CheckCircle2, Clock, Heart, Play, Users } from "lucide-react";
 
 export default async function CreatorDashboard() {
   const session = await getSession();
@@ -48,23 +48,49 @@ export default async function CreatorDashboard() {
         </div>
       )}
 
+      {/* TikTok connected card — surfaces all user.info.profile + user.info.stats data */}
       {tiktok && (
-        <div className="bg-green-500/10 border border-green-500/20 rounded-2xl p-4 flex items-center gap-3">
-          <CheckCircle2 className="w-5 h-5 text-green-400 flex-shrink-0" />
-          <div>
-            <p className="text-sm text-white font-medium">TikTok connected: <span className="text-green-400">@{tiktok.username}</span></p>
-            <p className="text-xs text-gray-500">You can apply to campaigns</p>
+        <div className="glass border border-white/10 rounded-2xl p-5 flex items-center gap-5">
+          {tiktok.avatarUrl ? (
+            <img src={tiktok.avatarUrl} alt={tiktok.displayName} className="w-14 h-14 rounded-full object-cover border-2 border-purple-500/40 flex-shrink-0" />
+          ) : (
+            <div className="w-14 h-14 rounded-full bg-purple-500/20 flex items-center justify-center flex-shrink-0">
+              <span className="text-purple-300 font-bold text-lg">{tiktok.displayName?.[0] ?? "T"}</span>
+            </div>
+          )}
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
+              <p className="text-white font-semibold">@{tiktok.username}</p>
+              {tiktok.isVerified && (
+                <span className="text-xs bg-blue-500/20 text-blue-300 border border-blue-500/30 px-2 py-0.5 rounded-full font-medium flex items-center gap-1">
+                  <CheckCircle2 className="w-3 h-3" /> Verified
+                </span>
+              )}
+              <span className="text-xs bg-green-500/10 text-green-400 border border-green-500/20 px-2 py-0.5 rounded-full font-medium">Connected</span>
+            </div>
+            {tiktok.bioDescription && (
+              <p className="text-xs text-gray-500 mt-1 truncate max-w-sm">{tiktok.bioDescription}</p>
+            )}
+            <div className="flex items-center gap-4 mt-2 text-xs text-gray-400">
+              <span><span className="text-white font-semibold">{tiktok.followerCount.toLocaleString()}</span> Followers</span>
+              <span><span className="text-white font-semibold">{tiktok.followingCount.toLocaleString()}</span> Following</span>
+              <span><span className="text-white font-semibold">{tiktok.likesCount.toLocaleString()}</span> Likes</span>
+              <span><span className="text-white font-semibold">{tiktok.videoCount.toLocaleString()}</span> Videos</span>
+            </div>
           </div>
+          <Link href="/c/profile" className="text-xs text-purple-400 hover:text-purple-300 font-medium flex-shrink-0 transition-colors">
+            View profile →
+          </Link>
         </div>
       )}
 
-      {/* Stats */}
+      {/* Stat cards — live from TikTok scopes */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         {[
-          { label: "Total earned", value: "$0", icon: DollarSign, color: "text-green-400" },
-          { label: "Active campaigns", value: "0", icon: Zap, color: "text-purple-400" },
-          { label: "Applications", value: String(applications.length), icon: TrendingUp, color: "text-blue-400" },
-          { label: "Published posts", value: "0", icon: CheckCircle2, color: "text-amber-400" },
+          { label: "Followers", value: tiktok ? tiktok.followerCount.toLocaleString() : "—", icon: Users, color: "text-purple-400" },
+          { label: "Total Videos", value: tiktok ? String(tiktok.videoCount) : "—", icon: Play, color: "text-blue-400" },
+          { label: "Applications", value: String(applications.length), icon: TrendingUp, color: "text-green-400" },
+          { label: "Total Likes", value: tiktok ? tiktok.likesCount.toLocaleString() : "—", icon: Heart, color: "text-amber-400" },
         ].map(({ label, value, icon: Icon, color }) => (
           <div key={label} className="glass border border-white/5 rounded-2xl p-5">
             <Icon className={`w-5 h-5 ${color} mb-3`} />
@@ -78,7 +104,7 @@ export default async function CreatorDashboard() {
       <div>
         <div className="flex items-center justify-between mb-4">
           <h2 className="font-semibold text-white">Recent Applications</h2>
-          <Link href="/c/applications" className="text-sm text-purple-400 hover:text-purple-300">View all →</Link>
+          <Link href="/c/applications" className="text-sm text-purple-400 hover:text-purple-300 transition-colors">View all →</Link>
         </div>
         {applications.length === 0 ? (
           <div className="glass border border-white/5 rounded-2xl p-10 text-center">
