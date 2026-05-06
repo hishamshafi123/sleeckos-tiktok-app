@@ -31,6 +31,19 @@ export async function initDirectPost(accessToken: string, payload: any) {
   return res.json();
 }
 
+// video.upload scope — posts to creator's TikTok inbox as a draft
+export async function initDraftPost(accessToken: string, payload: any) {
+  const res = await fetch(`${API_BASE}/post/publish/inbox/video/init/`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json; charset=UTF-8",
+    },
+    body: JSON.stringify(payload),
+  });
+  return res.json();
+}
+
 export async function checkPostStatus(accessToken: string, publishId: string) {
   const res = await fetch(`${API_BASE}/post/publish/status/fetch/`, {
     method: "POST",
