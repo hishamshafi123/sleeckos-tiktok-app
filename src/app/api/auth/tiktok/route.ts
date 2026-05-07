@@ -5,10 +5,15 @@ import crypto from "crypto";
 
 export async function GET(request: Request) {
   const url = new URL(request.url);
-  const state = crypto.randomBytes(16).toString("hex");
+  // flow: "login" | "signup" | "connect" — defaults to "login"
+  const flow = url.searchParams.get("flow") || "login";
+
+  const nonce = crypto.randomBytes(16).toString("hex");
+  // Encode both nonce and flow in state as "nonce:flow"
+  const state = `${nonce}:${flow}`;
+
   const cookieStore = await cookies();
-  
-  cookieStore.set("oauth_state", state, {
+  cookieStore.set("oauth_state", nonce, {
     httpOnly: true,
     secure: process.env.NODE_ENV === "production",
     sameSite: "lax",
@@ -18,9 +23,10 @@ export async function GET(request: Request) {
 
   const clientKey = process.env.TIKTOK_CLIENT_KEY!;
   const redirectUri = `${url.protocol}//${url.host}/api/auth/callback`;
-  
-  // Scopes required for marketplace: Login Kit + Content Posting API + User Info API
-  const scopes = "user.info.basic,video.publish,video.upload,user.info.profile,user.info.stats";
+
+  // Scopes: Login Kit (user.info.basic) + Content Posting API + User Info API
+  const scopes =
+    "user.info.basic,video.publish,video.upload,user.info.profile,user.info.stats";
 
   const tiktokUrl = new URL("https://www.tiktok.com/v2/auth/authorize/");
   tiktokUrl.searchParams.set("client_key", clientKey);
