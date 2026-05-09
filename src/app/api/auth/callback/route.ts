@@ -7,6 +7,10 @@ import { createSession } from "@/lib/session";
 export async function GET(request: Request) {
   const url = new URL(request.url);
   const proto = request.headers.get("x-forwarded-proto") ?? url.protocol.replace(":", "");
+  // Behind nginx/Docker, url.host is the internal address (127.0.0.1:3000).
+  // Use APP_URL env var if set, otherwise fall back to x-forwarded-host.
+  const baseUrl = process.env.APP_URL
+    ?? `${proto}://${request.headers.get("x-forwarded-host") ?? url.host}`;
   const code = url.searchParams.get("code");
   const stateParam = url.searchParams.get("state") ?? "";
   const error = url.searchParams.get("error");
@@ -22,7 +26,7 @@ export async function GET(request: Request) {
 
   const errorRedirect = (reason: string, redirectPath?: string) =>
     NextResponse.redirect(
-      `${proto}://${url.host}${redirectPath || "/login"}?error=${reason}`
+      `${baseUrl}${redirectPath || "/login"}?error=${reason}`
     );
 
   if (error || !code) {
@@ -39,7 +43,7 @@ export async function GET(request: Request) {
   // Clean up the state cookie
   cookieStore.delete("oauth_state");
 
-  const redirectUri = `${proto}://${url.host}/api/auth/callback`;
+  const redirectUri = `${baseUrl}/api/auth/callback`;
 
   // ── Exchange code for tokens ──────────────────────────────────────────────
   const tokenRes = await fetch("https://open.tiktokapis.com/v2/oauth/token/", {
@@ -160,7 +164,7 @@ export async function GET(request: Request) {
 
     // Redirect back to the group page
     return NextResponse.redirect(
-      `${proto}://${url.host}/admin/accounts/${group.section.slug}/${group.slug}`
+      `${baseUrl}/admin/accounts/${group.section.slug}/${group.slug}`
     );
   }
 
@@ -256,13 +260,17 @@ export async function GET(request: Request) {
       userId = dbUser.id;
     }
 
+    if (!userId) return errorRedirect("auth_failed");
+
     const user = await prisma.user.findUnique({ where: { id: userId } });
     await createSession({
       userId,
-      email: user!.email,
-      role: (user!.role ?? "CREATOR") as "CREATOR" | "BRAND_OWNER" | "ADMIN",
+      email: user?.email ?? "",
+      role: ((user?.role) ?? "CREATOR") as "CREATOR" | "BRAND_OWNER" | "ADMIN",
     });
   }
+
+  if (!userId) return errorRedirect("auth_failed");
 
   // Upsert TikTok account record
   await prisma.tiktokAccount.upsert({

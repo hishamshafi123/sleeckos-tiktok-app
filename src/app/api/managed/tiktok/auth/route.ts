@@ -32,8 +32,13 @@ export async function GET(request: Request) {
   });
 
   const clientKey = process.env.TIKTOK_CLIENT_KEY!;
+  // Behind nginx/Docker, url.host is the internal address (127.0.0.1:3000).
+  // Use APP_URL env var if set, otherwise fall back to x-forwarded-host header.
   const proto = request.headers.get("x-forwarded-proto") ?? url.protocol.replace(":", "");
-  const redirectUri = `${proto}://${url.host}/api/auth/callback`;
+  const host = process.env.APP_URL
+    ? new URL(process.env.APP_URL).host
+    : (request.headers.get("x-forwarded-host") ?? url.host);
+  const redirectUri = `${process.env.APP_URL ?? `${proto}://${host}`}/api/auth/callback`;
 
   // Scopes for managed accounts: Login Kit + Content Posting + User Info
   const scopes =
