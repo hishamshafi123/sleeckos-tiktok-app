@@ -1,20 +1,8 @@
 {
   "crons": [
-    {
-      "path": "/api/cron/post-scheduler?secret=sleeckos-cron-secret-2025",
-      "schedule": "*/5 * * * *"
-    },
-    {
-      "path": "/api/cron/poll-status?secret=sleeckos-cron-secret-2025",
-      "schedule": "*/10 * * * *"
-    },
-    {
-      "path": "/api/cron/sync-analytics?secret=sleeckos-cron-secret-2025",
-      "schedule": "0 */6 * * *"
-    },
-    {
-      "path": "/api/cron/refresh-tokens?secret=sleeckos-cron-secret-2025",
-      "schedule": "0 */12 * * *"
-    }
+    { "path": "/api/cron/post-scheduler", "schedule": "*/5 * * * *" },
+    { "path": "/api/cron/poll-status",    "schedule": "*/10 * * * *" },
+    { "path": "/api/cron/sync-analytics", "schedule": "0 */6 * * *" },
+    { "path": "/api/cron/refresh-tokens", "schedule": "0 */12 * * *" }
   ]
 }
