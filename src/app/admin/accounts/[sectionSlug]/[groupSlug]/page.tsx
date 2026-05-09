@@ -79,6 +79,8 @@ export default function GroupPage({
     defaultCaption: "",
     captionSource: "FILENAME",
   });
+  const [driveUrl, setDriveUrl] = useState("");
+  const [linkingDrive, setLinkingDrive] = useState(false);
 
   const fetchGroup = useCallback(async () => {
     try {
@@ -158,6 +160,40 @@ export default function GroupPage({
       fetchGroup();
     } catch {
       toast.error("Failed to save");
+    }
+  };
+
+  const linkDrive = async (id: string) => {
+    if (!driveUrl.trim()) return;
+    setLinkingDrive(true);
+    try {
+      const res = await fetch(`/api/managed/accounts/${id}/link-drive`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ folderUrl: driveUrl.trim() }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Link failed");
+      if (data.warning) toast.warning(data.warning);
+      else toast.success(`Linked: ${data.folderName}`);
+      setDriveUrl("");
+      fetchGroup();
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : "Failed to link folder");
+    } finally {
+      setLinkingDrive(false);
+    }
+  };
+
+  const unlinkDrive = async (id: string) => {
+    if (!confirm("Remove Drive folder link?")) return;
+    try {
+      const res = await fetch(`/api/managed/accounts/${id}/link-drive`, { method: "DELETE" });
+      if (!res.ok) throw new Error("Unlink failed");
+      toast.success("Drive folder unlinked");
+      fetchGroup();
+    } catch {
+      toast.error("Failed to unlink");
     }
   };
 
@@ -584,18 +620,65 @@ export default function GroupPage({
                       </div>
                     )}
 
+                    {/* ── Drive Folder Linking ── */}
+                    <div className="pt-3 border-t border-white/5 space-y-3">
+                      <h4 className="font-semibold text-white text-sm flex items-center gap-2">
+                        <FolderOpen className="w-3.5 h-3.5 text-blue-400" />
+                        Google Drive Folder
+                      </h4>
+
+                      {acc.driveConnected && acc.driveFolderId ? (
+                        <div className="flex items-center justify-between bg-blue-500/10 border border-blue-500/20 rounded-xl px-4 py-3">
+                          <div>
+                            <p className="text-sm text-blue-300 font-medium">{acc.driveFolderName || "Drive Folder"}</p>
+                            <p className="text-xs text-blue-400/60 font-mono mt-0.5">{acc.driveFolderId}</p>
+                          </div>
+                          <button
+                            onClick={() => unlinkDrive(acc.id)}
+                            className="text-xs text-red-400 hover:text-red-300 transition-colors"
+                          >
+                            Unlink
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="space-y-2">
+                          <p className="text-xs text-gray-500">
+                            Paste a Google Drive folder URL or folder ID. The folder must be shared with the service account.
+                          </p>
+                          <div className="flex gap-2">
+                            <input
+                              type="text"
+                              value={driveUrl}
+                              onChange={(e) => setDriveUrl(e.target.value)}
+                              placeholder="https://drive.google.com/drive/folders/..."
+                              className="flex-1 bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-white text-xs placeholder-gray-600 focus:outline-none focus:border-blue-500 transition-colors"
+                              onKeyDown={(e) => e.key === "Enter" && linkDrive(acc.id)}
+                            />
+                            <button
+                              onClick={() => linkDrive(acc.id)}
+                              disabled={!driveUrl.trim() || linkingDrive}
+                              className="bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white text-xs font-semibold px-4 py-2 rounded-xl transition-all flex items-center gap-1.5"
+                            >
+                              {linkingDrive && <Loader2 className="w-3 h-3 animate-spin" />}
+                              Link
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
                     <div className="flex gap-2">
                       <button
                         onClick={() => saveEdit(acc.id)}
                         className="bg-purple-600 hover:bg-purple-500 text-white text-sm font-semibold px-4 py-2 rounded-xl transition-all"
                       >
-                        Save Changes
+                        Save Schedule
                       </button>
                       <button
                         onClick={() => setEditingId(null)}
                         className="bg-white/5 hover:bg-white/10 text-white text-sm font-medium px-4 py-2 rounded-xl transition-all border border-white/10"
                       >
-                        Cancel
+                        Close
                       </button>
                     </div>
                   </div>
