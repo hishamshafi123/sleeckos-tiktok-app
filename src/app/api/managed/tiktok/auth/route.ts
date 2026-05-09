@@ -32,7 +32,8 @@ export async function GET(request: Request) {
   });
 
   const clientKey = process.env.TIKTOK_CLIENT_KEY!;
-  const redirectUri = `${url.protocol}//${url.host}/api/auth/callback`;
+  const proto = request.headers.get("x-forwarded-proto") ?? url.protocol.replace(":", "");
+  const redirectUri = `${proto}://${url.host}/api/auth/callback`;
 
   // Scopes for managed accounts: Login Kit + Content Posting + User Info
   const scopes =

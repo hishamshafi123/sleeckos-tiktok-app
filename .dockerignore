@@ -1,0 +1,25 @@
+node_modules
+.next
+.git
+.gitignore
+.env
+.env.*
+*.log
+npm-debug.log*
+
+# docs
+README.md
+DEPLOYMENT.md
+AGENTS.md
+CLAUDE.md
+*.md
+
+# deploy config (not needed inside container)
+deploy/
+vercel.json
+
+# OS / editor
+.DS_Store
+.vscode
+.idea
+*.swp

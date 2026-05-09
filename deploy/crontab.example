@@ -1,0 +1,22 @@
+# Cron schedule for the sleeckos TikTok app.
+#
+# Usage:
+#   crontab -e
+#   Paste the CRON_SECRET line and the four job lines below, then save.
+#
+# The app container listens on 127.0.0.1:3000. Hitting localhost avoids nginx.
+# Output is appended to /var/log/sleeckos-cron.log — create and set permissions
+# once with: sudo touch /var/log/sleeckos-cron.log && sudo chmod 666 /var/log/sleeckos-cron.log
+
+CRON_SECRET=replace-with-your-cron-secret
+
+# ┌──────────── minute
+# │  ┌───────── hour
+# │  │  ┌────── day of month
+# │  │  │  ┌─── month
+# │  │  │  │  ┌── day of week
+# │  │  │  │  │
+*/5  *  *  *  *  curl -fsS -H "x-cron-secret: $CRON_SECRET" http://127.0.0.1:3000/api/cron/post-scheduler  >> /var/log/sleeckos-cron.log 2>&1
+*/10 *  *  *  *  curl -fsS -H "x-cron-secret: $CRON_SECRET" http://127.0.0.1:3000/api/cron/poll-status     >> /var/log/sleeckos-cron.log 2>&1
+0    */6 *  *  *  curl -fsS -H "x-cron-secret: $CRON_SECRET" http://127.0.0.1:3000/api/cron/sync-analytics  >> /var/log/sleeckos-cron.log 2>&1
+0    */12 * *  *  curl -fsS -H "x-cron-secret: $CRON_SECRET" http://127.0.0.1:3000/api/cron/refresh-tokens  >> /var/log/sleeckos-cron.log 2>&1
