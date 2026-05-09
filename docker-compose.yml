@@ -18,6 +18,7 @@ services:
       resources:
         limits:
           memory: 512m
+          cpus: "0.5"
 
   app:
     build: .
@@ -36,6 +37,7 @@ services:
       resources:
         limits:
           memory: 1g
+          cpus: "1.0"
 
 volumes:
   pgdata:
