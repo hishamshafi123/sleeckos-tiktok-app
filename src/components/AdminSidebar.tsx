@@ -1,7 +1,7 @@
 "use client";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { LayoutDashboard, Shield, Users, Megaphone, FileText, AlertTriangle, ScrollText, LogOut } from "lucide-react";
+import { LayoutDashboard, Shield, Users, Megaphone, FileText, AlertTriangle, ScrollText, LogOut, MonitorPlay, BarChart3, Clock, History } from "lucide-react";
 import { toast } from "sonner";
 
 const NAV = [
@@ -12,6 +12,13 @@ const NAV = [
   { href: "/admin/applications", label: "Applications", icon: FileText },
   { href: "/admin/disputes", label: "Disputes", icon: AlertTriangle },
   { href: "/admin/audit-log", label: "Audit Log", icon: ScrollText },
+];
+
+const ACCOUNTS_NAV = [
+  { href: "/admin/accounts", label: "Manage", icon: MonitorPlay, exact: true },
+  { href: "/admin/accounts/dashboard", label: "Analytics", icon: BarChart3 },
+  { href: "/admin/accounts/queue", label: "Post Queue", icon: Clock },
+  { href: "/admin/accounts/history", label: "History", icon: History },
 ];
 
 export default function AdminSidebar() {
@@ -28,7 +35,7 @@ export default function AdminSidebar() {
         <Link href="/"><img src="/logo.png" alt="Sleeckos" className="h-7 w-auto object-contain brightness-110" /></Link>
         <p className="text-xs text-amber-500 mt-2 font-semibold">Admin Panel</p>
       </div>
-      <nav className="flex-1 p-4 space-y-1">
+      <nav className="flex-1 p-4 space-y-1 overflow-y-auto">
         {NAV.map(({ href, label, icon: Icon, exact }) => {
           const active = exact ? pathname === href : pathname.startsWith(href);
           return (
@@ -38,6 +45,22 @@ export default function AdminSidebar() {
             </Link>
           );
         })}
+
+        {/* TikTok Accounts section */}
+        <div className="pt-4 mt-4 border-t border-white/5">
+          <p className="px-3 mb-2 text-[10px] uppercase tracking-widest text-gray-600 font-bold">TikTok Accounts</p>
+          {ACCOUNTS_NAV.map(({ href, label, icon: Icon, exact }) => {
+            const active = exact
+              ? pathname === href
+              : pathname.startsWith(href) && !ACCOUNTS_NAV.some(n => n.href !== href && n.href.length > href.length && pathname.startsWith(n.href));
+            return (
+              <Link key={href} href={href} className={`flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all ${active ? "bg-purple-500/15 text-purple-300 border border-purple-500/20" : "text-gray-500 hover:text-white hover:bg-white/5"}`}>
+                <Icon className="w-4 h-4 flex-shrink-0" />
+                {label}
+              </Link>
+            );
+          })}
+        </div>
       </nav>
       <div className="p-4 border-t border-white/5">
         <button onClick={logout} className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm text-gray-600 hover:text-red-400 hover:bg-red-400/5 transition-all w-full">

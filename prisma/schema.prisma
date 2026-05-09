@@ -254,3 +254,158 @@ model AuditLog {
   metadata     Json?
   createdAt    DateTime @default(now())
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Multi-Account Management Panel
+// ═══════════════════════════════════════════════════════════════════════════════
+
+model AccountSection {
+  id        String         @id @default(uuid())
+  name      String         @unique
+  slug      String         @unique
+  color     String         @default("#8b5cf6")
+  icon      String?
+  sortOrder Int            @default(0)
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
+  groups    AccountGroup[]
+}
+
+model AccountGroup {
+  id          String         @id @default(uuid())
+  sectionId   String
+  section     AccountSection @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+  name        String
+  slug        String
+  description String?
+  sortOrder   Int            @default(0)
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+  accounts    ManagedAccount[]
+
+  @@unique([sectionId, slug])
+}
+
+model ManagedAccount {
+  id                    String       @id @default(uuid())
+  groupId               String
+  group                 AccountGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  // TikTok identity (from Login Kit OAuth)
+  tiktokOpenId          String       @unique
+  tiktokUnionId         String?
+  tiktokUsername        String
+  tiktokDisplayName     String
+  tiktokAvatarUrl       String
+  tiktokAccessToken     String
+  tiktokRefreshToken    String
+  tokenExpiresAt        DateTime
+  refreshTokenExpiresAt DateTime
+  tiktokScopes          String
+
+  // Profile stats (synced periodically)
+  followerCount         Int          @default(0)
+  followingCount        Int          @default(0)
+  likesCount            Int          @default(0)
+  videoCount            Int          @default(0)
+  isVerified            Boolean      @default(false)
+  statsUpdatedAt        DateTime?
+
+  // Google Drive link
+  driveFolderId         String?
+  driveFolderName       String?
+  driveConnected        Boolean      @default(false)
+
+  // Scheduling config
+  postTimeHour          Int          @default(12)
+  postTimeMinute        Int          @default(0)
+  postTimezone          String       @default("UTC")
+  postDays              String       @default("1,2,3,4,5,6,7")
+  postMode              String       @default("DIRECT")
+  defaultCaption        String?
+  isActive              Boolean      @default(true)
+
+  // Caption source: FILENAME | TXT_FILE | DEFAULT
+  captionSource         String       @default("FILENAME")
+
+  connectedAt           DateTime     @default(now())
+  revokedAt             DateTime?
+  createdAt             DateTime     @default(now())
+  updatedAt             DateTime     @updatedAt
+
+  scheduledPosts        ScheduledPost[]
+  dailyAnalytics        AccountDailyAnalytics[]
+}
+
+enum PostStatus {
+  QUEUED
+  DOWNLOADING
+  UPLOADING
+  PROCESSING
+  PUBLISHED
+  FAILED
+  SKIPPED
+}
+
+model ScheduledPost {
+  id              String         @id @default(uuid())
+  accountId       String
+  account         ManagedAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  // Source
+  driveFileId     String?
+  driveFileName   String?
+  videoUrl        String?
+
+  // Post content
+  caption         String         @default("")
+  hashtags        String?
+
+  // Schedule
+  scheduledFor    DateTime
+  status          PostStatus     @default(QUEUED)
+
+  // TikTok result
+  tiktokPublishId String?
+  tiktokVideoId   String?
+  tiktokPostUrl   String?
+  publishedAt     DateTime?
+  errorMessage    String?
+
+  // Post-publish metrics
+  viewCount       BigInt         @default(0)
+  likeCount       BigInt         @default(0)
+  commentCount    BigInt         @default(0)
+  shareCount      BigInt         @default(0)
+  metricsUpdatedAt DateTime?
+
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+}
+
+model AccountDailyAnalytics {
+  id             String         @id @default(uuid())
+  accountId      String
+  account        ManagedAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  date           DateTime
+  followerCount  Int            @default(0)
+  followingCount Int            @default(0)
+  likesCount     Int            @default(0)
+  videoCount     Int            @default(0)
+  postsToday     Int            @default(0)
+  totalViews     BigInt         @default(0)
+  totalLikes     BigInt         @default(0)
+
+  @@unique([accountId, date])
+}
+
+model GoogleCredential {
+  id             String   @id @default(uuid())
+  adminUserId    String   @unique
+  accessToken    String
+  refreshToken   String
+  tokenExpiresAt DateTime
+  email          String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+}

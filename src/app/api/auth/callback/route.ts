@@ -13,21 +13,26 @@ export async function GET(request: Request) {
   const cookieStore = await cookies();
   const savedNonce = cookieStore.get("oauth_state")?.value;
 
-  // Parse state: "nonce:flow" — flow defaults to "login" for backwards compat
-  const colonIdx = stateParam.indexOf(":");
-  const receivedNonce = colonIdx >= 0 ? stateParam.slice(0, colonIdx) : stateParam;
-  const flow = colonIdx >= 0 ? stateParam.slice(colonIdx + 1) : "login";
+  // Parse state: "nonce:flow" or "nonce:managed:groupId"
+  const stateParts = stateParam.split(":");
+  const receivedNonce = stateParts[0] || "";
+  const flow = stateParts[1] || "login";
+  const managedGroupId = flow === "managed" ? stateParts[2] : null;
 
-  const errorRedirect = (reason: string) =>
-    NextResponse.redirect(`${url.protocol}//${url.host}/login?error=${reason}`);
+  const errorRedirect = (reason: string, redirectPath?: string) =>
+    NextResponse.redirect(
+      `${url.protocol}//${url.host}${redirectPath || "/login"}?error=${reason}`
+    );
 
   if (error || !code) {
-    return errorRedirect("auth_failed");
+    const dest = flow === "managed" ? "/admin/accounts" : "/login";
+    return errorRedirect("auth_failed", dest);
   }
 
   // CSRF validation — only enforce when both nonces are present
   if (savedNonce && receivedNonce && receivedNonce !== savedNonce) {
-    return errorRedirect("invalid_state");
+    const dest = flow === "managed" ? "/admin/accounts" : "/login";
+    return errorRedirect("invalid_state", dest);
   }
 
   // Clean up the state cookie
@@ -52,7 +57,8 @@ export async function GET(request: Request) {
 
   if (!tokenData.access_token) {
     console.error("TikTok token exchange failed:", tokenData);
-    return errorRedirect("token_failed");
+    const dest = flow === "managed" ? "/admin/accounts" : "/login";
+    return errorRedirect("token_failed", dest);
   }
 
   // ── Fetch TikTok user profile ─────────────────────────────────────────────
@@ -68,6 +74,98 @@ export async function GET(request: Request) {
     tiktokUser.username ||
     tiktokUser.display_name?.toLowerCase().replace(/\s+/g, "_") ||
     "unknown";
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // MANAGED FLOW — adding a TikTok account to the management panel
+  // ══════════════════════════════════════════════════════════════════════════
+  if (flow === "managed" && managedGroupId) {
+    // Verify the group exists
+    const group = await prisma.accountGroup.findUnique({
+      where: { id: managedGroupId },
+      include: { section: true },
+    });
+
+    if (!group) {
+      return errorRedirect("group_not_found", "/admin/accounts");
+    }
+
+    // Upsert the managed account
+    await prisma.managedAccount.upsert({
+      where: { tiktokOpenId: tokenData.open_id },
+      create: {
+        groupId: managedGroupId,
+        tiktokOpenId: tokenData.open_id,
+        tiktokUnionId: tiktokUser.union_id ?? null,
+        tiktokUsername: username,
+        tiktokDisplayName: tiktokUser.display_name || "Unknown",
+        tiktokAvatarUrl: tiktokUser.avatar_url || "",
+        tiktokAccessToken: tokenData.access_token,
+        tiktokRefreshToken: tokenData.refresh_token || "",
+        tokenExpiresAt: new Date(
+          Date.now() + (tokenData.expires_in ?? 86400) * 1000
+        ),
+        refreshTokenExpiresAt: new Date(
+          Date.now() + (tokenData.refresh_expires_in ?? 86400 * 30) * 1000
+        ),
+        tiktokScopes:
+          tokenData.scope ||
+          "user.info.basic,video.publish,video.upload,user.info.profile,user.info.stats",
+        followerCount: tiktokUser.follower_count ?? 0,
+        followingCount: tiktokUser.following_count ?? 0,
+        likesCount: tiktokUser.likes_count ?? 0,
+        videoCount: tiktokUser.video_count ?? 0,
+        isVerified: tiktokUser.is_verified ?? false,
+        statsUpdatedAt: new Date(),
+      },
+      update: {
+        groupId: managedGroupId,
+        tiktokUsername: username,
+        tiktokDisplayName: tiktokUser.display_name || "Unknown",
+        tiktokAvatarUrl: tiktokUser.avatar_url || "",
+        tiktokAccessToken: tokenData.access_token,
+        tiktokRefreshToken: tokenData.refresh_token || "",
+        tokenExpiresAt: new Date(
+          Date.now() + (tokenData.expires_in ?? 86400) * 1000
+        ),
+        refreshTokenExpiresAt: new Date(
+          Date.now() + (tokenData.refresh_expires_in ?? 86400 * 30) * 1000
+        ),
+        tiktokScopes:
+          tokenData.scope ||
+          "user.info.basic,video.publish,video.upload,user.info.profile,user.info.stats",
+        followerCount: tiktokUser.follower_count ?? 0,
+        followingCount: tiktokUser.following_count ?? 0,
+        likesCount: tiktokUser.likes_count ?? 0,
+        videoCount: tiktokUser.video_count ?? 0,
+        isVerified: tiktokUser.is_verified ?? false,
+        statsUpdatedAt: new Date(),
+        revokedAt: null,
+      },
+    });
+
+    await prisma.auditLog.create({
+      data: {
+        action: "MANAGED_ACCOUNT_ADDED",
+        resourceType: "ManagedAccount",
+        metadata: {
+          openId: tokenData.open_id,
+          username,
+          groupId: managedGroupId,
+          sectionName: group.section.name,
+          groupName: group.name,
+        },
+      },
+    });
+
+    // Redirect back to the group page
+    return NextResponse.redirect(
+      `${url.protocol}//${url.host}/admin/accounts/${group.section.slug}/${group.slug}`
+    );
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // STANDARD FLOWS — login / signup / connect (existing marketplace logic)
+  // ══════════════════════════════════════════════════════════════════════════
 
   const profilePayload = {
     bioDescription: tiktokUser.bio_description ?? null,
@@ -102,8 +200,7 @@ export async function GET(request: Request) {
     ...profilePayload,
   };
 
-  // ── Resolve the user id ───────────────────────────────────────────────────
-  // First check if there's an active session (the "connect" flow)
+  // Resolve the user id
   const sessionToken = cookieStore.get("session")?.value;
   let userId: string | null = null;
   let isNewUser = false;
@@ -123,23 +220,18 @@ export async function GET(request: Request) {
   }
 
   if (!userId) {
-    // No active session — treat as a Login Kit login/signup
-    // Look up existing TikTok account first
     const existingTikTok = await prisma.tiktokAccount.findUnique({
       where: { openId: tokenData.open_id },
     });
 
     if (existingTikTok) {
-      // Returning creator — log them in
       userId = existingTikTok.userId;
     } else {
-      // Brand new creator via Login Kit
       isNewUser = true;
       const email = `${tokenData.open_id}@tiktok.local`;
       let dbUser = await prisma.user.findUnique({ where: { email } });
 
       if (!dbUser) {
-        // Create user + creator profile in one transaction
         dbUser = await prisma.user.create({
           data: {
             email,
@@ -151,7 +243,7 @@ export async function GET(request: Request) {
                 bio: tiktokUser.bio_description || "",
                 nicheTags: [],
                 contentSampleUrls: [],
-                disclosureAgreedAt: null, // will be collected in onboarding
+                disclosureAgreedAt: null,
                 followerCountSnapshot: tiktokUser.follower_count ?? 0,
                 followerCountUpdatedAt: new Date(),
               },
@@ -171,14 +263,13 @@ export async function GET(request: Request) {
     });
   }
 
-  // ── Upsert TikTok account record ─────────────────────────────────────────
+  // Upsert TikTok account record
   await prisma.tiktokAccount.upsert({
     where: { openId: tokenData.open_id },
     create: { userId, ...tiktokTokenPayload },
     update: { userId, ...tiktokTokenPayload },
   });
 
-  // Sync follower count snapshot into CreatorProfile
   await prisma.creatorProfile.updateMany({
     where: { userId },
     data: {
@@ -196,13 +287,10 @@ export async function GET(request: Request) {
     },
   });
 
-  // ── Redirect based on flow ────────────────────────────────────────────────
   if (flow === "connect") {
-    // Was connecting TikTok to an already-logged-in account
     return NextResponse.redirect(`${url.protocol}//${url.host}/c/dashboard`);
   }
 
-  // Login Kit flow: new user → onboarding; returning user → dashboard
   if (isNewUser) {
     return NextResponse.redirect(`${url.protocol}//${url.host}/c/onboarding`);
   }
