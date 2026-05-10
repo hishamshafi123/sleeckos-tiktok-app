@@ -1,5 +1,5 @@
 "use client";
-import { useState, useEffect, useCallback, use } from "react";
+import { useState, useEffect, useCallback, useRef, use } from "react";
 import Link from "next/link";
 import { toast } from "sonner";
 import {
@@ -89,6 +89,28 @@ export default function GroupPage({
   const [showAddForm, setShowAddForm] = useState(false);
   const [addForm, setAddForm] = useState({ tiktokUsername: "", postpeerAccountId: "" });
   const [addingAccount, setAddingAccount] = useState(false);
+  const [clockTick, setClockTick] = useState(0);
+  const clockRef = useRef<ReturnType<typeof setInterval>>();
+
+  // Tick the clock every second for live timezone display
+  useEffect(() => {
+    clockRef.current = setInterval(() => setClockTick((t) => t + 1), 1000);
+    return () => clearInterval(clockRef.current);
+  }, []);
+
+  const getTimeInZone = (tz: string) => {
+    try {
+      return new Date().toLocaleTimeString("en-US", {
+        timeZone: tz,
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hour12: true,
+      });
+    } catch {
+      return "--:--";
+    }
+  };
 
   const addAccountManual = async () => {
     if (!addForm.tiktokUsername.trim()) { toast.error("Enter a TikTok username"); return; }
@@ -444,9 +466,9 @@ export default function GroupPage({
                   <div className="flex items-center gap-1.5">
                     <button
                       onClick={() => postNow(acc)}
-                      disabled={postingNow === acc.id || !acc.driveConnected}
+                      disabled={postingNow === acc.id || !acc.driveConnected || !acc.postpeerAccountId}
                       className="flex items-center gap-1 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/20 text-amber-400 text-xs font-semibold px-3 py-1.5 rounded-lg transition-all disabled:opacity-40"
-                      title={acc.driveConnected ? "Post next video now" : "Link Drive folder first"}
+                      title={!acc.driveConnected ? "Link Drive folder first" : !acc.postpeerAccountId ? "Set PostPeer Account ID first" : "Post next video now"}
                     >
                       {postingNow === acc.id ? (
                         <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -521,10 +543,14 @@ export default function GroupPage({
 
                 {/* Info chips */}
                 <div className="flex flex-wrap gap-2 text-xs">
+                  {/* Live clock in account timezone */}
+                  <span className="flex items-center gap-1 bg-purple-500/10 text-purple-400 px-2.5 py-1 rounded-full font-mono" key={clockTick}>
+                    🕐 {getTimeInZone(acc.postTimezone)}
+                    <span className="text-purple-400/60 ml-0.5">{acc.postTimezone.split("/").pop()?.replace(/_/g, " ")}</span>
+                  </span>
                   <span className="flex items-center gap-1 bg-white/5 text-gray-400 px-2.5 py-1 rounded-full">
                     <Clock className="w-3 h-3" />
-                    {(acc.postTimeSlots || formatTime(acc.postTimeHour, acc.postTimeMinute)).split(",").map(s => s.trim()).join(" · ")}{" "}
-                    {acc.postTimezone}
+                    {(acc.postTimeSlots || formatTime(acc.postTimeHour, acc.postTimeMinute)).split(",").map(s => s.trim()).join(" · ")}
                   </span>
                   <span className="flex items-center gap-1 bg-white/5 text-gray-400 px-2.5 py-1 rounded-full">
                     📅{" "}
