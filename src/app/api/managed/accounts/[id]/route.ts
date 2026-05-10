@@ -24,6 +24,7 @@ export async function PATCH(
   if (body.postTimezone !== undefined) data.postTimezone = body.postTimezone;
   if (body.postDays !== undefined) data.postDays = body.postDays;
   if (body.postMode !== undefined) data.postMode = body.postMode;
+  if (body.postTimeSlots !== undefined) data.postTimeSlots = body.postTimeSlots;
   if (body.isActive !== undefined) data.isActive = body.isActive;
 
   // Caption settings

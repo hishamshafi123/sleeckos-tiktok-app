@@ -36,6 +36,7 @@ type Account = {
   postTimezone: string;
   postDays: string;
   postMode: string;
+  postTimeSlots: string;
   defaultCaption: string | null;
   captionSource: string;
   tokenExpiresAt: string;
@@ -71,14 +72,14 @@ export default function GroupPage({
   const [loading, setLoading] = useState(true);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editForm, setEditForm] = useState({
-    postTimeHour: 12,
-    postTimeMinute: 0,
+    postTimeSlots: "12:00",
     postTimezone: "UTC",
     postDays: "1,2,3,4,5,6,7",
     postMode: "DIRECT",
     defaultCaption: "",
     captionSource: "FILENAME",
   });
+  const [newSlot, setNewSlot] = useState("12:00");
   const [driveUrl, setDriveUrl] = useState("");
   const [linkingDrive, setLinkingDrive] = useState(false);
 
@@ -136,15 +137,29 @@ export default function GroupPage({
 
   const startEdit = (acc: Account) => {
     setEditingId(acc.id);
+    const slots = acc.postTimeSlots || `${acc.postTimeHour.toString().padStart(2,"0")}:${acc.postTimeMinute.toString().padStart(2,"0")}`;
     setEditForm({
-      postTimeHour: acc.postTimeHour,
-      postTimeMinute: acc.postTimeMinute,
+      postTimeSlots: slots,
       postTimezone: acc.postTimezone,
       postDays: acc.postDays,
       postMode: acc.postMode,
       defaultCaption: acc.defaultCaption || "",
       captionSource: acc.captionSource,
     });
+  };
+
+  const addSlot = () => {
+    const existing = editForm.postTimeSlots.split(",").map(s => s.trim()).filter(Boolean);
+    if (existing.includes(newSlot)) { toast.error("Slot already exists"); return; }
+    if (existing.length >= 10) { toast.error("Max 10 slots"); return; }
+    const updated = [...existing, newSlot].sort().join(",");
+    setEditForm({ ...editForm, postTimeSlots: updated });
+  };
+
+  const removeSlot = (slot: string) => {
+    const existing = editForm.postTimeSlots.split(",").map(s => s.trim()).filter(Boolean);
+    if (existing.length <= 1) { toast.error("Need at least 1 slot"); return; }
+    setEditForm({ ...editForm, postTimeSlots: existing.filter(s => s !== slot).join(",") });
   };
 
   const saveEdit = async (id: string) => {
@@ -413,7 +428,7 @@ export default function GroupPage({
                 <div className="flex flex-wrap gap-2 text-xs">
                   <span className="flex items-center gap-1 bg-white/5 text-gray-400 px-2.5 py-1 rounded-full">
                     <Clock className="w-3 h-3" />
-                    {formatTime(acc.postTimeHour, acc.postTimeMinute)}{" "}
+                    {(acc.postTimeSlots || formatTime(acc.postTimeHour, acc.postTimeMinute)).split(",").map(s => s.trim()).join(" · ")}{" "}
                     {acc.postTimezone}
                   </span>
                   <span className="flex items-center gap-1 bg-white/5 text-gray-400 px-2.5 py-1 rounded-full">
@@ -454,56 +469,37 @@ export default function GroupPage({
                       Schedule Settings
                     </h4>
 
-                    {/* Time */}
-                    <div className="grid grid-cols-3 gap-3">
-                      <div>
-                        <label className="block text-xs text-gray-400 mb-1">
-                          Hour (0-23)
-                        </label>
+                    {/* Time Slots */}
+                    <div className="space-y-3">
+                      <label className="block text-xs text-gray-400">Post Times (per day)</label>
+                      <div className="flex flex-wrap gap-2">
+                        {editForm.postTimeSlots.split(",").map(s => s.trim()).filter(Boolean).map((slot) => (
+                          <span key={slot} className="flex items-center gap-1.5 bg-purple-500/15 border border-purple-500/30 text-purple-300 text-xs font-medium px-3 py-1.5 rounded-lg">
+                            <Clock className="w-3 h-3" />
+                            {slot}
+                            <button onClick={() => removeSlot(slot)} className="ml-1 text-purple-400 hover:text-red-400 transition-colors text-sm leading-none">×</button>
+                          </span>
+                        ))}
+                      </div>
+                      <div className="flex gap-2">
                         <input
-                          type="number"
-                          min={0}
-                          max={23}
-                          value={editForm.postTimeHour}
-                          onChange={(e) =>
-                            setEditForm({
-                              ...editForm,
-                              postTimeHour: +e.target.value,
-                            })
-                          }
-                          className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-purple-500"
+                          type="time"
+                          value={newSlot}
+                          onChange={(e) => setNewSlot(e.target.value)}
+                          className="bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-purple-500"
                         />
+                        <button
+                          onClick={addSlot}
+                          className="bg-purple-600/30 hover:bg-purple-600/50 border border-purple-500/30 text-purple-300 text-xs font-semibold px-3 py-2 rounded-lg transition-all"
+                        >
+                          + Add Slot
+                        </button>
                       </div>
                       <div>
-                        <label className="block text-xs text-gray-400 mb-1">
-                          Minute (0-59)
-                        </label>
-                        <input
-                          type="number"
-                          min={0}
-                          max={59}
-                          value={editForm.postTimeMinute}
-                          onChange={(e) =>
-                            setEditForm({
-                              ...editForm,
-                              postTimeMinute: +e.target.value,
-                            })
-                          }
-                          className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-purple-500"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-xs text-gray-400 mb-1">
-                          Timezone
-                        </label>
+                        <label className="block text-xs text-gray-400 mb-1">Timezone</label>
                         <select
                           value={editForm.postTimezone}
-                          onChange={(e) =>
-                            setEditForm({
-                              ...editForm,
-                              postTimezone: e.target.value,
-                            })
-                          }
+                          onChange={(e) => setEditForm({ ...editForm, postTimezone: e.target.value })}
                           className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-purple-500"
                         >
                           <option value="UTC">UTC</option>

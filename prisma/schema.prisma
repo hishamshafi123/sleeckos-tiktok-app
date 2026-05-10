@@ -322,6 +322,8 @@ model ManagedAccount {
   postTimezone          String       @default("UTC")
   postDays              String       @default("1,2,3,4,5,6,7")
   postMode              String       @default("DIRECT")
+  // Multiple time slots per day, stored as CSV "HH:MM" e.g. "09:00,14:30,20:00"
+  postTimeSlots         String       @default("12:00")
   defaultCaption        String?
   isActive              Boolean      @default(true)
 
