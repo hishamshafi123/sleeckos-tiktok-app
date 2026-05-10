@@ -1,8 +1,12 @@
 export const dynamic = "force-dynamic";
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/db";
-import { listVideoFilesInFolder, downloadDriveFile, deleteDriveFile } from "@/lib/google";
-import { postVideoToTikTok, refreshTikTokToken } from "@/lib/tiktok-managed";
+import {
+  listVideoFilesInFolder,
+  makeFilePublic,
+  deleteDriveFile,
+} from "@/lib/google";
+import { postViaPostPeer, driveDirectUrl } from "@/lib/postpeer";
 import { toZonedTime } from "date-fns-tz";
 
 function verifyCronSecret(req: NextRequest) {
@@ -12,28 +16,23 @@ function verifyCronSecret(req: NextRequest) {
   return secret === process.env.CRON_SECRET;
 }
 
-// Day-of-week: 1=Mon..7=Sun → matching postDays CSV format
 function dayNumber(date: Date): string {
-  const d = date.getDay(); // 0=Sun..6=Sat
+  const d = date.getDay();
   return d === 0 ? "7" : d.toString();
 }
 
-/** Parse "HH:MM" → total minutes */
 function parseSlot(slot: string): number {
   const [h, m] = slot.split(":").map(Number);
   return (h || 0) * 60 + (m || 0);
 }
 
-/** Check if current time is within ±5 min of ANY slot */
 function matchesAnySlot(
   slots: string[],
   currentMinutes: number
 ): string | null {
   for (const slot of slots) {
     const slotMinutes = parseSlot(slot);
-    if (Math.abs(currentMinutes - slotMinutes) <= 5) {
-      return slot;
-    }
+    if (Math.abs(currentMinutes - slotMinutes) <= 5) return slot;
   }
   return null;
 }
@@ -46,7 +45,6 @@ export async function GET(req: NextRequest) {
   const now = new Date();
   const results: Record<string, string> = {};
 
-  // Fetch all active accounts with a linked Drive folder
   const accounts = await prisma.managedAccount.findMany({
     where: { isActive: true, driveConnected: true },
   });
@@ -62,21 +60,21 @@ export async function GET(req: NextRequest) {
   for (const account of accounts) {
     const accountKey = `@${account.tiktokUsername}`;
     try {
-      // Convert now to account's timezone
+      // Check PostPeer account ID
+      if (!account.postpeerAccountId) {
+        results[accountKey] = "skipped_no_postpeer_id";
+        continue;
+      }
+
       const zonedNow = toZonedTime(now, account.postTimezone);
-      const currentHour = zonedNow.getHours();
-      const currentMinute = zonedNow.getMinutes();
-      const currentMinutes = currentHour * 60 + currentMinute;
+      const currentMinutes = zonedNow.getHours() * 60 + zonedNow.getMinutes();
       const currentDay = dayNumber(zonedNow);
 
-      // Check day
-      const isRightDay = account.postDays.split(",").includes(currentDay);
-      if (!isRightDay) {
+      if (!account.postDays.split(",").includes(currentDay)) {
         results[accountKey] = "not_scheduled_day";
         continue;
       }
 
-      // Parse time slots — use postTimeSlots if set, else fall back to legacy fields
       const rawSlots = account.postTimeSlots || "";
       const slots =
         rawSlots.trim().length > 0
@@ -85,37 +83,18 @@ export async function GET(req: NextRequest) {
               `${account.postTimeHour.toString().padStart(2, "0")}:${account.postTimeMinute.toString().padStart(2, "0")}`,
             ];
 
-      // Check if current time matches any slot
       const matchedSlot = matchesAnySlot(slots, currentMinutes);
       if (!matchedSlot) {
-        results[accountKey] = `not_scheduled_time (slots: ${slots.join(", ")})`;
+        results[accountKey] = `not_scheduled_time`;
         continue;
       }
 
-      // Check if we already posted for this specific slot today
+      // Check slot already posted
       const todayStart = new Date(
         zonedNow.getFullYear(),
         zonedNow.getMonth(),
         zonedNow.getDate()
       );
-      // Count how many posts already exist today for this account
-      const postsToday = await prisma.scheduledPost.count({
-        where: {
-          accountId: account.id,
-          scheduledFor: { gte: todayStart },
-          status: {
-            in: ["PUBLISHED", "UPLOADING", "PROCESSING", "QUEUED", "DOWNLOADING"],
-          },
-        },
-      });
-
-      // Find which slot index we're on — allow up to slots.length posts per day
-      if (postsToday >= slots.length) {
-        results[accountKey] = `all_slots_filled (${postsToday}/${slots.length})`;
-        continue;
-      }
-
-      // Check we haven't already posted for this specific slot (±10 min window)
       const slotMinutes = parseSlot(matchedSlot);
       const slotWindowStart = new Date(todayStart);
       slotWindowStart.setMinutes(slotMinutes - 10);
@@ -126,9 +105,7 @@ export async function GET(req: NextRequest) {
         where: {
           accountId: account.id,
           scheduledFor: { gte: slotWindowStart, lte: slotWindowEnd },
-          status: {
-            in: ["PUBLISHED", "UPLOADING", "PROCESSING", "QUEUED", "DOWNLOADING"],
-          },
+          status: { in: ["PUBLISHED", "UPLOADING", "PROCESSING", "QUEUED", "DOWNLOADING"] },
         },
       });
 
@@ -137,57 +114,7 @@ export async function GET(req: NextRequest) {
         continue;
       }
 
-      // ── Token refresh ────────────────────────────────────────────────────────
-      let accessToken = account.tiktokAccessToken;
-      if (account.tokenExpiresAt.getTime() - Date.now() < 3600_000) {
-        try {
-          const refreshed = await refreshTikTokToken(
-            account.tiktokRefreshToken
-          );
-          if (refreshed.access_token) {
-            accessToken = refreshed.access_token;
-            await prisma.managedAccount.update({
-              where: { id: account.id },
-              data: {
-                tiktokAccessToken: refreshed.access_token,
-                tiktokRefreshToken:
-                  refreshed.refresh_token || account.tiktokRefreshToken,
-                tokenExpiresAt: new Date(
-                  Date.now() + (refreshed.expires_in ?? 86400) * 1000
-                ),
-                refreshTokenExpiresAt: new Date(
-                  Date.now() +
-                    (refreshed.refresh_expires_in ?? 86400 * 30) * 1000
-                ),
-              },
-            });
-          } else {
-            await prisma.scheduledPost.create({
-              data: {
-                accountId: account.id,
-                scheduledFor: now,
-                status: "FAILED",
-                errorMessage: `Token refresh failed: ${JSON.stringify(refreshed.error || refreshed)}. Re-authenticate this account.`,
-              },
-            });
-            results[accountKey] = "failed_token_refresh";
-            continue;
-          }
-        } catch (err) {
-          await prisma.scheduledPost.create({
-            data: {
-              accountId: account.id,
-              scheduledFor: now,
-              status: "FAILED",
-              errorMessage: `Token refresh error: ${err instanceof Error ? err.message : String(err)}`,
-            },
-          });
-          results[accountKey] = "error_token_refresh";
-          continue;
-        }
-      }
-
-      // ── Drive files ──────────────────────────────────────────────────────────
+      // ── Get next unposted file from Drive ────────────────────────────────
       let files;
       try {
         files = await listVideoFilesInFolder(account.driveFolderId!);
@@ -197,7 +124,7 @@ export async function GET(req: NextRequest) {
             accountId: account.id,
             scheduledFor: now,
             status: "FAILED",
-            errorMessage: `Could not list Drive folder: ${err instanceof Error ? err.message : String(err)}. Check that the folder is shared with the service account.`,
+            errorMessage: `Drive folder access failed: ${err instanceof Error ? err.message : String(err)}`,
           },
         });
         results[accountKey] = "failed_drive_access";
@@ -210,22 +137,16 @@ export async function GET(req: NextRequest) {
             accountId: account.id,
             scheduledFor: now,
             status: "SKIPPED",
-            errorMessage:
-              "No video files found in the linked Drive folder. Upload videos to the folder.",
+            errorMessage: "No video files in Drive folder.",
           },
         });
         results[accountKey] = "skipped_no_files";
         continue;
       }
 
-      // Get IDs of already-posted files
       const postedFileIds = await prisma.scheduledPost
         .findMany({
-          where: {
-            accountId: account.id,
-            driveFileId: { not: null },
-            status: { not: "FAILED" },
-          },
+          where: { accountId: account.id, driveFileId: { not: null }, status: { not: "FAILED" } },
           select: { driveFileId: true },
         })
         .then((rows) => new Set(rows.map((r) => r.driveFileId)));
@@ -237,22 +158,22 @@ export async function GET(req: NextRequest) {
             accountId: account.id,
             scheduledFor: now,
             status: "SKIPPED",
-            errorMessage: `All ${files.length} video(s) in the Drive folder have already been posted. Add more videos to continue.`,
+            errorMessage: `All ${files.length} video(s) have been posted. Add more to Drive.`,
           },
         });
         results[accountKey] = "skipped_all_posted";
         continue;
       }
 
-      // ── Resolve caption ──────────────────────────────────────────────────────
+      // ── Caption ──────────────────────────────────────────────────────────
       let caption = "";
       if (account.captionSource === "FILENAME") {
-        caption = nextFile.name!.replace(/\.[^.]+$/, ""); // strip extension
+        caption = nextFile.name!.replace(/\.[^.]+$/, "");
       } else if (account.captionSource === "DEFAULT") {
         caption = account.defaultCaption || "";
       }
 
-      // ── Create post record ───────────────────────────────────────────────────
+      // ── Create post record ───────────────────────────────────────────────
       const post = await prisma.scheduledPost.create({
         data: {
           accountId: account.id,
@@ -260,67 +181,56 @@ export async function GET(req: NextRequest) {
           driveFileName: nextFile.name,
           caption,
           scheduledFor: now,
-          status: "DOWNLOADING",
+          status: "UPLOADING",
         },
       });
 
-      // ── Download from Drive ──────────────────────────────────────────────────
-      let videoBuffer: Buffer;
+      // ── Make file public, post via PostPeer, cleanup ─────────────────────
       try {
-        videoBuffer = await downloadDriveFile(nextFile.id);
-      } catch (err) {
-        await prisma.scheduledPost.update({
-          where: { id: post.id },
-          data: {
-            status: "FAILED",
-            errorMessage: `Drive download failed for "${nextFile.name}": ${err instanceof Error ? err.message : String(err)}`,
-          },
-        });
-        results[accountKey] = "failed_download";
-        continue;
-      }
+        await makeFilePublic(nextFile.id);
+        const videoUrl = driveDirectUrl(nextFile.id);
 
-      // ── Upload to TikTok ─────────────────────────────────────────────────────
-      await prisma.scheduledPost.update({
-        where: { id: post.id },
-        data: { status: "UPLOADING" },
-      });
-
-      let publishId: string;
-      try {
-        const result = await postVideoToTikTok(
-          accessToken,
-          videoBuffer,
+        const result = await postViaPostPeer(
+          account.postpeerAccountId,
           caption,
-          account.postMode as "DIRECT" | "DRAFT"
+          videoUrl,
+          {
+            draft: account.postMode === "DRAFT",
+            privacyLevel: "PUBLIC_TO_EVERYONE",
+            disableComment: false,
+            disableDuet: false,
+            disableStitch: false,
+            publishNow: true,
+          }
         );
-        publishId = result.publishId;
+
+        await prisma.scheduledPost.update({
+          where: { id: post.id },
+          data: {
+            tiktokPublishId: result.postId || null,
+            status: "PUBLISHED",
+            publishedAt: new Date(),
+          },
+        });
+
+        // Delete from Drive after successful post
+        try {
+          await deleteDriveFile(nextFile.id);
+        } catch (delErr) {
+          console.error(`Drive delete failed for ${nextFile.id}:`, delErr);
+        }
+
+        results[accountKey] = `published via PostPeer (slot ${matchedSlot})`;
       } catch (err) {
         await prisma.scheduledPost.update({
           where: { id: post.id },
           data: {
             status: "FAILED",
-            errorMessage: `TikTok upload failed for "${nextFile.name}": ${err instanceof Error ? err.message : String(err)}`,
+            errorMessage: `PostPeer post failed: ${err instanceof Error ? err.message : String(err)}`,
           },
         });
-        results[accountKey] = "failed_upload";
-        continue;
+        results[accountKey] = "failed_postpeer";
       }
-
-      // Mark as processing
-      await prisma.scheduledPost.update({
-        where: { id: post.id },
-        data: { tiktokPublishId: publishId, status: "PROCESSING" },
-      });
-
-      // Delete the video from Drive after successful upload
-      try {
-        await deleteDriveFile(nextFile.id!);
-      } catch (delErr) {
-        console.error(`Post succeeded but Drive delete failed for ${nextFile.id}:`, delErr);
-      }
-
-      results[accountKey] = `processing:${publishId} (slot ${matchedSlot})`;
     } catch (err) {
       results[accountKey] = `error: ${err instanceof Error ? err.message : String(err)}`;
     }

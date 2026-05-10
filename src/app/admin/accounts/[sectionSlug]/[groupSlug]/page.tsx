@@ -38,6 +38,7 @@ type Account = {
   postDays: string;
   postMode: string;
   postTimeSlots: string;
+  postpeerAccountId: string | null;
   defaultCaption: string | null;
   captionSource: string;
   tokenExpiresAt: string;
@@ -79,6 +80,7 @@ export default function GroupPage({
     postMode: "DIRECT",
     defaultCaption: "",
     captionSource: "FILENAME",
+    postpeerAccountId: "",
   });
   const [newSlot, setNewSlot] = useState("12:00");
   const [driveUrl, setDriveUrl] = useState("");
@@ -163,6 +165,7 @@ export default function GroupPage({
       postMode: acc.postMode,
       defaultCaption: acc.defaultCaption || "",
       captionSource: acc.captionSource,
+      postpeerAccountId: acc.postpeerAccountId || "",
     });
   };
 
@@ -692,6 +695,24 @@ export default function GroupPage({
                           </div>
                         </div>
                       )}
+                    </div>
+
+                    {/* ── PostPeer Account ID ── */}
+                    <div className="pt-3 border-t border-white/5 space-y-2">
+                      <h4 className="font-semibold text-white text-sm flex items-center gap-2">
+                        <svg className="w-3.5 h-3.5 text-amber-400" viewBox="0 0 24 24" fill="currentColor"><path d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+                        PostPeer Integration
+                      </h4>
+                      <p className="text-xs text-gray-500">
+                        Enter the PostPeer account ID for this TikTok account (from your PostPeer dashboard).
+                      </p>
+                      <input
+                        type="text"
+                        value={editForm.postpeerAccountId}
+                        onChange={(e) => setEditForm({ ...editForm, postpeerAccountId: e.target.value })}
+                        placeholder="e.g. 6a009951aebd14fd48e032c9"
+                        className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-white text-xs font-mono placeholder-gray-600 focus:outline-none focus:border-amber-500 transition-colors"
+                      />
                     </div>
 
                     <div className="flex gap-2">

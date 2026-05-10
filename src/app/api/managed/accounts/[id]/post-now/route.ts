@@ -2,10 +2,14 @@ export const dynamic = "force-dynamic";
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/db";
 import { getSession } from "@/lib/session";
-import { listVideoFilesInFolder, downloadDriveFile, deleteDriveFile } from "@/lib/google";
-import { postVideoToTikTok, refreshTikTokToken } from "@/lib/tiktok-managed";
+import {
+  listVideoFilesInFolder,
+  makeFilePublic,
+  deleteDriveFile,
+} from "@/lib/google";
+import { postViaPostPeer, driveDirectUrl } from "@/lib/postpeer";
 
-// POST /api/managed/accounts/[id]/post-now — instantly post next Drive video
+// POST /api/managed/accounts/[id]/post-now — instantly post next video via PostPeer
 export async function POST(
   _req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -27,34 +31,11 @@ export async function POST(
       { status: 400 }
     );
   }
-
-  // ── Token refresh ──────────────────────────────────────────────────────────
-  let accessToken = account.tiktokAccessToken;
-  if (account.tokenExpiresAt.getTime() - Date.now() < 3600_000) {
-    try {
-      const refreshed = await refreshTikTokToken(account.tiktokRefreshToken);
-      if (!refreshed.access_token) {
-        return NextResponse.json(
-          { error: `Token expired. Re-authenticate @${account.tiktokUsername} via TikTok Login.` },
-          { status: 400 }
-        );
-      }
-      accessToken = refreshed.access_token;
-      await prisma.managedAccount.update({
-        where: { id },
-        data: {
-          tiktokAccessToken: refreshed.access_token,
-          tiktokRefreshToken: refreshed.refresh_token || account.tiktokRefreshToken,
-          tokenExpiresAt: new Date(Date.now() + (refreshed.expires_in ?? 86400) * 1000),
-          refreshTokenExpiresAt: new Date(Date.now() + (refreshed.refresh_expires_in ?? 86400 * 30) * 1000),
-        },
-      });
-    } catch (err) {
-      return NextResponse.json(
-        { error: `Token refresh error: ${err instanceof Error ? err.message : String(err)}` },
-        { status: 500 }
-      );
-    }
+  if (!account.postpeerAccountId) {
+    return NextResponse.json(
+      { error: "No PostPeer Account ID set. Add it in the account settings." },
+      { status: 400 }
+    );
   }
 
   // ── Find next unposted file ────────────────────────────────────────────────
@@ -106,45 +87,55 @@ export async function POST(
       driveFileName: nextFile.name,
       caption,
       scheduledFor: new Date(),
-      status: "DOWNLOADING",
+      status: "UPLOADING",
     },
   });
 
-  // ── Download + Upload (fire-and-forget, tracked via status) ────────────────
-  const driveFileId = nextFile.id;
+  // ── Post via PostPeer (fire-and-forget) ────────────────────────────────────
+  const fileId = nextFile.id;
+  const postpeerAccountId = account.postpeerAccountId;
+
   (async () => {
     try {
-      const videoBuffer = await downloadDriveFile(driveFileId);
+      // Make the Drive file publicly accessible
+      await makeFilePublic(fileId);
+      const videoUrl = driveDirectUrl(fileId);
 
-      await prisma.scheduledPost.update({
-        where: { id: post.id },
-        data: { status: "UPLOADING" },
-      });
-
-      const { publishId } = await postVideoToTikTok(
-        accessToken,
-        videoBuffer,
+      const result = await postViaPostPeer(
+        postpeerAccountId,
         caption,
-        account.postMode as "DIRECT" | "DRAFT"
+        videoUrl,
+        {
+          draft: account.postMode === "DRAFT",
+          privacyLevel: "PUBLIC_TO_EVERYONE",
+          disableComment: false,
+          disableDuet: false,
+          disableStitch: false,
+          publishNow: true,
+        }
       );
 
       await prisma.scheduledPost.update({
         where: { id: post.id },
-        data: { tiktokPublishId: publishId, status: "PROCESSING" },
+        data: {
+          tiktokPublishId: result.postId || null,
+          status: "PUBLISHED",
+          publishedAt: new Date(),
+        },
       });
 
-      // Delete from Drive after successful upload
+      // Delete from Drive after success
       try {
-        await deleteDriveFile(driveFileId);
+        await deleteDriveFile(fileId);
       } catch (delErr) {
-        console.error(`Post succeeded but Drive delete failed for ${driveFileId}:`, delErr);
+        console.error(`Drive delete failed for ${fileId}:`, delErr);
       }
     } catch (err) {
       await prisma.scheduledPost.update({
         where: { id: post.id },
         data: {
           status: "FAILED",
-          errorMessage: `Post Now failed: ${err instanceof Error ? err.message : String(err)}`,
+          errorMessage: `PostPeer failed: ${err instanceof Error ? err.message : String(err)}`,
         },
       });
     }
@@ -154,6 +145,6 @@ export async function POST(
     ok: true,
     postId: post.id,
     fileName: nextFile.name,
-    message: `Posting "${nextFile.name}" now...`,
+    message: `Posting "${nextFile.name}" via PostPeer...`,
   });
 }

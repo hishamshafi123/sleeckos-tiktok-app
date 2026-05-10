@@ -67,3 +67,25 @@ export async function deleteDriveFile(fileId: string): Promise<void> {
   const drive = getDriveClient();
   await drive.files.delete({ fileId });
 }
+
+// ── Make a file temporarily public (anyone with link can view) ────────────────
+export async function makeFilePublic(fileId: string): Promise<void> {
+  const drive = getDriveClient();
+  await drive.permissions.create({
+    fileId,
+    requestBody: {
+      role: "reader",
+      type: "anyone",
+    },
+  });
+}
+
+// ── Revoke public access from a file ─────────────────────────────────────────
+export async function revokeFilePublic(fileId: string): Promise<void> {
+  const drive = getDriveClient();
+  try {
+    await drive.permissions.delete({ fileId, permissionId: "anyoneWithLink" });
+  } catch {
+    // Permission may already be removed or not exist
+  }
+}

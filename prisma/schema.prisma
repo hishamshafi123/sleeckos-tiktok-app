@@ -316,6 +316,9 @@ model ManagedAccount {
   driveFolderName       String?
   driveConnected        Boolean      @default(false)
 
+  // PostPeer integration
+  postpeerAccountId     String?
+
   // Scheduling config
   postTimeHour          Int          @default(12)
   postTimeMinute        Int          @default(0)
