@@ -62,10 +62,26 @@ export async function downloadDriveFile(fileId: string): Promise<Buffer> {
   return Buffer.from(res.data as ArrayBuffer);
 }
 
-// ── Delete a file from Drive (after successful post) ─────────────────────────
+// ── Delete/trash a file from Drive (after successful post) ───────────────────
 export async function deleteDriveFile(fileId: string): Promise<void> {
   const drive = getDriveClient();
-  await drive.files.delete({ fileId });
+  try {
+    // Try permanent delete first (works if service account owns the file)
+    await drive.files.delete({ fileId });
+    console.log(`[Drive] Permanently deleted file ${fileId}`);
+  } catch {
+    // If delete fails (not owner), move to trash instead
+    try {
+      await drive.files.update({
+        fileId,
+        requestBody: { trashed: true },
+      });
+      console.log(`[Drive] Trashed file ${fileId}`);
+    } catch (trashErr) {
+      console.error(`[Drive] Both delete and trash failed for ${fileId}:`, trashErr instanceof Error ? trashErr.message : trashErr);
+      throw trashErr;
+    }
+  }
 }
 
 // ── Make a file temporarily public (anyone with link can view) ────────────────
