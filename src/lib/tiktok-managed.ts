@@ -47,7 +47,8 @@ export async function initManagedPost(
   const body: Record<string, unknown> = {
     post_info: {
       title: caption.slice(0, 2200),
-      privacy_level: "PUBLIC_TO_EVERYONE",
+      // Use SELF_ONLY for unaudited apps; change to PUBLIC_TO_EVERYONE after TikTok audit approval
+      privacy_level: "SELF_ONLY",
       disable_comment: false,
       disable_duet: false,
       disable_stitch: false,
