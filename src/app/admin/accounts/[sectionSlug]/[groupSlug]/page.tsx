@@ -90,7 +90,7 @@ export default function GroupPage({
   const [addForm, setAddForm] = useState({ tiktokUsername: "", postpeerAccountId: "" });
   const [addingAccount, setAddingAccount] = useState(false);
   const [clockTick, setClockTick] = useState(0);
-  const clockRef = useRef<ReturnType<typeof setInterval>>();
+  const clockRef = useRef<ReturnType<typeof setInterval>>(undefined);
 
   // Tick the clock every second for live timezone display
   useEffect(() => {
