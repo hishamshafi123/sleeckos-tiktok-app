@@ -95,7 +95,7 @@ export default async function AccountsDashboard() {
                 <th className="text-left px-4 py-3 text-gray-500 font-medium">Section / Group</th>
                 <th className="text-left px-4 py-3 text-gray-500 font-medium">Caption</th>
                 <th className="text-left px-4 py-3 text-gray-500 font-medium">Status</th>
-                <th className="text-left px-4 py-3 text-gray-500 font-medium">Views</th>
+                <th className="text-left px-4 py-3 text-gray-500 font-medium">Error / Info</th>
                 <th className="text-left px-4 py-3 text-gray-500 font-medium">Time</th>
               </tr>
             </thead>
@@ -118,7 +118,15 @@ export default async function AccountsDashboard() {
                       "bg-gray-500/10 text-gray-400"
                     }`}>{post.status}</span>
                   </td>
-                  <td className="px-4 py-3 text-gray-500 text-xs">{Number(post.viewCount).toLocaleString()}</td>
+                  <td className="px-4 py-3 text-xs max-w-[250px]">
+                    {post.errorMessage ? (
+                      <span className="text-red-400 line-clamp-2">{post.errorMessage}</span>
+                    ) : post.status === "PUBLISHED" ? (
+                      <span className="text-gray-500">{Number(post.viewCount).toLocaleString()} views</span>
+                    ) : (
+                      <span className="text-gray-600">—</span>
+                    )}
+                  </td>
                   <td className="px-4 py-3 text-gray-600 text-xs">{post.createdAt ? new Date(post.createdAt).toLocaleDateString() : "—"}</td>
                 </tr>
               ))}

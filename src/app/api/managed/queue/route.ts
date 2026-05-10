@@ -10,40 +10,56 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const url = new URL(req.url);
-  const filter = url.searchParams.get("filter") || "all";
-  const limit = Math.min(Number(url.searchParams.get("limit")) || 100, 500);
+  try {
+    const url = new URL(req.url);
+    const filter = url.searchParams.get("filter") || "all";
+    const limit = Math.min(Number(url.searchParams.get("limit")) || 100, 500);
 
-  type PostStatus = "QUEUED" | "DOWNLOADING" | "UPLOADING" | "PROCESSING" | "PUBLISHED" | "FAILED" | "SKIPPED";
-  let statusFilter: PostStatus[] | undefined;
-  if (filter === "active") {
-    statusFilter = ["QUEUED", "DOWNLOADING", "UPLOADING", "PROCESSING"];
-  } else if (filter === "failed") {
-    statusFilter = ["FAILED"];
-  } else if (filter === "completed") {
-    statusFilter = ["PUBLISHED", "SKIPPED"];
-  }
-  // "all" = no filter
+    // Build where clause
+    const where: Record<string, unknown> = {};
+    if (filter === "active") {
+      where.status = { in: ["QUEUED", "DOWNLOADING", "UPLOADING", "PROCESSING"] };
+    } else if (filter === "failed") {
+      where.status = "FAILED";
+    } else if (filter === "completed") {
+      where.status = { in: ["PUBLISHED", "SKIPPED"] };
+    }
 
-  const posts = await prisma.scheduledPost.findMany({
-    where: statusFilter ? { status: { in: statusFilter } } : undefined,
-    orderBy: { createdAt: "desc" },
-    take: limit,
-    include: {
-      account: {
-        select: {
-          tiktokUsername: true,
-          tiktokAvatarUrl: true,
-          group: {
-            select: {
-              name: true,
-              section: { select: { name: true } },
+    const posts = await prisma.scheduledPost.findMany({
+      where: Object.keys(where).length > 0 ? where : undefined,
+      orderBy: { createdAt: "desc" },
+      take: limit,
+      include: {
+        account: {
+          select: {
+            tiktokUsername: true,
+            tiktokAvatarUrl: true,
+            group: {
+              select: {
+                name: true,
+                section: { select: { name: true } },
+              },
             },
           },
         },
       },
-    },
-  });
+    });
 
-  return NextResponse.json(posts);
+    // Serialize BigInt fields to strings for JSON
+    const serialized = posts.map((p) => ({
+      ...p,
+      viewCount: p.viewCount?.toString() ?? "0",
+      likeCount: p.likeCount?.toString() ?? "0",
+      commentCount: p.commentCount?.toString() ?? "0",
+      shareCount: p.shareCount?.toString() ?? "0",
+    }));
+
+    return NextResponse.json(serialized);
+  } catch (err) {
+    console.error("Queue API error:", err);
+    return NextResponse.json(
+      { error: `Failed to fetch posts: ${err instanceof Error ? err.message : String(err)}` },
+      { status: 500 }
+    );
+  }
 }

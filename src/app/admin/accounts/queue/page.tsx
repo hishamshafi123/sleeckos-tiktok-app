@@ -96,7 +96,22 @@ export default function QueuePage() {
   const fetchPosts = useCallback(async () => {
     try {
       const res = await fetch(`/api/managed/queue?filter=${activeTab}`);
-      if (res.ok) setPosts(await res.json());
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        console.error("Queue API error:", data);
+        toast.error(data.error || `Failed to load posts (${res.status})`);
+        return;
+      }
+      const data = await res.json();
+      if (Array.isArray(data)) {
+        setPosts(data);
+      } else {
+        console.error("Queue API returned non-array:", data);
+        setPosts([]);
+      }
+    } catch (err) {
+      console.error("Queue fetch error:", err);
+      toast.error("Failed to connect to server");
     } finally {
       setLoading(false);
     }
