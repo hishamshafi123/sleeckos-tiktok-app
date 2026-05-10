@@ -72,9 +72,10 @@ export async function initManagedPost(
 // ── 3. Upload video chunks ────────────────────────────────────────────────────
 export async function uploadVideoChunks(
   uploadUrl: string,
-  videoBuffer: Buffer
+  videoBuffer: Buffer,
+  chunkSizeOverride?: number
 ) {
-  const CHUNK = 10 * 1024 * 1024; // 10 MB chunks
+  const CHUNK = chunkSizeOverride || Math.min(10 * 1024 * 1024, videoBuffer.length);
   const total = videoBuffer.length;
   const numChunks = Math.ceil(total / CHUNK);
 
@@ -139,13 +140,18 @@ export async function postVideoToTikTok(
   caption: string,
   mode: "DIRECT" | "DRAFT" = "DIRECT"
 ): Promise<{ publishId: string }> {
-  const CHUNK = 10 * 1024 * 1024; // 10 MB
+  const MAX_CHUNK = 10 * 1024 * 1024; // 10 MB
+  const videoSize = videoBuffer.length;
+
+  // TikTok requires: chunk_size <= video_size, and total_chunk_count must be correct
+  // For videos smaller than MAX_CHUNK, use the video size as chunk size (single chunk)
+  const chunkSize = Math.min(MAX_CHUNK, videoSize);
 
   // Init
   const initData = await initManagedPost(accessToken, {
     caption,
-    videoSize: videoBuffer.length,
-    chunkSize: CHUNK,
+    videoSize,
+    chunkSize,
     mode,
   });
 
