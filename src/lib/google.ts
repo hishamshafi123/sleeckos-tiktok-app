@@ -25,7 +25,7 @@ function getDriveClient() {
   const json = JSON.parse(Buffer.from(b64, "base64").toString("utf-8"));
   const auth = new google.auth.GoogleAuth({
     credentials: json,
-    scopes: ["https://www.googleapis.com/auth/drive.readonly"],
+    scopes: ["https://www.googleapis.com/auth/drive"],
   });
   return google.drive({ version: "v3", auth });
 }
@@ -60,4 +60,10 @@ export async function downloadDriveFile(fileId: string): Promise<Buffer> {
     { responseType: "arraybuffer" }
   );
   return Buffer.from(res.data as ArrayBuffer);
+}
+
+// ── Delete a file from Drive (after successful post) ─────────────────────────
+export async function deleteDriveFile(fileId: string): Promise<void> {
+  const drive = getDriveClient();
+  await drive.files.delete({ fileId });
 }

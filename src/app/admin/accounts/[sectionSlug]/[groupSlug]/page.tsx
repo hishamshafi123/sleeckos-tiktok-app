@@ -14,6 +14,7 @@ import {
   Settings,
   ExternalLink,
   AlertCircle,
+  Zap,
 } from "lucide-react";
 
 type Account = {
@@ -82,6 +83,23 @@ export default function GroupPage({
   const [newSlot, setNewSlot] = useState("12:00");
   const [driveUrl, setDriveUrl] = useState("");
   const [linkingDrive, setLinkingDrive] = useState(false);
+  const [postingNow, setPostingNow] = useState<string | null>(null);
+
+  const postNow = async (acc: Account) => {
+    if (!acc.driveConnected) { toast.error("Link a Drive folder first"); return; }
+    setPostingNow(acc.id);
+    try {
+      const res = await fetch(`/api/managed/accounts/${acc.id}/post-now`, { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Post failed");
+      toast.success(data.message || "Posting now...");
+      fetchGroup();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to post");
+    } finally {
+      setPostingNow(null);
+    }
+  };
 
   const fetchGroup = useCallback(async () => {
     try {
@@ -360,6 +378,19 @@ export default function GroupPage({
                     </div>
                   </div>
                   <div className="flex items-center gap-1.5">
+                    <button
+                      onClick={() => postNow(acc)}
+                      disabled={postingNow === acc.id || !acc.driveConnected}
+                      className="flex items-center gap-1 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/20 text-amber-400 text-xs font-semibold px-3 py-1.5 rounded-lg transition-all disabled:opacity-40"
+                      title={acc.driveConnected ? "Post next video now" : "Link Drive folder first"}
+                    >
+                      {postingNow === acc.id ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <Zap className="w-3.5 h-3.5" />
+                      )}
+                      Post Now
+                    </button>
                     <button
                       onClick={() => toggleActive(acc)}
                       className={`p-2 rounded-lg transition-all ${

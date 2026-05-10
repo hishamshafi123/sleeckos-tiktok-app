@@ -1,7 +1,7 @@
 export const dynamic = "force-dynamic";
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/db";
-import { listVideoFilesInFolder, downloadDriveFile } from "@/lib/google";
+import { listVideoFilesInFolder, downloadDriveFile, deleteDriveFile } from "@/lib/google";
 import { postVideoToTikTok, refreshTikTokToken } from "@/lib/tiktok-managed";
 import { toZonedTime } from "date-fns-tz";
 
@@ -312,6 +312,13 @@ export async function GET(req: NextRequest) {
         where: { id: post.id },
         data: { tiktokPublishId: publishId, status: "PROCESSING" },
       });
+
+      // Delete the video from Drive after successful upload
+      try {
+        await deleteDriveFile(nextFile.id!);
+      } catch (delErr) {
+        console.error(`Post succeeded but Drive delete failed for ${nextFile.id}:`, delErr);
+      }
 
       results[accountKey] = `processing:${publishId} (slot ${matchedSlot})`;
     } catch (err) {
