@@ -127,8 +127,9 @@ export async function POST(
       // Delete from Drive after success
       try {
         await deleteDriveFile(fileId);
+        console.log(`[Drive] Deleted file ${fileId} after successful post`);
       } catch (delErr) {
-        console.error(`Drive delete failed for ${fileId}:`, delErr);
+        console.error(`[Drive] Delete failed for ${fileId}:`, delErr instanceof Error ? delErr.message : delErr);
       }
     } catch (err) {
       await prisma.scheduledPost.update({

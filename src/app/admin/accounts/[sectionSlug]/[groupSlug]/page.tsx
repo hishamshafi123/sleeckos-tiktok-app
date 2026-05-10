@@ -86,6 +86,32 @@ export default function GroupPage({
   const [driveUrl, setDriveUrl] = useState("");
   const [linkingDrive, setLinkingDrive] = useState(false);
   const [postingNow, setPostingNow] = useState<string | null>(null);
+  const [showAddForm, setShowAddForm] = useState(false);
+  const [addForm, setAddForm] = useState({ tiktokUsername: "", postpeerAccountId: "" });
+  const [addingAccount, setAddingAccount] = useState(false);
+
+  const addAccountManual = async () => {
+    if (!addForm.tiktokUsername.trim()) { toast.error("Enter a TikTok username"); return; }
+    if (!group) return;
+    setAddingAccount(true);
+    try {
+      const res = await fetch("/api/managed/accounts/add-manual", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ groupId: group.id, ...addForm }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to add");
+      toast.success(`@${addForm.tiktokUsername} added!`);
+      setAddForm({ tiktokUsername: "", postpeerAccountId: "" });
+      setShowAddForm(false);
+      fetchGroup();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed");
+    } finally {
+      setAddingAccount(false);
+    }
+  };
 
   const postNow = async (acc: Account) => {
     if (!acc.driveConnected) { toast.error("Link a Drive folder first"); return; }
@@ -300,42 +326,77 @@ export default function GroupPage({
             </p>
           </div>
         </div>
-        <a
-          href={`/api/managed/tiktok/auth?groupId=${group.id}`}
-          className="flex items-center gap-2 bg-[#010101] hover:bg-[#1a1a1a] border border-white/10 hover:border-white/20 text-white text-sm font-semibold px-4 py-2.5 rounded-xl transition-all"
+        <button
+          onClick={() => setShowAddForm(!showAddForm)}
+          className="flex items-center gap-2 bg-purple-600 hover:bg-purple-500 text-white text-sm font-semibold px-4 py-2.5 rounded-xl transition-all"
         >
-          <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
-            <path d="M19.59 6.69a4.83 4.83 0 0 1-3.77-4.25V2h-3.45v13.67a2.89 2.89 0 0 1-2.88 2.5 2.89 2.89 0 0 1-2.89-2.89 2.89 2.89 0 0 1 2.89-2.89c.28 0 .54.04.79.1V9.01a6.27 6.27 0 0 0-.79-.05 6.34 6.34 0 0 0-6.34 6.34 6.34 6.34 0 0 0 6.34 6.34 6.34 6.34 0 0 0 6.33-6.34V9.41a8.16 8.16 0 0 0 4.77 1.52V7.49a4.85 4.85 0 0 1-1-.8z" />
-          </svg>
-          Add TikTok Account
-        </a>
+          <Plus className="w-4 h-4" />
+          Add Account
+        </button>
       </div>
+
+      {/* Manual Add Form */}
+      {showAddForm && (
+        <div className="glass border border-purple-500/20 rounded-2xl p-5 space-y-3">
+          <h3 className="text-white font-semibold text-sm">Add TikTok Account</h3>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className="text-xs text-gray-500 mb-1 block">TikTok Username *</label>
+              <input
+                type="text"
+                value={addForm.tiktokUsername}
+                onChange={(e) => setAddForm({ ...addForm, tiktokUsername: e.target.value })}
+                placeholder="@username"
+                className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-white text-sm placeholder-gray-600 focus:outline-none focus:border-purple-500"
+              />
+            </div>
+            <div>
+              <label className="text-xs text-gray-500 mb-1 block">PostPeer Account ID</label>
+              <input
+                type="text"
+                value={addForm.postpeerAccountId}
+                onChange={(e) => setAddForm({ ...addForm, postpeerAccountId: e.target.value })}
+                placeholder="e.g. 6a009951aebd14fd48e032c9"
+                className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-white text-sm font-mono placeholder-gray-600 focus:outline-none focus:border-purple-500"
+              />
+            </div>
+          </div>
+          <div className="flex gap-2">
+            <button
+              onClick={addAccountManual}
+              disabled={addingAccount}
+              className="flex items-center gap-2 bg-purple-600 hover:bg-purple-500 text-white text-sm font-semibold px-4 py-2 rounded-xl transition-all disabled:opacity-50"
+            >
+              {addingAccount && <Loader2 className="w-3 h-3 animate-spin" />}
+              Add Account
+            </button>
+            <button
+              onClick={() => setShowAddForm(false)}
+              className="text-gray-500 hover:text-white text-sm px-3 py-2 rounded-xl transition-all"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Accounts List */}
       {group.accounts.length === 0 ? (
         <div className="glass border border-white/5 rounded-2xl p-12 text-center">
-          <svg
-            className="w-12 h-12 text-gray-600 mx-auto mb-4"
-            viewBox="0 0 24 24"
-            fill="currentColor"
-          >
-            <path d="M19.59 6.69a4.83 4.83 0 0 1-3.77-4.25V2h-3.45v13.67a2.89 2.89 0 0 1-2.88 2.5 2.89 2.89 0 0 1-2.89-2.89 2.89 2.89 0 0 1 2.89-2.89c.28 0 .54.04.79.1V9.01a6.27 6.27 0 0 0-.79-.05 6.34 6.34 0 0 0-6.34 6.34 6.34 6.34 0 0 0 6.34 6.34 6.34 6.34 0 0 0 6.33-6.34V9.41a8.16 8.16 0 0 0 4.77 1.52V7.49a4.85 4.85 0 0 1-1-.8z" />
-          </svg>
+          <Plus className="w-12 h-12 text-gray-600 mx-auto mb-4" />
           <h3 className="text-lg font-semibold text-white mb-2">
             No accounts yet
           </h3>
           <p className="text-gray-500 text-sm mb-6">
-            Connect TikTok accounts to start managing them
+            Add TikTok accounts to start managing them
           </p>
-          <a
-            href={`/api/managed/tiktok/auth?groupId=${group.id}`}
-            className="inline-flex items-center gap-2 bg-[#010101] hover:bg-[#1a1a1a] border border-white/10 text-white text-sm font-semibold px-5 py-2.5 rounded-xl transition-all"
+          <button
+            onClick={() => setShowAddForm(true)}
+            className="inline-flex items-center gap-2 bg-purple-600 hover:bg-purple-500 text-white text-sm font-semibold px-5 py-2.5 rounded-xl transition-all"
           >
-            <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
-              <path d="M19.59 6.69a4.83 4.83 0 0 1-3.77-4.25V2h-3.45v13.67a2.89 2.89 0 0 1-2.88 2.5 2.89 2.89 0 0 1-2.89-2.89 2.89 2.89 0 0 1 2.89-2.89c.28 0 .54.04.79.1V9.01a6.27 6.27 0 0 0-.79-.05 6.34 6.34 0 0 0-6.34 6.34 6.34 6.34 0 0 0 6.34 6.34 6.34 6.34 0 0 0 6.33-6.34V9.41a8.16 8.16 0 0 0 4.77 1.52V7.49a4.85 4.85 0 0 1-1-.8z" />
-            </svg>
-            Connect First Account
-          </a>
+            <Plus className="w-4 h-4" />
+            Add First Account
+          </button>
         </div>
       ) : (
         <div className="space-y-3">

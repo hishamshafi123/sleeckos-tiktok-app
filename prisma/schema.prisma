@@ -291,17 +291,17 @@ model ManagedAccount {
   groupId               String
   group                 AccountGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
 
-  // TikTok identity (from Login Kit OAuth)
-  tiktokOpenId          String       @unique
+  // TikTok identity (from Login Kit OAuth — optional when using PostPeer)
+  tiktokOpenId          String?      @unique
   tiktokUnionId         String?
   tiktokUsername        String
-  tiktokDisplayName     String
-  tiktokAvatarUrl       String
-  tiktokAccessToken     String
-  tiktokRefreshToken    String
-  tokenExpiresAt        DateTime
-  refreshTokenExpiresAt DateTime
-  tiktokScopes          String
+  tiktokDisplayName     String       @default("")
+  tiktokAvatarUrl       String       @default("")
+  tiktokAccessToken     String       @default("")
+  tiktokRefreshToken    String       @default("")
+  tokenExpiresAt        DateTime     @default(now())
+  refreshTokenExpiresAt DateTime     @default(now())
+  tiktokScopes          String       @default("")
 
   // Profile stats (synced periodically)
   followerCount         Int          @default(0)
