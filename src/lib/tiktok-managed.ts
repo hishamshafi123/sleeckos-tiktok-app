@@ -42,6 +42,8 @@ export async function initManagedPost(
       ? `${TIKTOK_API}/post/publish/inbox/video/init/`
       : `${TIKTOK_API}/post/publish/video/init/`;
 
+  const totalChunkCount = Math.ceil(videoSize / chunkSize);
+
   const body: Record<string, unknown> = {
     post_info: {
       title: caption.slice(0, 2200),
@@ -54,9 +56,11 @@ export async function initManagedPost(
       source: "FILE_UPLOAD",
       video_size: videoSize,
       chunk_size: chunkSize,
-      total_chunk_count: Math.ceil(videoSize / chunkSize),
+      total_chunk_count: totalChunkCount,
     },
   };
+
+  console.log(`[TikTok Init] endpoint=${endpoint}, body=`, JSON.stringify(body.source_info));
 
   const res = await fetch(endpoint, {
     method: "POST",
@@ -66,7 +70,9 @@ export async function initManagedPost(
     },
     body: JSON.stringify(body),
   });
-  return res.json();
+  const result = await res.json();
+  console.log(`[TikTok Init] response=`, JSON.stringify(result));
+  return result;
 }
 
 // ── 3. Upload video chunks ────────────────────────────────────────────────────
@@ -140,12 +146,32 @@ export async function postVideoToTikTok(
   caption: string,
   mode: "DIRECT" | "DRAFT" = "DIRECT"
 ): Promise<{ publishId: string }> {
-  const MAX_CHUNK = 10 * 1024 * 1024; // 10 MB
+  const MIN_CHUNK = 5 * 1024 * 1024;  // 5 MB — TikTok minimum
+  const MAX_CHUNK = 64 * 1024 * 1024; // 64 MB — TikTok maximum
+  const DEFAULT_CHUNK = 10 * 1024 * 1024; // 10 MB — our preferred size
   const videoSize = videoBuffer.length;
 
-  // TikTok requires: chunk_size <= video_size, and total_chunk_count must be correct
-  // For videos smaller than MAX_CHUNK, use the video size as chunk size (single chunk)
-  const chunkSize = Math.min(MAX_CHUNK, videoSize);
+  if (videoSize === 0) {
+    throw new Error("Video file is empty (0 bytes)");
+  }
+
+  // TikTok rules:
+  // - If video < 5MB: chunk_size = video_size, total_chunks = 1
+  // - If video >= 5MB: chunk_size must be between 5MB and 64MB
+  let chunkSize: number;
+  let totalChunkCount: number;
+
+  if (videoSize < MIN_CHUNK) {
+    // Small video: single chunk upload
+    chunkSize = videoSize;
+    totalChunkCount = 1;
+  } else {
+    // Normal video: use 10MB chunks (clamped to bounds)
+    chunkSize = Math.min(Math.max(DEFAULT_CHUNK, MIN_CHUNK), MAX_CHUNK);
+    totalChunkCount = Math.ceil(videoSize / chunkSize);
+  }
+
+  console.log(`[TikTok Upload] videoSize=${videoSize}, chunkSize=${chunkSize}, totalChunks=${totalChunkCount}, mode=${mode}`);
 
   // Init
   const initData = await initManagedPost(accessToken, {
@@ -164,8 +190,8 @@ export async function postVideoToTikTok(
   const publishId: string = initData.data.publish_id;
   const uploadUrl: string = initData.data.upload_url;
 
-  // Upload chunks
-  await uploadVideoChunks(uploadUrl, videoBuffer);
+  // Upload chunks using the same chunkSize we told TikTok
+  await uploadVideoChunks(uploadUrl, videoBuffer, chunkSize);
 
   return { publishId };
 }
