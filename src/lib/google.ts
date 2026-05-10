@@ -38,6 +38,8 @@ export async function listVideoFilesInFolder(folderId: string) {
     orderBy: "name",
     fields: "files(id,name,size,mimeType,createdTime)",
     pageSize: 100,
+    supportsAllDrives: true,
+    includeItemsFromAllDrives: true,
   });
   return res.data.files ?? [];
 }
@@ -48,6 +50,7 @@ export async function getFolderMeta(folderId: string) {
   const res = await drive.files.get({
     fileId: folderId,
     fields: "id,name,mimeType",
+    supportsAllDrives: true,
   });
   return res.data;
 }
@@ -56,7 +59,7 @@ export async function getFolderMeta(folderId: string) {
 export async function downloadDriveFile(fileId: string): Promise<Buffer> {
   const drive = getDriveClient();
   const res = await drive.files.get(
-    { fileId, alt: "media" },
+    { fileId, alt: "media", supportsAllDrives: true },
     { responseType: "arraybuffer" }
   );
   return Buffer.from(res.data as ArrayBuffer);
@@ -65,22 +68,45 @@ export async function downloadDriveFile(fileId: string): Promise<Buffer> {
 // ── Delete/trash a file from Drive (after successful post) ───────────────────
 export async function deleteDriveFile(fileId: string): Promise<void> {
   const drive = getDriveClient();
+
+  // Try permanent delete
   try {
-    // Try permanent delete first (works if service account owns the file)
-    await drive.files.delete({ fileId });
+    await drive.files.delete({ fileId, supportsAllDrives: true });
     console.log(`[Drive] Permanently deleted file ${fileId}`);
-  } catch {
-    // If delete fails (not owner), move to trash instead
-    try {
+    return;
+  } catch (delErr) {
+    console.log(`[Drive] delete() failed for ${fileId}, trying trash...`, delErr instanceof Error ? delErr.message : String(delErr));
+  }
+
+  // Fallback: move to trash
+  try {
+    await drive.files.update({
+      fileId,
+      requestBody: { trashed: true },
+      supportsAllDrives: true,
+    });
+    console.log(`[Drive] Trashed file ${fileId}`);
+    return;
+  } catch (trashErr) {
+    console.error(`[Drive] trash() also failed for ${fileId}:`, trashErr instanceof Error ? trashErr.message : String(trashErr));
+  }
+
+  // Last resort: remove file from folder (unparent it so it disappears from listing)
+  try {
+    const file = await drive.files.get({ fileId, fields: "parents", supportsAllDrives: true });
+    const parents = file.data.parents;
+    if (parents && parents.length > 0) {
       await drive.files.update({
         fileId,
-        requestBody: { trashed: true },
+        removeParents: parents.join(","),
+        supportsAllDrives: true,
       });
-      console.log(`[Drive] Trashed file ${fileId}`);
-    } catch (trashErr) {
-      console.error(`[Drive] Both delete and trash failed for ${fileId}:`, trashErr instanceof Error ? trashErr.message : trashErr);
-      throw trashErr;
+      console.log(`[Drive] Removed file ${fileId} from parent folder(s)`);
+      return;
     }
+  } catch (removeErr) {
+    console.error(`[Drive] removeParents also failed for ${fileId}:`, removeErr instanceof Error ? removeErr.message : String(removeErr));
+    throw removeErr;
   }
 }
 
@@ -89,18 +115,20 @@ export async function makeFilePublic(fileId: string): Promise<void> {
   const drive = getDriveClient();
   await drive.permissions.create({
     fileId,
+    supportsAllDrives: true,
     requestBody: {
       role: "reader",
       type: "anyone",
     },
   });
+  console.log(`[Drive] Made file ${fileId} public`);
 }
 
 // ── Revoke public access from a file ─────────────────────────────────────────
 export async function revokeFilePublic(fileId: string): Promise<void> {
   const drive = getDriveClient();
   try {
-    await drive.permissions.delete({ fileId, permissionId: "anyoneWithLink" });
+    await drive.permissions.delete({ fileId, permissionId: "anyoneWithLink", supportsAllDrives: true });
   } catch {
     // Permission may already be removed or not exist
   }
