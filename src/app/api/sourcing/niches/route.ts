@@ -47,7 +47,15 @@ export async function POST(req: NextRequest) {
       },
     });
     return NextResponse.json(niche, { status: 201 });
-  } catch {
-    return NextResponse.json({ error: "A niche with this name already exists" }, { status: 409 });
+  } catch (err: unknown) {
+    console.error("Create niche error:", err);
+    // Prisma unique constraint violation
+    if (err && typeof err === "object" && "code" in err && (err as { code: string }).code === "P2002") {
+      return NextResponse.json({ error: "A niche with this name already exists" }, { status: 409 });
+    }
+    return NextResponse.json(
+      { error: err instanceof Error ? err.message : "Failed to create niche" },
+      { status: 500 }
+    );
   }
 }
