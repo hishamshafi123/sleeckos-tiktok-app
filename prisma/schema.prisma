@@ -265,10 +265,11 @@ model AccountSection {
   slug      String         @unique
   color     String         @default("#8b5cf6")
   icon      String?
-  sortOrder Int            @default(0)
-  createdAt DateTime       @default(now())
-  updatedAt DateTime       @updatedAt
-  groups    AccountGroup[]
+  sortOrder   Int            @default(0)
+  maxSources  Int            @default(10)
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+  groups      AccountGroup[]
 }
 
 model AccountGroup {
@@ -282,6 +283,8 @@ model AccountGroup {
   createdAt   DateTime       @default(now())
   updatedAt   DateTime       @updatedAt
   accounts    ManagedAccount[]
+  youtubeSources YouTubeSource[]
+  sourcedVideos  SourcedVideo[]
 
   @@unique([sectionId, slug])
 }
@@ -413,4 +416,65 @@ model GoogleCredential {
   email          String?
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// YouTube Video Sourcing
+// ═══════════════════════════════════════════════════════════════════════════════
+
+enum YouTubeSourceType {
+  CHANNEL
+  PLAYLIST
+}
+
+enum SourcedVideoStatus {
+  NEW
+  DOWNLOADED
+  CLIPPED
+  SKIPPED
+}
+
+model YouTubeSource {
+  id              String            @id @default(uuid())
+  groupId         String
+  group           AccountGroup      @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  type            YouTubeSourceType
+  youtubeId       String            // channel ID or playlist ID
+  url             String            // original pasted URL
+  title           String            @default("")
+  thumbnailUrl    String?
+  subscriberCount Int?
+  maxVideosPerFetch Int              @default(10)
+  isActive        Boolean           @default(true)
+  lastFetchedAt   DateTime?
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  videos          SourcedVideo[]
+
+  @@unique([groupId, youtubeId])
+}
+
+model SourcedVideo {
+  id              String             @id @default(uuid())
+  sourceId        String
+  source          YouTubeSource      @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  groupId         String
+  group           AccountGroup       @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  youtubeVideoId  String
+  title           String
+  description     String?
+  thumbnailUrl    String
+  channelTitle    String
+  publishedAt     DateTime
+  duration        String             @default("PT0S")
+  viewCount       BigInt             @default(0)
+  likeCount       BigInt             @default(0)
+  commentCount    BigInt             @default(0)
+  status          SourcedVideoStatus @default(NEW)
+  downloadUrl     String?
+  discoveredAt    DateTime           @default(now())
+  fetchedAt       DateTime           @default(now())
+
+  @@unique([sourceId, youtubeVideoId])
 }

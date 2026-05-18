@@ -16,7 +16,7 @@ export async function GET() {
       groups: {
         orderBy: { sortOrder: "asc" },
         include: {
-          _count: { select: { accounts: true } },
+          _count: { select: { accounts: true, youtubeSources: true, sourcedVideos: true } },
         },
       },
     },
