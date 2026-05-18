@@ -41,5 +41,12 @@ export async function GET(req: NextRequest) {
     prisma.sourcedVideo.count({ where }),
   ]);
 
-  return NextResponse.json({ videos, total, limit, offset });
+  const serializedVideos = videos.map((v) => ({
+    ...v,
+    viewCount: v.viewCount.toString(),
+    likeCount: v.likeCount.toString(),
+    commentCount: v.commentCount.toString(),
+  }));
+
+  return NextResponse.json({ videos: serializedVideos, total, limit, offset });
 }
