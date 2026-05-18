@@ -5,7 +5,7 @@ import { toast } from "sonner";
 import {
   Loader2, Plus, X, Trash2, ChevronRight, RefreshCw,
   ExternalLink, Eye, ThumbsUp, Clock, ToggleLeft, ToggleRight,
-  Users, Video,
+  Users, Video, Copy,
 } from "lucide-react";
 
 type Account = {
@@ -426,6 +426,12 @@ export default function NichePage({ params }: { params: Promise<{ id: string }> 
                         v.status === "CLIPPED" ? "bg-purple-500/10 text-purple-400" :
                         "bg-gray-500/10 text-gray-500"}`}>{v.status}</span>
                       <div className="flex gap-1">
+                        <button onClick={() => {
+                          navigator.clipboard.writeText(`https://youtube.com/watch?v=${v.youtubeVideoId}`);
+                          toast.success("URL copied to clipboard");
+                        }} className="flex items-center gap-1 bg-white/5 hover:bg-white/10 text-gray-400 text-xs px-2.5 py-1.5 rounded-lg transition-all">
+                          <Copy className="w-3 h-3" /> Copy URL
+                        </button>
                         <a href={`https://youtube.com/watch?v=${v.youtubeVideoId}`} target="_blank" rel="noopener noreferrer"
                           className="flex items-center gap-1 bg-white/5 hover:bg-white/10 text-gray-400 text-xs px-2.5 py-1.5 rounded-lg transition-all">
                           <ExternalLink className="w-3 h-3" /> Open
