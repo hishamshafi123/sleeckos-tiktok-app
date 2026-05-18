@@ -1,16 +1,38 @@
--- AlterTable (add maxSources to AccountSection)
-ALTER TABLE "AccountSection" ADD COLUMN "maxSources" INTEGER NOT NULL DEFAULT 10;
-
 -- CreateEnum
 CREATE TYPE "YouTubeSourceType" AS ENUM ('CHANNEL', 'PLAYLIST');
 
 -- CreateEnum
 CREATE TYPE "SourcedVideoStatus" AS ENUM ('NEW', 'DOWNLOADED', 'CLIPPED', 'SKIPPED');
 
--- CreateTable
+-- CreateTable: SourcingNiche (independent content topic for video sourcing)
+CREATE TABLE "SourcingNiche" (
+    "id" TEXT NOT NULL,
+    "name" TEXT NOT NULL,
+    "slug" TEXT NOT NULL,
+    "description" TEXT,
+    "color" TEXT NOT NULL DEFAULT '#ef4444',
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+
+    CONSTRAINT "SourcingNiche_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateIndex
+CREATE UNIQUE INDEX "SourcingNiche_slug_key" ON "SourcingNiche"("slug");
+
+-- CreateTable: SourcingNicheAccount (join: which accounts belong to which niche)
+CREATE TABLE "SourcingNicheAccount" (
+    "nicheId" TEXT NOT NULL,
+    "accountId" TEXT NOT NULL,
+    "addedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "SourcingNicheAccount_pkey" PRIMARY KEY ("nicheId","accountId")
+);
+
+-- CreateTable: YouTubeSource
 CREATE TABLE "YouTubeSource" (
     "id" TEXT NOT NULL,
-    "groupId" TEXT NOT NULL,
+    "nicheId" TEXT NOT NULL,
     "type" "YouTubeSourceType" NOT NULL,
     "youtubeId" TEXT NOT NULL,
     "url" TEXT NOT NULL,
@@ -26,11 +48,14 @@ CREATE TABLE "YouTubeSource" (
     CONSTRAINT "YouTubeSource_pkey" PRIMARY KEY ("id")
 );
 
--- CreateTable
+-- CreateIndex
+CREATE UNIQUE INDEX "YouTubeSource_nicheId_youtubeId_key" ON "YouTubeSource"("nicheId", "youtubeId");
+
+-- CreateTable: SourcedVideo
 CREATE TABLE "SourcedVideo" (
     "id" TEXT NOT NULL,
     "sourceId" TEXT NOT NULL,
-    "groupId" TEXT NOT NULL,
+    "nicheId" TEXT NOT NULL,
     "youtubeVideoId" TEXT NOT NULL,
     "title" TEXT NOT NULL,
     "description" TEXT,
@@ -50,16 +75,19 @@ CREATE TABLE "SourcedVideo" (
 );
 
 -- CreateIndex
-CREATE UNIQUE INDEX "YouTubeSource_groupId_youtubeId_key" ON "YouTubeSource"("groupId", "youtubeId");
-
--- CreateIndex
 CREATE UNIQUE INDEX "SourcedVideo_sourceId_youtubeVideoId_key" ON "SourcedVideo"("sourceId", "youtubeVideoId");
 
 -- AddForeignKey
-ALTER TABLE "YouTubeSource" ADD CONSTRAINT "YouTubeSource_groupId_fkey" FOREIGN KEY ("groupId") REFERENCES "AccountGroup"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+ALTER TABLE "SourcingNicheAccount" ADD CONSTRAINT "SourcingNicheAccount_nicheId_fkey" FOREIGN KEY ("nicheId") REFERENCES "SourcingNiche"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "SourcingNicheAccount" ADD CONSTRAINT "SourcingNicheAccount_accountId_fkey" FOREIGN KEY ("accountId") REFERENCES "ManagedAccount"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "YouTubeSource" ADD CONSTRAINT "YouTubeSource_nicheId_fkey" FOREIGN KEY ("nicheId") REFERENCES "SourcingNiche"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "SourcedVideo" ADD CONSTRAINT "SourcedVideo_sourceId_fkey" FOREIGN KEY ("sourceId") REFERENCES "YouTubeSource"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "SourcedVideo" ADD CONSTRAINT "SourcedVideo_groupId_fkey" FOREIGN KEY ("groupId") REFERENCES "AccountGroup"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+ALTER TABLE "SourcedVideo" ADD CONSTRAINT "SourcedVideo_nicheId_fkey" FOREIGN KEY ("nicheId") REFERENCES "SourcingNiche"("id") ON DELETE CASCADE ON UPDATE CASCADE;

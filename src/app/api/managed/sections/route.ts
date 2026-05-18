@@ -16,17 +16,16 @@ export async function GET() {
       groups: {
         orderBy: { sortOrder: "asc" },
         include: {
-          _count: { select: { accounts: true, youtubeSources: true, sourcedVideos: true } },
+          _count: { select: { accounts: true } },
         },
       },
     },
   });
 
-  // Enrich with aggregate counts
   const enriched = sections.map((s) => ({
     ...s,
     totalGroups: s.groups.length,
-    totalAccounts: s.groups.reduce((sum, g) => sum + g._count.accounts, 0),
+    totalAccounts: s.groups.reduce((sum: number, g) => sum + g._count.accounts, 0),
   }));
 
   return NextResponse.json(enriched);
