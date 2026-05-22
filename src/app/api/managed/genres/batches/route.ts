@@ -413,6 +413,8 @@ async function processBatchRendering(batchId: string) {
           trackStart: item.trackStart,
           outputPath: tempOutFile,
           curveText: styleConfig.curveText,
+          curvature: styleConfig.curvature,
+          positionY: styleConfig.positionY,
         });
 
         // 3. Deliver to Google Drive folder

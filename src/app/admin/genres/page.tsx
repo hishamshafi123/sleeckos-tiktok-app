@@ -44,6 +44,8 @@ interface GenreConfig {
   shadowColor: string;
   lineSpacing: number;
   curveText: boolean;
+  curvature: number;
+  positionY: number;
 }
 
 interface Account {
@@ -190,6 +192,14 @@ function getNicheGrouped(accountsList: Account[]): NicheGrouped[] {
 export default function GenresDashboard() {
   const [activeTab, setActiveTab] = useState<TabType>("accounts");
 
+  const resolveUrl = (url: string | null | undefined): string => {
+    if (!url) return "";
+    if (url.startsWith("/uploads/")) {
+      return url.replace("/uploads/", "/api/uploads/");
+    }
+    return url;
+  };
+
   // State pools
   const [tracks, setTracks] = useState<Track[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
@@ -208,7 +218,6 @@ export default function GenresDashboard() {
   const [trackTitle, setTrackTitle] = useState("");
   const [trackArtist, setTrackArtist] = useState("");
   const [trackGenre, setTrackGenre] = useState("");
-  const [trackMusician, setTrackMusician] = useState("");
   const [trackStart, setTrackStart] = useState("0");
   const [trackDuration, setTrackDuration] = useState("7");
   const [audioFile, setAudioFile] = useState<File | null>(null);
@@ -231,10 +240,12 @@ export default function GenresDashboard() {
   const [fontSize, setFontSize] = useState(44);
   const [fontColor, setFontColor] = useState("#FFFFFF");
   const [textCase, setTextCase] = useState("UPPERCASE");
-  const [boxColor, setBoxColor] = useState("black@0.4");
+  const [boxColor, setBoxColor] = useState("none");
   const [shadowColor, setShadowColor] = useState("black@0.6");
   const [lineSpacing, setLineSpacing] = useState(10);
   const [curveText, setCurveText] = useState(false);
+  const [curvature, setCurvature] = useState(30);
+  const [positionY, setPositionY] = useState(50);
   const [uploadingBg, setUploadingBg] = useState(false);
   const [savingConfig, setSavingConfig] = useState(false);
 
@@ -268,6 +279,10 @@ export default function GenresDashboard() {
   const [audioReuseMax, setAudioReuseMax] = useState(2);
   const [triggeringRender, setTriggeringRender] = useState(false);
 
+  // Derived autocomplete lists
+  const uniqueMusiciansList = Array.from(new Set(tracks.map(t => t.musician || t.artist).filter(Boolean))) as string[];
+  const uniqueGenresList = Array.from(new Set(tracks.map(t => t.genre).filter(Boolean))) as string[];
+
   // Fetch initial data & load google fonts for preview
   useEffect(() => {
     fetchTracks();
@@ -294,14 +309,19 @@ export default function GenresDashboard() {
       setFontSize(config?.fontSize || 44);
       setFontColor(config?.fontColor || "#FFFFFF");
       setTextCase(config?.textCase || "UPPERCASE");
-      setBoxColor(config?.boxColor || "black@0.4");
+      setBoxColor(config?.boxColor || "none");
       setShadowColor(config?.shadowColor || "black@0.6");
       setLineSpacing(config?.lineSpacing || 10);
       setCurveText(config?.curveText || false);
+      setCurvature(config?.curvature !== undefined ? config.curvature : 30);
+      setPositionY(config?.positionY ?? 50);
       setPreviewBgIndex(0);
     } else {
       setThemeText("");
       setCurveText(false);
+      setCurvature(30);
+      setBoxColor("none");
+      setPositionY(50);
       setPreviewBgIndex(0);
     }
   }, [selectedAccountId, accounts]);
@@ -313,7 +333,7 @@ export default function GenresDashboard() {
       setPlayingTrackId(null);
     } else {
       if (audioPlayerRef.current) {
-        audioPlayerRef.current.src = track.fileUrl;
+        audioPlayerRef.current.src = resolveUrl(track.fileUrl);
         audioPlayerRef.current.currentTime = track.defaultStart;
         audioPlayerRef.current.play();
         setPlayingTrackId(track.id);
@@ -403,7 +423,7 @@ export default function GenresDashboard() {
     data.append("defaultStart", trackStart);
     data.append("defaultDuration", trackDuration);
     data.append("genre", trackGenre);
-    data.append("musician", trackMusician);
+    data.append("musician", trackArtist); // Consolidated: map Musician/Producer to both fields
 
     // Read audio duration using browser capabilities
     try {
@@ -426,7 +446,6 @@ export default function GenresDashboard() {
         setTrackTitle("");
         setTrackArtist("");
         setTrackGenre("");
-        setTrackMusician("");
         setTrackStart("0");
         setTrackDuration("7");
         setAudioFile(null);
@@ -497,6 +516,8 @@ export default function GenresDashboard() {
     data.append("shadowColor", shadowColor);
     data.append("lineSpacing", lineSpacing.toString());
     data.append("curveText", curveText.toString());
+    data.append("curvature", curvature.toString());
+    data.append("positionY", positionY.toString());
 
     try {
       const res = await fetch("/api/managed/genres/accounts", {
@@ -862,42 +883,31 @@ export default function GenresDashboard() {
 
               <div>
                 <label className="block text-xs uppercase tracking-wider font-bold text-gray-400 mb-2">
-                  Artist / Producer
+                  Musician / Producer
                 </label>
                 <input
                   type="text"
-                  placeholder="e.g. M83"
+                  placeholder="e.g. M83, Chopin, Hans Zimmer"
                   value={trackArtist}
                   onChange={(e) => setTrackArtist(e.target.value)}
+                  list="musicians-datalist"
                   className="w-full bg-[#141423] border border-white/5 rounded-2xl px-4 py-3 text-sm text-white focus:outline-none focus:border-amber-500/50 focus:ring-1 focus:ring-amber-500/30"
+                  required
                 />
               </div>
 
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-xs uppercase tracking-wider font-bold text-gray-400 mb-2">
-                    Genre / Mood
-                  </label>
-                  <input
-                    type="text"
-                    placeholder="e.g. Stoic, Sad, Piano"
-                    value={trackGenre}
-                    onChange={(e) => setTrackGenre(e.target.value)}
-                    className="w-full bg-[#141423] border border-white/5 rounded-2xl px-4 py-3 text-sm text-white focus:outline-none focus:border-amber-500/50 focus:ring-1 focus:ring-amber-500/30"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs uppercase tracking-wider font-bold text-gray-400 mb-2">
-                    Musician / Composer
-                  </label>
-                  <input
-                    type="text"
-                    placeholder="e.g. Chopin, Hans Zimmer"
-                    value={trackMusician}
-                    onChange={(e) => setTrackMusician(e.target.value)}
-                    className="w-full bg-[#141423] border border-white/5 rounded-2xl px-4 py-3 text-sm text-white focus:outline-none focus:border-amber-500/50 focus:ring-1 focus:ring-amber-500/30"
-                  />
-                </div>
+              <div>
+                <label className="block text-xs uppercase tracking-wider font-bold text-gray-400 mb-2">
+                  Genre / Mood
+                </label>
+                <input
+                  type="text"
+                  placeholder="e.g. Stoic, Sad, Piano, Lyrical"
+                  value={trackGenre}
+                  onChange={(e) => setTrackGenre(e.target.value)}
+                  list="genres-datalist"
+                  className="w-full bg-[#141423] border border-white/5 rounded-2xl px-4 py-3 text-sm text-white focus:outline-none focus:border-amber-500/50 focus:ring-1 focus:ring-amber-500/30"
+                />
               </div>
 
               <div className="grid grid-cols-2 gap-4">
@@ -978,17 +988,17 @@ export default function GenresDashboard() {
             {/* Search & Filter Controls */}
             {(() => {
               const uniqueGenres = Array.from(new Set(tracks.map(t => t.genre).filter(Boolean))) as string[];
-              const uniqueMusicians = Array.from(new Set(tracks.map(t => t.musician).filter(Boolean))) as string[];
+              const uniqueMusicians = Array.from(new Set(tracks.map(t => t.musician || t.artist).filter(Boolean))) as string[];
 
               const filteredTracks = tracks.filter(t => {
                 const matchesSearch = 
                   t.title.toLowerCase().includes(searchTrackQuery.toLowerCase()) ||
                   t.artist.toLowerCase().includes(searchTrackQuery.toLowerCase()) ||
                   (t.genre && t.genre.toLowerCase().includes(searchTrackQuery.toLowerCase())) ||
-                  (t.musician && t.musician.toLowerCase().includes(searchTrackQuery.toLowerCase()));
+                  ((t.musician || t.artist).toLowerCase().includes(searchTrackQuery.toLowerCase()));
                   
                 const matchesGenre = filterGenre === "all" || t.genre === filterGenre;
-                const matchesMusician = filterMusician === "all" || t.musician === filterMusician;
+                const matchesMusician = filterMusician === "all" || (t.musician || t.artist) === filterMusician;
                 const matchesCampaign = filterCampaign === "all" || (filterCampaign === "active" && t.campaignOn);
                 
                 return matchesSearch && matchesGenre && matchesMusician && matchesCampaign;
@@ -1103,7 +1113,7 @@ export default function GenresDashboard() {
                                     {track.genre}
                                   </span>
                                 )}
-                                {track.musician && (
+                                {track.musician && track.musician !== track.artist && (
                                   <span className="text-[9px] font-bold uppercase tracking-wider px-2 py-0.5 bg-blue-500/10 text-blue-400 border border-blue-500/15 rounded-md">
                                     {track.musician}
                                   </span>
@@ -1563,39 +1573,63 @@ export default function GenresDashboard() {
                           <label className="block text-xs uppercase tracking-wider font-bold text-gray-400 mb-2">
                             Font Color (HEX or Quick Pick)
                           </label>
-                          <div className="flex gap-2 mb-2">
-                            <button
-                              type="button"
-                              onClick={() => setFontColor("#FFFFFF")}
-                              className="w-6 h-6 rounded-full bg-white border border-white/10"
-                              title="Pure White"
-                            />
-                            <button
-                              type="button"
-                              onClick={() => setFontColor("#FEF08A")}
-                              className="w-6 h-6 rounded-full bg-yellow-200 border border-white/10"
-                              title="Pale Yellow"
-                            />
-                            <button
-                              type="button"
-                              onClick={() => setFontColor("#FDE047")}
-                              className="w-6 h-6 rounded-full bg-yellow-400 border border-white/10"
-                              title="Vibrant Yellow"
-                            />
-                            <button
-                              type="button"
-                              onClick={() => setFontColor("#F5F5F7")}
-                              className="w-6 h-6 rounded-full bg-[#f5f5f7] border border-white/10"
-                              title="Cream Grey"
-                            />
+                          <div className="flex gap-2.5 mb-3">
+                            {[
+                              { hex: "#FFFFFF", name: "Pure White", bg: "bg-white" },
+                              { hex: "#FEF08A", name: "Pale Yellow", bg: "bg-yellow-100" },
+                              { hex: "#FDE047", name: "Vibrant Yellow", bg: "bg-yellow-400" },
+                              { hex: "#F5F5F7", name: "Cream Grey", bg: "bg-[#f5f5f7]" },
+                              { hex: "#F87171", name: "Soft Red", bg: "bg-red-400" },
+                              { hex: "#6EE7B7", name: "Mint Green", bg: "bg-emerald-300" },
+                              { hex: "#93C5FD", name: "Sky Blue", bg: "bg-blue-300" },
+                              { hex: "#C084FC", name: "Lavender", bg: "bg-purple-400" }
+                            ].map((preset) => {
+                              const isActive = fontColor.toLowerCase() === preset.hex.toLowerCase();
+                              return (
+                                <button
+                                  key={preset.hex}
+                                  type="button"
+                                  onClick={() => setFontColor(preset.hex)}
+                                  className={`w-7 h-7 rounded-full border-2 transition-all duration-300 relative hover:scale-110 flex items-center justify-center ${
+                                    isActive
+                                      ? "border-amber-500 scale-110 shadow-lg shadow-amber-500/20 ring-1 ring-amber-500/30"
+                                      : "border-white/10 hover:border-white/30"
+                                  }`}
+                                  title={preset.name}
+                                >
+                                  <span className={`w-full h-full rounded-full ${preset.bg}`} />
+                                  {isActive && (
+                                    <div className="absolute w-2 h-2 rounded-full bg-black flex items-center justify-center">
+                                      <Check className="w-1.5 h-1.5 text-amber-500 stroke-[4]" />
+                                    </div>
+                                  )}
+                                </button>
+                              );
+                            })}
                           </div>
-                          <input
-                            type="text"
-                            value={fontColor}
-                            onChange={(e) => setFontColor(e.target.value)}
-                            placeholder="#FFFFFF"
-                            className="w-full bg-[#141423] border border-white/5 rounded-2xl px-4 py-3 text-sm text-white focus:outline-none focus:border-amber-500/50"
-                          />
+                          <div className="flex gap-3 items-center">
+                            <div className="relative flex-1">
+                              <input
+                                type="text"
+                                value={fontColor}
+                                onChange={(e) => setFontColor(e.target.value)}
+                                placeholder="#FFFFFF"
+                                className="w-full bg-[#141423] border border-white/5 rounded-2xl pl-4 pr-10 py-3 text-sm font-bold text-white focus:outline-none focus:border-amber-500/50"
+                              />
+                              <div className="absolute right-3.5 top-3.5 w-4 h-4 rounded-full border border-white/10 shadow-sm transition-all duration-300" style={{ backgroundColor: fontColor.startsWith("#") ? fontColor : "#ffffff" }} />
+                            </div>
+                            <div className="relative w-12 h-11 rounded-2xl overflow-hidden border border-white/5 bg-[#141423] flex items-center justify-center hover:border-amber-500/40 transition-all duration-300">
+                              <input
+                                type="color"
+                                value={fontColor.startsWith("#") && fontColor.length === 7 ? fontColor : "#FFFFFF"}
+                                onChange={(e) => setFontColor(e.target.value)}
+                                className="absolute inset-0 w-full h-full p-0 border-0 cursor-pointer bg-transparent opacity-0 z-10"
+                              />
+                              <div className="w-6 h-6 rounded-full bg-gradient-to-tr from-red-500 via-green-500 to-blue-500 flex items-center justify-center animate-spin-slow">
+                                <div className="w-4 h-4 rounded-full bg-[#141423]" />
+                              </div>
+                            </div>
+                          </div>
                         </div>
 
                         {/* Text Casing */}
@@ -1630,6 +1664,24 @@ export default function GenresDashboard() {
                             value={lineSpacing}
                             onChange={(e) => setLineSpacing(parseInt(e.target.value))}
                             className="w-full h-1.5 bg-[#141423] rounded-lg appearance-none cursor-pointer accent-purple-500"
+                          />
+                        </div>
+
+                        {/* Text Vertical Positioning */}
+                        <div>
+                          <div className="flex justify-between items-center mb-2">
+                            <label className="block text-xs uppercase tracking-wider font-bold text-gray-400">
+                              Text Vertical Position (%)
+                            </label>
+                            <span className="text-xs font-extrabold text-amber-400">{positionY}%</span>
+                          </div>
+                          <input
+                            type="range"
+                            min="10"
+                            max="90"
+                            value={positionY}
+                            onChange={(e) => setPositionY(parseInt(e.target.value))}
+                            className="w-full h-1.5 bg-[#141423] rounded-lg appearance-none cursor-pointer accent-amber-500"
                           />
                         </div>
 
@@ -1670,23 +1722,49 @@ export default function GenresDashboard() {
 
                       </div>
 
-                      {/* Curve Text Card (Rounded Corners) */}
-                      <div className="flex items-center justify-between bg-[#141423]/60 p-4 border border-white/5 rounded-2xl">
-                        <div>
-                          <label className="block text-xs uppercase tracking-wider font-bold text-gray-300">
-                            Curve Text Card
+                      {/* Curve Text (Arc Along Path) */}
+                      <div className="bg-[#141423]/60 p-4 border border-white/5 rounded-2xl space-y-4">
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <label className="block text-xs uppercase tracking-wider font-bold text-gray-300">
+                              Curve Text (Arc Along Path)
+                            </label>
+                            <span className="text-[10px] text-gray-500 font-medium">Curve text characters along a dynamic SVG path</span>
+                          </div>
+                          <label className="relative inline-flex items-center cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={curveText}
+                              onChange={() => setCurveText(!curveText)}
+                              className="sr-only peer"
+                            />
+                            <div className="w-9 h-5 bg-gray-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-gray-300 after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-amber-500 peer-checked:after:bg-black peer-checked:after:border-black"></div>
                           </label>
-                          <span className="text-[10px] text-gray-500 font-medium">Toggle rounded corners (curvature radius) on the quote overlay card</span>
                         </div>
-                        <label className="relative inline-flex items-center cursor-pointer">
-                          <input
-                            type="checkbox"
-                            checked={curveText}
-                            onChange={() => setCurveText(!curveText)}
-                            className="sr-only peer"
-                          />
-                          <div className="w-9 h-5 bg-gray-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-gray-300 after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-amber-500 peer-checked:after:bg-black peer-checked:after:border-black"></div>
-                        </label>
+
+                        {curveText && (
+                          <div className="pt-2 border-t border-white/5 transition-all duration-300">
+                            <div className="flex justify-between items-center mb-2">
+                              <label className="block text-[11px] uppercase tracking-wider font-bold text-gray-400">
+                                Curvature Strength
+                              </label>
+                              <span className="text-xs font-extrabold text-amber-400">{curvature > 0 ? `+${curvature}` : curvature}</span>
+                            </div>
+                            <input
+                              type="range"
+                              min="-100"
+                              max="100"
+                              value={curvature}
+                              onChange={(e) => setCurvature(parseInt(e.target.value))}
+                              className="w-full h-1.5 bg-[#0d0d16] rounded-lg appearance-none cursor-pointer accent-amber-500"
+                            />
+                            <div className="flex justify-between text-[9px] text-gray-500 font-bold uppercase tracking-wider mt-1 px-1">
+                              <span>Arch Down</span>
+                              <span>Straight</span>
+                              <span>Arch Up</span>
+                            </div>
+                          </div>
+                        )}
                       </div>
 
                       <button
@@ -1714,13 +1792,18 @@ export default function GenresDashboard() {
                       {/* Background Loop Source */}
                       {selectedAccount.backgroundVideos.length > 0 ? (
                         <video
-                          src={selectedAccount.backgroundVideos[previewBgIndex]?.videoUrl}
+                          src={resolveUrl(selectedAccount.backgroundVideos[previewBgIndex]?.videoUrl)}
                           className="absolute inset-0 w-full h-full object-cover"
                           muted
                           loop
                           autoPlay
                           playsInline
+                          preload="auto"
                           key={selectedAccount.backgroundVideos[previewBgIndex]?.id}
+                          onLoadedData={(e) => {
+                            const vid = e.target as HTMLVideoElement;
+                            vid.play().catch(err => console.log("Autoplay preview video blocked:", err));
+                          }}
                         />
                       ) : (
                         <div className="absolute inset-0 bg-gradient-to-br from-[#1b1a2e] to-[#0c0b14] flex flex-col items-center justify-center p-6 text-center">
@@ -1760,28 +1843,93 @@ export default function GenresDashboard() {
                       </div>
 
                       {/* Canvas Overlay text reacting live to inputs */}
-                      <div className="absolute inset-0 flex items-center justify-center p-4 pointer-events-none z-10">
-                        <div 
-                          style={{
-                            fontFamily: getCssFontFamily(fontFamily),
-                            fontSize: `${Math.max(12, fontSize * 0.40)}px`,
-                            color: fontColor,
-                            textTransform: textCase === "UPPERCASE" ? "uppercase" : textCase === "lowercase" ? "lowercase" : "none",
-                            backgroundColor: getCssRgba(boxColor),
-                            textShadow: getCssTextShadow(shadowColor),
-                            lineHeight: `${(fontSize + lineSpacing) / fontSize}`,
-                            borderRadius: curveText ? "20px" : "0px",
-                            padding: curveText ? "16px 20px" : "10px 14px",
-                            transition: "all 0.2s ease",
-                          }}
-                          className="text-center font-bold max-w-[90%] break-words border border-white/5 pointer-events-auto shadow-xl"
-                        >
-                          {themeText ? applyTextCase(`"${themeText}"`, textCase) : applyTextCase(`"Be the change you wish to see in the world."`, textCase)}
-                          <div className="text-[0.62em] opacity-80 mt-1.5 font-medium">
-                            - Marcus Aurelius
+                      {(() => {
+                        const isClearBox = !boxColor || boxColor === "none";
+                        const displayQuote = themeText ? applyTextCase(themeText, textCase) : applyTextCase("Be the change you wish to see in the world.", textCase);
+                        return (
+                          <div 
+                            style={{
+                              position: "absolute",
+                              left: "0",
+                              right: "0",
+                              top: `${positionY}%`,
+                              transform: "translateY(-50%)",
+                              pointerEvents: "none",
+                              zIndex: 10,
+                              display: "flex",
+                              justifyContent: "center",
+                              padding: "0 16px",
+                              transition: "top 0.2s ease",
+                            }}
+                          >
+                            <div 
+                              style={{
+                                fontFamily: getCssFontFamily(fontFamily),
+                                color: fontColor,
+                                textTransform: textCase === "UPPERCASE" ? "uppercase" : textCase === "lowercase" ? "lowercase" : "none",
+                                backgroundColor: isClearBox ? "transparent" : getCssRgba(boxColor),
+                                textShadow: getCssTextShadow(shadowColor),
+                                lineHeight: `${(fontSize + lineSpacing) / fontSize}`,
+                                borderRadius: isClearBox ? "0px" : (curveText ? "20px" : "0px"),
+                                padding: isClearBox ? "0px" : (curveText ? "16px 20px" : "10px 14px"),
+                                boxShadow: isClearBox ? "none" : undefined,
+                                border: isClearBox ? "none" : "1px solid rgba(255, 255, 255, 0.05)",
+                                transition: "all 0.2s ease",
+                              }}
+                              className={`text-center font-bold max-w-[95%] break-words pointer-events-auto ${isClearBox ? "" : "shadow-xl"}`}
+                            >
+                              {curveText ? (
+                                <div className="flex flex-col items-center justify-center w-full">
+                                  <svg viewBox="0 0 300 160" className="w-full overflow-visible">
+                                    <path 
+                                      id="previewCurvePath" 
+                                      d={`M 20 110 Q 150 ${110 - curvature} 280 110`} 
+                                      fill="none" 
+                                      stroke="none"
+                                    />
+                                    <text 
+                                      style={{
+                                        fontFamily: getCssFontFamily(fontFamily),
+                                        fontSize: `${Math.max(10, fontSize * 0.38)}px`,
+                                        textShadow: getCssTextShadow(shadowColor),
+                                        letterSpacing: "1px",
+                                      }}
+                                      fill={fontColor}
+                                      className="font-bold"
+                                    >
+                                      <textPath 
+                                        href="#previewCurvePath" 
+                                        startOffset="50%" 
+                                        textAnchor="middle"
+                                      >
+                                        {displayQuote}
+                                      </textPath>
+                                    </text>
+                                  </svg>
+                                  <div 
+                                    style={{
+                                      fontFamily: getCssFontFamily(fontFamily),
+                                      color: fontColor,
+                                      textShadow: getCssTextShadow(shadowColor),
+                                      marginTop: "4px"
+                                    }}
+                                    className="text-[0.62em] opacity-80 font-medium text-center"
+                                  >
+                                    - Marcus Aurelius
+                                  </div>
+                                </div>
+                              ) : (
+                                <>
+                                  "{displayQuote}"
+                                  <div className="text-[0.62em] opacity-80 mt-1.5 font-medium">
+                                    - Marcus Aurelius
+                                  </div>
+                                </>
+                              )}
+                            </div>
                           </div>
-                        </div>
-                      </div>
+                        );
+                      })()}
 
                       {/* TikTok bottom caption mockup details */}
                       <div className="mt-auto w-full z-10 p-2 bg-gradient-to-t from-black/80 to-transparent rounded-b-2xl pointer-events-none text-left">
@@ -1855,13 +2003,18 @@ export default function GenresDashboard() {
                     {selectedAccount.backgroundVideos.map((bg) => (
                       <div key={bg.id} className="relative aspect-[9/16] rounded-2xl overflow-hidden border border-white/5 group bg-black">
                         <video
-                          src={bg.videoUrl}
+                          key={bg.id}
+                          src={resolveUrl(bg.videoUrl)}
                           className="w-full h-full object-cover"
                           muted
                           loop
+                          autoPlay
                           playsInline
-                          onMouseOver={(e) => (e.target as HTMLVideoElement).play()}
-                          onMouseOut={(e) => (e.target as HTMLVideoElement).pause()}
+                          preload="auto"
+                          onLoadedData={(e) => {
+                            const vid = e.target as HTMLVideoElement;
+                            vid.play().catch(err => console.log("Autoplay gallery loop blocked:", err));
+                          }}
                         />
                         <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-all duration-300 flex flex-col justify-end p-3 text-left">
                           <button
@@ -2726,6 +2879,16 @@ export default function GenresDashboard() {
         </div>
       )}
 
+      <datalist id="musicians-datalist">
+        {uniqueMusiciansList.map((musician) => (
+          <option key={musician} value={musician} />
+        ))}
+      </datalist>
+      <datalist id="genres-datalist">
+        {uniqueGenresList.map((genre) => (
+          <option key={genre} value={genre} />
+        ))}
+      </datalist>
     </div>
   );
 }

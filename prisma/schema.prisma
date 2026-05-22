@@ -553,10 +553,12 @@ model AccountGenreConfig {
   fontSize       Int            @default(44)
   fontColor      String         @default("#FFFFFF")
   textCase       String         @default("UPPERCASE")
-  boxColor       String         @default("black@0.4")
+  boxColor       String         @default("none")
   shadowColor    String         @default("black@0.6")
   lineSpacing    Int            @default(10)
   curveText      Boolean        @default(false)
+  curvature      Int            @default(30)
+  positionY      Int            @default(50)
   createdAt      DateTime       @default(now())
   updatedAt      DateTime       @updatedAt
 

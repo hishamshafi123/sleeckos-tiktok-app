@@ -19,6 +19,8 @@ export interface ComposeOptions {
   trackStart: number;
   outputPath: string;          // local path
   curveText?: boolean;
+  curvature?: number;
+  positionY?: number;
 }
 
 const FONT_URLS: Record<string, string> = {
@@ -180,95 +182,187 @@ export async function composeVideo(options: ComposeOptions): Promise<string> {
     videoLength,
     trackStart,
     outputPath,
-    curveText = false
+    curveText = false,
+    curvature = 30,
+    positionY = 50
   } = options;
 
   // 1. Resolve font path
   const resolvedFont = await resolveFontPath(fontFamily);
-
-  // 2. Format quote text and wrapping
-  const casedText = applyCasing(quoteText, textCase);
-  const wrappedText = wrapText(casedText, 25);
-  
-  let fullText = wrappedText;
-  if (quoteAuthor) {
-    fullText += `\n\n— ${quoteAuthor.trim()}`;
-  }
-
-  // Create temporary text file to hold the quote
   const tempDir = path.join(process.cwd(), "temp_renders");
   if (!fs.existsSync(tempDir)) {
     fs.mkdirSync(tempDir, { recursive: true });
-  }
-  const textFilePath = path.join(tempDir, `quote_${Math.random().toString(36).substring(2, 9)}.txt`);
-  fs.writeFileSync(textFilePath, fullText);
-
-  // 3. Format colors for FFmpeg
-  const drawFontColor = formatFfmpegColor(fontColor);
-  
-  // Format box color
-  let drawBoxStr = "";
-  if (boxColor && boxColor.toLowerCase() !== "none") {
-    const drawBoxColor = formatFfmpegColor(boxColor);
-    drawBoxStr = `:box=1:boxcolor=${drawBoxColor}:boxborderw=20`;
-  }
-
-  // Format shadow color
-  let drawShadowStr = "";
-  if (shadowColor && shadowColor.toLowerCase() !== "none") {
-    const drawShadowColor = formatFfmpegColor(shadowColor);
-    drawShadowStr = `:shadowcolor=${drawShadowColor}:shadowx=2:shadowy=2`;
   }
 
   // Calculate audio fade start (fade out for last 1 second)
   const fadeStart = Math.max(0, videoLength - 1.0);
 
-  // FFmpeg drawtext font config escaping
-  // On Windows/Darwin, path backslashes must be escaped for FFmpeg drawtext
-  const escapedFontPath = resolvedFont.replace(/\\/g, "/").replace(/:/g, "\\:");
-  const escapedTextFilePath = textFilePath.replace(/\\/g, "/").replace(/:/g, "\\:");
-
-  // Build the filter complex string
   let filterComplex = "";
+  let textFilePath = "";
+  let svgFilePath = "";
+
   if (curveText) {
-    let boxColorHex = "black";
-    let boxAlpha = 102; // default 40% (0.4 * 255)
-    if (boxColor && boxColor.toLowerCase() !== "none") {
+    // True curved text along an SVG path
+    const casedText = applyCasing(quoteText, textCase);
+    const displayQuote = casedText.trim();
+    const posPercent = Math.min(Math.max(10, positionY), 90);
+
+    // Proportionally scale standard 9:16 coordinates to 720x1280 resolution
+    const yBase = Math.round((1280 * posPercent) / 100);
+    const startX = 60;
+    const endX = 660;
+    const startY = yBase;
+    const endY = yBase;
+    const controlX = 360;
+    // Multiplier adjusted for pleasant curvature visual match
+    const controlY = yBase - (curvature * 2.5);
+
+    const isTransparent = !boxColor || boxColor.toLowerCase() === "none";
+    let rectSvg = "";
+
+    if (!isTransparent) {
+      let boxColorHex = "#000000";
+      let boxAlpha = 0.4;
       const parts = boxColor.split("@");
       if (parts.length === 2) {
-        boxColorHex = formatFfmpegColor(parts[0]);
+        boxColorHex = parts[0];
         const parsedAlpha = parseFloat(parts[1]);
         if (!isNaN(parsedAlpha)) {
-          boxAlpha = Math.round(parsedAlpha * 255);
+          boxAlpha = parsedAlpha;
         }
       } else {
-        boxColorHex = formatFfmpegColor(boxColor);
-        boxAlpha = 255;
+        boxColorHex = boxColor;
+        boxAlpha = 1.0;
       }
+      
+      const cardW = 640;
+      // Curved text cards can have standard visual boundaries
+      const cardH = Math.round(fontSize * 2 + 120);
+      const cardX = 40;
+      const cardY = Math.round(yBase - cardH / 2 - 20);
+      rectSvg = `<rect x="${cardX}" y="${cardY}" width="${cardW}" height="${cardH}" rx="24" ry="24" fill="${boxColorHex}" fill-opacity="${boxAlpha}" />`;
     }
-    const linesCount = fullText.split("\n").length;
-    const cardW = 600;
-    // Estimated card height based on font size and lines count
-    const cardH = Math.round(linesCount * (fontSize + lineSpacing) + 60);
 
+    let filterDefSvg = "";
+    let filterAttrSvg = "";
+    if (shadowColor && shadowColor.toLowerCase() !== "none") {
+      let shadowColorHex = "black";
+      let shadowAlpha = 0.6;
+      const parts = shadowColor.split("@");
+      if (parts.length === 2) {
+        shadowColorHex = parts[0];
+        const parsedAlpha = parseFloat(parts[1]);
+        if (!isNaN(parsedAlpha)) {
+          shadowAlpha = parsedAlpha;
+        }
+      } else {
+        shadowColorHex = shadowColor;
+        shadowAlpha = 1.0;
+      }
+      filterDefSvg = `
+    <filter id="shadowFilter" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="2" dy="2" stdDeviation="3" flood-color="${shadowColorHex}" flood-opacity="${shadowAlpha}" />
+    </filter>
+      `;
+      filterAttrSvg = `filter="url(#shadowFilter)"`;
+    }
+
+    const svgFileName = `quote_${Math.random().toString(36).substring(2, 9)}.svg`;
+    svgFilePath = path.join(tempDir, svgFileName);
+
+    // Format absolute path for local font rendering inside rsvg
+    const formattedFontUrl = resolvedFont.replace(/\\/g, "/");
+
+    const svgContent = `
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 1280" width="720" height="1280">
+  <defs>
+    ${filterDefSvg}
+  </defs>
+  <style>
+    @font-face {
+      font-family: 'StoicFont';
+      src: url('file://${formattedFontUrl}');
+    }
+    .quote-text {
+      font-family: 'StoicFont', 'Arial', sans-serif;
+      font-size: ${fontSize}px;
+      font-weight: bold;
+      fill: ${fontColor};
+      text-anchor: middle;
+      letter-spacing: 1px;
+    }
+    .author-text {
+      font-family: 'StoicFont', 'Arial', sans-serif;
+      font-size: ${Math.round(fontSize * 0.6)}px;
+      font-weight: 500;
+      fill: ${fontColor};
+      text-anchor: middle;
+      opacity: 0.8;
+    }
+  </style>
+  ${rectSvg}
+  <path id="curvePath" d="M ${startX} ${startY} Q ${controlX} ${controlY} ${endX} ${endY}" fill="none" stroke="none" />
+  <text class="quote-text" ${filterAttrSvg}>
+    <textPath href="#curvePath" startOffset="50%">
+      ${displayQuote}
+    </textPath>
+  </text>
+  ${quoteAuthor ? `<text x="360" y="${yBase + Math.round(fontSize + 30)}" class="author-text" ${filterAttrSvg}>— ${quoteAuthor}</text>` : ''}
+</svg>
+`.trim();
+
+    fs.writeFileSync(svgFilePath, svgContent);
+
+    // Build the filter complex overlaying the SVG onto scaled/cropped background
     filterComplex = [
       `[0:v]scale='if(gte(iw/ih,720/1280),-1,720)':'if(gte(iw/ih,720/1280),1280,-1)',crop=720:1280[bg]`,
-      `color=c=${boxColorHex}:s=${cardW}x${cardH}:d=${videoLength}[card]`,
-      `[card]geq=a='if(lt(X,30),if(lt(Y,30),if(gt((30-X)*(30-X)+(30-Y)*(30-Y),900),0,${boxAlpha}),if(gt(Y,H-30),if(gt((30-X)*(30-X)+(Y-(H-30))*(Y-(H-30)),900),0,${boxAlpha}),${boxAlpha})),if(gt(X,W-30),if(lt(Y,30),if(gt((X-(W-30))*(X-(W-30))+(30-Y)*(30-Y),900),0,${boxAlpha}),if(gt(Y,H-30),if(gt((X-(W-30))*(X-(W-30))+(Y-(H-30))*(Y-(H-30)),900),0,${boxAlpha}),${boxAlpha})),${boxAlpha}))'[curved_card]`,
-      `[bg][curved_card]overlay=x=(W-w)/2:y=(H-h)/2[overlayed_bg]`,
-      `[overlayed_bg]drawtext=fontfile='${escapedFontPath}':textfile='${escapedTextFilePath}':fontcolor=${drawFontColor}:fontsize=${fontSize}:x=(w-text_w)/2:y=(h-text_h)/2:line_spacing=${lineSpacing}${drawShadowStr}:alpha='if(lt(t,0.5),t/0.5,if(gt(t,${videoLength}-0.5),(${videoLength}-t)/0.5,1))'[v]`,
+      `[2:v]format=yuva420p,fade=in:st=0:d=0.5:alpha=1,fade=out:st=${fadeStart}:d=0.5:alpha=1[v_overlay]`,
+      `[bg][v_overlay]overlay=x=0:y=0[v]`,
       `[1:a]afade=t=out:st=${fadeStart}:d=1[a]`
     ].join(";");
+
   } else {
+    // Standard horizontal text using drawtext file rendering
+    const casedText = applyCasing(quoteText, textCase);
+    const wrappedText = wrapText(casedText, 25);
+    
+    let fullText = wrappedText;
+    if (quoteAuthor) {
+      fullText += `\n\n— ${quoteAuthor.trim()}`;
+    }
+
+    textFilePath = path.join(tempDir, `quote_${Math.random().toString(36).substring(2, 9)}.txt`);
+    fs.writeFileSync(textFilePath, fullText);
+
+    const drawFontColor = formatFfmpegColor(fontColor);
+    
+    // Format box color
+    const isTransparent = !boxColor || boxColor.toLowerCase() === "none";
+    let drawBoxStr = "";
+    if (!isTransparent) {
+      const drawBoxColor = formatFfmpegColor(boxColor);
+      drawBoxStr = `:box=1:boxcolor=${drawBoxColor}:boxborderw=20`;
+    }
+
+    // Format shadow color
+    let drawShadowStr = "";
+    if (shadowColor && shadowColor.toLowerCase() !== "none") {
+      const drawShadowColor = formatFfmpegColor(shadowColor);
+      drawShadowStr = `:shadowcolor=${drawShadowColor}:shadowx=2:shadowy=2`;
+    }
+
+    const escapedFontPath = resolvedFont.replace(/\\/g, "/").replace(/:/g, "\\:");
+    const escapedTextFilePath = textFilePath.replace(/\\/g, "/").replace(/:/g, "\\:");
+    const posPercent = Math.min(Math.max(10, positionY), 90);
+
     filterComplex = [
-      `[0:v]scale='if(gte(iw/ih,720/1280),-1,720)':'if(gte(iw/ih,720/1280),1280,-1)',crop=720:1280,drawtext=fontfile='${escapedFontPath}':textfile='${escapedTextFilePath}':fontcolor=${drawFontColor}:fontsize=${fontSize}:x=(w-text_w)/2:y=(h-text_h)/2:line_spacing=${lineSpacing}${drawBoxStr}${drawShadowStr}:alpha='if(lt(t,0.5),t/0.5,if(gt(t,${videoLength}-0.5),(${videoLength}-t)/0.5,1))'[v]`,
+      `[0:v]scale='if(gte(iw/ih,720/1280),-1,720)':'if(gte(iw/ih,720/1280),1280,-1)',crop=720:1280,drawtext=fontfile='${escapedFontPath}':textfile='${escapedTextFilePath}':fontcolor=${drawFontColor}:fontsize=${fontSize}:x=(w-text_w)/2:y=((h-text_h)*${posPercent}/100):line_spacing=${lineSpacing}${drawBoxStr}${drawShadowStr}:alpha='if(lt(t,0.5),t/0.5,if(gt(t,${videoLength}-0.5),(${videoLength}-t)/0.5,1))'[v]`,
       `[1:a]afade=t=out:st=${fadeStart}:d=1[a]`
     ].join(";");
   }
 
   return new Promise((resolve, reject) => {
     // Construct single-pass FFmpeg command
-    // Loops background infinitely, crops/scales to 9:16 720x1280, overlay text box, fading in first 0.5s & out last 0.5s
     const cmd = [
       "ffmpeg",
       "-y",
@@ -277,6 +371,7 @@ export async function composeVideo(options: ComposeOptions): Promise<string> {
       `-ss ${trackStart}`,
       `-t ${videoLength}`,
       `-i "${audioPath}"`,
+      ...(curveText ? [`-i "${svgFilePath}"`] : []),
       "-filter_complex",
       `"${filterComplex}"`,
       '-map "[v]"',
@@ -292,13 +387,21 @@ export async function composeVideo(options: ComposeOptions): Promise<string> {
     console.log(`[Composer] Spawning FFmpeg command: ${cmd}`);
 
     exec(cmd, (error, stdout, stderr) => {
-      // Always cleanup the temporary text file
+      // Always cleanup temporary files
       try {
-        if (fs.existsSync(textFilePath)) {
+        if (textFilePath && fs.existsSync(textFilePath)) {
           fs.unlinkSync(textFilePath);
         }
       } catch (err) {
         console.error("[Composer] Failed to cleanup temp text file", err);
+      }
+
+      try {
+        if (svgFilePath && fs.existsSync(svgFilePath)) {
+          fs.unlinkSync(svgFilePath);
+        }
+      } catch (err) {
+        console.error("[Composer] Failed to cleanup temp SVG file", err);
       }
 
       if (error) {

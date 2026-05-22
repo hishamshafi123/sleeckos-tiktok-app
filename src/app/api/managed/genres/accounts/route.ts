@@ -109,10 +109,12 @@ export async function POST(req: Request) {
       const fontSize = parseInt(formData.get("fontSize") as string || "44", 10);
       const fontColor = formData.get("fontColor") as string || "#FFFFFF";
       const textCase = formData.get("textCase") as string || "UPPERCASE";
-      const boxColor = formData.get("boxColor") as string || "black@0.4";
+      const boxColor = formData.get("boxColor") as string || "none";
       const shadowColor = formData.get("shadowColor") as string || "black@0.6";
       const lineSpacing = parseInt(formData.get("lineSpacing") as string || "10", 10);
       const curveText = formData.get("curveText") === "true";
+      const curvature = parseInt(formData.get("curvature") as string || "30", 10);
+      const positionY = parseInt(formData.get("positionY") as string || "50", 10);
 
       // Upsert style configuration
       configRecord = await prisma.accountGenreConfig.upsert({
@@ -134,6 +136,8 @@ export async function POST(req: Request) {
           shadowColor: shadowColor.trim(),
           lineSpacing,
           curveText,
+          curvature,
+          positionY,
         },
         update: {
           themeText: themeText.trim(),
@@ -145,6 +149,8 @@ export async function POST(req: Request) {
           shadowColor: shadowColor.trim(),
           lineSpacing,
           curveText,
+          curvature,
+          positionY,
         },
       });
       console.log(`[Genre Accounts API] Upserted quote configurations for account ${accountId}`);
