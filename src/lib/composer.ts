@@ -366,6 +366,7 @@ export async function composeVideo(options: ComposeOptions): Promise<string> {
     const cmd = [
       "ffmpeg",
       "-y",
+      "-loglevel error",
       "-stream_loop -1",
       `-i "${bgVideoPath}"`,
       `-ss ${trackStart}`,
@@ -386,7 +387,7 @@ export async function composeVideo(options: ComposeOptions): Promise<string> {
 
     console.log(`[Composer] Spawning FFmpeg command: ${cmd}`);
 
-    exec(cmd, (error, stdout, stderr) => {
+    exec(cmd, { maxBuffer: 1024 * 1024 * 10 }, (error, stdout, stderr) => {
       // Always cleanup temporary files
       try {
         if (textFilePath && fs.existsSync(textFilePath)) {

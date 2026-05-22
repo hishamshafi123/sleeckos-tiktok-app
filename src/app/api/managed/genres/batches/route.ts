@@ -291,6 +291,37 @@ export async function POST(req: Request) {
       return NextResponse.json({ success: true, message: "Compositing rendering queue started in the background" });
     }
 
+    // ─────────────────────────────────────────────────────────────────────────
+    // ACTION 4: CANCEL_BATCH
+    // ─────────────────────────────────────────────────────────────────────────
+    if (action === "CANCEL_BATCH") {
+      const { batchId } = body;
+      if (!batchId) {
+        return NextResponse.json({ error: "Missing batchId" }, { status: 400 });
+      }
+
+      // Update the parent batch status to FAILED
+      await prisma.genreBatch.update({
+        where: { id: batchId },
+        data: { status: "FAILED" },
+      });
+
+      // Update all items that are not completed (i.e. not UPLOADED) to FAILED
+      await prisma.genreBatchItem.updateMany({
+        where: {
+          batchId,
+          status: { not: "UPLOADED" },
+        },
+        data: {
+          status: "FAILED",
+          errorMessage: "Cancelled by user",
+        },
+      });
+
+      console.log(`[Batches API] Batch ${batchId} cancelled by user`);
+      return NextResponse.json({ success: true, message: "Batch processing cancelled" });
+    }
+
     return NextResponse.json({ error: "Invalid action" }, { status: 400 });
   } catch (err) {
     console.error("[Batches API] Error handling batch action:", err);
@@ -353,6 +384,15 @@ async function processBatchRendering(batchId: string) {
     // 2. Loop sequentially through each pending item to composer & upload
     for (const item of batch.items) {
       if (item.status === "UPLOADED") continue;
+
+      // Check if batch has been cancelled
+      const freshBatch = await prisma.genreBatch.findUnique({
+        where: { id: batchId },
+      });
+      if (!freshBatch || freshBatch.status === "FAILED") {
+        console.log(`[Batch Worker] Batch ${batchId} is marked as FAILED/CANCELLED. Aborting rendering loop.`);
+        break;
+      }
 
       console.log(`[Batch Worker] Processing item ${item.id} (${item.account.tiktokUsername})`);
 
