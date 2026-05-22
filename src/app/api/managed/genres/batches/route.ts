@@ -296,6 +296,122 @@ export async function POST(req: Request) {
     // ─────────────────────────────────────────────────────────────────────────
     // ACTION 4: CANCEL_BATCH
     // ─────────────────────────────────────────────────────────────────────────
+    // ─────────────────────────────────────────────────────────────────────────
+    // ACTION 3.5: UPLOAD_TO_DRIVE
+    // ─────────────────────────────────────────────────────────────────────────
+    if (action === "UPLOAD_TO_DRIVE") {
+      const { batchId, itemId } = body;
+      
+      if (!batchId && !itemId) {
+        return NextResponse.json({ error: "Missing batchId or itemId" }, { status: 400 });
+      }
+
+      // Fetch items to upload
+      const itemsToUpload = await prisma.genreBatchItem.findMany({
+        where: {
+          ...(itemId ? { id: itemId } : { batchId }),
+          status: "RENDERED",
+        },
+        include: {
+          account: true,
+        },
+      });
+
+      if (itemsToUpload.length === 0) {
+        return NextResponse.json({ error: "No rendered items found to upload" }, { status: 400 });
+      }
+
+      const results = [];
+      const errors = [];
+
+      for (const item of itemsToUpload) {
+        try {
+          if (!item.account.driveFolderId) {
+            throw new Error(`Google Drive folder is not linked for account @${item.account.tiktokUsername}`);
+          }
+
+          // Resolve absolute path to local render
+          if (!item.renderedVideoUrl) {
+            throw new Error("Rendered video URL is missing");
+          }
+          const localPath = path.join(process.cwd(), "public", item.renderedVideoUrl);
+          if (!fs.existsSync(localPath)) {
+            throw new Error(`Rendered video file not found locally at: ${localPath}`);
+          }
+
+          console.log(`[Manual Uploader] Uploading item ${item.id} (${item.account.tiktokUsername}) to Drive`);
+          const fileBuffer = fs.readFileSync(localPath);
+
+          const dateStr = new Date().toISOString().slice(0, 10);
+          const randStr = Math.random().toString(36).substring(2, 6);
+          const driveFileName = `quote_${dateStr}_${randStr}.mp4`;
+
+          const { uploadFileToFolder } = await import("@/lib/google");
+          const driveFileId = await uploadFileToFolder(
+            item.account.driveFolderId,
+            driveFileName,
+            fileBuffer,
+            "video/mp4"
+          );
+
+          // Delete local file to prevent disk bloat
+          try {
+            if (fs.existsSync(localPath)) {
+              fs.unlinkSync(localPath);
+              console.log(`[Manual Uploader] Deleted local rendered file: ${localPath}`);
+            }
+          } catch (cleanErr) {
+            console.warn(`[Manual Uploader] Clean up local file warning: ${localPath}`, cleanErr);
+          }
+
+          // Update item in database
+          await prisma.genreBatchItem.update({
+            where: { id: item.id },
+            data: {
+              status: "UPLOADED",
+              driveFileId,
+            },
+          });
+
+          results.push({ id: item.id, driveFileId });
+        } catch (itemErr: any) {
+          console.error(`[Manual Uploader] Error uploading item ${item.id}:`, itemErr);
+          errors.push({ id: item.id, error: itemErr.message || String(itemErr) });
+          
+          await prisma.genreBatchItem.update({
+            where: { id: item.id },
+            data: {
+              status: "FAILED",
+              errorMessage: `Upload failed: ${itemErr.message || String(itemErr)}`,
+            },
+          });
+        }
+      }
+
+      // Check if this action completed a batch
+      if (batchId) {
+        const remainingPending = await prisma.genreBatchItem.count({
+          where: {
+            batchId,
+            status: { in: ["PENDING", "RENDERING", "RENDERED"] },
+          },
+        });
+        if (remainingPending === 0) {
+          await prisma.genreBatch.update({
+            where: { id: batchId },
+            data: { status: "COMPLETED" },
+          });
+        }
+      }
+
+      return NextResponse.json({
+        success: errors.length === 0,
+        uploadedCount: results.length,
+        failedCount: errors.length,
+        errors,
+      });
+    }
+
     if (action === "CANCEL_BATCH") {
       const { batchId } = body;
       if (!batchId) {
@@ -308,11 +424,11 @@ export async function POST(req: Request) {
         data: { status: "FAILED" },
       });
 
-      // Update all items that are not completed (i.e. not UPLOADED) to FAILED
+      // Update all items that are not completed (i.e. not UPLOADED and not RENDERED) to FAILED
       await prisma.genreBatchItem.updateMany({
         where: {
           batchId,
-          status: { not: "UPLOADED" },
+          status: { notIn: ["UPLOADED", "RENDERED"] },
         },
         data: {
           status: "FAILED",
@@ -383,9 +499,9 @@ async function processBatchRendering(batchId: string) {
       data: { status: "RENDERING" },
     });
 
-    // 2. Loop sequentially through each pending item to composer & upload
+    // 2. Loop sequentially through each pending item to composer
     for (const item of batch.items) {
-      if (item.status === "UPLOADED") continue;
+      if (item.status === "UPLOADED" || item.status === "RENDERED") continue;
 
       // Check if batch has been cancelled
       const freshBatch = await prisma.genreBatch.findUnique({
@@ -430,12 +546,12 @@ async function processBatchRendering(batchId: string) {
           throw new Error("TikTok account has no Quote typography configuration saved. Please configure it first.");
         }
 
-        // Generate dynamic local output destination in temp_renders
-        const tempRendersDir = path.join(process.cwd(), "temp_renders");
-        if (!fs.existsSync(tempRendersDir)) {
-          fs.mkdirSync(tempRendersDir, { recursive: true });
+        // Generate dynamic local output destination in public/uploads/renders
+        const rendersDir = path.join(process.cwd(), "public", "uploads", "renders");
+        if (!fs.existsSync(rendersDir)) {
+          fs.mkdirSync(rendersDir, { recursive: true });
         }
-        const tempOutFile = path.join(tempRendersDir, `render_${item.id}.mp4`);
+        const localOutFile = path.join(rendersDir, `render_${item.id}.mp4`);
 
         // Trigger visual composition via FFmpeg
         const { composeVideo } = await import("@/lib/composer");
@@ -453,60 +569,29 @@ async function processBatchRendering(batchId: string) {
           lineSpacing: styleConfig.lineSpacing,
           videoLength: batch.videoLength,
           trackStart: item.trackStart,
-          outputPath: tempOutFile,
+          outputPath: localOutFile,
           curveText: styleConfig.curveText,
           curvature: styleConfig.curvature,
           positionY: styleConfig.positionY,
         });
 
-        // 3. Deliver to Google Drive folder
-        if (!item.account.driveFolderId) {
-          throw new Error("Google Drive folder is not linked for this account");
-        }
-
-        console.log(`[Batch Worker] Uploading composited clip to Google Drive folder: ${item.account.driveFolderId}`);
-        const fileBuffer = fs.readFileSync(tempOutFile);
-
-        const dateStr = new Date().toISOString().slice(0, 10);
-        const randStr = Math.random().toString(36).substring(2, 6);
-        const driveFileName = `quote_${dateStr}_${randStr}.mp4`;
-
-        const { uploadFileToFolder } = await import("@/lib/google");
-        const driveFileId = await uploadFileToFolder(
-          item.account.driveFolderId,
-          driveFileName,
-          fileBuffer,
-          "video/mp4"
-        );
-
-        // 4. Delete the local temporary output file IMMEDIATELY to prevent disk overflow
-        try {
-          if (fs.existsSync(tempOutFile)) {
-            fs.unlinkSync(tempOutFile);
-            console.log(`[Batch Worker] Successfully deleted local temp render: ${tempOutFile}`);
-          }
-        } catch (cleanErr) {
-          console.warn(`[Batch Worker] Clean up local temp file warning: ${tempOutFile}`, cleanErr);
-        }
-
-        // Update DB item record
+        // Update DB item record to RENDERED with local URL path
         await prisma.genreBatchItem.update({
           where: { id: item.id },
           data: {
-            status: "UPLOADED",
-            renderedVideoUrl: `/uploads/renders/${driveFileName}`, // UI reference
-            driveFileId,
+            status: "RENDERED",
+            renderedVideoUrl: `/uploads/renders/render_${item.id}.mp4`,
           },
         });
 
-        console.log(`[Batch Worker] Item ${item.id} fully finished & delivered to Drive!`);
+        console.log(`[Batch Worker] Item ${item.id} successfully rendered locally!`);
       } catch (itemErr: any) {
         console.error(`[Batch Worker] Error rendering item ${item.id}:`, itemErr);
 
         // Cleanup temporary render clip on failure
-        const tempOutFile = path.join(process.cwd(), "temp_renders", `render_${item.id}.mp4`);
-        if (fs.existsSync(tempOutFile)) {
-          try { fs.unlinkSync(tempOutFile); } catch {}
+        const localOutFile = path.join(process.cwd(), "public", "uploads", "renders", `render_${item.id}.mp4`);
+        if (fs.existsSync(localOutFile)) {
+          try { fs.unlinkSync(localOutFile); } catch {}
         }
 
         await prisma.genreBatchItem.update({
@@ -525,7 +610,7 @@ async function processBatchRendering(batchId: string) {
     });
 
     const failedCount = remainingItems.filter(i => i.status === "FAILED").length;
-    const completedCount = remainingItems.filter(i => i.status === "UPLOADED").length;
+    const completedCount = remainingItems.filter(i => i.status === "RENDERED" || i.status === "UPLOADED").length;
 
     let finalStatus: "COMPLETED" | "FAILED" = "COMPLETED";
     if (failedCount > 0 && completedCount === 0) {

@@ -89,14 +89,15 @@ interface BatchItem {
   errorMessage: string | null;
   backgroundVideoUrl: string;
   driveFileId: string | null;
-  account: {
+  renderedVideoUrl?: string | null;
+  account?: {
     tiktokUsername: string;
     tiktokAvatarUrl: string;
-  };
-  track: {
+  } | null;
+  track?: {
     title: string;
     artist: string;
-  };
+  } | null;
 }
 
 // Helper to recursively group accounts by Niche (Section) -> Group -> Account
@@ -279,6 +280,12 @@ export default function GenresDashboard() {
   const [audioReuseMax, setAudioReuseMax] = useState(2);
   const [triggeringRender, setTriggeringRender] = useState(false);
   const [cancellingBatchId, setCancellingBatchId] = useState<string | null>(null);
+
+  // Local video preview & manual upload states
+  const [previewVideoUrl, setPreviewVideoUrl] = useState<string | null>(null);
+  const [isPreviewModalOpen, setIsPreviewModalOpen] = useState(false);
+  const [uploadingItems, setUploadingItems] = useState<Record<string, boolean>>({});
+  const [uploadingBatch, setUploadingBatch] = useState(false);
 
   // Derived autocomplete lists
   const uniqueMusiciansList = Array.from(new Set(tracks.map(t => t.musician || t.artist).filter(Boolean))) as string[];
@@ -821,12 +828,70 @@ export default function GenresDashboard() {
     }
   };
 
+  const handleUploadToDrive = async (itemId: string) => {
+    setUploadingItems(prev => ({ ...prev, [itemId]: true }));
+    try {
+      const res = await fetch("/api/managed/genres/batches", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "UPLOAD_TO_DRIVE",
+          itemId
+        })
+      });
+      if (res.ok) {
+        toast.success("Video uploaded to Google Drive successfully!");
+        if (activeBatch) {
+          const statusRes = await fetch(`/api/managed/genres/batches?batchId=${activeBatch.id}`);
+          if (statusRes.ok) setActiveBatch(await statusRes.json());
+        }
+        fetchBatches();
+      } else {
+        const data = await res.json().catch(() => ({}));
+        toast.error(data.error || "Failed to upload video to Google Drive");
+      }
+    } catch (err) {
+      console.error(err);
+      toast.error("An error occurred while uploading to Google Drive");
+    } finally {
+      setUploadingItems(prev => ({ ...prev, [itemId]: false }));
+    }
+  };
+
+  const handleUploadAllToDrive = async (batchId: string) => {
+    setUploadingBatch(true);
+    try {
+      const res = await fetch("/api/managed/genres/batches", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "UPLOAD_TO_DRIVE",
+          batchId
+        })
+      });
+      if (res.ok) {
+        toast.success("All rendered videos uploaded to Google Drive!");
+        const statusRes = await fetch(`/api/managed/genres/batches?batchId=${batchId}`);
+        if (statusRes.ok) setActiveBatch(await statusRes.json());
+        fetchBatches();
+      } else {
+        const data = await res.json().catch(() => ({}));
+        toast.error(data.error || "Failed to upload all videos to Google Drive");
+      }
+    } catch (err) {
+      console.error(err);
+      toast.error("An error occurred during bulk Google Drive upload");
+    } finally {
+      setUploadingBatch(false);
+    }
+  };
+
   // Rendering statistics
   const getRenderStats = () => {
     if (!activeBatch?.items) return { total: 0, completed: 0, failed: 0, percent: 0 };
     const items = activeBatch.items;
     const total = items.length;
-    const completed = items.filter(i => i.status === "UPLOADED").length;
+    const completed = items.filter(i => i.status === "RENDERED" || i.status === "UPLOADED").length;
     const failed = items.filter(i => i.status === "FAILED").length;
     const percent = total > 0 ? Math.round(((completed + failed) / total) * 100) : 0;
     return { total, completed, failed, percent };
@@ -2552,7 +2617,7 @@ export default function GenresDashboard() {
                         <span className="text-[10px] font-black text-amber-500 uppercase tracking-widest bg-amber-500/10 px-2 py-0.5 rounded">
                           Item #{idx + 1}
                         </span>
-                        <span className="text-xs font-semibold text-gray-400">@{item.account.tiktokUsername}</span>
+                        <span className="text-xs font-semibold text-gray-400">@{item.account?.tiktokUsername || "Account"}</span>
                       </div>
                     </div>
 
@@ -2759,6 +2824,7 @@ export default function GenresDashboard() {
                       key={item.id} 
                       className={`bg-[#0d0d16] border p-4 rounded-3xl flex flex-col sm:flex-row justify-between sm:items-center gap-4 transition-all duration-300 ${
                         item.status === "RENDERING" ? "border-amber-500/40 bg-[#141221] shadow-md shadow-amber-500/5" :
+                        item.status === "RENDERED" ? "border-purple-500/30 bg-[#121021] shadow-md shadow-purple-500/5" :
                         item.status === "UPLOADED" ? "border-green-500/20" :
                         item.status === "FAILED" ? "border-red-500/20 bg-[#1e0e13]" : "border-white/5 opacity-60"
                       }`}
@@ -2768,16 +2834,16 @@ export default function GenresDashboard() {
                           #{idx + 1}
                         </div>
                         <div className="space-y-1">
-                          <p className="text-sm font-bold text-white">@{item.account.tiktokUsername}</p>
+                          <p className="text-sm font-bold text-white">@{item.account?.tiktokUsername || "Account"}</p>
                           <p className="text-xs text-gray-400 max-w-lg italic font-medium leading-normal">
                             &ldquo;{item.quoteText}&rdquo;
                           </p>
                         </div>
                       </div>
 
-                      <div className="flex items-center gap-3 self-end sm:self-center">
-                        <div className="text-right text-xs">
-                          <p className="text-gray-500 font-semibold">{item.track.title}</p>
+                      <div className="flex flex-wrap items-center gap-3 self-end sm:self-center">
+                        <div className="text-right text-xs mr-2">
+                          <p className="text-gray-500 font-semibold">{item.track?.title || "No track"}</p>
                           <p className="text-[10px] text-gray-600 font-semibold uppercase tracking-wider">Audio clip</p>
                         </div>
 
@@ -2786,6 +2852,41 @@ export default function GenresDashboard() {
                             <RefreshCw className="w-3.5 h-3.5 animate-spin" />
                             Rendering...
                           </span>
+                        )}
+
+                        {item.status === "RENDERED" && (
+                          <div className="flex items-center gap-2">
+                            <span className="flex items-center gap-1 px-3 py-1 bg-[#1d1b38] text-amber-400 border border-amber-500/20 rounded-xl text-xs font-bold shadow-md shadow-amber-500/5 mr-1">
+                              <Sparkles className="w-3.5 h-3.5 text-amber-500 animate-pulse" />
+                              Rendered (Ready)
+                            </span>
+                            
+                            <button
+                              onClick={() => {
+                                setPreviewVideoUrl(item.renderedVideoUrl || null);
+                                setIsPreviewModalOpen(true);
+                              }}
+                              className="flex items-center gap-1 px-3 py-1.5 bg-purple-500/15 hover:bg-purple-500 text-purple-400 hover:text-black border border-purple-500/20 hover:border-purple-500 rounded-xl text-xs font-extrabold transition-all duration-300"
+                              title="Preview video render"
+                            >
+                              <Eye className="w-3.5 h-3.5" />
+                              Preview
+                            </button>
+
+                            <button
+                              onClick={() => handleUploadToDrive(item.id)}
+                              disabled={!!uploadingItems[item.id] || uploadingBatch}
+                              className="flex items-center gap-1 px-3 py-1.5 bg-green-500/15 hover:bg-green-500 text-green-400 hover:text-black border border-green-500/20 hover:border-green-500 rounded-xl text-xs font-extrabold transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed"
+                              title="Upload to Google Drive"
+                            >
+                              {uploadingItems[item.id] ? (
+                                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                              ) : (
+                                <Upload className="w-3.5 h-3.5" />
+                              )}
+                              Upload
+                            </button>
+                          </div>
                         )}
 
                         {item.status === "UPLOADED" && (
@@ -2815,6 +2916,26 @@ export default function GenresDashboard() {
 
               {/* Close or Cancel Button */}
               <div className="pt-6 border-t border-white/5 flex flex-wrap gap-4">
+                {activeBatch.items?.some(i => i.status === "RENDERED") && (
+                  <button
+                    onClick={() => handleUploadAllToDrive(activeBatch.id)}
+                    disabled={uploadingBatch}
+                    className="bg-gradient-to-r from-green-500/20 to-emerald-500/20 hover:from-green-500 hover:to-emerald-500 text-green-400 hover:text-black font-extrabold py-3.5 px-6 rounded-2xl border border-green-500/30 hover:border-green-500 transition-all flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-green-500/5 animate-pulse"
+                  >
+                    {uploadingBatch ? (
+                      <>
+                        <RefreshCw className="w-5 h-5 animate-spin" />
+                        Uploading All...
+                      </>
+                    ) : (
+                      <>
+                        <Upload className="w-5 h-5" />
+                        Upload All to Google Drive ({activeBatch.items?.filter(i => i.status === "RENDERED").length})
+                      </>
+                    )}
+                  </button>
+                )}
+
                 {activeBatch.status !== "RENDERING" ? (
                   <button
                     onClick={() => {
@@ -2933,6 +3054,59 @@ export default function GenresDashboard() {
             </div>
           )}
 
+        </div>
+      )}
+
+      {/* Video Preview Modal */}
+      {isPreviewModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md transition-all duration-300">
+          <div className="relative w-full max-w-sm bg-[#0e0e16] border border-white/10 rounded-3xl overflow-hidden shadow-2xl shadow-purple-500/10">
+            {/* Modal Header */}
+            <div className="flex justify-between items-center px-6 py-4 border-b border-white/5 bg-black/20">
+              <h3 className="text-sm font-extrabold text-white flex items-center gap-2">
+                <Sparkles className="w-4 h-4 text-amber-500 animate-pulse" />
+                Video Composition Preview
+              </h3>
+              <button
+                onClick={() => {
+                  setIsPreviewModalOpen(false);
+                  setPreviewVideoUrl(null);
+                }}
+                className="p-1.5 rounded-full bg-white/5 hover:bg-white/10 text-gray-400 hover:text-white transition-all"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Video Player Area */}
+            <div className="p-4 bg-black/40 flex justify-center items-center">
+              {previewVideoUrl ? (
+                <div className="w-full aspect-[9/16] max-h-[60vh] rounded-2xl overflow-hidden bg-black border border-white/5 relative shadow-inner">
+                  <video 
+                    src={resolveUrl(previewVideoUrl)} 
+                    controls 
+                    autoPlay 
+                    className="w-full h-full object-contain"
+                  />
+                </div>
+              ) : (
+                <div className="py-20 text-gray-500 text-sm">No video file available for preview.</div>
+              )}
+            </div>
+
+            {/* Modal Footer */}
+            <div className="flex justify-end px-6 py-3 border-t border-white/5 bg-black/20">
+              <button
+                onClick={() => {
+                  setIsPreviewModalOpen(false);
+                  setPreviewVideoUrl(null);
+                }}
+                className="px-5 py-2 bg-gradient-to-r from-amber-500 to-purple-500 hover:from-amber-600 hover:to-purple-600 text-black font-extrabold rounded-xl text-xs transition-all shadow-lg shadow-purple-500/10 active:scale-95"
+              >
+                Done
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
