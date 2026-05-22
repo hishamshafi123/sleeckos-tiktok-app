@@ -28,10 +28,10 @@ ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV NODE_PATH=/usr/local/lib/node_modules
 
-RUN addgroup --system --gid 1001 nodejs && \
-    adduser --system --uid 1001 nextjs
-
-RUN npm install -g prisma@7
+RUN apk add --no-cache ffmpeg ttf-dejavu && \
+    addgroup --system --gid 1001 nodejs && \
+    adduser --system --uid 1001 nextjs && \
+    npm install -g prisma@7
 
 # standalone output + static assets + public files
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./

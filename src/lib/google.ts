@@ -133,3 +133,37 @@ export async function revokeFilePublic(fileId: string): Promise<void> {
     // Permission may already be removed or not exist
   }
 }
+
+// ── Upload a Buffer to a Google Drive folder ─────────────────────────────────
+export async function uploadFileToFolder(
+  folderId: string,
+  fileName: string,
+  fileBuffer: Buffer,
+  mimeType: string = "video/mp4"
+): Promise<string> {
+  const { Readable } = await import("stream");
+  const drive = getDriveClient();
+  
+  const readableStream = new Readable();
+  readableStream.push(fileBuffer);
+  readableStream.push(null);
+
+  const response = await drive.files.create({
+    requestBody: {
+      name: fileName,
+      parents: [folderId],
+    },
+    media: {
+      mimeType,
+      body: readableStream,
+    },
+    fields: "id",
+    supportsAllDrives: true,
+  });
+
+  if (!response.data.id) {
+    throw new Error("Failed to upload file to Google Drive: no ID returned");
+  }
+
+  return response.data.id;
+}

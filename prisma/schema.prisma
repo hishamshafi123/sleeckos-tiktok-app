@@ -341,6 +341,9 @@ model ManagedAccount {
   scheduledPosts        ScheduledPost[]
   dailyAnalytics        AccountDailyAnalytics[]
   sourcingNiches        SourcingNicheAccount[]
+  genreConfigs          AccountGenreConfig[]
+  backgroundVideos      AccountBackgroundVideo[]
+  genreBatchItems       GenreBatchItem[]
 }
 
 enum PostStatus {
@@ -502,4 +505,98 @@ model SourcedVideo {
   fetchedAt      DateTime           @default(now())
 
   @@unique([sourceId, youtubeVideoId])
+}
+
+enum GenreBatchStatus {
+  DRAFT
+  QUOTES_GENERATING
+  QUOTES_REVIEW
+  RENDERING
+  COMPLETED
+  FAILED
+}
+
+enum GenreBatchItemStatus {
+  PENDING
+  GENERATED
+  CONFIRMED
+  RENDERING
+  RENDERED
+  UPLOADED
+  FAILED
+}
+
+model Track {
+  id              String           @id @default(uuid())
+  title           String
+  artist          String
+  fileUrl         String
+  duration        Float
+  defaultStart    Float            @default(0.0)
+  defaultDuration Float            @default(7.0)
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  batchItems      GenreBatchItem[]
+}
+
+model AccountGenreConfig {
+  id             String         @id @default(uuid())
+  accountId      String
+  account        ManagedAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  genre          String         @default("quote")
+  themeText      String
+  fontFamily     String         @default("Outfit-Bold")
+  fontSize       Int            @default(44)
+  fontColor      String         @default("#FFFFFF")
+  textCase       String         @default("UPPERCASE")
+  boxColor       String         @default("black@0.4")
+  shadowColor    String         @default("black@0.6")
+  lineSpacing    Int            @default(10)
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  @@unique([accountId, genre])
+}
+
+model AccountBackgroundVideo {
+  id        String         @id @default(uuid())
+  accountId String
+  account   ManagedAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  genre     String         @default("quote")
+  videoUrl  String
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
+}
+
+model GenreBatch {
+  id              String           @id @default(uuid())
+  genre           String           @default("quote")
+  status          GenreBatchStatus @default(DRAFT)
+  totalPosts      Int
+  postsPerAccount Int
+  audioReuseMax   Int              @default(2)
+  videoLength     Float            @default(7.0)
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  items           GenreBatchItem[]
+}
+
+model GenreBatchItem {
+  id                  String               @id @default(uuid())
+  batchId             String
+  batch               GenreBatch           @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  accountId           String
+  account             ManagedAccount       @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  quoteText           String
+  quoteAuthor         String?
+  trackId             String
+  track               Track                @relation(fields: [trackId], references: [id], onDelete: Cascade)
+  trackStart          Float
+  backgroundVideoUrl  String
+  renderedVideoUrl    String?
+  driveFileId         String?
+  status              GenreBatchItemStatus @default(PENDING)
+  errorMessage        String?
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
 }
