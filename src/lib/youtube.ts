@@ -310,3 +310,95 @@ export function youtubeVideoUrl(videoId: string): string {
 export function youtubeChannelUrl(channelId: string): string {
   return `https://www.youtube.com/channel/${channelId}`;
 }
+
+/**
+ * Clean standard stopwords out of text search contexts.
+ */
+export const STOPWORDS = new Set([
+  "the", "and", "a", "of", "to", "in", "is", "that", "it", "on", "for", "with",
+  "as", "at", "by", "an", "this", "about", "are", "be", "or", "from", "your", "my",
+  "how", "video", "youtube", "channel", "playlist", "videos", "like", "so", "just"
+]);
+
+/**
+ * Offline fallback heuristic-based summarizer.
+ * Cleans descriptions of links, hashtags, socials, and emojis, then returns the first substantial sentence.
+ */
+export function generateHeuristicSummary(title: string, description: string): string {
+  const cleanTitle = title.trim();
+  let desc = description || "";
+
+  // 1. Remove URLs
+  desc = desc.replace(/https?:\/\/[^\s]+/g, "");
+  // 2. Remove standard marketing / social call-to-actions
+  desc = desc.replace(/(subscribe|follow|instagram|twitter|facebook|tiktok|email|business|coaching|course|patreon|support|donate|links|website)/gi, "");
+  // 3. Remove hashtags
+  desc = desc.replace(/#[a-zA-Z0-9_]+/g, "");
+  // 4. Remove standard emojis
+  desc = desc.replace(/[\u2700-\u27BF]|[\uE000-\uF8FF]|\uD83C[\uDC00-\uDFFF]|\uD83D[\uDC00-\uDFFF]|[\u2011-\u26FF]|\uD83E[\uDD00-\uDFFF]/g, "");
+  // 5. Clean whitespace
+  desc = desc.replace(/\s+/g, " ").trim();
+
+  if (!desc) {
+    return `Overview of "${cleanTitle}" video content.`;
+  }
+
+  // 6. Extract the first substantial sentence
+  const sentences = desc.split(/[.!?]+/).map(s => s.trim()).filter(s => s.length > 10);
+  if (sentences.length > 0) {
+    const summarySentences = sentences[0] + ".";
+    return summarySentences.substring(0, 140) + (summarySentences.length > 140 ? "..." : "");
+  }
+
+  return desc.substring(0, 120) + (desc.length > 120 ? "..." : "");
+}
+
+/**
+ * Summarizes the video using Gemini API with a robust offline heuristic fallback.
+ */
+export async function generateVideoSummary(title: string, description: string): Promise<string> {
+  const apiKey = process.env.GEMINI_API_KEY || process.env.YOUTUBE_API_KEY;
+  if (!apiKey) {
+    return generateHeuristicSummary(title, description);
+  }
+
+  try {
+    const prompt = `Summarize what this YouTube video is about in a single, short sentence (maximum 15 words) based on its title and description. Do not include promotional text, links, or hashtags. Keep it clean and highly informative.
+Title: ${title}
+Description: ${description || "No description provided."}`;
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 4000); // 4-second timeout to avoid hanging fetches
+
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: { maxOutputTokens: 50 }
+        }),
+        signal: controller.signal
+      }
+    );
+
+    clearTimeout(timeoutId);
+
+    if (!res.ok) {
+      throw new Error(`API returned status ${res.status}`);
+    }
+
+    const data = await res.json();
+    const aiSummary = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+
+    if (aiSummary && aiSummary.length > 5) {
+      return aiSummary.replace(/\s+/g, " ");
+    }
+  } catch (err) {
+    console.warn("Failed to generate AI summary, falling back to heuristic", err);
+  }
+
+  return generateHeuristicSummary(title, description);
+}
+

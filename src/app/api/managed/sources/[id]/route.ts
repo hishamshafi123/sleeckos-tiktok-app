@@ -2,7 +2,7 @@ export const dynamic = "force-dynamic";
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/db";
 import { getSession } from "@/lib/session";
-import { fetchLatestChannelVideos, fetchPlaylistVideos, getVideoDetails } from "@/lib/youtube";
+import { fetchLatestChannelVideos, fetchPlaylistVideos, getVideoDetails, generateVideoSummary } from "@/lib/youtube";
 
 export async function DELETE(
   _req: NextRequest,
@@ -79,6 +79,7 @@ export async function POST(
     let discovered = 0;
     for (const video of freshVideos) {
       const stats = detailsMap.get(video.videoId);
+      const summaryText = await generateVideoSummary(video.title, video.description || "");
       await prisma.sourcedVideo.upsert({
         where: { sourceId_youtubeVideoId: { sourceId: source.id, youtubeVideoId: video.videoId } },
         create: {
@@ -87,11 +88,13 @@ export async function POST(
           thumbnailUrl: video.thumbnailUrl, channelTitle: video.channelTitle,
           publishedAt: new Date(video.publishedAt), duration: stats?.duration || "PT0S",
           viewCount: stats?.viewCount || 0, likeCount: stats?.likeCount || 0, commentCount: stats?.commentCount || 0,
+          summary: summaryText,
         },
         update: {
           title: video.title, thumbnailUrl: video.thumbnailUrl,
           viewCount: stats?.viewCount || 0, likeCount: stats?.likeCount || 0,
           commentCount: stats?.commentCount || 0, duration: stats?.duration || "PT0S", fetchedAt: new Date(),
+          summary: summaryText,
         },
       });
       discovered++;

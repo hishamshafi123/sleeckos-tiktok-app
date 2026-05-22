@@ -2,7 +2,7 @@ export const dynamic = "force-dynamic";
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/db";
 import { getSession } from "@/lib/session";
-import { fetchLatestChannelVideos, fetchPlaylistVideos, getVideoDetails } from "@/lib/youtube";
+import { fetchLatestChannelVideos, fetchPlaylistVideos, getVideoDetails, generateVideoSummary } from "@/lib/youtube";
 
 function verifyCronSecret(req: NextRequest) {
   const secret = req.headers.get("x-cron-secret") || req.nextUrl.searchParams.get("secret");
@@ -43,6 +43,7 @@ export async function GET(req: NextRequest) {
       for (const video of basicVideos) {
         const stats = detailsMap.get(video.videoId);
         try {
+          const summaryText = await generateVideoSummary(video.title, video.description || "");
           await prisma.sourcedVideo.upsert({
             where: { sourceId_youtubeVideoId: { sourceId: source.id, youtubeVideoId: video.videoId } },
             create: {
@@ -51,11 +52,13 @@ export async function GET(req: NextRequest) {
               thumbnailUrl: video.thumbnailUrl, channelTitle: video.channelTitle,
               publishedAt: new Date(video.publishedAt), duration: stats?.duration || "PT0S",
               viewCount: stats?.viewCount || 0, likeCount: stats?.likeCount || 0, commentCount: stats?.commentCount || 0,
+              summary: summaryText,
             },
             update: {
               title: video.title, thumbnailUrl: video.thumbnailUrl,
               viewCount: stats?.viewCount || 0, likeCount: stats?.likeCount || 0,
               commentCount: stats?.commentCount || 0, duration: stats?.duration || "PT0S", fetchedAt: new Date(),
+              summary: summaryText,
             },
           });
           discovered++;

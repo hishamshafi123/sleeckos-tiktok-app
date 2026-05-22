@@ -497,6 +497,7 @@ model SourcedVideo {
   commentCount   BigInt             @default(0)
   status         SourcedVideoStatus @default(NEW)
   downloadUrl    String?
+  summary        String?
   discoveredAt   DateTime           @default(now())
   fetchedAt      DateTime           @default(now())
 

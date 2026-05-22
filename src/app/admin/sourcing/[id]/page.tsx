@@ -52,6 +52,7 @@ type VideoItem = {
   viewCount: string;
   likeCount: string;
   status: string;
+  summary?: string;
 };
 
 type AllAccount = {
@@ -94,6 +95,8 @@ export default function NichePage({ params }: { params: Promise<{ id: string }> 
   const [fetchingId, setFetchingId] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState("");
   const [sortBy, setSortBy] = useState("discovered");
+  const [nicheContext, setNicheContext] = useState("");
+  const [debouncedContext, setDebouncedContext] = useState("");
   // Account picker
   const [allAccounts, setAllAccounts] = useState<AllAccount[]>([]);
   const [accountSearch, setAccountSearch] = useState("");
@@ -107,14 +110,36 @@ export default function NichePage({ params }: { params: Promise<{ id: string }> 
   const fetchVideos = useCallback(async () => {
     const p = new URLSearchParams({ nicheId: id, sortBy, limit: "50" });
     if (statusFilter) p.set("status", statusFilter);
+    if (debouncedContext) p.set("nicheContext", debouncedContext);
     const res = await fetch(`/api/managed/videos?${p}`);
     if (res.ok) { const d = await res.json(); setVideos(d.videos); setVideoTotal(d.total); }
-  }, [id, sortBy, statusFilter]);
+  }, [id, sortBy, statusFilter, debouncedContext]);
 
   const fetchAllAccounts = useCallback(async () => {
     const res = await fetch("/api/managed/accounts/all");
     if (res.ok) setAllAccounts(await res.json());
   }, []);
+
+  const deleteAllFetches = async () => {
+    if (!confirm("Are you sure you want to delete all temporary fetches (New & Skipped videos) for this sub-niche? This cannot be undone.")) return;
+    try {
+      const res = await fetch(`/api/managed/videos?nicheId=${id}`, { method: "DELETE" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to delete");
+      toast.success(`Deleted ${data.count} fetched videos`);
+      fetchVideos();
+      fetchNiche();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to delete");
+    }
+  };
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedContext(nicheContext);
+    }, 350);
+    return () => clearTimeout(timer);
+  }, [nicheContext]);
 
   useEffect(() => {
     Promise.all([fetchNiche(), fetchVideos()]).finally(() => setLoading(false));
@@ -375,14 +400,23 @@ export default function NichePage({ params }: { params: Promise<{ id: string }> 
       {/* ── VIDEOS TAB ── */}
       {tab === "videos" && (
         <div className="space-y-4">
-          <div className="flex items-center gap-3 flex-wrap">
+          <div className="flex items-center gap-3 flex-wrap w-full">
             <select value={sortBy} onChange={e => setSortBy(e.target.value)}
               className="bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-purple-500">
               <option value="discovered">Recently Discovered</option>
               <option value="recent">Latest on YouTube</option>
+              <option value="relevance">Sub-Niche Match</option>
+              <option value="combined">Latest + Sub-Niche Match</option>
               <option value="views">Most Views</option>
               <option value="likes">Most Likes</option>
             </select>
+
+            {(sortBy === "relevance" || sortBy === "combined") && (
+              <input value={nicheContext} onChange={e => setNicheContext(e.target.value)}
+                placeholder="Custom context (e.g. baking, recipes)..."
+                className="bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white text-sm placeholder-gray-600 focus:outline-none focus:border-purple-500 min-w-[240px]" />
+            )}
+
             <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)}
               className="bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-purple-500">
               <option value="">All Status</option>
@@ -391,7 +425,14 @@ export default function NichePage({ params }: { params: Promise<{ id: string }> 
               <option value="CLIPPED">Clipped</option>
               <option value="SKIPPED">Skipped</option>
             </select>
-            <span className="text-xs text-gray-500 ml-auto">{videoTotal} videos</span>
+
+            <div className="flex items-center gap-4 ml-auto">
+              <span className="text-xs text-gray-500">{videoTotal} videos</span>
+              <button onClick={deleteAllFetches} disabled={videos.length === 0}
+                className="flex items-center gap-1.5 bg-red-600/10 hover:bg-red-600/20 border border-red-500/20 hover:border-red-500/40 text-red-400 text-xs font-semibold px-3.5 py-2 rounded-xl transition-all disabled:opacity-40">
+                <Trash2 className="w-3.5 h-3.5" /> Delete All Fetches
+              </button>
+            </div>
           </div>
 
           {videos.length === 0 ? (
@@ -413,6 +454,14 @@ export default function NichePage({ params }: { params: Promise<{ id: string }> 
                       <a href={`https://youtube.com/watch?v=${v.youtubeVideoId}`} target="_blank" rel="noopener noreferrer"
                         className="font-semibold text-white text-sm hover:text-purple-300 transition-colors line-clamp-2">{v.title}</a>
                       <p className="text-xs text-gray-500 mt-1">{v.channelTitle} · {timeAgo(v.publishedAt)}</p>
+                      
+                      {v.summary && (
+                        <div className="mt-2 text-xs bg-white/5 border border-white/5 rounded-xl px-3.5 py-2 text-gray-300 leading-relaxed max-w-2xl animate-fade-in">
+                          <span className="font-semibold text-purple-400 mr-1.5">✨ Summary:</span>
+                          {v.summary}
+                        </div>
+                      )}
+                      
                       <div className="flex items-center gap-4 mt-2 text-xs text-gray-400">
                         <span className="flex items-center gap-1"><Eye className="w-3 h-3" />{formatCount(v.viewCount)}</span>
                         <span className="flex items-center gap-1"><ThumbsUp className="w-3 h-3" />{formatCount(v.likeCount)}</span>
