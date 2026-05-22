@@ -351,7 +351,8 @@ export async function POST(req: Request) {
             item.account.driveFolderId,
             driveFileName,
             fileBuffer,
-            "video/mp4"
+            "video/mp4",
+            item.accountId
           );
 
           // Delete local file to prevent disk bloat

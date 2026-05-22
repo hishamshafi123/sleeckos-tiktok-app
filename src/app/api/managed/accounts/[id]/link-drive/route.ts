@@ -59,7 +59,7 @@ export async function POST(
 
   let folderName = "Drive Folder";
   try {
-    const meta = await getFolderMeta(folderId);
+    const meta = await getFolderMeta(folderId, id);
     folderName = meta.name || "Drive Folder";
   } catch (err) {
     return NextResponse.json(
@@ -96,7 +96,14 @@ export async function DELETE(
   const { id } = await params;
   await prisma.managedAccount.update({
     where: { id },
-    data: { driveFolderId: null, driveFolderName: null, driveConnected: false },
+    data: {
+      driveFolderId: null,
+      driveFolderName: null,
+      driveConnected: false,
+      googleAccessToken: null,
+      googleRefreshToken: null,
+      googleTokenExpiresAt: null,
+    },
   });
 
   return NextResponse.json({ ok: true });

@@ -41,7 +41,7 @@ export async function POST(
   // ── Find next unposted file ────────────────────────────────────────────────
   let files;
   try {
-    files = await listVideoFilesInFolder(account.driveFolderId);
+    files = await listVideoFilesInFolder(account.driveFolderId, account.id);
   } catch (err) {
     return NextResponse.json(
       { error: `Cannot access Drive folder: ${err instanceof Error ? err.message : String(err)}` },
@@ -98,7 +98,7 @@ export async function POST(
   (async () => {
     try {
       // Make the Drive file publicly accessible
-      await makeFilePublic(fileId);
+      await makeFilePublic(fileId, account.id);
       const videoUrl = driveDirectUrl(fileId);
 
       const result = await postViaPostPeer(
@@ -126,7 +126,7 @@ export async function POST(
 
       // Delete from Drive after success
       try {
-        await deleteDriveFile(fileId);
+        await deleteDriveFile(fileId, account.id);
         console.log(`[Drive] Deleted file ${fileId} after successful post`);
       } catch (delErr) {
         console.error(`[Drive] Delete failed for ${fileId}:`, delErr instanceof Error ? delErr.message : delErr);

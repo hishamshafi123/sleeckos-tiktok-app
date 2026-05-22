@@ -117,7 +117,7 @@ export async function GET(req: NextRequest) {
       // ── Get next unposted file from Drive ────────────────────────────────
       let files;
       try {
-        files = await listVideoFilesInFolder(account.driveFolderId!);
+        files = await listVideoFilesInFolder(account.driveFolderId!, account.id);
       } catch (err) {
         await prisma.scheduledPost.create({
           data: {
@@ -187,7 +187,7 @@ export async function GET(req: NextRequest) {
 
       // ── Make file public, post via PostPeer, cleanup ─────────────────────
       try {
-        await makeFilePublic(nextFile.id);
+        await makeFilePublic(nextFile.id, account.id);
         const videoUrl = driveDirectUrl(nextFile.id);
 
         const result = await postViaPostPeer(
@@ -215,7 +215,7 @@ export async function GET(req: NextRequest) {
 
         // Delete from Drive after successful post
         try {
-          await deleteDriveFile(nextFile.id);
+          await deleteDriveFile(nextFile.id, account.id);
         } catch (delErr) {
           console.error(`Drive delete failed for ${nextFile.id}:`, delErr);
         }

@@ -1,6 +1,7 @@
 "use client";
 import { useState, useEffect, useCallback, useRef, use } from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { toast } from "sonner";
 import {
   Plus,
@@ -43,6 +44,7 @@ type Account = {
   captionSource: string;
   tokenExpiresAt: string;
   _count: { scheduledPosts: number };
+  googleOAuthConnected?: boolean;
 };
 
 type Group = {
@@ -70,6 +72,7 @@ export default function GroupPage({
   params: Promise<{ sectionSlug: string; groupSlug: string }>;
 }) {
   const { sectionSlug, groupSlug } = use(params);
+  const searchParams = useSearchParams();
   const [group, setGroup] = useState<Group | null>(null);
   const [loading, setLoading] = useState(true);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -166,6 +169,26 @@ export default function GroupPage({
   useEffect(() => {
     fetchGroup();
   }, [fetchGroup]);
+
+  // Handle Google Drive OAuth Redirect Alerts
+  useEffect(() => {
+    const success = searchParams.get("google_success");
+    const error = searchParams.get("google_error");
+    const username = searchParams.get("username");
+
+    if (success) {
+      toast.success(`Google Drive connected successfully for @${username}!`);
+      // Clean query params
+      const newUrl = window.location.pathname;
+      window.history.replaceState({}, "", newUrl);
+      fetchGroup();
+    } else if (error) {
+      toast.error(`Google Drive connection failed: ${error}`);
+      // Clean query params
+      const newUrl = window.location.pathname;
+      window.history.replaceState({}, "", newUrl);
+    }
+  }, [searchParams, fetchGroup]);
 
   const toggleActive = async (acc: Account) => {
     try {
@@ -747,7 +770,16 @@ export default function GroupPage({
                       {acc.driveConnected && acc.driveFolderId ? (
                         <div className="flex items-center justify-between bg-blue-500/10 border border-blue-500/20 rounded-xl px-4 py-3">
                           <div>
-                            <p className="text-sm text-blue-300 font-medium">{acc.driveFolderName || "Drive Folder"}</p>
+                            <div className="flex items-center gap-2">
+                              {acc.googleOAuthConnected && (
+                                <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
+                              )}
+                              <p className="text-sm text-blue-300 font-medium">
+                                {acc.googleOAuthConnected
+                                  ? `OAuth: ${acc.driveFolderName || "Sleeckos Videos"}`
+                                  : acc.driveFolderName || "Drive Folder"}
+                              </p>
+                            </div>
                             <p className="text-xs text-blue-400/60 font-mono mt-0.5">{acc.driveFolderId}</p>
                           </div>
                           <button
@@ -758,27 +790,50 @@ export default function GroupPage({
                           </button>
                         </div>
                       ) : (
-                        <div className="space-y-2">
-                          <p className="text-xs text-gray-500">
-                            Paste a Google Drive folder URL or folder ID. The folder must be shared with the service account.
-                          </p>
-                          <div className="flex gap-2">
-                            <input
-                              type="text"
-                              value={driveUrl}
-                              onChange={(e) => setDriveUrl(e.target.value)}
-                              placeholder="https://drive.google.com/drive/folders/..."
-                              className="flex-1 bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-white text-xs placeholder-gray-600 focus:outline-none focus:border-blue-500 transition-colors"
-                              onKeyDown={(e) => e.key === "Enter" && linkDrive(acc.id)}
-                            />
-                            <button
-                              onClick={() => linkDrive(acc.id)}
-                              disabled={!driveUrl.trim() || linkingDrive}
-                              className="bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white text-xs font-semibold px-4 py-2 rounded-xl transition-all flex items-center gap-1.5"
+                        <div className="space-y-3">
+                          {/* Premium Google OAuth Connection */}
+                          <div className="flex flex-col sm:flex-row gap-3">
+                            <a
+                              href={`/api/managed/accounts/${acc.id}/auth/google?section=${sectionSlug}&group=${groupSlug}`}
+                              className="flex-1 flex items-center justify-center gap-2 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white text-xs font-bold px-4 py-3 rounded-xl transition-all shadow-lg hover:shadow-purple-500/20 hover:scale-[1.01]"
                             >
-                              {linkingDrive && <Loader2 className="w-3 h-3 animate-spin" />}
-                              Link
-                            </button>
+                              <svg className="w-4 h-4 text-white" viewBox="0 0 24 24" fill="currentColor">
+                                <path d="M12.24 10.285V14.4h6.887c-.648 2.41-2.519 4.114-5.136 4.114-3.51 0-6.357-2.846-6.357-6.357s2.846-6.357 6.357-6.357c1.616 0 3.084.604 4.225 1.597L21.3 4.316C19.043 2.214 15.938 1 12.24 1c-6.076 0-11 4.924-11 11s4.924 11 11 11c6.34 0 10.55-4.46 10.55-10.74 0-.74-.08-1.285-.2-1.974h-10.35z"/>
+                              </svg>
+                              Connect Google Drive (OAuth)
+                            </a>
+                          </div>
+
+                          {/* Divider */}
+                          <div className="relative flex py-1 items-center">
+                            <div className="flex-grow border-t border-white/5"></div>
+                            <span className="flex-shrink mx-3 text-[10px] text-gray-500 font-medium uppercase tracking-wider">Or paste folder URL</span>
+                            <div className="flex-grow border-t border-white/5"></div>
+                          </div>
+
+                          {/* Folder URL Fallback */}
+                          <div className="space-y-2">
+                            <p className="text-[10px] text-gray-500">
+                              Paste a Google Drive folder URL or ID. The folder must be manually shared with the Service Account.
+                            </p>
+                            <div className="flex gap-2">
+                              <input
+                                type="text"
+                                value={driveUrl}
+                                onChange={(e) => setDriveUrl(e.target.value)}
+                                placeholder="https://drive.google.com/drive/folders/..."
+                                className="flex-1 bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-white text-xs placeholder-gray-600 focus:outline-none focus:border-blue-500 transition-colors"
+                                onKeyDown={(e) => e.key === "Enter" && linkDrive(acc.id)}
+                              />
+                              <button
+                                onClick={() => linkDrive(acc.id)}
+                                disabled={!driveUrl.trim() || linkingDrive}
+                                className="bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white text-xs font-semibold px-4 py-2 rounded-xl transition-all flex items-center gap-1.5"
+                              >
+                                {linkingDrive && <Loader2 className="w-3 h-3 animate-spin" />}
+                                Link
+                              </button>
+                            </div>
                           </div>
                         </div>
                       )}

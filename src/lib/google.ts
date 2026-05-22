@@ -1,4 +1,5 @@
 import { google } from "googleapis";
+import prisma from "./db";
 
 // ── Helper: extract folder ID from a Drive URL or raw ID ─────────────────────
 export function parseDriveFolderId(urlOrId: string): string | null {
@@ -17,10 +18,70 @@ export function parseDriveFolderId(urlOrId: string): string | null {
   return null;
 }
 
-// ── Build authenticated Drive client using a Service Account ─────────────────
-function getDriveClient() {
+// ── Build authenticated OAuth2 client for an account ─────────────────────────
+export async function getOAuth2ClientForAccount(account: any) {
+  const oauth2Client = new google.auth.OAuth2(
+    process.env.GOOGLE_CLIENT_ID,
+    process.env.GOOGLE_CLIENT_SECRET,
+    `${process.env.APP_URL}/api/managed/accounts/auth/google/callback`
+  );
+
+  oauth2Client.setCredentials({
+    access_token: account.googleAccessToken || undefined,
+    refresh_token: account.googleRefreshToken || undefined,
+  });
+
+  // Check if token is expired or close to expiry (expires in < 5 minutes)
+  const now = new Date();
+  const isExpired = !account.googleTokenExpiresAt || 
+    new Date(account.googleTokenExpiresAt).getTime() - now.getTime() < 5 * 60 * 1000;
+
+  if (isExpired && account.googleRefreshToken) {
+    console.log(`[Google OAuth] Token expired or expiring soon for @${account.tiktokUsername}. Refreshing...`);
+    try {
+      const { credentials } = await oauth2Client.refreshAccessToken();
+      
+      // Update database with refreshed credentials
+      await prisma.managedAccount.update({
+        where: { id: account.id },
+        data: {
+          googleAccessToken: credentials.access_token || undefined,
+          googleTokenExpiresAt: credentials.expiry_date ? new Date(credentials.expiry_date) : undefined,
+          ...(credentials.refresh_token ? { googleRefreshToken: credentials.refresh_token } : {}),
+        },
+      });
+      console.log(`[Google OAuth] Token successfully refreshed and saved for @${account.tiktokUsername}`);
+      
+      // Re-set refreshed credentials on client
+      oauth2Client.setCredentials({
+        access_token: credentials.access_token || undefined,
+        refresh_token: credentials.refresh_token || account.googleRefreshToken,
+      });
+    } catch (refreshErr) {
+      console.error(`[Google OAuth] Failed to refresh token for @${account.tiktokUsername}:`, refreshErr);
+    }
+  }
+
+  return oauth2Client;
+}
+
+// ── Build authenticated Drive client (OAuth or fallback to Service Account) ───
+async function getDriveClient(accountId?: string) {
+  if (accountId) {
+    const account = await prisma.managedAccount.findUnique({
+      where: { id: accountId },
+    });
+    if (account && account.googleAccessToken && account.googleRefreshToken) {
+      const auth = await getOAuth2ClientForAccount(account);
+      return google.drive({ version: "v3", auth });
+    }
+  }
+
+  // Fallback: build with Service Account
   const b64 = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
-  if (!b64) throw new Error("GOOGLE_SERVICE_ACCOUNT_JSON env var not set");
+  if (!b64) {
+    throw new Error("Google Drive credentials not set (OAuth not connected and GOOGLE_SERVICE_ACCOUNT_JSON not set)");
+  }
 
   const json = JSON.parse(Buffer.from(b64, "base64").toString("utf-8"));
   const auth = new google.auth.GoogleAuth({
@@ -31,8 +92,8 @@ function getDriveClient() {
 }
 
 // ── List video files in a Drive folder (sorted by name ascending) ─────────────
-export async function listVideoFilesInFolder(folderId: string) {
-  const drive = getDriveClient();
+export async function listVideoFilesInFolder(folderId: string, accountId?: string) {
+  const drive = await getDriveClient(accountId);
   const res = await drive.files.list({
     q: `'${folderId}' in parents and mimeType contains 'video/' and trashed = false`,
     orderBy: "name",
@@ -45,8 +106,8 @@ export async function listVideoFilesInFolder(folderId: string) {
 }
 
 // ── Get folder metadata (name, existence check) ───────────────────────────────
-export async function getFolderMeta(folderId: string) {
-  const drive = getDriveClient();
+export async function getFolderMeta(folderId: string, accountId?: string) {
+  const drive = await getDriveClient(accountId);
   const res = await drive.files.get({
     fileId: folderId,
     fields: "id,name,mimeType",
@@ -56,8 +117,8 @@ export async function getFolderMeta(folderId: string) {
 }
 
 // ── Download a Drive file as a Buffer ────────────────────────────────────────
-export async function downloadDriveFile(fileId: string): Promise<Buffer> {
-  const drive = getDriveClient();
+export async function downloadDriveFile(fileId: string, accountId?: string): Promise<Buffer> {
+  const drive = await getDriveClient(accountId);
   const res = await drive.files.get(
     { fileId, alt: "media", supportsAllDrives: true },
     { responseType: "arraybuffer" }
@@ -66,8 +127,8 @@ export async function downloadDriveFile(fileId: string): Promise<Buffer> {
 }
 
 // ── Delete/trash a file from Drive (after successful post) ───────────────────
-export async function deleteDriveFile(fileId: string): Promise<void> {
-  const drive = getDriveClient();
+export async function deleteDriveFile(fileId: string, accountId?: string): Promise<void> {
+  const drive = await getDriveClient(accountId);
 
   // Try permanent delete
   try {
@@ -111,8 +172,8 @@ export async function deleteDriveFile(fileId: string): Promise<void> {
 }
 
 // ── Make a file temporarily public (anyone with link can view) ────────────────
-export async function makeFilePublic(fileId: string): Promise<void> {
-  const drive = getDriveClient();
+export async function makeFilePublic(fileId: string, accountId?: string): Promise<void> {
+  const drive = await getDriveClient(accountId);
   await drive.permissions.create({
     fileId,
     supportsAllDrives: true,
@@ -125,8 +186,8 @@ export async function makeFilePublic(fileId: string): Promise<void> {
 }
 
 // ── Revoke public access from a file ─────────────────────────────────────────
-export async function revokeFilePublic(fileId: string): Promise<void> {
-  const drive = getDriveClient();
+export async function revokeFilePublic(fileId: string, accountId?: string): Promise<void> {
+  const drive = await getDriveClient(accountId);
   try {
     await drive.permissions.delete({ fileId, permissionId: "anyoneWithLink", supportsAllDrives: true });
   } catch {
@@ -139,10 +200,11 @@ export async function uploadFileToFolder(
   folderId: string,
   fileName: string,
   fileBuffer: Buffer,
-  mimeType: string = "video/mp4"
+  mimeType: string = "video/mp4",
+  accountId?: string
 ): Promise<string> {
   const { Readable } = await import("stream");
-  const drive = getDriveClient();
+  const drive = await getDriveClient(accountId);
   
   const readableStream = new Readable();
   readableStream.push(fileBuffer);

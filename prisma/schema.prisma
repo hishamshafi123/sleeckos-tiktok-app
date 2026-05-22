@@ -315,6 +315,9 @@ model ManagedAccount {
   driveFolderId         String?
   driveFolderName       String?
   driveConnected        Boolean      @default(false)
+  googleAccessToken     String?
+  googleRefreshToken    String?
+  googleTokenExpiresAt  DateTime?
 
   // PostPeer integration
   postpeerAccountId     String?

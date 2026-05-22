@@ -45,5 +45,17 @@ export async function GET(
     return NextResponse.json({ error: "Group not found" }, { status: 404 });
   }
 
-  return NextResponse.json(group);
+  // Sanitizing sensitive tokens from the API payload
+  const sanitizedAccounts = group.accounts.map((acc) => {
+    const { googleAccessToken, googleRefreshToken, ...rest } = acc as any;
+    return {
+      ...rest,
+      googleOAuthConnected: !!googleRefreshToken,
+    };
+  });
+
+  return NextResponse.json({
+    ...group,
+    accounts: sanitizedAccounts,
+  });
 }
