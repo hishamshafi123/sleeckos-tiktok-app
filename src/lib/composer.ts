@@ -307,7 +307,7 @@ export async function composeVideo(options: ComposeOptions): Promise<string> {
       ${displayQuote}
     </textPath>
   </text>
-  ${quoteAuthor ? `<text x="360" y="${yBase + Math.round(fontSize + 30)}" class="author-text" ${filterAttrSvg}>— ${quoteAuthor}</text>` : ''}
+  ${quoteAuthor && quoteAuthor.trim() ? `<text x="360" y="${yBase + Math.round(fontSize + 30)}" class="author-text" ${filterAttrSvg}>— ${quoteAuthor.trim()}</text>` : ''}
 </svg>
 `.trim();
 
@@ -327,7 +327,7 @@ export async function composeVideo(options: ComposeOptions): Promise<string> {
     const wrappedText = wrapText(casedText, 25);
     
     let fullText = wrappedText;
-    if (quoteAuthor) {
+    if (quoteAuthor && quoteAuthor.trim()) {
       fullText += `\n\n— ${quoteAuthor.trim()}`;
     }
 
@@ -431,28 +431,37 @@ export async function generateQuotesForTheme(
     return generateFallbackQuotes(theme, count);
   }
 
+  // Overshoot strategy to generate excess quotes to filter duplicates
+  const targetCount = Math.max(count * 2, count + 10);
+
+  // Normalize existing quotes cache for case-insensitive lookup
+  const normalizedCache = new Set(existingQuotes.map(q => q.trim().toLowerCase()).filter(Boolean));
+
+  // Use the last 150 historical quotes as a negative prompt seed to Gemini
+  const negativeSeeds = existingQuotes.slice(-150).map(q => q.trim()).filter(Boolean);
+
   const prompt = [
     "You are a professional creative writer specializing in premium TikTok quotes.",
-    `Generate exactly ${count} unique, high-quality, short, and highly impactful quotes for this sub-niche/theme:`,
+    `Generate exactly ${targetCount} unique, high-quality, short, and highly impactful quotes for this sub-niche/theme:`,
     `"${theme}"`,
     "",
     "Rules:",
     "1. Each quote must be inspiring, deeply motivational, or highly engaging.",
     "2. Each quote must be extremely concise (maximum 15-20 words), perfect for visual vertical video slides.",
     "3. Keep quotes extremely clean, simple, and elegant.",
-    "4. Optional but recommended: provide an author for each quote (e.g., Seneca, Anonymous, Unknown) only if it fits the style.",
+    "4. CRITICAL: Do NOT generate or include any author name, author attribution, or signature placeholder (e.g. do NOT include names like 'Seneca', 'Anonymous', 'Unknown', etc. inside the quote text or as a field).",
     "5. CRITICAL: Completely avoid repeating or mimicking the following quotes which were generated previously:",
-    ...existingQuotes.slice(-40).map(q => `- "${q}"`),
+    ...negativeSeeds.map(q => `- "${q}"`),
     "",
-    "Respond ONLY with a valid JSON array of objects containing 'text' and 'author' (which can be a string or null).",
+    "Respond ONLY with a valid JSON array of objects, where each object has ONLY a 'text' key.",
     "Do NOT wrap the JSON output in markdown blocks like ```json. Return only the raw JSON string.",
     "Example format:",
-    '[{"text": "The only way out is through.", "author": "Robert Frost"}, {"text": "Do not seek to have events happen as you want them to.", "author": "Epictetus"}]'
+    '[{"text": "The only way out is through."}, {"text": "Do not seek to have events happen as you want them to."}]'
   ].join("\n");
 
   try {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 8000); // 8 second timeout
+    const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
 
     const res = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
@@ -461,7 +470,7 @@ export async function generateQuotesForTheme(
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: { maxOutputTokens: 1000, temperature: 0.8 }
+          generationConfig: { maxOutputTokens: 2000, temperature: 0.8 }
         }),
         signal: controller.signal
       }
@@ -482,12 +491,35 @@ export async function generateQuotesForTheme(
         cleanText = cleanText.replace(/^```json\s*/i, "").replace(/```$/, "").trim();
       }
 
-      const quotes = JSON.parse(cleanText);
-      if (Array.isArray(quotes)) {
-        return quotes.map((q: any) => ({
-          text: String(q.text || q.quote || "").trim(),
-          author: q.author ? String(q.author).trim() : null
-        })).filter(q => q.text.length > 0);
+      const parsedQuotes = JSON.parse(cleanText);
+      if (Array.isArray(parsedQuotes)) {
+        const uniqueFiltered: { text: string; author: string | null }[] = [];
+        const seenInBatch = new Set<string>();
+
+        for (const q of parsedQuotes) {
+          const text = String(q.text || q.quote || "").trim();
+          if (!text) continue;
+
+          const lowerText = text.toLowerCase();
+          
+          if (!normalizedCache.has(lowerText) && !seenInBatch.has(lowerText)) {
+            seenInBatch.add(lowerText);
+            uniqueFiltered.push({
+              text,
+              author: null
+            });
+          }
+        }
+
+        console.log(`[Composer] Generated ${uniqueFiltered.length} unique quotes out of ${parsedQuotes.length} returned by Gemini. Requested ${count}.`);
+
+        if (uniqueFiltered.length >= count) {
+          return uniqueFiltered.slice(0, count);
+        }
+
+        // Pad with fallbacks if short of unique quotes
+        const fallbacks = generateFallbackQuotes(theme, count - uniqueFiltered.length);
+        return [...uniqueFiltered, ...fallbacks];
       }
     }
   } catch (err) {
@@ -502,25 +534,28 @@ export async function generateQuotesForTheme(
  */
 function generateFallbackQuotes(theme: string, count: number): { text: string; author: string | null }[] {
   const list = [
-    { text: "The obstacles you face are the path to your destiny.", author: "Marcus Aurelius" },
-    { text: "He who has a why to live can bear almost any how.", author: "Friedrich Nietzsche" },
-    { text: "Difficulty is what wakes up the creative sleeping giant.", author: "Anonymous" },
-    { text: "Your potential is limited only by the boundaries of your imagination.", author: "Unknown" },
-    { text: "Control your mind, or it will control you.", author: "Horace" },
-    { text: "Waste no more time arguing about what a good man should be. Be one.", author: "Marcus Aurelius" },
-    { text: "Quiet minds cannot be perplexed or frightened.", author: "Seneca" },
-    { text: "The happiness of your life depends upon the quality of your thoughts.", author: "Marcus Aurelius" },
-    { text: "Do not explain your philosophy. Embody it.", author: "Epictetus" },
-    { text: "We suffer more often in imagination than in reality.", author: "Seneca" },
-    { text: "Begin at once to live, and count each separate day as a separate life.", author: "Seneca" },
-    { text: "No man is free who is not master of himself.", author: "Epictetus" }
+    { text: "The obstacles you face are the path to your destiny.", author: null },
+    { text: "He who has a why to live can bear almost any how.", author: null },
+    { text: "Difficulty is what wakes up the creative sleeping giant.", author: null },
+    { text: "Your potential is limited only by the boundaries of your imagination.", author: null },
+    { text: "Control your mind, or it will control you.", author: null },
+    { text: "Waste no more time arguing about what a good man should be. Be one.", author: null },
+    { text: "Quiet minds cannot be perplexed or frightened.", author: null },
+    { text: "The happiness of your life depends upon the quality of your thoughts.", author: null },
+    { text: "Do not explain your philosophy. Embody it.", author: null },
+    { text: "We suffer more often in imagination than in reality.", author: null },
+    { text: "Begin at once to live, and count each separate day as a separate life.", author: null },
+    { text: "No man is free who is not master of himself.", author: null }
   ];
 
   // Shuffle and return count items
   const shuffled = [...list].sort(() => 0.5 - Math.random());
   const result: { text: string; author: string | null }[] = [];
   for (let i = 0; i < count; i++) {
-    result.push(shuffled[i % shuffled.length]);
+    result.push({
+      text: shuffled[i % shuffled.length].text,
+      author: null
+    });
   }
   return result;
 }

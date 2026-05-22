@@ -2570,20 +2570,6 @@ export default function GenresDashboard() {
                       />
                     </div>
 
-                    <div className="space-y-1">
-                      <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider">Author Name</label>
-                      <input
-                        type="text"
-                        value={item.quoteAuthor || ""}
-                        placeholder="Marcus Aurelius, Seneca, Unknown etc."
-                        onChange={(e) => {
-                          const updated = [...reviewItems];
-                          updated[idx].quoteAuthor = e.target.value;
-                          setReviewItems(updated);
-                        }}
-                        className="w-full bg-black/40 border border-white/5 rounded-2xl px-3 py-2 text-xs text-white focus:outline-none focus:border-amber-500/30"
-                      />
-                    </div>
                   </div>
                 ))}
               </div>

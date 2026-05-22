@@ -130,12 +130,13 @@ export async function POST(req: Request) {
           continue;
         }
 
-        // Fetch duplicate check seed (all previous quotes generated for this account)
+        // Fetch duplicate check seed (all previous quotes generated globally)
         const previousItems = await prisma.genreBatchItem.findMany({
-          where: { accountId },
           select: { quoteText: true },
         });
-        const existingQuotes = previousItems.map(item => item.quoteText);
+        const existingQuotes = Array.from(
+          new Set(previousItems.map(item => item.quoteText.trim()).filter(Boolean))
+        );
 
         // Call Gemini generator
         const quotes = await generateQuotesForTheme(config.themeText, postsPerAccount, existingQuotes);
@@ -214,7 +215,8 @@ export async function POST(req: Request) {
     // ACTION 3: START_RENDERING
     // ─────────────────────────────────────────────────────────────────────────
     if (action === "START_RENDERING") {
-      const { batchId, trackIds, audioReuseMax = 2 } = body;
+      const { batchId, trackIds } = body;
+      const audioReuseMax = Math.max(1, Math.round(Number(body.audioReuseMax)) || 2);
 
       if (!batchId) {
         return NextResponse.json({ error: "Missing batchId" }, { status: 400 });
@@ -264,12 +266,12 @@ export async function POST(req: Request) {
         for (let i = 0; i < groupItems.length; i++) {
           const item = groupItems[i];
           const alloc = allocations[i];
-          const matchedTrack = tracks.find(t => t.id === alloc.trackId)!;
+          const matchedTrack = tracks.find(t => t.id === alloc.trackId) || tracks[0];
 
           await prisma.genreBatchItem.update({
             where: { id: item.id },
             data: {
-              trackId: alloc.trackId,
+              trackId: matchedTrack.id,
               trackStart: matchedTrack.defaultStart,
             },
           });
