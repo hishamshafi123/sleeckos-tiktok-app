@@ -16,10 +16,26 @@ export async function GET(req: NextRequest) {
   const limit = Math.min(parseInt(req.nextUrl.searchParams.get("limit") || "50", 10), 100);
   const offset = parseInt(req.nextUrl.searchParams.get("offset") || "0", 10);
 
+  const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+
+  // Clean up older videos (status NEW or SKIPPED) that are older than 24 hours
+  await prisma.sourcedVideo.deleteMany({
+    where: {
+      status: { in: ["NEW", "SKIPPED"] },
+      OR: [
+        { publishedAt: { lt: twentyFourHoursAgo } },
+        { discoveredAt: { lt: twentyFourHoursAgo } },
+      ],
+    },
+  });
+
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const where: any = {};
   if (nicheId) where.nicheId = nicheId;
   if (status) where.status = status;
+  
+  // Strict 24-hour window: only show videos published in the last 24 hours
+  where.publishedAt = { gte: twentyFourHoursAgo };
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let orderBy: any;

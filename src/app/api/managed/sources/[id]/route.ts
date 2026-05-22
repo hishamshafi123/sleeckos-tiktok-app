@@ -46,20 +46,38 @@ export async function POST(
   if (!source) return NextResponse.json({ error: "Source not found" }, { status: 404 });
 
   try {
+    const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+
+    // Clean up older videos (status NEW or SKIPPED) that are older than 24 hours
+    await prisma.sourcedVideo.deleteMany({
+      where: {
+        status: { in: ["NEW", "SKIPPED"] },
+        OR: [
+          { publishedAt: { lt: twentyFourHoursAgo } },
+          { discoveredAt: { lt: twentyFourHoursAgo } },
+        ],
+      },
+    });
+
     const basicVideos = source.type === "CHANNEL"
       ? await fetchLatestChannelVideos(source.youtubeId, source.maxVideosPerFetch)
       : await fetchPlaylistVideos(source.youtubeId, source.maxVideosPerFetch);
 
-    if (basicVideos.length === 0) {
+    // Only process videos published in the last 24 hours
+    const freshVideos = basicVideos.filter(
+      (v) => new Date(v.publishedAt).getTime() >= twentyFourHoursAgo.getTime()
+    );
+
+    if (freshVideos.length === 0) {
       await prisma.youTubeSource.update({ where: { id }, data: { lastFetchedAt: new Date() } });
-      return NextResponse.json({ ok: true, discovered: 0, message: "No new videos found" });
+      return NextResponse.json({ ok: true, discovered: 0, message: "No new videos found in the last 24 hours" });
     }
 
-    const details = await getVideoDetails(basicVideos.map((v) => v.videoId));
+    const details = await getVideoDetails(freshVideos.map((v) => v.videoId));
     const detailsMap = new Map(details.map((d) => [d.videoId, d]));
 
     let discovered = 0;
-    for (const video of basicVideos) {
+    for (const video of freshVideos) {
       const stats = detailsMap.get(video.videoId);
       await prisma.sourcedVideo.upsert({
         where: { sourceId_youtubeVideoId: { sourceId: source.id, youtubeVideoId: video.videoId } },
