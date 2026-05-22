@@ -18,6 +18,7 @@ export interface ComposeOptions {
   videoLength: number;
   trackStart: number;
   outputPath: string;          // local path
+  curveText?: boolean;
 }
 
 const FONT_URLS: Record<string, string> = {
@@ -28,7 +29,17 @@ const FONT_URLS: Record<string, string> = {
   "Playfair Display": "https://github.com/google/fonts/raw/main/ofl/playfairdisplay/static/PlayfairDisplay-Bold.ttf",
   "PlayfairDisplay-Bold": "https://github.com/google/fonts/raw/main/ofl/playfairdisplay/static/PlayfairDisplay-Bold.ttf",
   "Great Vibes": "https://github.com/google/fonts/raw/main/ofl/greatvibes/GreatVibes-Regular.ttf",
-  "GreatVibes-Regular": "https://github.com/google/fonts/raw/main/ofl/greatvibes/GreatVibes-Regular.ttf"
+  "GreatVibes-Regular": "https://github.com/google/fonts/raw/main/ofl/greatvibes/GreatVibes-Regular.ttf",
+  "Anton": "https://github.com/google/fonts/raw/main/ofl/anton/Anton-Regular.ttf",
+  "Anton-Regular": "https://github.com/google/fonts/raw/main/ofl/anton/Anton-Regular.ttf",
+  "Oswald": "https://github.com/google/fonts/raw/main/ofl/oswald/static/Oswald-Bold.ttf",
+  "Oswald-Bold": "https://github.com/google/fonts/raw/main/ofl/oswald/static/Oswald-Bold.ttf",
+  "Montserrat": "https://github.com/google/fonts/raw/main/ofl/montserrat/static/Montserrat-Bold.ttf",
+  "Montserrat-Bold": "https://github.com/google/fonts/raw/main/ofl/montserrat/static/Montserrat-Bold.ttf",
+  "Caveat": "https://github.com/google/fonts/raw/main/ofl/caveat/static/Caveat-Bold.ttf",
+  "Caveat-Bold": "https://github.com/google/fonts/raw/main/ofl/caveat/static/Caveat-Bold.ttf",
+  "Lora": "https://github.com/google/fonts/raw/main/ofl/lora/static/Lora-Bold.ttf",
+  "Lora-Bold": "https://github.com/google/fonts/raw/main/ofl/lora/static/Lora-Bold.ttf"
 };
 
 /**
@@ -168,7 +179,8 @@ export async function composeVideo(options: ComposeOptions): Promise<string> {
     lineSpacing,
     videoLength,
     trackStart,
-    outputPath
+    outputPath,
+    curveText = false
   } = options;
 
   // 1. Resolve font path
@@ -216,6 +228,44 @@ export async function composeVideo(options: ComposeOptions): Promise<string> {
   const escapedFontPath = resolvedFont.replace(/\\/g, "/").replace(/:/g, "\\:");
   const escapedTextFilePath = textFilePath.replace(/\\/g, "/").replace(/:/g, "\\:");
 
+  // Build the filter complex string
+  let filterComplex = "";
+  if (curveText) {
+    let boxColorHex = "black";
+    let boxAlpha = 102; // default 40% (0.4 * 255)
+    if (boxColor && boxColor.toLowerCase() !== "none") {
+      const parts = boxColor.split("@");
+      if (parts.length === 2) {
+        boxColorHex = formatFfmpegColor(parts[0]);
+        const parsedAlpha = parseFloat(parts[1]);
+        if (!isNaN(parsedAlpha)) {
+          boxAlpha = Math.round(parsedAlpha * 255);
+        }
+      } else {
+        boxColorHex = formatFfmpegColor(boxColor);
+        boxAlpha = 255;
+      }
+    }
+    const linesCount = fullText.split("\n").length;
+    const cardW = 600;
+    // Estimated card height based on font size and lines count
+    const cardH = Math.round(linesCount * (fontSize + lineSpacing) + 60);
+
+    filterComplex = [
+      `[0:v]scale='if(gte(iw/ih,720/1280),-1,720)':'if(gte(iw/ih,720/1280),1280,-1)',crop=720:1280[bg]`,
+      `color=c=${boxColorHex}:s=${cardW}x${cardH}:d=${videoLength}[card]`,
+      `[card]geq=a='if(lt(X,30),if(lt(Y,30),if(gt((30-X)*(30-X)+(30-Y)*(30-Y),900),0,${boxAlpha}),if(gt(Y,H-30),if(gt((30-X)*(30-X)+(Y-(H-30))*(Y-(H-30)),900),0,${boxAlpha}),${boxAlpha})),if(gt(X,W-30),if(lt(Y,30),if(gt((X-(W-30))*(X-(W-30))+(30-Y)*(30-Y),900),0,${boxAlpha}),if(gt(Y,H-30),if(gt((X-(W-30))*(X-(W-30))+(Y-(H-30))*(Y-(H-30)),900),0,${boxAlpha}),${boxAlpha})),${boxAlpha}))'[curved_card]`,
+      `[bg][curved_card]overlay=x=(W-w)/2:y=(H-h)/2[overlayed_bg]`,
+      `[overlayed_bg]drawtext=fontfile='${escapedFontPath}':textfile='${escapedTextFilePath}':fontcolor=${drawFontColor}:fontsize=${fontSize}:x=(w-text_w)/2:y=(h-text_h)/2:line_spacing=${lineSpacing}${drawShadowStr}:alpha='if(lt(t,0.5),t/0.5,if(gt(t,${videoLength}-0.5),(${videoLength}-t)/0.5,1))'[v]`,
+      `[1:a]afade=t=out:st=${fadeStart}:d=1[a]`
+    ].join(";");
+  } else {
+    filterComplex = [
+      `[0:v]scale='if(gte(iw/ih,720/1280),-1,720)':'if(gte(iw/ih,720/1280),1280,-1)',crop=720:1280,drawtext=fontfile='${escapedFontPath}':textfile='${escapedTextFilePath}':fontcolor=${drawFontColor}:fontsize=${fontSize}:x=(w-text_w)/2:y=(h-text_h)/2:line_spacing=${lineSpacing}${drawBoxStr}${drawShadowStr}:alpha='if(lt(t,0.5),t/0.5,if(gt(t,${videoLength}-0.5),(${videoLength}-t)/0.5,1))'[v]`,
+      `[1:a]afade=t=out:st=${fadeStart}:d=1[a]`
+    ].join(";");
+  }
+
   return new Promise((resolve, reject) => {
     // Construct single-pass FFmpeg command
     // Loops background infinitely, crops/scales to 9:16 720x1280, overlay text box, fading in first 0.5s & out last 0.5s
@@ -228,7 +278,7 @@ export async function composeVideo(options: ComposeOptions): Promise<string> {
       `-t ${videoLength}`,
       `-i "${audioPath}"`,
       "-filter_complex",
-      `"[0:v]scale='if(gte(iw/ih,720/1280),-1,720)':'if(gte(iw/ih,720/1280),1280,-1)',crop=720:1280,drawtext=fontfile='${escapedFontPath}':textfile='${escapedTextFilePath}':fontcolor=${drawFontColor}:fontsize=${fontSize}:x=(w-text_w)/2:y=(h-text_h)/2:line_spacing=${lineSpacing}${drawBoxStr}${drawShadowStr}:alpha='if(lt(t,0.5),t/0.5,if(gt(t,${videoLength}-0.5),(${videoLength}-t)/0.5,1))'[v];[1:a]afade=t=out:st=${fadeStart}:d=1[a]"`,
+      `"${filterComplex}"`,
       '-map "[v]"',
       '-map "[a]"',
       "-c:v libx264",

@@ -33,7 +33,7 @@ const DEMO_CAMPAIGNS: any = {
   }
 };
 
-export default async function CampaignDetailPage({ params }: { params: { id: string } }) {
+export default async function CampaignDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const session = await getSession();
   if (!session) redirect("/login");
 

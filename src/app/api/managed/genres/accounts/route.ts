@@ -25,7 +25,17 @@ export async function GET() {
         driveFolderName: true,
         group: {
           select: {
+            id: true,
             name: true,
+            slug: true,
+            section: {
+              select: {
+                id: true,
+                name: true,
+                slug: true,
+                color: true,
+              }
+            }
           },
         },
         genreConfigs: {
@@ -102,6 +112,7 @@ export async function POST(req: Request) {
       const boxColor = formData.get("boxColor") as string || "black@0.4";
       const shadowColor = formData.get("shadowColor") as string || "black@0.6";
       const lineSpacing = parseInt(formData.get("lineSpacing") as string || "10", 10);
+      const curveText = formData.get("curveText") === "true";
 
       // Upsert style configuration
       configRecord = await prisma.accountGenreConfig.upsert({
@@ -122,6 +133,7 @@ export async function POST(req: Request) {
           boxColor: boxColor.trim(),
           shadowColor: shadowColor.trim(),
           lineSpacing,
+          curveText,
         },
         update: {
           themeText: themeText.trim(),
@@ -132,6 +144,7 @@ export async function POST(req: Request) {
           boxColor: boxColor.trim(),
           shadowColor: shadowColor.trim(),
           lineSpacing,
+          curveText,
         },
       });
       console.log(`[Genre Accounts API] Upserted quote configurations for account ${accountId}`);

@@ -3,7 +3,7 @@ import { prisma } from "@/lib/db";
 import { notFound, redirect } from "next/navigation";
 import CompliantComposer from "@/components/composer/CompliantComposer";
 
-export default async function PublishingPage({ params }: { params: { id: string } }) {
+export default async function PublishingPage({ params }: { params: Promise<{ id: string }> }) {
   const session = await getSession();
   if (!session) redirect("/login");
 

@@ -534,6 +534,10 @@ model Track {
   duration        Float
   defaultStart    Float            @default(0.0)
   defaultDuration Float            @default(7.0)
+  genre           String?
+  musician        String?
+  campaignOn      Boolean          @default(false)
+  campaignActiveAt DateTime?
   createdAt       DateTime         @default(now())
   updatedAt       DateTime         @updatedAt
   batchItems      GenreBatchItem[]
@@ -552,6 +556,7 @@ model AccountGenreConfig {
   boxColor       String         @default("black@0.4")
   shadowColor    String         @default("black@0.6")
   lineSpacing    Int            @default(10)
+  curveText      Boolean        @default(false)
   createdAt      DateTime       @default(now())
   updatedAt      DateTime       @updatedAt
 

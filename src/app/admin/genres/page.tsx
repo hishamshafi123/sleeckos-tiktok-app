@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef } from "react";
 import { 
   Sparkles, Music, Sliders, Play, Pause, Trash2, Plus, 
-  Upload, Film, CheckCircle2, AlertCircle, RefreshCw, ChevronRight, Check, X
+  Upload, Film, CheckCircle2, AlertCircle, RefreshCw, ChevronRight, ChevronDown, Check, X, Lock, Tag, Folder, Eye, Filter
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -18,6 +18,12 @@ interface Track {
   duration: number;
   defaultStart: number;
   defaultDuration: number;
+  genre: string | null;
+  musician: string | null;
+  campaignOn: boolean;
+  campaignActiveAt: string | null;
+  videosPosted?: number;
+  totalViews?: number;
   createdAt: string;
 }
 
@@ -37,6 +43,7 @@ interface GenreConfig {
   boxColor: string;
   shadowColor: string;
   lineSpacing: number;
+  curveText: boolean;
 }
 
 interface Account {
@@ -46,7 +53,17 @@ interface Account {
   tiktokAvatarUrl: string;
   driveFolderId: string | null;
   driveFolderName: string | null;
-  group: { name: string } | null;
+  group: {
+    id: string;
+    name: string;
+    slug: string;
+    section: {
+      id: string;
+      name: string;
+      slug: string;
+      color: string;
+    } | null;
+  } | null;
   genreConfigs: GenreConfig[];
   backgroundVideos: BackgroundVideo[];
 }
@@ -80,6 +97,96 @@ interface BatchItem {
   };
 }
 
+// Helper to recursively group accounts by Niche (Section) -> Group -> Account
+interface NicheGrouped {
+  id: string;
+  name: string;
+  slug: string;
+  color: string;
+  groups: {
+    id: string;
+    name: string;
+    slug: string;
+    accounts: Account[];
+  }[];
+}
+
+function getNicheGrouped(accountsList: Account[]): NicheGrouped[] {
+  const nichesMap: Record<string, NicheGrouped> = {};
+  const uncategorizedNiche: NicheGrouped = {
+    id: "uncategorized",
+    name: "Uncategorized Niches",
+    slug: "uncategorized",
+    color: "#9ca3af",
+    groups: []
+  };
+  const uncategorizedGroup = {
+    id: "uncategorized",
+    name: "Uncategorized Groups",
+    slug: "uncategorized",
+    accounts: [] as Account[]
+  };
+
+  accountsList.forEach(acc => {
+    const sec = acc.group?.section;
+    const grp = acc.group;
+
+    if (sec && grp) {
+      if (!nichesMap[sec.id]) {
+        nichesMap[sec.id] = {
+          id: sec.id,
+          name: sec.name,
+          slug: sec.slug,
+          color: sec.color || "#8b5cf6",
+          groups: []
+        };
+      }
+      let g = nichesMap[sec.id].groups.find(x => x.id === grp.id);
+      if (!g) {
+        g = {
+          id: grp.id,
+          name: grp.name,
+          slug: grp.slug,
+          accounts: []
+        };
+        nichesMap[sec.id].groups.push(g);
+      }
+      g.accounts.push(acc);
+    } else if (grp) {
+      let g = uncategorizedNiche.groups.find(x => x.id === grp.id);
+      if (!g) {
+        g = {
+          id: grp.id,
+          name: grp.name,
+          slug: grp.slug,
+          accounts: []
+        };
+        uncategorizedNiche.groups.push(g);
+      }
+      g.accounts.push(acc);
+    } else {
+      uncategorizedGroup.accounts.push(acc);
+    }
+  });
+
+  const result = Object.values(nichesMap);
+  if (uncategorizedNiche.groups.length > 0) {
+    result.push(uncategorizedNiche);
+  }
+  if (uncategorizedGroup.accounts.length > 0) {
+    if (uncategorizedNiche.groups.length === 0) {
+      uncategorizedNiche.groups.push(uncategorizedGroup);
+      result.push(uncategorizedNiche);
+    } else {
+      const existingUncat = result.find(r => r.id === "uncategorized");
+      if (existingUncat) {
+        existingUncat.groups.push(uncategorizedGroup);
+      }
+    }
+  }
+  return result;
+}
+
 export default function GenresDashboard() {
   const [activeTab, setActiveTab] = useState<TabType>("accounts");
 
@@ -100,10 +207,19 @@ export default function GenresDashboard() {
   // 1. Tracks Library State
   const [trackTitle, setTrackTitle] = useState("");
   const [trackArtist, setTrackArtist] = useState("");
+  const [trackGenre, setTrackGenre] = useState("");
+  const [trackMusician, setTrackMusician] = useState("");
   const [trackStart, setTrackStart] = useState("0");
   const [trackDuration, setTrackDuration] = useState("7");
   const [audioFile, setAudioFile] = useState<File | null>(null);
   const [uploadingTrack, setUploadingTrack] = useState(false);
+  
+  // Tracks Library Filter states
+  const [filterGenre, setFilterGenre] = useState("all");
+  const [filterMusician, setFilterMusician] = useState("all");
+  const [filterCampaign, setFilterCampaign] = useState("all"); // "all" | "active"
+  const [searchTrackQuery, setSearchTrackQuery] = useState("");
+  const [previewBgIndex, setPreviewBgIndex] = useState(0);
   
   // Audio Player State
   const [playingTrackId, setPlayingTrackId] = useState<string | null>(null);
@@ -118,10 +234,23 @@ export default function GenresDashboard() {
   const [boxColor, setBoxColor] = useState("black@0.4");
   const [shadowColor, setShadowColor] = useState("black@0.6");
   const [lineSpacing, setLineSpacing] = useState(10);
+  const [curveText, setCurveText] = useState(false);
   const [uploadingBg, setUploadingBg] = useState(false);
   const [savingConfig, setSavingConfig] = useState(false);
 
-  // 3. Batch Wizard State
+  // Cascading Dropdown Selectors for Niche & Group under Accounts Config Tab
+  const [selectedNicheFilter, setSelectedNicheFilter] = useState("all");
+  const [selectedGroupFilter, setSelectedGroupFilter] = useState("all");
+
+  // Cascading Dropdown Selectors for Niche & Group under Composer Wizard Tab
+  const [wizardNicheFilter, setWizardNicheFilter] = useState("all");
+  const [wizardGroupFilter, setWizardGroupFilter] = useState("all");
+
+  // Sidebar and selections collapsible state
+  const [expandedNiches, setExpandedNiches] = useState<Record<string, boolean>>({});
+  const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
+
+  // Batch Wizard State
   const [wizardStep, setWizardStep] = useState(1);
   const [batchPostsTotal, setBatchPostsTotal] = useState(10);
   const [postsPerAccount, setPostsPerAccount] = useState(2);
@@ -139,11 +268,21 @@ export default function GenresDashboard() {
   const [audioReuseMax, setAudioReuseMax] = useState(2);
   const [triggeringRender, setTriggeringRender] = useState(false);
 
-  // Fetch initial data
+  // Fetch initial data & load google fonts for preview
   useEffect(() => {
     fetchTracks();
     fetchAccounts();
     fetchBatches();
+
+    // Inject Google Fonts link for preview styling
+    const id = "google-fonts-preview";
+    if (!document.getElementById(id)) {
+      const link = document.createElement("link");
+      link.id = id;
+      link.rel = "stylesheet";
+      link.href = "https://fonts.googleapis.com/css2?family=Anton&family=Caveat:wght@700&family=Great+Vibes&family=Inter:wght@700&family=Lora:ital,wght@0,700;1,700&family=Montserrat:wght@700&family=Oswald:wght@700&family=Outfit:wght@700&family=Playfair+Display:ital,wght@0,700;1,700&display=swap";
+      document.head.appendChild(link);
+    }
   }, []);
 
   // Set default form values when account selection changes
@@ -158,8 +297,12 @@ export default function GenresDashboard() {
       setBoxColor(config?.boxColor || "black@0.4");
       setShadowColor(config?.shadowColor || "black@0.6");
       setLineSpacing(config?.lineSpacing || 10);
+      setCurveText(config?.curveText || false);
+      setPreviewBgIndex(0);
     } else {
       setThemeText("");
+      setCurveText(false);
+      setPreviewBgIndex(0);
     }
   }, [selectedAccountId, accounts]);
 
@@ -259,6 +402,8 @@ export default function GenresDashboard() {
     data.append("artist", trackArtist);
     data.append("defaultStart", trackStart);
     data.append("defaultDuration", trackDuration);
+    data.append("genre", trackGenre);
+    data.append("musician", trackMusician);
 
     // Read audio duration using browser capabilities
     try {
@@ -280,6 +425,8 @@ export default function GenresDashboard() {
         toast.success("Music track uploaded successfully");
         setTrackTitle("");
         setTrackArtist("");
+        setTrackGenre("");
+        setTrackMusician("");
         setTrackStart("0");
         setTrackDuration("7");
         setAudioFile(null);
@@ -312,6 +459,27 @@ export default function GenresDashboard() {
     }
   };
 
+  const handleToggleCampaign = async (track: Track) => {
+    try {
+      const res = await fetch("/api/managed/genres/tracks", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: track.id,
+          campaignOn: !track.campaignOn,
+        }),
+      });
+      if (res.ok) {
+        toast.success(`Campaign turned ${!track.campaignOn ? "ON" : "OFF"} for "${track.title}"`);
+        fetchTracks();
+      } else {
+        toast.error("Failed to toggle campaign");
+      }
+    } catch {
+      toast.error("Error toggling campaign");
+    }
+  };
+
   // Configurations Actions
   const handleSaveConfig = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -328,6 +496,7 @@ export default function GenresDashboard() {
     data.append("boxColor", boxColor);
     data.append("shadowColor", shadowColor);
     data.append("lineSpacing", lineSpacing.toString());
+    data.append("curveText", curveText.toString());
 
     try {
       const res = await fetch("/api/managed/genres/accounts", {
@@ -387,6 +556,108 @@ export default function GenresDashboard() {
       }
     } catch {
       toast.error("Error removing background");
+    }
+  };
+
+  // Visual CSS and Casing Helpers
+  const getCssFontFamily = (font: string) => {
+    switch (font) {
+      case "Outfit-Bold": return "'Outfit', sans-serif";
+      case "Inter-Bold": return "'Inter', sans-serif";
+      case "PlayfairDisplay-Bold": return "'Playfair Display', serif";
+      case "GreatVibes-Regular": return "'Great Vibes', cursive";
+      case "Anton": return "'Anton', sans-serif";
+      case "Caveat": return "'Caveat', cursive";
+      case "Lora": return "'Lora', serif";
+      case "Montserrat": return "'Montserrat', sans-serif";
+      case "Oswald": return "'Oswald', sans-serif";
+      default: return "'Outfit', sans-serif";
+    }
+  };
+
+  const getCssRgba = (colorStr: string) => {
+    if (!colorStr || colorStr === "none") return "transparent";
+    const parts = colorStr.split("@");
+    const color = parts[0];
+    const opacity = parts[1] || "1";
+    if (color === "black") {
+      return `rgba(0, 0, 0, ${opacity})`;
+    }
+    if (color === "white") {
+      return `rgba(255, 255, 255, ${opacity})`;
+    }
+    return `rgba(0, 0, 0, ${opacity})`;
+  };
+
+  const getCssTextShadow = (shadowStr: string) => {
+    if (!shadowStr || shadowStr === "none") return "none";
+    const parts = shadowStr.split("@");
+    const opacity = parts[1] || "1";
+    return `2px 2px 4px rgba(0, 0, 0, ${opacity})`;
+  };
+
+  const applyTextCase = (text: string, casing: string) => {
+    if (!text) return "";
+    switch (casing) {
+      case "UPPERCASE": return text.toUpperCase();
+      case "Title Case": 
+        return text.replace(/\w\S*/g, (txt) => txt.charAt(0).toUpperCase() + txt.substr(1).toLowerCase());
+      case "lowercase": return text.toLowerCase();
+      default: return text;
+    }
+  };
+
+  // Niche and Group collapsing helpers
+  const toggleNicheCollapse = (nicheId: string) => {
+    setExpandedNiches(prev => ({
+      ...prev,
+      [nicheId]: !prev[nicheId]
+    }));
+  };
+
+  const toggleGroupCollapse = (groupId: string) => {
+    setExpandedGroups(prev => ({
+      ...prev,
+      [groupId]: !prev[groupId]
+    }));
+  };
+
+  // Bulk selectors for wizard
+  const toggleSelectNiche = (niche: NicheGrouped, select: boolean) => {
+    const validAccs = niche.groups.flatMap(g => g.accounts).filter(acc => {
+      const isConfigured = acc.genreConfigs.length > 0;
+      const hasBgs = acc.backgroundVideos.length > 0;
+      return isConfigured && hasBgs && acc.driveFolderId;
+    });
+    const validIds = validAccs.map(a => a.id);
+
+    if (select) {
+      const newSelections = Array.from(new Set([...selectedBatchAccountIds, ...validIds]));
+      setSelectedBatchAccountIds(newSelections);
+      setBatchPostsTotal(newSelections.length * postsPerAccount);
+    } else {
+      const newSelections = selectedBatchAccountIds.filter(id => !validIds.includes(id));
+      setSelectedBatchAccountIds(newSelections);
+      setBatchPostsTotal(newSelections.length * postsPerAccount);
+    }
+  };
+
+  const toggleSelectGroup = (group: { id: string; name: string; slug: string; accounts: Account[] }, select: boolean) => {
+    const validAccs = group.accounts.filter(acc => {
+      const isConfigured = acc.genreConfigs.length > 0;
+      const hasBgs = acc.backgroundVideos.length > 0;
+      return isConfigured && hasBgs && acc.driveFolderId;
+    });
+    const validIds = validAccs.map(a => a.id);
+
+    if (select) {
+      const newSelections = Array.from(new Set([...selectedBatchAccountIds, ...validIds]));
+      setSelectedBatchAccountIds(newSelections);
+      setBatchPostsTotal(newSelections.length * postsPerAccount);
+    } else {
+      const newSelections = selectedBatchAccountIds.filter(id => !validIds.includes(id));
+      setSelectedBatchAccountIds(newSelections);
+      setBatchPostsTotal(newSelections.length * postsPerAccount);
     }
   };
 
@@ -605,6 +876,33 @@ export default function GenresDashboard() {
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="block text-xs uppercase tracking-wider font-bold text-gray-400 mb-2">
+                    Genre / Mood
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="e.g. Stoic, Sad, Piano"
+                    value={trackGenre}
+                    onChange={(e) => setTrackGenre(e.target.value)}
+                    className="w-full bg-[#141423] border border-white/5 rounded-2xl px-4 py-3 text-sm text-white focus:outline-none focus:border-amber-500/50 focus:ring-1 focus:ring-amber-500/30"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs uppercase tracking-wider font-bold text-gray-400 mb-2">
+                    Musician / Composer
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="e.g. Chopin, Hans Zimmer"
+                    value={trackMusician}
+                    onChange={(e) => setTrackMusician(e.target.value)}
+                    className="w-full bg-[#141423] border border-white/5 rounded-2xl px-4 py-3 text-sm text-white focus:outline-none focus:border-amber-500/50 focus:ring-1 focus:ring-amber-500/30"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs uppercase tracking-wider font-bold text-gray-400 mb-2">
                     Start Trim (s)
                   </label>
                   <input
@@ -677,65 +975,226 @@ export default function GenresDashboard() {
               Library Music Tracks ({tracks.length})
             </h2>
 
-            {loadingTracks ? (
-              <div className="flex justify-center items-center py-24">
-                <RefreshCw className="w-8 h-8 text-amber-500 animate-spin" />
-              </div>
-            ) : tracks.length === 0 ? (
-              <div className="bg-[#0d0d16] border border-white/5 p-12 text-center rounded-3xl">
-                <p className="text-gray-500 text-sm">No tracks uploaded in the library yet. Start by uploading one!</p>
-              </div>
-            ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {tracks.map((track) => (
-                  <div 
-                    key={track.id} 
-                    className={`bg-[#0d0d16] border rounded-3xl p-5 flex flex-col justify-between space-y-4 transition-all duration-300 ${
-                      playingTrackId === track.id ? "border-amber-500/40 shadow-lg shadow-amber-500/5 bg-[#141221]" : "border-white/5 hover:border-white/10"
-                    }`}
-                  >
-                    <div className="flex justify-between items-start">
-                      <div className="space-y-1">
-                        <h3 className="font-bold text-white text-base leading-tight">{track.title}</h3>
-                        <p className="text-xs text-gray-400 font-medium">{track.artist}</p>
-                      </div>
-                      <button
-                        onClick={() => handleDeleteTrack(track.id)}
-                        className="text-gray-600 hover:text-red-400 p-2 hover:bg-red-400/10 rounded-xl transition-all duration-300"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    </div>
+            {/* Search & Filter Controls */}
+            {(() => {
+              const uniqueGenres = Array.from(new Set(tracks.map(t => t.genre).filter(Boolean))) as string[];
+              const uniqueMusicians = Array.from(new Set(tracks.map(t => t.musician).filter(Boolean))) as string[];
 
-                    <div className="bg-[#141423] p-3 rounded-2xl flex items-center justify-between gap-4">
-                      <div className="flex items-center gap-3">
-                        <button
-                          onClick={() => togglePlayTrack(track)}
-                          className="bg-amber-500/15 hover:bg-amber-500 text-amber-400 hover:text-black p-3 rounded-xl transition-all duration-300"
+              const filteredTracks = tracks.filter(t => {
+                const matchesSearch = 
+                  t.title.toLowerCase().includes(searchTrackQuery.toLowerCase()) ||
+                  t.artist.toLowerCase().includes(searchTrackQuery.toLowerCase()) ||
+                  (t.genre && t.genre.toLowerCase().includes(searchTrackQuery.toLowerCase())) ||
+                  (t.musician && t.musician.toLowerCase().includes(searchTrackQuery.toLowerCase()));
+                  
+                const matchesGenre = filterGenre === "all" || t.genre === filterGenre;
+                const matchesMusician = filterMusician === "all" || t.musician === filterMusician;
+                const matchesCampaign = filterCampaign === "all" || (filterCampaign === "active" && t.campaignOn);
+                
+                return matchesSearch && matchesGenre && matchesMusician && matchesCampaign;
+              });
+
+              return (
+                <div className="space-y-4">
+                  <div className="bg-[#0d0d16] border border-white/5 p-4 rounded-3xl space-y-3 shadow-xl">
+                    <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+                      <div className="md:col-span-2 relative">
+                        <input
+                          type="text"
+                          placeholder="Search title, artist, genre..."
+                          value={searchTrackQuery}
+                          onChange={(e) => setSearchTrackQuery(e.target.value)}
+                          className="w-full bg-[#141423] border border-white/5 rounded-2xl pl-10 pr-4 py-2.5 text-xs text-white focus:outline-none focus:border-amber-500/30"
+                        />
+                        <Filter className="absolute left-3.5 top-3 w-3.5 h-3.5 text-gray-500" />
+                      </div>
+                      
+                      <div>
+                        <select
+                          value={filterGenre}
+                          onChange={(e) => setFilterGenre(e.target.value)}
+                          className="w-full bg-[#141423] border border-white/5 rounded-2xl px-3 py-2.5 text-xs text-white focus:outline-none"
                         >
-                          {playingTrackId === track.id ? (
-                            <Pause className="w-4 h-4 fill-current" />
-                          ) : (
-                            <Play className="w-4 h-4 fill-current" />
-                          )}
+                          <option value="all">All Genres</option>
+                          {uniqueGenres.map(g => (
+                            <option key={g} value={g}>{g}</option>
+                          ))}
+                        </select>
+                      </div>
+                      
+                      <div>
+                        <select
+                          value={filterMusician}
+                          onChange={(e) => setFilterMusician(e.target.value)}
+                          className="w-full bg-[#141423] border border-white/5 rounded-2xl px-3 py-2.5 text-xs text-white focus:outline-none"
+                        >
+                          <option value="all">All Musicians</option>
+                          {uniqueMusicians.map(m => (
+                            <option key={m} value={m}>{m}</option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+                    
+                    <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
+                      <div className="flex gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setFilterCampaign(filterCampaign === "all" ? "active" : "all")}
+                          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all border ${
+                            filterCampaign === "active"
+                              ? "bg-green-500/10 text-green-400 border-green-500/20 shadow-lg shadow-green-500/5"
+                              : "bg-[#141423] text-gray-400 border-white/5 hover:text-white"
+                          }`}
+                        >
+                          <Tag className="w-3.5 h-3.5" />
+                          Campaign Active Only
                         </button>
-                        <div className="text-xs space-y-0.5">
-                          <p className="text-gray-400 font-semibold">Trim Config</p>
-                          <p className="text-gray-500 font-medium">
-                            Start: <span className="text-amber-400">{track.defaultStart}s</span> | Duration: <span className="text-purple-400">{track.defaultDuration}s</span>
-                          </p>
-                        </div>
+                        
+                        {(searchTrackQuery || filterGenre !== "all" || filterMusician !== "all" || filterCampaign !== "all") && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setSearchTrackQuery("");
+                              setFilterGenre("all");
+                              setFilterMusician("all");
+                              setFilterCampaign("all");
+                            }}
+                            className="text-xs text-amber-400 hover:text-amber-300 font-bold px-2 py-1.5"
+                          >
+                            Reset Filters
+                          </button>
+                        )}
                       </div>
 
-                      <div className="text-right text-xs">
-                        <p className="text-gray-500 font-medium">Total Length</p>
-                        <p className="text-white font-bold">{track.duration.toFixed(1)}s</p>
-                      </div>
+                      <span className="text-[10px] text-gray-500 font-semibold uppercase tracking-wider">
+                        Showing {filteredTracks.length} of {tracks.length} tracks
+                      </span>
                     </div>
                   </div>
-                ))}
-              </div>
-            )}
+
+                  {loadingTracks ? (
+                    <div className="flex justify-center items-center py-24">
+                      <RefreshCw className="w-8 h-8 text-amber-500 animate-spin" />
+                    </div>
+                  ) : filteredTracks.length === 0 ? (
+                    <div className="bg-[#0d0d16] border border-white/5 p-12 text-center rounded-3xl">
+                      <p className="text-gray-500 text-sm">No tracks matched your active filter settings.</p>
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      {filteredTracks.map((track) => (
+                        <div 
+                          key={track.id} 
+                          className={`bg-[#0d0d16] border rounded-3xl p-5 flex flex-col justify-between space-y-4 transition-all duration-300 ${
+                            playingTrackId === track.id ? "border-amber-500/40 shadow-lg shadow-amber-500/5 bg-[#141221]" : "border-white/5 hover:border-white/10"
+                          }`}
+                        >
+                          {/* Title block */}
+                          <div className="flex justify-between items-start">
+                            <div className="space-y-1 overflow-hidden">
+                              <h3 className="font-bold text-white text-base leading-tight truncate">{track.title}</h3>
+                              <p className="text-xs text-gray-400 font-medium truncate">{track.artist}</p>
+                              
+                              {/* Genre & Musician badges */}
+                              <div className="flex flex-wrap gap-1.5 pt-1">
+                                {track.genre && (
+                                  <span className="text-[9px] font-bold uppercase tracking-wider px-2 py-0.5 bg-purple-500/10 text-purple-400 border border-purple-500/15 rounded-md">
+                                    {track.genre}
+                                  </span>
+                                )}
+                                {track.musician && (
+                                  <span className="text-[9px] font-bold uppercase tracking-wider px-2 py-0.5 bg-blue-500/10 text-blue-400 border border-blue-500/15 rounded-md">
+                                    {track.musician}
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                            
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteTrack(track.id)}
+                              className="text-gray-600 hover:text-red-400 p-2 hover:bg-red-400/10 rounded-xl transition-all duration-300"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </div>
+
+                          {/* Trim Settings */}
+                          <div className="bg-[#141423] p-3 rounded-2xl flex items-center justify-between gap-4">
+                            <div className="flex items-center gap-3">
+                              <button
+                                type="button"
+                                onClick={() => togglePlayTrack(track)}
+                                className="bg-amber-500/15 hover:bg-amber-500 text-amber-400 hover:text-black p-3 rounded-xl transition-all duration-300"
+                              >
+                                {playingTrackId === track.id ? (
+                                  <Pause className="w-4 h-4 fill-current" />
+                                ) : (
+                                  <Play className="w-4 h-4 fill-current" />
+                                )}
+                              </button>
+                              <div className="text-xs space-y-0.5">
+                                <p className="text-gray-400 font-semibold">Trim Config</p>
+                                <p className="text-gray-500 font-medium">
+                                  Start: <span className="text-amber-400">{track.defaultStart}s</span> | Duration: <span className="text-purple-400">{track.defaultDuration}s</span>
+                                </p>
+                              </div>
+                            </div>
+
+                            <div className="text-right text-xs">
+                              <p className="text-gray-500 font-medium">Total Length</p>
+                              <p className="text-white font-bold">{track.duration.toFixed(1)}s</p>
+                            </div>
+                          </div>
+
+                          {/* Campaign controls */}
+                          <div className="border-t border-white/5 pt-3.5 space-y-3">
+                            <div className="flex items-center justify-between">
+                              <div className="flex items-center gap-2">
+                                <label className="relative inline-flex items-center cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    checked={track.campaignOn}
+                                    onChange={() => handleToggleCampaign(track)}
+                                    className="sr-only peer"
+                                  />
+                                  <div className="w-9 h-5 bg-gray-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-gray-300 after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-green-500 peer-checked:after:bg-black peer-checked:after:border-black"></div>
+                                </label>
+                                <span className={`text-[10px] font-bold uppercase tracking-wider ${track.campaignOn ? "text-green-400" : "text-gray-500"}`}>
+                                  Campaign On/Off
+                                </span>
+                              </div>
+                              
+                              {track.campaignOn && (
+                                <span className="flex items-center gap-1 text-[9px] font-black uppercase tracking-widest text-green-400 bg-green-500/10 border border-green-500/15 px-2 py-0.5 rounded animate-pulse">
+                                  Active
+                                </span>
+                              )}
+                            </div>
+
+                            {/* Dynamic views / posted analytics statistics */}
+                            {track.campaignOn && (
+                              <div className="grid grid-cols-2 gap-2 bg-black/40 p-2.5 rounded-2xl border border-white/5 shadow-inner">
+                                <div className="text-center">
+                                  <p className="text-[9px] text-gray-500 uppercase tracking-wider font-bold">Videos Posted</p>
+                                  <p className="text-sm font-black text-amber-400 mt-0.5">{track.videosPosted || 0}</p>
+                                </div>
+                                <div className="text-center border-l border-white/5">
+                                  <p className="text-[9px] text-gray-500 uppercase tracking-wider font-bold">Total Views</p>
+                                  <p className="text-sm font-black text-purple-400 mt-0.5">{(track.totalViews || 0).toLocaleString()}</p>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
           </div>
         </div>
       )}
@@ -762,251 +1221,601 @@ export default function GenresDashboard() {
                 <p className="text-gray-500 text-sm">No managed accounts linked. Link accounts under Manage accounts panel first.</p>
               </div>
             ) : (
-              <div className="space-y-3">
-                {accounts.map((acc) => {
-                  const hasConfig = acc.genreConfigs.length > 0;
-                  const bgCount = acc.backgroundVideos.length;
-                  const active = selectedAccountId === acc.id;
-
-                  return (
-                    <button
-                      key={acc.id}
-                      onClick={() => setSelectedAccountId(acc.id)}
-                      className={`w-full text-left bg-[#0d0d16] border p-4 rounded-3xl transition-all duration-300 flex items-center justify-between gap-4 ${
-                        active 
-                          ? "border-amber-500/40 shadow-lg shadow-amber-500/5 bg-[#141221]" 
-                          : "border-white/5 hover:border-white/10 hover:bg-white/[0.02]"
-                      }`}
+              <div className="space-y-4">
+                {/* Modern cascading filter controls for Sidebar */}
+                <div className="bg-[#0c0c14]/85 border border-white/5 p-4 rounded-3xl space-y-3.5 shadow-xl">
+                  <div>
+                    <label className="block text-[10px] uppercase tracking-wider font-extrabold text-gray-500 mb-1.5">
+                      Filter by Niche
+                    </label>
+                    <select
+                      value={selectedNicheFilter}
+                      onChange={(e) => {
+                        setSelectedNicheFilter(e.target.value);
+                        setSelectedGroupFilter("all");
+                      }}
+                      className="w-full bg-[#141423] border border-white/5 rounded-2xl px-4 py-2.5 text-xs font-bold text-gray-300 focus:outline-none focus:border-amber-500/30"
                     >
-                      <div className="flex items-center gap-3">
-                        <img 
-                          src={acc.tiktokAvatarUrl || "https://www.tiktok.com/favicon.ico"} 
-                          alt={acc.tiktokUsername} 
-                          className="w-11 h-11 rounded-full border border-white/10 bg-white/5 object-cover"
-                        />
-                        <div className="space-y-0.5">
-                          <h3 className="font-bold text-white text-sm">@{acc.tiktokUsername}</h3>
-                          <p className="text-xs text-gray-500 font-medium">
-                            {acc.group?.name || "No Group"}
-                          </p>
-                        </div>
-                      </div>
+                      <option value="all">All Niches</option>
+                      {(() => {
+                        const sectionsMap = new Map();
+                        accounts.forEach(a => {
+                          const sec = a.group?.section;
+                          if (sec) {
+                            sectionsMap.set(sec.id, sec);
+                          }
+                        });
+                        return Array.from(sectionsMap.values()).map(sec => (
+                          <option key={sec.id} value={sec.id}>{sec.name}</option>
+                        ));
+                      })()}
+                      <option value="uncategorized">Uncategorized Niches</option>
+                    </select>
+                  </div>
 
-                      <div className="text-right space-y-1">
-                        {hasConfig ? (
-                          <span className="inline-block text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 bg-green-500/10 text-green-400 border border-green-500/15 rounded-md">
-                            Configured
-                          </span>
-                        ) : (
-                          <span className="inline-block text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 bg-amber-500/10 text-amber-400 border border-amber-500/15 rounded-md">
-                            No Config
-                          </span>
-                        )}
-                        <p className="text-[10px] text-gray-500 font-semibold uppercase tracking-wider">
-                          {bgCount} backgrounds
-                        </p>
+                  <div>
+                    <label className="block text-[10px] uppercase tracking-wider font-extrabold text-gray-500 mb-1.5">
+                      Filter by Group
+                    </label>
+                    <select
+                      value={selectedGroupFilter}
+                      onChange={(e) => setSelectedGroupFilter(e.target.value)}
+                      className="w-full bg-[#141423] border border-white/5 rounded-2xl px-4 py-2.5 text-xs font-bold text-gray-300 focus:outline-none focus:border-amber-500/30"
+                      disabled={selectedNicheFilter === "uncategorized"}
+                    >
+                      <option value="all">All Groups</option>
+                      {(() => {
+                        const groupsMap = new Map();
+                        accounts.forEach(a => {
+                          const grp = a.group;
+                          const sec = grp?.section;
+                          if (grp) {
+                            if (selectedNicheFilter === "all" || (sec && sec.id === selectedNicheFilter)) {
+                              groupsMap.set(grp.id, grp);
+                            }
+                          }
+                        });
+                        return Array.from(groupsMap.values()).map(grp => (
+                          <option key={grp.id} value={grp.id}>{grp.name}</option>
+                        ));
+                      })()}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-[10px] uppercase tracking-wider font-extrabold text-gray-500 mb-1.5">
+                      Account Fast-Select
+                    </label>
+                    <select
+                      value={selectedAccountId || ""}
+                      onChange={(e) => {
+                        if (e.target.value) {
+                          setSelectedAccountId(e.target.value);
+                        } else {
+                          setSelectedAccountId(null);
+                        }
+                      }}
+                      className="w-full bg-[#141423] border border-white/5 rounded-2xl px-4 py-2.5 text-xs font-bold text-gray-300 focus:outline-none focus:border-amber-500/30"
+                    >
+                      <option value="">-- Choose Account --</option>
+                      {(() => {
+                        return accounts
+                          .filter(a => {
+                            const sec = a.group?.section;
+                            const grp = a.group;
+                            
+                            if (selectedNicheFilter !== "all") {
+                              if (selectedNicheFilter === "uncategorized") {
+                                if (sec) return false;
+                              } else {
+                                if (!sec || sec.id !== selectedNicheFilter) return false;
+                              }
+                            }
+                            
+                            if (selectedGroupFilter !== "all") {
+                              if (!grp || grp.id !== selectedGroupFilter) return false;
+                            }
+                            
+                            return true;
+                          })
+                          .map(a => (
+                            <option key={a.id} value={a.id}>@{a.tiktokUsername}</option>
+                          ));
+                      })()}
+                    </select>
+                  </div>
+                </div>
+
+                {/* Filtered Collapsible visual tree */}
+                {(() => {
+                  const filteredList = accounts.filter(a => {
+                    const sec = a.group?.section;
+                    const grp = a.group;
+                    
+                    if (selectedNicheFilter !== "all") {
+                      if (selectedNicheFilter === "uncategorized") {
+                        if (sec) return false;
+                      } else {
+                        if (!sec || sec.id !== selectedNicheFilter) return false;
+                      }
+                    }
+                    
+                    if (selectedGroupFilter !== "all") {
+                      if (!grp || grp.id !== selectedGroupFilter) return false;
+                    }
+                    
+                    return true;
+                  });
+
+                  if (filteredList.length === 0) {
+                    return (
+                      <div className="bg-[#0d0d16] border border-white/5 p-8 text-center rounded-3xl">
+                        <p className="text-gray-500 text-xs font-semibold">No accounts match the selected filters.</p>
                       </div>
-                    </button>
-                  );
-                })}
+                    );
+                  }
+
+                  return getNicheGrouped(filteredList).map((niche) => {
+                    const isNicheExpanded = expandedNiches[niche.id] !== false;
+                    const nicheColor = niche.color || "#8b5cf6";
+                    const nicheAccounts = niche.groups.flatMap(g => g.accounts);
+                    const configuredCount = nicheAccounts.filter(a => a.genreConfigs.length > 0).length;
+
+                    return (
+                      <div key={niche.id} className="bg-[#0c0c14] border border-white/5 rounded-3xl overflow-hidden shadow-md">
+                        <button
+                          type="button"
+                          onClick={() => toggleNicheCollapse(niche.id)}
+                          style={{ borderLeftColor: nicheColor }}
+                          className="w-full flex items-center justify-between p-4 bg-[#11111c] hover:bg-[#151528]/80 text-left transition-all duration-300 border-l-4"
+                        >
+                          <div className="flex items-center gap-2 overflow-hidden mr-2">
+                            <Folder className="w-4 h-4 text-gray-400 flex-shrink-0" style={{ color: nicheColor }} />
+                            <span className="font-extrabold text-white text-xs uppercase tracking-wider truncate">
+                              {niche.name}
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-2 flex-shrink-0">
+                            <span className="text-[9px] font-bold text-gray-400 bg-white/5 border border-white/5 px-2 py-0.5 rounded-md">
+                              {configuredCount}/{nicheAccounts.length} Configured
+                            </span>
+                            {isNicheExpanded ? (
+                              <ChevronDown className="w-4 h-4 text-gray-500" />
+                            ) : (
+                              <ChevronRight className="w-4 h-4 text-gray-500" />
+                            )}
+                          </div>
+                        </button>
+
+                        {isNicheExpanded && (
+                          <div className="p-3 space-y-3 bg-[#0d0d16]/30 border-t border-white/5">
+                            {niche.groups.map((group) => {
+                              const isGroupExpanded = expandedGroups[group.id] !== false;
+                              const groupConfiguredCount = group.accounts.filter(a => a.genreConfigs.length > 0).length;
+
+                              return (
+                                <div key={group.id} className="space-y-2 border border-white/5 rounded-2xl bg-black/20 p-2.5">
+                                  <button
+                                    type="button"
+                                    onClick={() => toggleGroupCollapse(group.id)}
+                                    className="w-full flex items-center justify-between px-2.5 py-1 text-left transition-all hover:opacity-80"
+                                  >
+                                    <div className="flex items-center gap-2">
+                                      <Tag className="w-3.5 h-3.5 text-gray-400" />
+                                      <span className="font-bold text-gray-300 text-xs truncate">
+                                        {group.name}
+                                      </span>
+                                    </div>
+                                    <div className="flex items-center gap-1.5">
+                                      <span className="text-[8px] font-black uppercase text-gray-500">
+                                        {groupConfiguredCount}/{group.accounts.length}
+                                      </span>
+                                      {isGroupExpanded ? (
+                                        <ChevronDown className="w-3.5 h-3.5 text-gray-500" />
+                                      ) : (
+                                        <ChevronRight className="w-3.5 h-3.5 text-gray-500" />
+                                      )}
+                                    </div>
+                                  </button>
+
+                                  {isGroupExpanded && (
+                                    <div className="space-y-1.5 pl-2.5">
+                                      {group.accounts.map((acc) => {
+                                        const hasConfig = acc.genreConfigs.length > 0;
+                                        const bgCount = acc.backgroundVideos.length;
+                                        const active = selectedAccountId === acc.id;
+
+                                        return (
+                                          <button
+                                            key={acc.id}
+                                            type="button"
+                                            onClick={() => setSelectedAccountId(acc.id)}
+                                            className={`w-full text-left p-3 rounded-2xl transition-all duration-300 flex items-center justify-between gap-3 border ${
+                                              active 
+                                                ? "border-amber-500/40 shadow-lg shadow-amber-500/5 bg-[#141221]" 
+                                                : "border-white/5 hover:border-white/10 hover:bg-white/[0.01] bg-[#0f0f18]/60"
+                                            }`}
+                                          >
+                                            <div className="flex items-center gap-2.5 overflow-hidden">
+                                              <img 
+                                                src={acc.tiktokAvatarUrl || "https://www.tiktok.com/favicon.ico"} 
+                                                alt={acc.tiktokUsername} 
+                                                className="w-7 h-7 rounded-full border border-white/10 bg-white/5 object-cover flex-shrink-0"
+                                              />
+                                              <span className="font-bold text-white text-xs truncate">@{acc.tiktokUsername}</span>
+                                            </div>
+
+                                            <div className="text-right flex-shrink-0 flex items-center gap-1.5">
+                                              {hasConfig ? (
+                                                <span className="text-[8px] font-bold uppercase tracking-wider px-1.5 py-0.5 bg-green-500/10 text-green-400 border border-green-500/15 rounded-md">
+                                                  Configured
+                                                </span>
+                                              ) : (
+                                                <span className="text-[8px] font-bold uppercase tracking-wider px-1.5 py-0.5 bg-amber-500/10 text-amber-400 border border-amber-500/15 rounded-md">
+                                                  No Config
+                                                </span>
+                                              )}
+                                              <span className="text-[8px] text-gray-500 font-semibold uppercase tracking-wider">
+                                                {bgCount} bgs
+                                              </span>
+                                            </div>
+                                          </button>
+                                        );
+                                      })}
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  });
+                })()}
               </div>
             )}
           </div>
 
           {/* Selected Account Configurations & Backgrounds */}
-          <div className="lg:col-span-2 space-y-8">
+          <div className="lg:col-span-2">
             {selectedAccount ? (
-              <>
-                {/* Visual Settings Form */}
-                <div className="bg-[#0d0d16] border border-white/5 p-6 rounded-3xl shadow-xl space-y-6">
-                  <div className="flex justify-between items-center border-b border-white/5 pb-4">
-                    <div className="flex items-center gap-3">
-                      <img 
-                        src={selectedAccount.tiktokAvatarUrl} 
-                        className="w-10 h-10 rounded-full object-cover border border-white/10"
-                        alt=""
-                      />
-                      <div>
-                        <h2 className="text-xl font-bold text-white">@{selectedAccount.tiktokUsername} Aesthetics</h2>
-                        <p className="text-xs text-gray-400 font-medium">Style Configuration for the Quote Genre</p>
+              <div className="space-y-8">
+                {/* 2-Column Styling grid: Controls on left, Live 9:16 Crop Mockup Preview on right */}
+                <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
+                  {/* Left Column: Visual Settings Form (span 7) */}
+                  <div className="lg:col-span-7 bg-[#0d0d16] border border-white/5 p-6 rounded-3xl shadow-xl space-y-6">
+                    <div className="flex justify-between items-center border-b border-white/5 pb-4">
+                      <div className="flex items-center gap-3">
+                        <img 
+                          src={selectedAccount.tiktokAvatarUrl} 
+                          className="w-10 h-10 rounded-full object-cover border border-white/10 bg-white/5"
+                          alt=""
+                        />
+                        <div>
+                          <h2 className="text-lg font-black text-white">@{selectedAccount.tiktokUsername} Aesthetics</h2>
+                          <p className="text-[10px] text-gray-500 font-semibold uppercase tracking-wider">Style Configuration for the Quote Genre</p>
+                        </div>
                       </div>
                     </div>
+
+                    <form onSubmit={handleSaveConfig} className="space-y-6">
+                      <div>
+                        <label className="block text-xs uppercase tracking-wider font-bold text-gray-400 mb-2">
+                          Account Theme / Topic Prompt (Gemini AI context)
+                        </label>
+                        <textarea
+                          rows={3}
+                          placeholder="e.g. Daily motivational quote, stoic wisdom for men, self discipline advice, ancient philosophy..."
+                          value={themeText}
+                          onChange={(e) => setThemeText(e.target.value)}
+                          className="w-full bg-[#141423] border border-white/5 rounded-2xl px-4 py-3 text-sm text-white focus:outline-none focus:border-amber-500/50 focus:ring-1 focus:ring-amber-500/30"
+                        />
+                        <p className="text-[11px] text-gray-500 mt-1.5 font-medium">
+                          Used to bulk generate original, context-aligned quotes via Gemini API.
+                        </p>
+                      </div>
+
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        
+                        {/* Font Family */}
+                        <div>
+                          <label className="block text-xs uppercase tracking-wider font-bold text-gray-400 mb-2">
+                            Font Family
+                          </label>
+                          <select
+                            value={fontFamily}
+                            onChange={(e) => setFontFamily(e.target.value)}
+                            className="w-full bg-[#141423] border border-white/5 rounded-2xl px-4 py-3.5 text-sm text-white focus:outline-none focus:border-amber-500/50"
+                          >
+                            <option value="Outfit-Bold">Outfit Bold (Modern, Rounded)</option>
+                            <option value="Inter-Bold">Inter Bold (Sleek, Clean Sans)</option>
+                            <option value="PlayfairDisplay-Bold">Playfair Display Bold (Premium Serif)</option>
+                            <option value="GreatVibes-Regular">Great Vibes (Elegant Script/Cursive)</option>
+                            <option value="Anton">Anton (Heavy, Impressive Impact)</option>
+                            <option value="Caveat">Caveat (Bold Cursive Handwriting)</option>
+                            <option value="Lora">Lora (Elegant Classic Serif)</option>
+                            <option value="Montserrat">Montserrat (Geometric Premium Sans)</option>
+                            <option value="Oswald">Oswald (Narrow Tall Gothic)</option>
+                          </select>
+                        </div>
+
+                        {/* Font Size */}
+                        <div>
+                          <div className="flex justify-between items-center mb-2">
+                            <label className="block text-xs uppercase tracking-wider font-bold text-gray-400">
+                              Font Size (px)
+                            </label>
+                            <span className="text-xs font-extrabold text-amber-400">{fontSize}px</span>
+                          </div>
+                          <input
+                            type="range"
+                            min="24"
+                            max="72"
+                            value={fontSize}
+                            onChange={(e) => setFontSize(parseInt(e.target.value))}
+                            className="w-full h-1.5 bg-[#141423] rounded-lg appearance-none cursor-pointer accent-amber-500"
+                          />
+                        </div>
+
+                        {/* Font Color Picker */}
+                        <div>
+                          <label className="block text-xs uppercase tracking-wider font-bold text-gray-400 mb-2">
+                            Font Color (HEX or Quick Pick)
+                          </label>
+                          <div className="flex gap-2 mb-2">
+                            <button
+                              type="button"
+                              onClick={() => setFontColor("#FFFFFF")}
+                              className="w-6 h-6 rounded-full bg-white border border-white/10"
+                              title="Pure White"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => setFontColor("#FEF08A")}
+                              className="w-6 h-6 rounded-full bg-yellow-200 border border-white/10"
+                              title="Pale Yellow"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => setFontColor("#FDE047")}
+                              className="w-6 h-6 rounded-full bg-yellow-400 border border-white/10"
+                              title="Vibrant Yellow"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => setFontColor("#F5F5F7")}
+                              className="w-6 h-6 rounded-full bg-[#f5f5f7] border border-white/10"
+                              title="Cream Grey"
+                            />
+                          </div>
+                          <input
+                            type="text"
+                            value={fontColor}
+                            onChange={(e) => setFontColor(e.target.value)}
+                            placeholder="#FFFFFF"
+                            className="w-full bg-[#141423] border border-white/5 rounded-2xl px-4 py-3 text-sm text-white focus:outline-none focus:border-amber-500/50"
+                          />
+                        </div>
+
+                        {/* Text Casing */}
+                        <div>
+                          <label className="block text-xs uppercase tracking-wider font-bold text-gray-400 mb-2">
+                            Text Casing
+                          </label>
+                          <select
+                            value={textCase}
+                            onChange={(e) => setTextCase(e.target.value)}
+                            className="w-full bg-[#141423] border border-white/5 rounded-2xl px-4 py-3.5 text-sm text-white focus:outline-none"
+                          >
+                            <option value="UPPERCASE">UPPERCASE</option>
+                            <option value="Title Case">Title Case / Capitalize</option>
+                            <option value="lowercase">lowercase</option>
+                            <option value="None">As Written / None</option>
+                          </select>
+                        </div>
+
+                        {/* Line Spacing */}
+                        <div>
+                          <div className="flex justify-between items-center mb-2">
+                            <label className="block text-xs uppercase tracking-wider font-bold text-gray-400">
+                              Line Spacing (px)
+                            </label>
+                            <span className="text-xs font-extrabold text-purple-400">{lineSpacing}px</span>
+                          </div>
+                          <input
+                            type="range"
+                            min="0"
+                            max="40"
+                            value={lineSpacing}
+                            onChange={(e) => setLineSpacing(parseInt(e.target.value))}
+                            className="w-full h-1.5 bg-[#141423] rounded-lg appearance-none cursor-pointer accent-purple-500"
+                          />
+                        </div>
+
+                        {/* Card Overlay Box Color */}
+                        <div>
+                          <label className="block text-xs uppercase tracking-wider font-bold text-gray-400 mb-2">
+                            Text Background Card Opacity
+                          </label>
+                          <select
+                            value={boxColor}
+                            onChange={(e) => setBoxColor(e.target.value)}
+                            className="w-full bg-[#141423] border border-white/5 rounded-2xl px-4 py-3.5 text-sm text-white focus:outline-none"
+                          >
+                            <option value="none">No Background Card / Clear</option>
+                            <option value="black@0.2">Light Shadow Overlay (20%)</option>
+                            <option value="black@0.4">Standard Overlay (40%)</option>
+                            <option value="black@0.6">Deep Contrast Overlay (60%)</option>
+                            <option value="black@0.8">Heavy Dark Card (80%)</option>
+                          </select>
+                        </div>
+
+                        {/* Drop Shadow Color */}
+                        <div>
+                          <label className="block text-xs uppercase tracking-wider font-bold text-gray-400 mb-2">
+                            Text Drop Shadow Opacity
+                          </label>
+                          <select
+                            value={shadowColor}
+                            onChange={(e) => setShadowColor(e.target.value)}
+                            className="w-full bg-[#141423] border border-white/5 rounded-2xl px-4 py-3.5 text-sm text-white focus:outline-none"
+                          >
+                            <option value="none">No Drop Shadow</option>
+                            <option value="black@0.4">Light Drop Shadow</option>
+                            <option value="black@0.6">Standard Shadow</option>
+                            <option value="black@0.8">Heavy Soft Glow Shadow</option>
+                          </select>
+                        </div>
+
+                      </div>
+
+                      {/* Curve Text Card (Rounded Corners) */}
+                      <div className="flex items-center justify-between bg-[#141423]/60 p-4 border border-white/5 rounded-2xl">
+                        <div>
+                          <label className="block text-xs uppercase tracking-wider font-bold text-gray-300">
+                            Curve Text Card
+                          </label>
+                          <span className="text-[10px] text-gray-500 font-medium">Toggle rounded corners (curvature radius) on the quote overlay card</span>
+                        </div>
+                        <label className="relative inline-flex items-center cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={curveText}
+                            onChange={() => setCurveText(!curveText)}
+                            className="sr-only peer"
+                          />
+                          <div className="w-9 h-5 bg-gray-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-gray-300 after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-amber-500 peer-checked:after:bg-black peer-checked:after:border-black"></div>
+                        </label>
+                      </div>
+
+                      <button
+                        type="submit"
+                        disabled={savingConfig}
+                        className="bg-amber-500 hover:bg-amber-600 text-black font-extrabold px-6 py-3.5 rounded-2xl transition-all duration-300 shadow-lg disabled:opacity-50"
+                      >
+                        {savingConfig ? "Saving Config..." : "Save Aesthetics Settings"}
+                      </button>
+                    </form>
                   </div>
 
-                  <form onSubmit={handleSaveConfig} className="space-y-6">
+                  {/* Right Column: High-Fidelity 9:16 Live Preview Panel (span 5) */}
+                  <div className="lg:col-span-5 bg-[#0d0d16] border border-white/5 p-6 rounded-3xl shadow-xl flex flex-col justify-between space-y-6">
                     <div>
-                      <label className="block text-xs uppercase tracking-wider font-bold text-gray-400 mb-2">
-                        Account Theme / Topic Prompt (Gemini AI context)
-                      </label>
-                      <textarea
-                        rows={3}
-                        placeholder="e.g. Daily motivational quote, stoic wisdom for men, self discipline advice, ancient philosophy..."
-                        value={themeText}
-                        onChange={(e) => setThemeText(e.target.value)}
-                        className="w-full bg-[#141423] border border-white/5 rounded-2xl px-4 py-3 text-sm text-white focus:outline-none focus:border-amber-500/50 focus:ring-1 focus:ring-amber-500/30"
-                      />
-                      <p className="text-[11px] text-gray-500 mt-1.5 font-medium">
-                        Used to bulk generate original, context-aligned quotes via Gemini API.
-                      </p>
+                      <h3 className="text-base font-bold text-white flex items-center gap-2">
+                        <Eye className="w-4 h-4 text-amber-500" />
+                        Live Aesthetics Preview
+                      </h3>
+                      <p className="text-[10px] text-gray-500 uppercase tracking-wider font-bold mt-0.5">Real-time video layout overlay simulation</p>
                     </div>
 
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                      
-                      {/* Font Family */}
-                      <div>
-                        <label className="block text-xs uppercase tracking-wider font-bold text-gray-400 mb-2">
-                          Font Family
-                        </label>
-                        <select
-                          value={fontFamily}
-                          onChange={(e) => setFontFamily(e.target.value)}
-                          className="w-full bg-[#141423] border border-white/5 rounded-2xl px-4 py-3.5 text-sm text-white focus:outline-none focus:border-amber-500/50"
-                        >
-                          <option value="Outfit-Bold">Outfit Bold (Modern, Rounded)</option>
-                          <option value="Inter-Bold">Inter Bold (Sleek, Clean Sans)</option>
-                          <option value="PlayfairDisplay-Bold">Playfair Display Bold (Premium Serif)</option>
-                          <option value="GreatVibes-Regular">Great Vibes (Elegant Script/Cursive)</option>
-                        </select>
-                      </div>
-
-                      {/* Font Size */}
-                      <div>
-                        <div className="flex justify-between items-center mb-2">
-                          <label className="block text-xs uppercase tracking-wider font-bold text-gray-400">
-                            Font Size (px)
-                          </label>
-                          <span className="text-xs font-extrabold text-amber-400">{fontSize}px</span>
-                        </div>
-                        <input
-                          type="range"
-                          min="24"
-                          max="72"
-                          value={fontSize}
-                          onChange={(e) => setFontSize(parseInt(e.target.value))}
-                          className="w-full h-1.5 bg-[#141423] rounded-lg appearance-none cursor-pointer accent-amber-500"
+                    {/* Standard 9:16 vertically cropped aspect box */}
+                    <div className="relative aspect-[9/16] w-full max-w-[270px] mx-auto rounded-[2rem] overflow-hidden border border-white/10 shadow-2xl bg-black flex flex-col justify-between p-4">
+                      {/* Background Loop Source */}
+                      {selectedAccount.backgroundVideos.length > 0 ? (
+                        <video
+                          src={selectedAccount.backgroundVideos[previewBgIndex]?.videoUrl}
+                          className="absolute inset-0 w-full h-full object-cover"
+                          muted
+                          loop
+                          autoPlay
+                          playsInline
+                          key={selectedAccount.backgroundVideos[previewBgIndex]?.id}
                         />
-                      </div>
-
-                      {/* Font Color Picker */}
-                      <div>
-                        <label className="block text-xs uppercase tracking-wider font-bold text-gray-400 mb-2">
-                          Font Color (HEX or Quick Pick)
-                        </label>
-                        <div className="flex gap-2 mb-2">
-                          <button
-                            type="button"
-                            onClick={() => setFontColor("#FFFFFF")}
-                            className="w-6 h-6 rounded-full bg-white border border-white/10"
-                            title="Pure White"
-                          />
-                          <button
-                            type="button"
-                            onClick={() => setFontColor("#FEF08A")}
-                            className="w-6 h-6 rounded-full bg-yellow-200 border border-white/10"
-                            title="Pale Yellow"
-                          />
-                          <button
-                            type="button"
-                            onClick={() => setFontColor("#FDE047")}
-                            className="w-6 h-6 rounded-full bg-yellow-400 border border-white/10"
-                            title="Vibrant Yellow"
-                          />
-                          <button
-                            type="button"
-                            onClick={() => setFontColor("#F5F5F7")}
-                            className="w-6 h-6 rounded-full bg-[#f5f5f7] border border-white/10"
-                            title="Cream Grey"
-                          />
+                      ) : (
+                        <div className="absolute inset-0 bg-gradient-to-br from-[#1b1a2e] to-[#0c0b14] flex flex-col items-center justify-center p-6 text-center">
+                          <Film className="w-8 h-8 text-gray-600 mb-2" />
+                          <p className="text-xs text-gray-400 font-bold">No Background Videos</p>
+                          <p className="text-[10px] text-gray-600 mt-1.5">Upload loop MP4s below to unlock preview overlays.</p>
                         </div>
-                        <input
-                          type="text"
-                          value={fontColor}
-                          onChange={(e) => setFontColor(e.target.value)}
-                          placeholder="#FFFFFF"
-                          className="w-full bg-[#141423] border border-white/5 rounded-2xl px-4 py-3 text-sm text-white focus:outline-none focus:border-amber-500/50"
-                        />
-                      </div>
+                      )}
 
-                      {/* Text Casing */}
-                      <div>
-                        <label className="block text-xs uppercase tracking-wider font-bold text-gray-400 mb-2">
-                          Text Casing
-                        </label>
-                        <select
-                          value={textCase}
-                          onChange={(e) => setTextCase(e.target.value)}
-                          className="w-full bg-[#141423] border border-white/5 rounded-2xl px-4 py-3.5 text-sm text-white focus:outline-none"
-                        >
-                          <option value="UPPERCASE">UPPERCASE</option>
-                          <option value="Title Case">Title Case / Capitalize</option>
-                          <option value="lowercase">lowercase</option>
-                          <option value="None">As Written / None</option>
-                        </select>
-                      </div>
+                      {/* Dark Overlay Mockup Layer */}
+                      <div className="absolute inset-0 bg-black/10 pointer-events-none" />
 
-                      {/* Line Spacing */}
-                      <div>
-                        <div className="flex justify-between items-center mb-2">
-                          <label className="block text-xs uppercase tracking-wider font-bold text-gray-400">
-                            Line Spacing (px)
-                          </label>
-                          <span className="text-xs font-extrabold text-purple-400">{lineSpacing}px</span>
+                      {/* Right side floating buttons mockup */}
+                      <div className="absolute right-3.5 bottom-20 flex flex-col items-center gap-4 pointer-events-none opacity-85 z-10">
+                        <div className="w-9 h-9 rounded-full border border-white/20 bg-black/40 backdrop-blur-md flex items-center justify-center">
+                          <img src={selectedAccount.tiktokAvatarUrl || "https://www.tiktok.com/favicon.ico"} className="w-7 h-7 rounded-full object-cover" alt="" />
                         </div>
-                        <input
-                          type="range"
-                          min="0"
-                          max="40"
-                          value={lineSpacing}
-                          onChange={(e) => setLineSpacing(parseInt(e.target.value))}
-                          className="w-full h-1.5 bg-[#141423] rounded-lg appearance-none cursor-pointer accent-purple-500"
-                        />
+                        <div className="flex flex-col items-center">
+                          <div className="w-8 h-8 rounded-full bg-black/40 backdrop-blur-md flex items-center justify-center text-white">
+                            <svg className="w-4 h-4 fill-white" viewBox="0 0 24 24"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
+                          </div>
+                          <span className="text-[8px] text-white font-extrabold mt-0.5">24.5K</span>
+                        </div>
+                        <div className="flex flex-col items-center">
+                          <div className="w-8 h-8 rounded-full bg-black/40 backdrop-blur-md flex items-center justify-center text-white">
+                            <svg className="w-4 h-4 fill-white" viewBox="0 0 24 24"><path d="M21.99 4c0-1.1-.89-2-1.99-2H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h14l4 4-.01-18z"/></svg>
+                          </div>
+                          <span className="text-[8px] text-white font-extrabold mt-0.5">1,050</span>
+                        </div>
                       </div>
 
-                      {/* Card Overlay Box Color */}
-                      <div>
-                        <label className="block text-xs uppercase tracking-wider font-bold text-gray-400 mb-2">
-                          Text Background Card Opacity
-                        </label>
-                        <select
-                          value={boxColor}
-                          onChange={(e) => setBoxColor(e.target.value)}
-                          className="w-full bg-[#141423] border border-white/5 rounded-2xl px-4 py-3.5 text-sm text-white focus:outline-none"
+                      {/* Bottom music disk spinner mockup */}
+                      <div className="absolute right-3.5 bottom-6 pointer-events-none opacity-85 z-10">
+                        <div className="w-8 h-8 rounded-full bg-black/60 border border-white/20 flex items-center justify-center animate-spin" style={{ animationDuration: "4s" }}>
+                          <Music className="w-3.5 h-3.5 text-white" />
+                        </div>
+                      </div>
+
+                      {/* Canvas Overlay text reacting live to inputs */}
+                      <div className="absolute inset-0 flex items-center justify-center p-4 pointer-events-none z-10">
+                        <div 
+                          style={{
+                            fontFamily: getCssFontFamily(fontFamily),
+                            fontSize: `${Math.max(12, fontSize * 0.40)}px`,
+                            color: fontColor,
+                            textTransform: textCase === "UPPERCASE" ? "uppercase" : textCase === "lowercase" ? "lowercase" : "none",
+                            backgroundColor: getCssRgba(boxColor),
+                            textShadow: getCssTextShadow(shadowColor),
+                            lineHeight: `${(fontSize + lineSpacing) / fontSize}`,
+                            borderRadius: curveText ? "20px" : "0px",
+                            padding: curveText ? "16px 20px" : "10px 14px",
+                            transition: "all 0.2s ease",
+                          }}
+                          className="text-center font-bold max-w-[90%] break-words border border-white/5 pointer-events-auto shadow-xl"
                         >
-                          <option value="none">No Background Card / Clear</option>
-                          <option value="black@0.2">Light Shadow Overlay (20%)</option>
-                          <option value="black@0.4">Standard Overlay (40%)</option>
-                          <option value="black@0.6">Deep Contrast Overlay (60%)</option>
-                          <option value="black@0.8">Heavy Dark Card (80%)</option>
-                        </select>
+                          {themeText ? applyTextCase(`"${themeText}"`, textCase) : applyTextCase(`"Be the change you wish to see in the world."`, textCase)}
+                          <div className="text-[0.62em] opacity-80 mt-1.5 font-medium">
+                            - Marcus Aurelius
+                          </div>
+                        </div>
                       </div>
 
-                      {/* Drop Shadow Color */}
-                      <div>
-                        <label className="block text-xs uppercase tracking-wider font-bold text-gray-400 mb-2">
-                          Text Drop Shadow Opacity
-                        </label>
-                        <select
-                          value={shadowColor}
-                          onChange={(e) => setShadowColor(e.target.value)}
-                          className="w-full bg-[#141423] border border-white/5 rounded-2xl px-4 py-3.5 text-sm text-white focus:outline-none"
-                        >
-                          <option value="none">No Drop Shadow</option>
-                          <option value="black@0.4">Light Drop Shadow</option>
-                          <option value="black@0.6">Standard Shadow</option>
-                          <option value="black@0.8">Heavy Soft Glow Shadow</option>
-                        </select>
+                      {/* TikTok bottom caption mockup details */}
+                      <div className="mt-auto w-full z-10 p-2 bg-gradient-to-t from-black/80 to-transparent rounded-b-2xl pointer-events-none text-left">
+                        <p className="text-[10px] font-black text-white">@{selectedAccount.tiktokUsername}</p>
+                        <p className="text-[9px] text-gray-300 mt-0.5 line-clamp-2 leading-snug">Daily motivation niche context: {themeText || "Stoicism wisdom guides daily..."} #motivation #quotes</p>
+                        <div className="flex items-center gap-1 mt-1.5 text-[9px] text-white font-medium">
+                          <Music className="w-2.5 h-2.5 text-amber-500 animate-pulse" />
+                          <span className="truncate">Original Sound - @{selectedAccount.tiktokUsername}</span>
+                        </div>
                       </div>
-
                     </div>
 
-                    <button
-                      type="submit"
-                      disabled={savingConfig}
-                      className="bg-amber-500 hover:bg-amber-600 text-black font-extrabold px-6 py-3.5 rounded-2xl transition-all duration-300 shadow-lg disabled:opacity-50"
-                    >
-                      {savingConfig ? "Saving Config..." : "Save Aesthetics Settings"}
-                    </button>
-                  </form>
+                    {/* Pagination indicators to switch loops in real time */}
+                    {selectedAccount.backgroundVideos.length > 0 && (
+                      <div className="space-y-1.5">
+                        <p className="text-[9px] text-center text-gray-500 font-extrabold uppercase tracking-wider">
+                          Loop Selector: {previewBgIndex + 1} of {selectedAccount.backgroundVideos.length}
+                        </p>
+                        <div className="flex justify-center items-center gap-1.5">
+                          {selectedAccount.backgroundVideos.map((_, idx) => (
+                            <button
+                              key={idx}
+                              type="button"
+                              onClick={() => setPreviewBgIndex(idx)}
+                              className={`w-2 h-2 rounded-full transition-all duration-300 ${
+                                previewBgIndex === idx ? "bg-amber-500 w-4.5" : "bg-white/20 hover:bg-white/40"
+                              }`}
+                              title={`Preview Background #${idx + 1}`}
+                            />
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
                 </div>
 
                 {/* Account Video Backgrounds */}
@@ -1054,7 +1863,7 @@ export default function GenresDashboard() {
                           onMouseOver={(e) => (e.target as HTMLVideoElement).play()}
                           onMouseOut={(e) => (e.target as HTMLVideoElement).pause()}
                         />
-                        <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-all duration-300 flex flex-col justify-end p-3">
+                        <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-all duration-300 flex flex-col justify-end p-3 text-left">
                           <button
                             onClick={() => handleDeleteBg(bg.id)}
                             className="bg-red-500/95 hover:bg-red-600 text-white p-2 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5"
@@ -1070,7 +1879,7 @@ export default function GenresDashboard() {
                     ))}
                   </div>
                 </div>
-              </>
+              </div>
             ) : (
               <div className="bg-[#0d0d16] border border-white/5 p-24 text-center rounded-3xl">
                 <p className="text-gray-500">Please select an active TikTok account from the left panel.</p>
@@ -1086,6 +1895,60 @@ export default function GenresDashboard() {
       ──────────────────────────────────────────────────────────────────────── */}
       {activeTab === "batches" && (
         <div className="bg-[#0d0d16] border border-white/5 p-8 rounded-3xl shadow-xl space-y-8">
+          
+          {/* Multi-Genre Wizard Selection Bar */}
+          <div className="border-b border-white/5 pb-6 text-left">
+            <h2 className="text-xl font-bold text-white mb-4">Bulk Video Composer</h2>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 bg-[#11111c] p-2 rounded-2xl border border-white/5">
+              {/* Quote Genre (Active) */}
+              <button
+                type="button"
+                className="flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-400 font-extrabold text-xs tracking-wider uppercase transition-all shadow-md shadow-amber-500/5 cursor-default"
+              >
+                <Sparkles className="w-4 h-4" />
+                Quotes Composer
+              </button>
+
+              {/* Lyrical Genre (Locked Placeholder) */}
+              <div 
+                className="relative group flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-white/[0.02] border border-white/5 text-gray-500 font-bold text-xs tracking-wider uppercase select-none cursor-not-allowed transition-all hover:bg-white/[0.04]"
+                title="Lyrical composer is locked"
+              >
+                <Lock className="w-3.5 h-3.5 text-gray-600 flex-shrink-0" />
+                <span>Lyrical</span>
+                {/* Custom premium glassmorphic tooltip */}
+                <div className="absolute bottom-full mb-2 left-1/2 -translate-x-1/2 hidden group-hover:block bg-[#0f0f18]/95 border border-white/10 px-3 py-1.5 rounded-xl shadow-xl backdrop-blur-md text-[10px] text-gray-300 font-bold uppercase tracking-wider text-center w-48 z-20 pointer-events-none">
+                  Lyrical Composer <span className="text-purple-400">Coming Soon</span>
+                </div>
+              </div>
+
+              {/* K-Pop Genre (Locked Placeholder) */}
+              <div 
+                className="relative group flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-white/[0.02] border border-white/5 text-gray-500 font-bold text-xs tracking-wider uppercase select-none cursor-not-allowed transition-all hover:bg-white/[0.04]"
+                title="K-Pop composer is locked"
+              >
+                <Lock className="w-3.5 h-3.5 text-gray-600 flex-shrink-0" />
+                <span>K-Pop</span>
+                {/* Custom premium glassmorphic tooltip */}
+                <div className="absolute bottom-full mb-2 left-1/2 -translate-x-1/2 hidden group-hover:block bg-[#0f0f18]/95 border border-white/10 px-3 py-1.5 rounded-xl shadow-xl backdrop-blur-md text-[10px] text-gray-300 font-bold uppercase tracking-wider text-center w-48 z-20 pointer-events-none">
+                  K-Pop Composer <span className="text-purple-400">Coming Soon</span>
+                </div>
+              </div>
+
+              {/* Pop Genre (Locked Placeholder) */}
+              <div 
+                className="relative group flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-white/[0.02] border border-white/5 text-gray-500 font-bold text-xs tracking-wider uppercase select-none cursor-not-allowed transition-all hover:bg-white/[0.04]"
+                title="Pop composer is locked"
+              >
+                <Lock className="w-3.5 h-3.5 text-gray-600 flex-shrink-0" />
+                <span>Pop Music</span>
+                {/* Custom premium glassmorphic tooltip */}
+                <div className="absolute bottom-full mb-2 left-1/2 -translate-x-1/2 hidden group-hover:block bg-[#0f0f18]/95 border border-white/10 px-3 py-1.5 rounded-xl shadow-xl backdrop-blur-md text-[10px] text-gray-300 font-bold uppercase tracking-wider text-center w-48 z-20 pointer-events-none">
+                  Pop Composer <span className="text-purple-400">Coming Soon</span>
+                </div>
+              </div>
+            </div>
+          </div>
           
           {/* Steps Indicator */}
           <div className="flex flex-col md:flex-row justify-between items-center gap-4 bg-[#141423] p-4 rounded-3xl border border-white/5">
@@ -1167,82 +2030,299 @@ export default function GenresDashboard() {
                     Total Posts Count
                   </label>
                   <div className="w-full bg-[#141423]/50 border border-white/5 rounded-2xl px-4 py-3.5 text-amber-400 font-black text-lg">
-                    {selectedBatchAccountIds.length * postsPerAccount} videos
+                    {batchPostsTotal}
                   </div>
-                  <p className="text-[11px] text-gray-500 mt-1 font-semibold">Calculated dynamically across active accounts</p>
+                  <p className="text-[11px] text-gray-500 mt-1 font-semibold">
+                    Automatically calculated count
+                  </p>
                 </div>
               </div>
 
-              {/* Accounts Selection */}
-              <div className="space-y-4 pt-4 border-t border-white/5">
-                <div className="flex justify-between items-center">
-                  <h3 className="text-lg font-bold text-white">Select Accounts to Composite ({selectedBatchAccountIds.length})</h3>
+              {/* Cascading Filter Controls for Step 1 Accounts Grid */}
+              <div className="bg-[#0c0c14]/60 border border-white/5 p-4 rounded-3xl space-y-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-[10px] uppercase tracking-wider font-extrabold text-gray-500 mb-1.5">
+                      Filter by Niche
+                    </label>
+                    <select
+                      value={wizardNicheFilter}
+                      onChange={(e) => {
+                        setWizardNicheFilter(e.target.value);
+                        setWizardGroupFilter("all");
+                      }}
+                      className="w-full bg-[#141423] border border-white/5 rounded-2xl px-4 py-2.5 text-xs font-bold text-gray-300 focus:outline-none focus:border-amber-500/30"
+                    >
+                      <option value="all">All Niches</option>
+                      {(() => {
+                        const sectionsMap = new Map();
+                        accounts.forEach(a => {
+                          const sec = a.group?.section;
+                          if (sec) {
+                            sectionsMap.set(sec.id, sec);
+                          }
+                        });
+                        return Array.from(sectionsMap.values()).map(sec => (
+                          <option key={sec.id} value={sec.id}>{sec.name}</option>
+                        ));
+                      })()}
+                      <option value="uncategorized">Uncategorized Niches</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-[10px] uppercase tracking-wider font-extrabold text-gray-500 mb-1.5">
+                      Filter by Group
+                    </label>
+                    <select
+                      value={wizardGroupFilter}
+                      onChange={(e) => setWizardGroupFilter(e.target.value)}
+                      className="w-full bg-[#141423] border border-white/5 rounded-2xl px-4 py-2.5 text-xs font-bold text-gray-300 focus:outline-none focus:border-amber-500/30"
+                      disabled={wizardNicheFilter === "uncategorized"}
+                    >
+                      <option value="all">All Groups</option>
+                      {(() => {
+                        const groupsMap = new Map();
+                        accounts.forEach(a => {
+                          const grp = a.group;
+                          const sec = grp?.section;
+                          if (grp) {
+                            if (wizardNicheFilter === "all" || (sec && sec.id === wizardNicheFilter)) {
+                              groupsMap.set(grp.id, grp);
+                            }
+                          }
+                        });
+                        return Array.from(groupsMap.values()).map(grp => (
+                          <option key={grp.id} value={grp.id}>{grp.name}</option>
+                        ));
+                      })()}
+                    </select>
+                  </div>
+                </div>
+
+                <div className="flex gap-2.5 pt-3 border-t border-white/5">
                   <button
                     type="button"
                     onClick={() => {
-                      if (selectedBatchAccountIds.length === accounts.length) {
-                        setSelectedBatchAccountIds([]);
-                        setBatchPostsTotal(0);
-                      } else {
-                        const allIds = accounts.map(a => a.id);
-                        setSelectedBatchAccountIds(allIds);
-                        setBatchPostsTotal(allIds.length * postsPerAccount);
-                      }
+                      const visibleValid = accounts
+                        .filter(acc => {
+                          const sec = acc.group?.section;
+                          const grp = acc.group;
+                          
+                          if (wizardNicheFilter !== "all") {
+                            if (wizardNicheFilter === "uncategorized") {
+                              if (sec) return false;
+                            } else {
+                              if (!sec || sec.id !== wizardNicheFilter) return false;
+                            }
+                          }
+                          
+                          if (wizardGroupFilter !== "all") {
+                            if (!grp || grp.id !== wizardGroupFilter) return false;
+                          }
+                          
+                          const isConfigured = acc.genreConfigs.length > 0;
+                          const hasBgs = acc.backgroundVideos.length > 0;
+                          return isConfigured && hasBgs && acc.driveFolderId;
+                        })
+                        .map(a => a.id);
+                      
+                      const otherSelected = selectedBatchAccountIds.filter(id => !accounts.some(a => {
+                        if (a.id !== id) return false;
+                        const sec = a.group?.section;
+                        const grp = a.group;
+                        if (wizardNicheFilter !== "all") {
+                          if (wizardNicheFilter === "uncategorized") {
+                            if (sec) return true;
+                          } else {
+                            if (!sec || sec.id !== wizardNicheFilter) return true;
+                          }
+                        }
+                        if (wizardGroupFilter !== "all") {
+                          if (!grp || grp.id !== wizardGroupFilter) return true;
+                        }
+                        return false;
+                      }));
+
+                      const updated = Array.from(new Set([...otherSelected, ...visibleValid]));
+                      setSelectedBatchAccountIds(updated);
+                      setBatchPostsTotal(updated.length * postsPerAccount);
                     }}
-                    className="text-xs text-amber-400 hover:text-amber-300 font-bold uppercase tracking-wider bg-amber-500/10 border border-amber-500/20 px-3 py-1.5 rounded-xl transition-all"
+                    className="text-[10px] text-amber-400 hover:text-amber-300 font-extrabold uppercase tracking-widest bg-amber-500/10 border border-amber-500/20 px-3 py-2 rounded-xl transition-all"
                   >
-                    {selectedBatchAccountIds.length === accounts.length ? "Deselect All" : "Select All"}
+                    Select All Configured
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const updated = selectedBatchAccountIds.filter(id => !accounts.some(a => {
+                        if (a.id !== id) return false;
+                        const sec = a.group?.section;
+                        const grp = a.group;
+                        if (wizardNicheFilter !== "all") {
+                          if (wizardNicheFilter === "uncategorized") {
+                            if (sec) return false;
+                          } else {
+                            if (!sec || sec.id !== wizardNicheFilter) return false;
+                          }
+                        }
+                        if (wizardGroupFilter !== "all") {
+                          if (!grp || grp.id !== wizardGroupFilter) return false;
+                        }
+                        return true;
+                      }));
+                      setSelectedBatchAccountIds(updated);
+                      setBatchPostsTotal(updated.length * postsPerAccount);
+                    }}
+                    className="text-[10px] text-gray-400 hover:text-gray-300 font-extrabold uppercase tracking-widest bg-white/5 border border-white/5 px-3 py-2 rounded-xl transition-all"
+                  >
+                    Deselect All
                   </button>
                 </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
-                  {accounts.map((acc) => {
-                    const isSelected = selectedBatchAccountIds.includes(acc.id);
-                    const isConfigured = acc.genreConfigs.length > 0;
-                    const hasBgs = acc.backgroundVideos.length > 0;
-                    const disabled = !isConfigured || !hasBgs || !acc.driveFolderId;
-
-                    return (
-                      <div
-                        key={acc.id}
-                        onClick={() => {
-                          if (disabled) return;
-                          if (isSelected) {
-                            const updated = selectedBatchAccountIds.filter(id => id !== acc.id);
-                            setSelectedBatchAccountIds(updated);
-                            setBatchPostsTotal(updated.length * postsPerAccount);
-                          } else {
-                            const updated = [...selectedBatchAccountIds, acc.id];
-                            setSelectedBatchAccountIds(updated);
-                            setBatchPostsTotal(updated.length * postsPerAccount);
-                          }
-                        }}
-                        className={`border p-4 rounded-3xl transition-all duration-300 flex items-center gap-3 cursor-pointer ${
-                          disabled ? "opacity-35 cursor-not-allowed border-white/5 bg-[#0a0a0f]" :
-                          isSelected ? "border-amber-500/50 bg-[#141221]" : "border-white/5 bg-[#0d0d16] hover:border-white/10"
-                        }`}
-                      >
-                        <div className={`w-5 h-5 rounded-md border flex items-center justify-center ${
-                          isSelected ? "bg-amber-500 border-amber-500 text-black" : "border-white/10 bg-black/40"
-                        }`}>
-                          {isSelected && <Check className="w-3.5 h-3.5 stroke-[4]" />}
-                        </div>
-                        <img src={acc.tiktokAvatarUrl} className="w-9 h-9 rounded-full object-cover" alt="" />
-                        <div className="space-y-0.5">
-                          <p className="text-sm font-bold text-white leading-tight">@{acc.tiktokUsername}</p>
-                          {disabled ? (
-                            <p className="text-[10px] text-red-400 font-semibold uppercase tracking-wider">
-                              {!isConfigured ? "No theme config" : !hasBgs ? "No loops uploaded" : "No Drive folder"}
-                            </p>
-                          ) : (
-                            <p className="text-[10px] text-gray-500 font-medium">{acc.group?.name}</p>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
               </div>
+
+              <div className="space-y-4">
+                  {(() => {
+                    const filteredWizard = accounts.filter(a => {
+                      const sec = a.group?.section;
+                      const grp = a.group;
+                      
+                      if (wizardNicheFilter !== "all") {
+                        if (wizardNicheFilter === "uncategorized") {
+                          if (sec) return false;
+                        } else {
+                          if (!sec || sec.id !== wizardNicheFilter) return false;
+                        }
+                      }
+                      
+                      if (wizardGroupFilter !== "all") {
+                        if (!grp || grp.id !== wizardGroupFilter) return false;
+                      }
+                      
+                      return true;
+                    });
+
+                    if (filteredWizard.length === 0) {
+                      return (
+                        <div className="bg-[#0d0d16] border border-white/5 p-12 text-center rounded-3xl">
+                          <p className="text-gray-500 text-xs font-bold">No accounts match the active wizard filters.</p>
+                        </div>
+                      );
+                    }
+
+                    return getNicheGrouped(filteredWizard).map((niche) => {
+                      const nicheColor = niche.color || "#8b5cf6";
+                      const nicheAccounts = niche.groups.flatMap(g => g.accounts);
+                      const configuredCount = nicheAccounts.filter(a => a.genreConfigs.length > 0).length;
+                      
+                      const allNicheIds = nicheAccounts.filter(acc => acc.genreConfigs.length > 0 && acc.backgroundVideos.length > 0 && acc.driveFolderId).map(a => a.id);
+                      const isNicheFullySelected = allNicheIds.length > 0 && allNicheIds.every(id => selectedBatchAccountIds.includes(id));
+
+                      return (
+                        <div key={niche.id} className="border border-white/5 rounded-3xl overflow-hidden bg-black/10">
+                          {/* Niche Header Bar */}
+                          <div className="flex items-center justify-between p-4 bg-[#11111c]/60 border-b border-white/5">
+                            <div className="flex items-center gap-2 overflow-hidden mr-2">
+                              <span className="w-1.5 h-3.5 rounded-full flex-shrink-0" style={{ backgroundColor: nicheColor }} />
+                              <span className="font-extrabold text-white text-xs uppercase tracking-wider truncate">
+                                {niche.name} ({configuredCount}/{nicheAccounts.length} Configured)
+                              </span>
+                            </div>
+                            <div>
+                              <button
+                                type="button"
+                                onClick={() => toggleSelectNiche(niche, !isNicheFullySelected)}
+                                className={`text-[9px] font-extrabold uppercase tracking-wider px-2.5 py-1 rounded-lg border transition-all ${
+                                  isNicheFullySelected 
+                                    ? "bg-red-500/10 hover:bg-red-500/20 text-red-400 border-red-500/20" 
+                                    : "bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 border-amber-500/20"
+                                }`}
+                              >
+                                {isNicheFullySelected ? "Deselect Niche" : "Select Niche"}
+                              </button>
+                            </div>
+                          </div>
+
+                          {/* Groups inside Niche */}
+                          <div className="p-4 space-y-4">
+                            {niche.groups.map((group) => {
+                              const groupAccounts = group.accounts;
+                              const allGroupIds = groupAccounts.filter(acc => acc.genreConfigs.length > 0 && acc.backgroundVideos.length > 0 && acc.driveFolderId).map(a => a.id);
+                              const isGroupFullySelected = allGroupIds.length > 0 && allGroupIds.every(id => selectedBatchAccountIds.includes(id));
+
+                              return (
+                                <div key={group.id} className="space-y-3 bg-[#0d0d16]/30 border border-white/5 p-3 rounded-2xl">
+                                  {/* Group Title Bar */}
+                                  <div className="flex items-center justify-between border-b border-white/5 pb-2">
+                                    <span className="font-bold text-gray-300 text-xs">
+                                      {group.name} ({groupAccounts.length} Accounts)
+                                    </span>
+                                    <button
+                                      type="button"
+                                      onClick={() => toggleSelectGroup(group, !isGroupFullySelected)}
+                                      className="text-[9px] font-black uppercase text-amber-500 bg-amber-500/5 hover:bg-amber-500/10 border border-amber-500/15 px-2 py-0.5 rounded"
+                                    >
+                                      {isGroupFullySelected ? "Deselect Group" : "Select Group"}
+                                    </button>
+                                  </div>
+
+                                  {/* Accounts Cards inside Group */}
+                                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
+                                    {group.accounts.map((acc) => {
+                                      const isSelected = selectedBatchAccountIds.includes(acc.id);
+                                      const isConfigured = acc.genreConfigs.length > 0;
+                                      const hasBgs = acc.backgroundVideos.length > 0;
+                                      const disabled = !isConfigured || !hasBgs || !acc.driveFolderId;
+
+                                      return (
+                                        <div
+                                          key={acc.id}
+                                          onClick={() => {
+                                            if (disabled) return;
+                                            if (isSelected) {
+                                              const updated = selectedBatchAccountIds.filter(id => id !== acc.id);
+                                              setSelectedBatchAccountIds(updated);
+                                              setBatchPostsTotal(updated.length * postsPerAccount);
+                                            } else {
+                                              const updated = [...selectedBatchAccountIds, acc.id];
+                                              setSelectedBatchAccountIds(updated);
+                                              setBatchPostsTotal(updated.length * postsPerAccount);
+                                            }
+                                          }}
+                                          className={`border p-4 rounded-3xl transition-all duration-300 flex items-center gap-3 cursor-pointer ${
+                                            disabled ? "opacity-35 cursor-not-allowed border-white/5 bg-[#0a0a0f]" :
+                                            isSelected ? "border-amber-500/50 bg-[#141221]" : "border-white/5 bg-[#0d0d16] hover:border-white/10"
+                                          }`}
+                                        >
+                                          <div className={`w-5 h-5 rounded-md border flex items-center justify-center flex-shrink-0 ${
+                                            isSelected ? "bg-amber-500 border-amber-500 text-black" : "border-white/10 bg-black/40"
+                                          }`}>
+                                            {isSelected && <Check className="w-3.5 h-3.5 stroke-[4]" />}
+                                          </div>
+                                          <img src={acc.tiktokAvatarUrl} className="w-9 h-9 rounded-full object-cover flex-shrink-0 bg-white/5" alt="" />
+                                          <div className="space-y-0.5 overflow-hidden">
+                                            <p className="text-xs font-bold text-white leading-tight truncate">@{acc.tiktokUsername}</p>
+                                            {disabled ? (
+                                              <p className="text-[8px] text-red-400 font-semibold uppercase tracking-wider truncate">
+                                                {!isConfigured ? "No theme config" : !hasBgs ? "No loops uploaded" : "No Drive folder"}
+                                              </p>
+                                            ) : (
+                                              <p className="text-[8px] text-gray-500 font-semibold uppercase tracking-wider">Configured</p>
+                                            )}
+                                          </div>
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      );
+                    });
+                  })()}
+                </div>
 
               {/* Trigger */}
               <div className="pt-6 border-t border-white/5">

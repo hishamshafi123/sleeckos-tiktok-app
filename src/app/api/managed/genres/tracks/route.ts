@@ -5,7 +5,7 @@ import { getSession } from "@/lib/session";
 import fs from "fs";
 import path from "path";
 
-// GET /api/managed/genres/tracks — List all music tracks
+// GET /api/managed/genres/tracks — List all music tracks with campaign metrics
 export async function GET() {
   const session = await getSession();
   if (!session || session.role !== "ADMIN") {
@@ -16,7 +16,62 @@ export async function GET() {
     const tracks = await prisma.track.findMany({
       orderBy: { createdAt: "desc" },
     });
-    return NextResponse.json(tracks);
+
+    const enrichedTracks = await Promise.all(tracks.map(async (track) => {
+      if (!track.campaignOn || !track.campaignActiveAt) {
+        return {
+          ...track,
+          videosPosted: 0,
+          totalViews: 0
+        };
+      }
+
+      // Fetch batch items with driveFileIds
+      const batchItems = await prisma.genreBatchItem.findMany({
+        where: {
+          trackId: track.id,
+          driveFileId: { not: null }
+        },
+        select: {
+          driveFileId: true
+        }
+      });
+
+      const driveFileIds = batchItems.map(item => item.driveFileId).filter(Boolean) as string[];
+
+      if (driveFileIds.length === 0) {
+        return {
+          ...track,
+          videosPosted: 0,
+          totalViews: 0
+        };
+      }
+
+      // Query published ScheduledPost records after campaignActiveAt
+      const posts = await prisma.scheduledPost.findMany({
+        where: {
+          driveFileId: { in: driveFileIds },
+          status: "PUBLISHED",
+          publishedAt: {
+            gte: track.campaignActiveAt
+          }
+        },
+        select: {
+          viewCount: true
+        }
+      });
+
+      const videosPosted = posts.length;
+      const totalViews = posts.reduce((sum, post) => sum + Number(post.viewCount || 0), 0);
+
+      return {
+        ...track,
+        videosPosted,
+        totalViews
+      };
+    }));
+
+    return NextResponse.json(enrichedTracks);
   } catch (err) {
     console.error("[Tracks API] Error fetching tracks:", err);
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
@@ -38,6 +93,8 @@ export async function POST(req: Request) {
     const defaultStart = parseFloat(formData.get("defaultStart") as string || "0");
     const defaultDuration = parseFloat(formData.get("defaultDuration") as string || "7");
     const passedDuration = parseFloat(formData.get("duration") as string || "0");
+    const genre = formData.get("genre") as string | null;
+    const musician = formData.get("musician") as string | null;
 
     if (!file || !title || !artist) {
       return NextResponse.json({ error: "Missing required fields (audioFile, title, artist)" }, { status: 400 });
@@ -67,6 +124,8 @@ export async function POST(req: Request) {
         duration: passedDuration > 0 ? passedDuration : 30.0, // default if duration not read
         defaultStart,
         defaultDuration,
+        genre: genre ? genre.trim() : null,
+        musician: musician ? musician.trim() : null,
       },
     });
 
@@ -75,6 +134,52 @@ export async function POST(req: Request) {
   } catch (err) {
     console.error("[Tracks API] Upload error:", err);
     return NextResponse.json({ error: "Failed to upload track" }, { status: 500 });
+  }
+}
+
+// PATCH /api/managed/genres/tracks — Toggle campaign status or edit track details
+export async function PATCH(req: Request) {
+  const session = await getSession();
+  if (!session || session.role !== "ADMIN") {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  try {
+    const body = await req.json();
+    const { id, genre, musician, campaignOn } = body;
+
+    if (!id) {
+      return NextResponse.json({ error: "Missing track ID" }, { status: 400 });
+    }
+
+    const track = await prisma.track.findUnique({ where: { id } });
+    if (!track) {
+      return NextResponse.json({ error: "Track not found" }, { status: 404 });
+    }
+
+    const updateData: any = {};
+    if (genre !== undefined) updateData.genre = genre ? genre.trim() : null;
+    if (musician !== undefined) updateData.musician = musician ? musician.trim() : null;
+    
+    if (campaignOn !== undefined) {
+      updateData.campaignOn = !!campaignOn;
+      if (campaignOn) {
+        updateData.campaignActiveAt = new Date();
+      } else {
+        updateData.campaignActiveAt = null;
+      }
+    }
+
+    const updatedTrack = await prisma.track.update({
+      where: { id },
+      data: updateData,
+    });
+
+    console.log(`[Tracks API] Updated track ${id}:`, updateData);
+    return NextResponse.json(updatedTrack);
+  } catch (err) {
+    console.error("[Tracks API] Error updating track:", err);
+    return NextResponse.json({ error: "Failed to update track" }, { status: 500 });
   }
 }
 
