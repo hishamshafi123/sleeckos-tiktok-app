@@ -37,6 +37,8 @@ RUN apk add --no-cache ffmpeg ttf-dejavu && \
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 COPY --from=builder --chown=nextjs:nodejs /app/public ./public
+RUN mkdir -p public/uploads public/fonts && \
+    chown -R nextjs:nodejs public
 
 # Prisma: config + schema + migrations + generated client
 COPY --from=builder --chown=nextjs:nodejs /app/prisma.config.ts ./
