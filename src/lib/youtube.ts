@@ -161,12 +161,24 @@ export type VideoBasic = {
 
 /**
  * Fetch latest videos from a channel, sorted by date (most recent first).
- * Uses search.list (100 quota units per call).
+ * Optimizes quota usage by fetching from the channel's uploads playlist (UU...)
+ * which costs 1 quota unit, instead of using search.list which costs 100 quota units.
  */
 export async function fetchLatestChannelVideos(
   channelId: string,
   maxResults: number = 10
 ): Promise<VideoBasic[]> {
+  // Most YouTube channels start with 'UC'. Replacing 'UC' with 'UU' gives the uploads playlist ID.
+  if (channelId.startsWith("UC")) {
+    const uploadsPlaylistId = "UU" + channelId.substring(2);
+    try {
+      return await fetchPlaylistVideos(uploadsPlaylistId, maxResults);
+    } catch (err) {
+      console.warn("Failed to fetch uploads playlist, falling back to search", err);
+    }
+  }
+
+  // Fallback to search.list (100 quota units) if channel ID is not standard
   const data = await ytFetch("search", {
     part: "snippet",
     channelId,
