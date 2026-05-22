@@ -189,7 +189,7 @@ export async function composeVideo(options: ComposeOptions): Promise<string> {
 
   // 1. Resolve font path
   const resolvedFont = await resolveFontPath(fontFamily);
-  const tempDir = path.join(process.cwd(), "temp_renders");
+  const tempDir = path.join(os.tmpdir(), "temp_renders");
   if (!fs.existsSync(tempDir)) {
     fs.mkdirSync(tempDir, { recursive: true });
   }

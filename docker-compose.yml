@@ -30,6 +30,9 @@ services:
     ports:
       # Bind to localhost only — nginx terminates TLS and proxies here.
       - "127.0.0.1:${PORT:-3000}:${PORT:-3000}"
+    volumes:
+      - uploads-data:/app/public/uploads
+      - fonts-data:/app/public/fonts
     depends_on:
       db:
         condition: service_healthy
@@ -41,3 +44,5 @@ services:
 
 volumes:
   pgdata:
+  uploads-data:
+  fonts-data:

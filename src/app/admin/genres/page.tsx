@@ -2838,6 +2838,12 @@ export default function GenresDashboard() {
                           <p className="text-xs text-gray-400 max-w-lg italic font-medium leading-normal">
                             &ldquo;{item.quoteText}&rdquo;
                           </p>
+                          {item.status === "FAILED" && item.errorMessage && (
+                            <p className="text-[11px] text-red-400 font-semibold bg-red-500/10 px-2.5 py-1.5 rounded-xl border border-red-500/15 max-w-lg mt-1.5 flex items-start gap-1">
+                              <AlertCircle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+                              <span>Error: {item.errorMessage}</span>
+                            </p>
+                          )}
                         </div>
                       </div>
 
