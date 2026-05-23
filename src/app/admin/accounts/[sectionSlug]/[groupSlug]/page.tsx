@@ -292,15 +292,20 @@ export default function GroupPage({
     }
   };
 
-  const unlinkDrive = async (id: string) => {
-    if (!confirm("Remove Drive folder link?")) return;
+  const unlinkDrive = async (id: string, disconnectGoogle = false) => {
+    const confirmMsg = disconnectGoogle
+      ? "Disconnect Google Account? This will remove the connected Google Drive folder and log you out of Google on this server."
+      : "Remove Google Drive folder link? (This keeps your Google Account connected so you can paste a new folder URL instantly)";
+
+    if (!confirm(confirmMsg)) return;
     try {
-      const res = await fetch(`/api/managed/accounts/${id}/link-drive`, { method: "DELETE" });
+      const url = `/api/managed/accounts/${id}/link-drive${disconnectGoogle ? "?disconnectGoogle=true" : ""}`;
+      const res = await fetch(url, { method: "DELETE" });
       if (!res.ok) throw new Error("Unlink failed");
-      toast.success("Drive folder unlinked");
+      toast.success(disconnectGoogle ? "Google Account disconnected" : "Drive folder unlinked");
       fetchGroup();
     } catch {
-      toast.error("Failed to unlink");
+      toast.error(disconnectGoogle ? "Failed to disconnect account" : "Failed to unlink folder");
     }
   };
 
@@ -768,26 +773,63 @@ export default function GroupPage({
                       </h4>
 
                       {acc.driveConnected && acc.driveFolderId ? (
-                        <div className="flex items-center justify-between bg-blue-500/10 border border-blue-500/20 rounded-xl px-4 py-3">
-                          <div>
-                            <div className="flex items-center gap-2">
-                              {acc.googleOAuthConnected && (
-                                <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
-                              )}
-                              <p className="text-sm text-blue-300 font-medium">
-                                {acc.googleOAuthConnected
-                                  ? `OAuth: ${acc.driveFolderName || "Sleeckos Videos"}`
-                                  : acc.driveFolderName || "Drive Folder"}
-                              </p>
+                        <div className="space-y-4">
+                          <div className="flex items-center justify-between bg-blue-500/10 border border-blue-500/20 rounded-xl px-4 py-3">
+                            <div className="overflow-hidden flex-1 mr-2">
+                              <div className="flex items-center gap-2">
+                                {acc.googleOAuthConnected && (
+                                  <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
+                                )}
+                                <p className="text-sm text-blue-300 font-medium truncate">
+                                  {acc.googleOAuthConnected
+                                    ? `OAuth: ${acc.driveFolderName || "Sleeckos Videos"}`
+                                    : acc.driveFolderName || "Drive Folder"}
+                                </p>
+                              </div>
+                              <p className="text-xs text-blue-400/60 font-mono mt-0.5 truncate">{acc.driveFolderId}</p>
                             </div>
-                            <p className="text-xs text-blue-400/60 font-mono mt-0.5">{acc.driveFolderId}</p>
+                            <div className="flex flex-col items-end gap-1 flex-shrink-0">
+                              <button
+                                onClick={() => unlinkDrive(acc.id, false)}
+                                className="text-xs text-blue-400 hover:text-blue-300 font-semibold transition-colors"
+                                title="Remove the current folder link but keep Google OAuth logged in"
+                              >
+                                Unlink Folder
+                              </button>
+                              {acc.googleOAuthConnected && (
+                                <button
+                                  onClick={() => unlinkDrive(acc.id, true)}
+                                  className="text-[10px] text-red-400/70 hover:text-red-400 transition-colors font-medium"
+                                  title="Log out of Google completely"
+                                >
+                                  Disconnect Account
+                                </button>
+                              )}
+                            </div>
                           </div>
-                          <button
-                            onClick={() => unlinkDrive(acc.id)}
-                            className="text-xs text-red-400 hover:text-red-300 transition-colors"
-                          >
-                            Unlink
-                          </button>
+
+                          {/* Quick Change Folder Link block */}
+                          <div className="space-y-2 pl-3 border-l-2 border-blue-500/20">
+                            <label className="block text-[10px] text-gray-500 font-bold uppercase tracking-wider">Change Folder Link</label>
+                            <div className="flex gap-2">
+                              <input
+                                type="text"
+                                value={driveUrl}
+                                onChange={(e) => setDriveUrl(e.target.value)}
+                                placeholder="Paste new Google Drive folder URL or ID..."
+                                className="flex-1 bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-white text-xs placeholder-gray-600 focus:outline-none focus:border-blue-500 transition-colors"
+                                onKeyDown={(e) => e.key === "Enter" && linkDrive(acc.id)}
+                              />
+                              <button
+                                onClick={() => linkDrive(acc.id)}
+                                disabled={!driveUrl.trim() || linkingDrive}
+                                className="bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white text-xs font-semibold px-4 py-2 rounded-xl transition-all flex items-center gap-1.5"
+                              >
+                                {linkingDrive && <Loader2 className="w-3 h-3 animate-spin" />}
+                                Change
+                              </button>
+                            </div>
+                          </div>
                         </div>
                       ) : (
                         <div className="space-y-3">
@@ -814,7 +856,7 @@ export default function GroupPage({
                           {/* Folder URL Fallback */}
                           <div className="space-y-2">
                             <p className="text-[10px] text-gray-500">
-                              Paste a Google Drive folder URL or ID. The folder must be manually shared with the Service Account.
+                              Paste a Google Drive folder URL or ID. This will automatically authenticate uploads using the Master/Global Google OAuth credentials.
                             </p>
                             <div className="flex gap-2">
                               <input

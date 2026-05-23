@@ -61,11 +61,12 @@ export async function POST(
   try {
     const meta = await getFolderMeta(folderId, id);
     folderName = meta.name || "Drive Folder";
-  } catch (err) {
+  } catch (err: any) {
+    const msg = err?.message || String(err);
+    console.error(`[Link Drive] Verification failed for folder ${folderId} on account ${id}:`, err);
     return NextResponse.json(
       {
-        error:
-          "Could not access this folder. Make sure you shared it with the service account email and the service account has Viewer access.",
+        error: `Could not access this folder: ${msg}. Make sure the folder exists and is shared/accessible by your Google OAuth account or the Service Account.`,
       },
       { status: 400 }
     );
@@ -94,17 +95,32 @@ export async function DELETE(
   }
 
   const { id } = await params;
-  await prisma.managedAccount.update({
-    where: { id },
-    data: {
-      driveFolderId: null,
-      driveFolderName: null,
-      driveConnected: false,
-      googleAccessToken: null,
-      googleRefreshToken: null,
-      googleTokenExpiresAt: null,
-    },
-  });
+  const { searchParams } = new URL(_req.url);
+  const disconnectGoogle = searchParams.get("disconnectGoogle") === "true";
+
+  if (disconnectGoogle) {
+    await prisma.managedAccount.update({
+      where: { id },
+      data: {
+        driveFolderId: null,
+        driveFolderName: null,
+        driveConnected: false,
+        googleAccessToken: null,
+        googleRefreshToken: null,
+        googleTokenExpiresAt: null,
+      },
+    });
+  } else {
+    // Just unlink the folder, preserve Google OAuth tokens!
+    await prisma.managedAccount.update({
+      where: { id },
+      data: {
+        driveFolderId: null,
+        driveFolderName: null,
+        driveConnected: false,
+      },
+    });
+  }
 
   return NextResponse.json({ ok: true });
 }

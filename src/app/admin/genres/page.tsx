@@ -103,6 +103,8 @@ interface Account {
   tiktokAvatarUrl: string;
   driveFolderId: string | null;
   driveFolderName: string | null;
+  driveConnected?: boolean;
+  googleOAuthConnected?: boolean;
   group: {
     id: string;
     name: string;
@@ -297,6 +299,8 @@ export default function GenresDashboard() {
   const [positionY, setPositionY] = useState(50);
   const [uploadingBg, setUploadingBg] = useState(false);
   const [savingConfig, setSavingConfig] = useState(false);
+  const [driveUrl, setDriveUrl] = useState("");
+  const [linkingDrive, setLinkingDrive] = useState(false);
 
   // Cascading Dropdown Selectors for Niche & Group under Accounts Config Tab
   const [selectedNicheFilter, setSelectedNicheFilter] = useState("all");
@@ -633,6 +637,44 @@ export default function GenresDashboard() {
       }
     } catch {
       toast.error("Error removing background");
+    }
+  };
+
+  const linkDrive = async (id: string) => {
+    if (!driveUrl.trim()) return;
+    setLinkingDrive(true);
+    try {
+      const res = await fetch(`/api/managed/accounts/${id}/link-drive`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ folderUrl: driveUrl.trim() }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Link failed");
+      toast.success(`Linked: ${data.folderName}`);
+      setDriveUrl("");
+      fetchAccounts();
+    } catch (err: any) {
+      toast.error(err.message || "Failed to link folder");
+    } finally {
+      setLinkingDrive(false);
+    }
+  };
+
+  const unlinkDrive = async (id: string, disconnectGoogle = false) => {
+    const confirmMsg = disconnectGoogle
+      ? "Disconnect Google Account? This will remove the connected Google Drive folder and log you out of Google on this server."
+      : "Remove Google Drive folder link? (This keeps your Google Account connected so you can paste a new folder URL instantly)";
+
+    if (!confirm(confirmMsg)) return;
+    try {
+      const url = `/api/managed/accounts/${id}/link-drive${disconnectGoogle ? "?disconnectGoogle=true" : ""}`;
+      const res = await fetch(url, { method: "DELETE" });
+      if (!res.ok) throw new Error("Unlink failed");
+      toast.success(disconnectGoogle ? "Google Account disconnected" : "Drive folder unlinked");
+      fetchAccounts();
+    } catch {
+      toast.error(disconnectGoogle ? "Failed to disconnect account" : "Failed to unlink folder");
     }
   };
 
@@ -2111,6 +2153,133 @@ export default function GenresDashboard() {
                       </div>
                     )}
                   </div>
+                </div>
+
+                {/* ── Google Drive Folder Configuration ── */}
+                <div className="bg-[#0d0d16] border border-white/5 p-6 rounded-3xl shadow-xl space-y-5 text-left">
+                  <div>
+                    <h3 className="text-lg font-bold text-white flex items-center gap-2">
+                      <Folder className="w-5 h-5 text-blue-400" />
+                      Google Drive Folder Configuration
+                    </h3>
+                    <p className="text-xs text-gray-400 mt-0.5">
+                      Select or paste the Google Drive folder where videos generated for this account will be automatically uploaded.
+                    </p>
+                  </div>
+
+                  {selectedAccount.driveFolderId ? (
+                    <div className="space-y-4">
+                      {/* Active Folder Status */}
+                      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 bg-blue-500/10 border border-blue-500/20 rounded-2xl px-5 py-4">
+                        <div className="overflow-hidden flex-1">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            {selectedAccount.googleOAuthConnected && (
+                              <span className="flex items-center gap-1 bg-green-500/10 text-green-400 text-[10px] font-black uppercase px-2 py-0.5 rounded-full border border-green-500/20">
+                                <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />
+                                Google Account Connected
+                              </span>
+                            )}
+                            <p className="text-sm text-blue-300 font-bold truncate">
+                              {selectedAccount.googleOAuthConnected
+                                ? `OAuth: ${selectedAccount.driveFolderName || "Sleeckos Videos"}`
+                                : selectedAccount.driveFolderName || "Drive Folder"}
+                            </p>
+                          </div>
+                          <p className="text-xs text-blue-400/60 font-mono mt-1 truncate">ID: {selectedAccount.driveFolderId}</p>
+                        </div>
+                        <div className="flex sm:flex-col items-end gap-2 flex-shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => unlinkDrive(selectedAccount.id, false)}
+                            className="bg-blue-600/20 hover:bg-blue-600/30 border border-blue-500/30 text-blue-300 text-xs font-bold px-3 py-2 rounded-xl transition-all"
+                            title="Remove the folder link but keep Google OAuth logged in"
+                          >
+                            Unlink Folder
+                          </button>
+                          {selectedAccount.googleOAuthConnected && (
+                            <button
+                              type="button"
+                              onClick={() => unlinkDrive(selectedAccount.id, true)}
+                              className="text-red-400 hover:text-red-300 text-[10px] font-semibold transition-colors"
+                              title="Disconnect and log out of Google completely"
+                            >
+                              Disconnect Google Account
+                            </button>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Inline Overwrite Link paste */}
+                      <div className="space-y-2.5 pl-3.5 border-l-2 border-blue-500/20">
+                        <label className="block text-[10px] text-gray-500 font-extrabold uppercase tracking-wider">Change Folder Link</label>
+                        <div className="flex gap-2">
+                          <input
+                            type="text"
+                            value={driveUrl}
+                            onChange={(e) => setDriveUrl(e.target.value)}
+                            placeholder="Paste new Google Drive folder URL or ID..."
+                            className="flex-1 bg-[#141423] border border-white/5 rounded-2xl px-4 py-3 text-xs text-white focus:outline-none focus:border-blue-500 placeholder-gray-700 transition-colors"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => linkDrive(selectedAccount.id)}
+                            disabled={!driveUrl.trim() || linkingDrive}
+                            className="bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-xs font-bold text-white px-4 py-3 rounded-2xl transition-all flex items-center gap-1.5 flex-shrink-0"
+                          >
+                            {linkingDrive && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                            Change
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="space-y-4">
+                      {/* Premium Connect Google Drive button */}
+                      <div className="flex flex-col sm:flex-row gap-3">
+                        <a
+                          href={`/api/managed/accounts/${selectedAccount.id}/auth/google?section=${selectedAccount.group?.section?.slug || "uncategorized"}&group=${selectedAccount.group?.slug || "uncategorized"}`}
+                          className="flex-1 flex items-center justify-center gap-2 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white text-xs font-black uppercase tracking-wider py-4 rounded-2xl transition-all shadow-lg hover:shadow-purple-500/25 hover:scale-[1.01]"
+                        >
+                          <svg className="w-4 h-4 text-white" viewBox="0 0 24 24" fill="currentColor">
+                            <path d="M12.24 10.285V14.4h6.887c-.648 2.41-2.519 4.114-5.136 4.114-3.51 0-6.357-2.846-6.357-6.357s2.846-6.357 6.357-6.357c1.616 0 3.084.604 4.225 1.597L21.3 4.316C19.043 2.214 15.938 1 12.24 1c-6.076 0-11 4.924-11 11s4.924 11 11 11c6.34 0 10.55-4.46 10.55-10.74 0-.74-.08-1.285-.2-1.974h-10.35z"/>
+                          </svg>
+                          Connect Google Drive (OAuth)
+                        </a>
+                      </div>
+
+                      {/* Divider */}
+                      <div className="relative flex py-1 items-center">
+                        <div className="flex-grow border-t border-white/5"></div>
+                        <span className="flex-shrink mx-3 text-[10px] text-gray-600 font-extrabold uppercase tracking-wider">Or paste folder URL</span>
+                        <div className="flex-grow border-t border-white/5"></div>
+                      </div>
+
+                      {/* Paste URL linking */}
+                      <div className="space-y-2">
+                        <p className="text-[10px] text-gray-500 leading-relaxed">
+                          Paste a Google Drive folder URL or ID. Uploads will automatically authorize using your Master/Global Google OAuth account quota.
+                        </p>
+                        <div className="flex gap-2">
+                          <input
+                            type="text"
+                            value={driveUrl}
+                            onChange={(e) => setDriveUrl(e.target.value)}
+                            placeholder="https://drive.google.com/drive/folders/..."
+                            className="flex-1 bg-[#141423] border border-white/5 rounded-2xl px-4 py-3 text-xs text-white focus:outline-none focus:border-blue-500 placeholder-gray-700 transition-colors"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => linkDrive(selectedAccount.id)}
+                            disabled={!driveUrl.trim() || linkingDrive}
+                            className="bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-xs font-bold text-white px-4 py-3 rounded-2xl transition-all flex items-center gap-1.5 flex-shrink-0"
+                          >
+                            {linkingDrive && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                            Link Folder
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 {/* Account Video Backgrounds */}

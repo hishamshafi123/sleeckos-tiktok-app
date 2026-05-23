@@ -23,6 +23,8 @@ export async function GET() {
         tiktokAvatarUrl: true,
         driveFolderId: true,
         driveFolderName: true,
+        driveConnected: true,
+        googleRefreshToken: true,
         group: {
           select: {
             id: true,
@@ -49,7 +51,13 @@ export async function GET() {
       orderBy: { tiktokUsername: "asc" },
     });
 
-    return NextResponse.json(accounts);
+    const sanitized = accounts.map(a => ({
+      ...a,
+      googleOAuthConnected: !!a.googleRefreshToken,
+      googleRefreshToken: undefined,
+    }));
+
+    return NextResponse.json(sanitized);
   } catch (err) {
     console.error("[Genre Accounts API] Error fetching:", err);
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
