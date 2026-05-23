@@ -23,26 +23,49 @@ export interface ComposeOptions {
   positionY?: number;
 }
 
+/**
+ * Full-weight font files from the Google Fonts GitHub repository.
+ * These are complete .ttf files (100KB–870KB) that FFmpeg's freetype renders correctly,
+ * unlike the tiny 33KB variable-font subsets from fonts.gstatic.com.
+ * Fonts are also baked into the Docker image at build time (see Dockerfile).
+ */
 const FONT_URLS: Record<string, string> = {
-  "Outfit": "https://fonts.gstatic.com/s/outfit/v15/QGYyz_MVcBeNP4NjuGObqx1XmO1I4deyO4a0Fg.ttf",
-  "Outfit-Bold": "https://fonts.gstatic.com/s/outfit/v15/QGYyz_MVcBeNP4NjuGObqx1XmO1I4deyO4a0Fg.ttf",
-  "Inter": "https://fonts.gstatic.com/s/inter/v20/UcCO3FwrK3iLTeHuS_nVMrMxCp50SjIw2boKoduKmMEVuFuYAZ9hjQ.ttf",
-  "Inter-Bold": "https://fonts.gstatic.com/s/inter/v20/UcCO3FwrK3iLTeHuS_nVMrMxCp50SjIw2boKoduKmMEVuFuYAZ9hjQ.ttf",
-  "Playfair Display": "https://fonts.gstatic.com/s/playfairdisplay/v40/nuFvD-vYSZviVYUb_rj3ij__anPXJzDwcbmjWBN2PKeiunDXbtY.ttf",
-  "PlayfairDisplay-Bold": "https://fonts.gstatic.com/s/playfairdisplay/v40/nuFvD-vYSZviVYUb_rj3ij__anPXJzDwcbmjWBN2PKeiunDXbtY.ttf",
-  "Great Vibes": "https://fonts.gstatic.com/s/greatvibes/v21/RWmMoKWR9v4ksMfaWd_JN9XFiaE.ttf",
-  "GreatVibes-Regular": "https://fonts.gstatic.com/s/greatvibes/v21/RWmMoKWR9v4ksMfaWd_JN9XFiaE.ttf",
-  "Anton": "https://fonts.gstatic.com/s/anton/v27/1Ptgg87LROyAm3Kz-Co.ttf",
-  "Anton-Regular": "https://fonts.gstatic.com/s/anton/v27/1Ptgg87LROyAm3Kz-Co.ttf",
-  "Oswald": "https://fonts.gstatic.com/s/oswald/v57/TK3_WkUHHAIjg75cFRf3bXL8LICs1xZosUZiYA.ttf",
-  "Oswald-Bold": "https://fonts.gstatic.com/s/oswald/v57/TK3_WkUHHAIjg75cFRf3bXL8LICs1xZosUZiYA.ttf",
-  "Montserrat": "https://fonts.gstatic.com/s/montserrat/v31/JTUHjIg1_i6t8kCHKm4532VJOt5-QNFgpCuM73w5aX8.ttf",
-  "Montserrat-Bold": "https://fonts.gstatic.com/s/montserrat/v31/JTUHjIg1_i6t8kCHKm4532VJOt5-QNFgpCuM73w5aX8.ttf",
-  "Caveat": "https://fonts.gstatic.com/s/caveat/v23/WnznHAc5bAfYB2QRah7pcpNvOx-pjRV6eIWpZA.ttf",
-  "Caveat-Bold": "https://fonts.gstatic.com/s/caveat/v23/WnznHAc5bAfYB2QRah7pcpNvOx-pjRV6eIWpZA.ttf",
-  "Lora": "https://fonts.gstatic.com/s/lora/v37/0QI6MX1D_JOuGQbT0gvTJPa787z5vBJBkqg.ttf",
-  "Lora-Bold": "https://fonts.gstatic.com/s/lora/v37/0QI6MX1D_JOuGQbT0gvTJPa787z5vBJBkqg.ttf"
+  "Outfit": "https://raw.githubusercontent.com/google/fonts/main/ofl/outfit/Outfit%5Bwght%5D.ttf",
+  "Outfit-Bold": "https://raw.githubusercontent.com/google/fonts/main/ofl/outfit/Outfit%5Bwght%5D.ttf",
+  "Inter": "https://raw.githubusercontent.com/google/fonts/main/ofl/inter/Inter%5Bopsz%2Cwght%5D.ttf",
+  "Inter-Bold": "https://raw.githubusercontent.com/google/fonts/main/ofl/inter/Inter%5Bopsz%2Cwght%5D.ttf",
+  "Playfair Display": "https://raw.githubusercontent.com/google/fonts/main/ofl/playfairdisplay/PlayfairDisplay%5Bwght%5D.ttf",
+  "PlayfairDisplay-Bold": "https://raw.githubusercontent.com/google/fonts/main/ofl/playfairdisplay/PlayfairDisplay%5Bwght%5D.ttf",
+  "Great Vibes": "https://raw.githubusercontent.com/google/fonts/main/ofl/greatvibes/GreatVibes-Regular.ttf",
+  "GreatVibes-Regular": "https://raw.githubusercontent.com/google/fonts/main/ofl/greatvibes/GreatVibes-Regular.ttf",
+  "Anton": "https://raw.githubusercontent.com/google/fonts/main/ofl/anton/Anton-Regular.ttf",
+  "Anton-Regular": "https://raw.githubusercontent.com/google/fonts/main/ofl/anton/Anton-Regular.ttf",
+  "Oswald": "https://raw.githubusercontent.com/google/fonts/main/ofl/oswald/Oswald%5Bwght%5D.ttf",
+  "Oswald-Bold": "https://raw.githubusercontent.com/google/fonts/main/ofl/oswald/Oswald%5Bwght%5D.ttf",
+  "Montserrat": "https://raw.githubusercontent.com/google/fonts/main/ofl/montserrat/Montserrat%5Bwght%5D.ttf",
+  "Montserrat-Bold": "https://raw.githubusercontent.com/google/fonts/main/ofl/montserrat/Montserrat%5Bwght%5D.ttf",
+  "Caveat": "https://raw.githubusercontent.com/google/fonts/main/ofl/caveat/Caveat%5Bwght%5D.ttf",
+  "Caveat-Bold": "https://raw.githubusercontent.com/google/fonts/main/ofl/caveat/Caveat%5Bwght%5D.ttf",
+  "Lora": "https://raw.githubusercontent.com/google/fonts/main/ofl/lora/Lora%5Bwght%5D.ttf",
+  "Lora-Bold": "https://raw.githubusercontent.com/google/fonts/main/ofl/lora/Lora%5Bwght%5D.ttf"
 };
+
+/** Minimum valid font file size — anything smaller is a corrupt cache artifact */
+const MIN_FONT_SIZE_BYTES = 50_000;
+
+/** Valid TrueType magic bytes: 0x00010000 (TrueType) or 0x4F54544F ('OTTO' = OpenType) */
+function isValidTTF(filePath: string): boolean {
+  try {
+    const fd = fs.openSync(filePath, "r");
+    const header = Buffer.alloc(4);
+    fs.readSync(fd, header, 0, 4, 0);
+    fs.closeSync(fd);
+    const magic = header.readUInt32BE(0);
+    return magic === 0x00010000 || magic === 0x4F54544F;
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Checks system font paths or downloads google font if configured, falling back gracefully.
@@ -61,13 +84,14 @@ export async function resolveFontPath(fontFamily: string): Promise<string> {
     const fontFileName = `${normalizedKey.replace(/\s+/g, "")}.ttf`;
     const fontFilePath = path.join(fontsDir, fontFileName);
 
+    // Validate cached font: must exist, be large enough, and have valid TTF header
     if (fs.existsSync(fontFilePath)) {
       try {
         const stats = fs.statSync(fontFilePath);
-        if (stats.size > 5000) {
+        if (stats.size >= MIN_FONT_SIZE_BYTES && isValidTTF(fontFilePath)) {
           return fontFilePath;
         }
-        console.warn(`[Composer] Cached font at ${fontFilePath} is corrupt/empty (${stats.size} bytes). Deleting and re-downloading...`);
+        console.warn(`[Composer] Cached font at ${fontFilePath} is invalid (${stats.size} bytes, validTTF=${isValidTTF(fontFilePath)}). Deleting stale cache...`);
         fs.unlinkSync(fontFilePath);
       } catch (err) {
         console.warn(`[Composer] Failed to validate cached font file:`, err);
@@ -77,16 +101,22 @@ export async function resolveFontPath(fontFamily: string): Promise<string> {
     try {
       console.log(`[Composer] Downloading font "${fontFamily}" from ${url}...`);
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 8000); // 8-second download timeout
+      const timeoutId = setTimeout(() => controller.abort(), 15000); // 15-second download timeout (GitHub raw can be slow)
 
       const res = await fetch(url, { signal: controller.signal });
       clearTimeout(timeoutId);
 
       if (res.ok) {
         const buffer = Buffer.from(await res.arrayBuffer());
-        fs.writeFileSync(fontFilePath, buffer);
-        console.log(`[Composer] Cached font at ${fontFilePath}`);
-        return fontFilePath;
+        if (buffer.length >= MIN_FONT_SIZE_BYTES) {
+          fs.writeFileSync(fontFilePath, buffer);
+          console.log(`[Composer] Cached font at ${fontFilePath} (${buffer.length} bytes)`);
+          return fontFilePath;
+        } else {
+          console.warn(`[Composer] Downloaded font is too small (${buffer.length} bytes), skipping cache`);
+        }
+      } else {
+        console.warn(`[Composer] Font download returned HTTP ${res.status} for ${fontFamily}`);
       }
     } catch (err) {
       console.warn(`[Composer] Font download failed for ${fontFamily}, falling back`, err);
@@ -116,6 +146,33 @@ export async function resolveFontPath(fontFamily: string): Promise<string> {
   }
 
   return "Arial"; // let ffmpeg try internal system font resolver
+}
+
+/**
+ * Sanitizes quote text from Gemini API output or user input.
+ * Strips carriage returns, control characters, invisible formatting chars,
+ * and problematic unicode symbols that FFmpeg renders as box glyphs.
+ */
+function sanitizeQuoteText(text: string): string {
+  return text
+    // Strip carriage returns
+    .replace(/\r/g, "")
+    // Strip all ASCII control characters except newline (\n = 0x0A)
+    .replace(/[\x00-\x09\x0B-\x1F\x7F]/g, "")
+    // Strip invisible formatting / zero-width characters
+    .replace(/[\u00AD\u200B-\u200F\u2028\u2029\u202A-\u202E\u2060\uFEFF]/g, "")
+    // Strip NOT SIGN (¬ U+00AC) and REVERSED NOT SIGN (⌐ U+2310) — common Gemini artifacts
+    .replace(/[\u00AC\u2310]/g, "")
+    // Strip box-drawing / misc symbols that FFmpeg can't render
+    .replace(/[\u2500-\u257F\u2580-\u259F\u25A0-\u25FF]/g, "")
+    // Normalize smart/curly quotes to straight quotes
+    .replace(/[\u2018\u2019]/g, "'")
+    .replace(/[\u201C\u201D]/g, '"')
+    // Normalize em/en dashes to simple dash
+    .replace(/[\u2013\u2014]/g, "-")
+    // Normalize ellipsis character to three dots
+    .replace(/\u2026/g, "...")
+    .trim();
 }
 
 /**
@@ -224,8 +281,9 @@ export async function composeVideo(options: ComposeOptions): Promise<string> {
 
   if (curveText) {
     // True curved text along an SVG path
-    const casedText = applyCasing(quoteText, textCase);
-    const displayQuote = casedText.replace(/\r/g, "").trim();
+    const cleanQuote = sanitizeQuoteText(quoteText);
+    const casedText = applyCasing(cleanQuote, textCase);
+    const displayQuote = casedText.trim();
     const posPercent = Math.min(Math.max(10, positionY), 90);
 
     // Proportionally scale standard 9:16 coordinates to 720x1280 resolution
@@ -344,7 +402,8 @@ export async function composeVideo(options: ComposeOptions): Promise<string> {
 
   } else {
     // Standard horizontal text using drawtext file rendering
-    const casedText = applyCasing(quoteText, textCase);
+    const cleanQuote = sanitizeQuoteText(quoteText);
+    const casedText = applyCasing(cleanQuote, textCase);
     const wrappedText = wrapText(casedText, 25);
     
     let fullText = wrappedText;

@@ -28,10 +28,33 @@ ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV NODE_PATH=/usr/local/lib/node_modules
 
-RUN apk add --no-cache ffmpeg ttf-dejavu && \
+RUN apk add --no-cache ffmpeg ttf-dejavu curl && \
     addgroup --system --gid 1001 nodejs && \
     adduser --system --uid 1001 nextjs && \
     npm install -g prisma@7
+
+# Bake Google Fonts into the image so FFmpeg always has them (no runtime downloads needed)
+RUN mkdir -p /app/public/fonts && \
+    curl -fsSL -o /app/public/fonts/Outfit-Bold.ttf    "https://raw.githubusercontent.com/google/fonts/main/ofl/outfit/Outfit%5Bwght%5D.ttf" && \
+    curl -fsSL -o /app/public/fonts/Inter-Bold.ttf     "https://raw.githubusercontent.com/google/fonts/main/ofl/inter/Inter%5Bopsz%2Cwght%5D.ttf" && \
+    curl -fsSL -o /app/public/fonts/PlayfairDisplay-Bold.ttf "https://raw.githubusercontent.com/google/fonts/main/ofl/playfairdisplay/PlayfairDisplay%5Bwght%5D.ttf" && \
+    curl -fsSL -o /app/public/fonts/GreatVibes-Regular.ttf   "https://raw.githubusercontent.com/google/fonts/main/ofl/greatvibes/GreatVibes-Regular.ttf" && \
+    curl -fsSL -o /app/public/fonts/Anton.ttf          "https://raw.githubusercontent.com/google/fonts/main/ofl/anton/Anton-Regular.ttf" && \
+    curl -fsSL -o /app/public/fonts/Anton-Regular.ttf  "https://raw.githubusercontent.com/google/fonts/main/ofl/anton/Anton-Regular.ttf" && \
+    curl -fsSL -o /app/public/fonts/Oswald-Bold.ttf    "https://raw.githubusercontent.com/google/fonts/main/ofl/oswald/Oswald%5Bwght%5D.ttf" && \
+    curl -fsSL -o /app/public/fonts/Montserrat-Bold.ttf "https://raw.githubusercontent.com/google/fonts/main/ofl/montserrat/Montserrat%5Bwght%5D.ttf" && \
+    curl -fsSL -o /app/public/fonts/Caveat-Bold.ttf    "https://raw.githubusercontent.com/google/fonts/main/ofl/caveat/Caveat%5Bwght%5D.ttf" && \
+    curl -fsSL -o /app/public/fonts/Caveat.ttf         "https://raw.githubusercontent.com/google/fonts/main/ofl/caveat/Caveat%5Bwght%5D.ttf" && \
+    curl -fsSL -o /app/public/fonts/Lora-Bold.ttf      "https://raw.githubusercontent.com/google/fonts/main/ofl/lora/Lora%5Bwght%5D.ttf" && \
+    curl -fsSL -o /app/public/fonts/Lora.ttf           "https://raw.githubusercontent.com/google/fonts/main/ofl/lora/Lora%5Bwght%5D.ttf" && \
+    curl -fsSL -o /app/public/fonts/Outfit.ttf         "https://raw.githubusercontent.com/google/fonts/main/ofl/outfit/Outfit%5Bwght%5D.ttf" && \
+    curl -fsSL -o /app/public/fonts/Inter.ttf          "https://raw.githubusercontent.com/google/fonts/main/ofl/inter/Inter%5Bopsz%2Cwght%5D.ttf" && \
+    curl -fsSL -o /app/public/fonts/Oswald.ttf         "https://raw.githubusercontent.com/google/fonts/main/ofl/oswald/Oswald%5Bwght%5D.ttf" && \
+    curl -fsSL -o /app/public/fonts/Montserrat.ttf     "https://raw.githubusercontent.com/google/fonts/main/ofl/montserrat/Montserrat%5Bwght%5D.ttf" && \
+    curl -fsSL -o /app/public/fonts/GreatVibes.ttf     "https://raw.githubusercontent.com/google/fonts/main/ofl/greatvibes/GreatVibes-Regular.ttf" && \
+    curl -fsSL -o /app/public/fonts/PlayfairDisplay.ttf "https://raw.githubusercontent.com/google/fonts/main/ofl/playfairdisplay/PlayfairDisplay%5Bwght%5D.ttf" && \
+    chown -R nextjs:nodejs /app/public/fonts && \
+    echo "[Docker Build] Baked $(ls /app/public/fonts/*.ttf | wc -l) Google Font files into image"
 
 # standalone output + static assets + public files
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
