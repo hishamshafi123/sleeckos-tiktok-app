@@ -129,7 +129,7 @@ export async function getFolderMeta(folderId: string, accountId?: string, useSer
   const drive = await getDriveClient(accountId, useServiceAccount);
   const res = await drive.files.get({
     fileId: folderId,
-    fields: "id,name,mimeType",
+    fields: "id,name,mimeType,owners(emailAddress)",
     supportsAllDrives: true,
   });
   return res.data;

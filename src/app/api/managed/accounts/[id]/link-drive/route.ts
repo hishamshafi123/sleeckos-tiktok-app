@@ -60,7 +60,8 @@ export async function POST(
   let folderName = "Drive Folder";
   try {
     const meta = await getFolderMeta(folderId, id);
-    folderName = meta.name || "Drive Folder";
+    const ownerEmail = (meta as any).owners?.[0]?.emailAddress;
+    folderName = ownerEmail ? `${meta.name || "Drive Folder"} (${ownerEmail})` : (meta.name || "Drive Folder");
   } catch (err: any) {
     const msg = err?.message || String(err);
     console.error(`[Link Drive] Verification failed for folder ${folderId} on account ${id}:`, err);

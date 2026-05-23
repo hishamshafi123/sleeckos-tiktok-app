@@ -12,6 +12,7 @@ import {
   Download,
   Upload,
   Cog,
+  ExternalLink,
 } from "lucide-react";
 
 type QueuePost = {
@@ -293,6 +294,18 @@ export default function QueuePage() {
                       <Icon className="w-3 h-3" />
                       {cfg.label}
                     </span>
+                    {post.driveFileId && (
+                      <a
+                        href={`https://drive.google.com/file/d/${post.driveFileId}/view`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="flex items-center gap-1 text-xs text-purple-400 hover:text-purple-300 bg-purple-500/10 hover:bg-purple-500/20 border border-purple-500/20 px-2.5 py-1 rounded-full transition-all"
+                        title="Open in Google Drive"
+                      >
+                        <ExternalLink className="w-3.5 h-3.5" />
+                        View File
+                      </a>
+                    )}
                     {post.status === "FAILED" && (
                       <button
                         onClick={() => retry(post.id)}

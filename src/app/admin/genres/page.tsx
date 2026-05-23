@@ -4,7 +4,7 @@ import { useState, useEffect, useRef } from "react";
 import { 
   Sparkles, Music, Sliders, Play, Pause, Trash2, Plus, 
   Upload, Film, CheckCircle2, AlertCircle, RefreshCw, ChevronRight, ChevronDown, Check, X, Lock, Tag, Folder, Eye, Filter,
-  Loader2
+  Loader2, ExternalLink
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -3277,10 +3277,24 @@ export default function GenresDashboard() {
                         )}
 
                         {item.status === "UPLOADED" && (
-                          <span className="flex items-center gap-1 px-3 py-1 bg-green-500/10 text-green-400 border border-green-500/15 rounded-xl text-xs font-bold">
-                            <CheckCircle2 className="w-3.5 h-3.5" />
-                            Google Drive Uploaded
-                          </span>
+                          <div className="flex items-center gap-2">
+                            <span className="flex items-center gap-1 px-3 py-1 bg-green-500/10 text-green-400 border border-green-500/15 rounded-xl text-xs font-bold">
+                              <CheckCircle2 className="w-3.5 h-3.5" />
+                              Google Drive Uploaded
+                            </span>
+                            {item.driveFileId && (
+                              <a
+                                href={`https://drive.google.com/file/d/${item.driveFileId}/view`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="flex items-center gap-1 px-3 py-1.5 bg-purple-500/15 hover:bg-purple-500 text-purple-400 hover:text-black border border-purple-500/20 hover:border-purple-500 rounded-xl text-xs font-extrabold transition-all duration-300"
+                                title="Open in Google Drive"
+                              >
+                                <ExternalLink className="w-3.5 h-3.5" />
+                                View File
+                              </a>
+                            )}
+                          </div>
                         )}
 
                         {item.status === "FAILED" && (

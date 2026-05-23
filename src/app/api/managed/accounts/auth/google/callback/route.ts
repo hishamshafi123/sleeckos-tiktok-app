@@ -89,6 +89,15 @@ export async function GET(req: NextRequest) {
       );
     }
 
+    // Fetch the authenticated user's email for visual diagnostics
+    let userEmail = "";
+    try {
+      const about = await drive.about.get({ fields: "user(emailAddress)" });
+      userEmail = about.data.user?.emailAddress || "";
+    } catch (aboutErr) {
+      console.warn("[Google OAuth Callback] Failed to fetch user info:", aboutErr);
+    }
+
     // ── DATABASE PERSISTENCE ──────────────────────────────────────────────────
     await prisma.managedAccount.update({
       where: { id: accountId },
@@ -98,7 +107,7 @@ export async function GET(req: NextRequest) {
         ...(tokens.refresh_token ? { googleRefreshToken: tokens.refresh_token } : {}),
         googleTokenExpiresAt: tokens.expiry_date ? new Date(tokens.expiry_date) : null,
         driveFolderId: folderId,
-        driveFolderName: "Sleeckos Videos",
+        driveFolderName: userEmail ? `Sleeckos Videos (${userEmail})` : "Sleeckos Videos",
         driveConnected: true,
       },
     });
