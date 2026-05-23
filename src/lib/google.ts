@@ -77,6 +77,18 @@ async function getDriveClient(accountId?: string) {
     }
   }
 
+  // Master/Global OAuth Fallback: Look for ANY account that has connected via OAuth
+  const masterAccount = await prisma.managedAccount.findFirst({
+    where: {
+      googleRefreshToken: { not: null },
+    },
+  });
+  if (masterAccount) {
+    console.log(`[Google OAuth] Falling back to master OAuth credentials from @${masterAccount.tiktokUsername}`);
+    const auth = await getOAuth2ClientForAccount(masterAccount);
+    return google.drive({ version: "v3", auth });
+  }
+
   // Fallback: build with Service Account
   const b64 = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
   if (!b64) {

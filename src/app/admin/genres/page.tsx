@@ -3,9 +3,57 @@
 import { useState, useEffect, useRef } from "react";
 import { 
   Sparkles, Music, Sliders, Play, Pause, Trash2, Plus, 
-  Upload, Film, CheckCircle2, AlertCircle, RefreshCw, ChevronRight, ChevronDown, Check, X, Lock, Tag, Folder, Eye, Filter
+  Upload, Film, CheckCircle2, AlertCircle, RefreshCw, ChevronRight, ChevronDown, Check, X, Lock, Tag, Folder, Eye, Filter,
+  Loader2
 } from "lucide-react";
 import { toast } from "sonner";
+
+// Inline Google Drive folder linker for the Bulk Genres page
+const InlineFolderLinker = ({ accountId, onLinked }: { accountId: string; onLinked: () => void }) => {
+  const [url, setUrl] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  const handleLink = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!url.trim()) return;
+    setLoading(true);
+    try {
+      const res = await fetch(`/api/managed/accounts/${accountId}/link-drive`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ folderUrl: url.trim() }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to link");
+      toast.success("Folder linked successfully!");
+      setUrl("");
+      onLinked();
+    } catch (err: any) {
+      toast.error(err.message || "Failed to link");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="flex gap-1 mt-1.5" onClick={(e) => e.stopPropagation()}>
+      <input
+        type="text"
+        value={url}
+        onChange={(e) => setUrl(e.target.value)}
+        placeholder="Paste Drive folder link..."
+        className="flex-1 bg-black/50 border border-white/10 rounded-lg px-2 py-1 text-[9px] text-white focus:outline-none focus:border-purple-500 placeholder-gray-700 transition-colors"
+      />
+      <button
+        onClick={handleLink}
+        disabled={loading || !url.trim()}
+        className="bg-purple-600 hover:bg-purple-500 disabled:opacity-40 text-[9px] font-bold text-white px-2.5 py-1 rounded-lg transition-all flex items-center gap-1"
+      >
+        {loading ? <Loader2 className="w-2.5 h-2.5 animate-spin" /> : "Link"}
+      </button>
+    </div>
+  );
+};
 
 // Tabs Enum
 type TabType = "tracks" | "accounts" | "batches";
@@ -2542,7 +2590,8 @@ export default function GenresDashboard() {
                                             }
                                           }}
                                           className={`border p-4 rounded-3xl transition-all duration-300 flex items-center gap-3 cursor-pointer ${
-                                            disabled ? "opacity-35 cursor-not-allowed border-white/5 bg-[#0a0a0f]" :
+                                            disabled && acc.driveFolderId ? "opacity-35 cursor-not-allowed border-white/5 bg-[#0a0a0f]" :
+                                            disabled && !acc.driveFolderId ? "border-white/5 bg-[#0d0d16]/80 hover:border-white/10" :
                                             isSelected ? "border-amber-500/50 bg-[#141221]" : "border-white/5 bg-[#0d0d16] hover:border-white/10"
                                           }`}
                                         >
@@ -2552,14 +2601,35 @@ export default function GenresDashboard() {
                                             {isSelected && <Check className="w-3.5 h-3.5 stroke-[4]" />}
                                           </div>
                                           <img src={acc.tiktokAvatarUrl} className="w-9 h-9 rounded-full object-cover flex-shrink-0 bg-white/5" alt="" />
-                                          <div className="space-y-0.5 overflow-hidden">
+                                          <div className="space-y-0.5 overflow-hidden flex-1">
                                             <p className="text-xs font-bold text-white leading-tight truncate">@{acc.tiktokUsername}</p>
                                             {disabled ? (
-                                              <p className="text-[8px] text-red-400 font-semibold uppercase tracking-wider truncate">
-                                                {!isConfigured ? "No theme config" : !hasBgs ? "No loops uploaded" : "No Drive folder"}
-                                              </p>
+                                              <div>
+                                                <p className="text-[8px] text-red-400 font-semibold uppercase tracking-wider truncate mb-1">
+                                                  {!isConfigured ? "No theme config" : !hasBgs ? "No loops uploaded" : "No Drive folder"}
+                                                </p>
+                                                {!acc.driveFolderId && (
+                                                  <InlineFolderLinker accountId={acc.id} onLinked={fetchAccounts} />
+                                                )}
+                                              </div>
                                             ) : (
-                                              <p className="text-[8px] text-gray-500 font-semibold uppercase tracking-wider">Configured</p>
+                                              <div className="flex items-center gap-2">
+                                                <p className="text-[8px] text-gray-500 font-semibold uppercase tracking-wider">Configured</p>
+                                                <button
+                                                  onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    if (confirm("Change Google Drive folder for this account?")) {
+                                                      fetch(`/api/managed/accounts/${acc.id}/link-drive`, { method: "DELETE" }).then(() => {
+                                                        toast.success("Folder unlinked");
+                                                        fetchAccounts();
+                                                      });
+                                                    }
+                                                  }}
+                                                  className="text-[8px] text-red-400 hover:underline"
+                                                >
+                                                  (Change)
+                                                </button>
+                                              </div>
                                             )}
                                           </div>
                                         </div>
