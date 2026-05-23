@@ -1805,7 +1805,7 @@ export default function GenresDashboard() {
                           </div>
                           <input
                             type="range"
-                            min="24"
+                            min="12"
                             max="72"
                             value={fontSize}
                             onChange={(e) => setFontSize(parseInt(e.target.value))}
@@ -2110,6 +2110,7 @@ export default function GenresDashboard() {
                             <div 
                               style={{
                                 fontFamily: getCssFontFamily(fontFamily),
+                                fontSize: `${Math.max(10, fontSize * 0.38)}px`,
                                 color: fontColor,
                                 textTransform: textCase === "UPPERCASE" ? "uppercase" : textCase === "lowercase" ? "lowercase" : "none",
                                 backgroundColor: isClearBox ? "transparent" : getCssRgba(boxColor),

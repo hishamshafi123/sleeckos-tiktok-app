@@ -24,24 +24,24 @@ export interface ComposeOptions {
 }
 
 const FONT_URLS: Record<string, string> = {
-  "Outfit": "https://github.com/google/fonts/raw/main/ofl/outfit/static/Outfit-Bold.ttf",
-  "Outfit-Bold": "https://github.com/google/fonts/raw/main/ofl/outfit/static/Outfit-Bold.ttf",
-  "Inter": "https://github.com/google/fonts/raw/main/ofl/inter/static/Inter-Bold.ttf",
-  "Inter-Bold": "https://github.com/google/fonts/raw/main/ofl/inter/static/Inter-Bold.ttf",
-  "Playfair Display": "https://github.com/google/fonts/raw/main/ofl/playfairdisplay/static/PlayfairDisplay-Bold.ttf",
-  "PlayfairDisplay-Bold": "https://github.com/google/fonts/raw/main/ofl/playfairdisplay/static/PlayfairDisplay-Bold.ttf",
-  "Great Vibes": "https://github.com/google/fonts/raw/main/ofl/greatvibes/GreatVibes-Regular.ttf",
-  "GreatVibes-Regular": "https://github.com/google/fonts/raw/main/ofl/greatvibes/GreatVibes-Regular.ttf",
-  "Anton": "https://github.com/google/fonts/raw/main/ofl/anton/Anton-Regular.ttf",
-  "Anton-Regular": "https://github.com/google/fonts/raw/main/ofl/anton/Anton-Regular.ttf",
-  "Oswald": "https://github.com/google/fonts/raw/main/ofl/oswald/static/Oswald-Bold.ttf",
-  "Oswald-Bold": "https://github.com/google/fonts/raw/main/ofl/oswald/static/Oswald-Bold.ttf",
-  "Montserrat": "https://github.com/google/fonts/raw/main/ofl/montserrat/static/Montserrat-Bold.ttf",
-  "Montserrat-Bold": "https://github.com/google/fonts/raw/main/ofl/montserrat/static/Montserrat-Bold.ttf",
-  "Caveat": "https://github.com/google/fonts/raw/main/ofl/caveat/static/Caveat-Bold.ttf",
-  "Caveat-Bold": "https://github.com/google/fonts/raw/main/ofl/caveat/static/Caveat-Bold.ttf",
-  "Lora": "https://github.com/google/fonts/raw/main/ofl/lora/static/Lora-Bold.ttf",
-  "Lora-Bold": "https://github.com/google/fonts/raw/main/ofl/lora/static/Lora-Bold.ttf"
+  "Outfit": "https://fonts.gstatic.com/s/outfit/v15/QGYyz_MVcBeNP4NjuGObqx1XmO1I4deyO4a0Fg.ttf",
+  "Outfit-Bold": "https://fonts.gstatic.com/s/outfit/v15/QGYyz_MVcBeNP4NjuGObqx1XmO1I4deyO4a0Fg.ttf",
+  "Inter": "https://fonts.gstatic.com/s/inter/v20/UcCO3FwrK3iLTeHuS_nVMrMxCp50SjIw2boKoduKmMEVuFuYAZ9hjQ.ttf",
+  "Inter-Bold": "https://fonts.gstatic.com/s/inter/v20/UcCO3FwrK3iLTeHuS_nVMrMxCp50SjIw2boKoduKmMEVuFuYAZ9hjQ.ttf",
+  "Playfair Display": "https://fonts.gstatic.com/s/playfairdisplay/v40/nuFvD-vYSZviVYUb_rj3ij__anPXJzDwcbmjWBN2PKeiunDXbtY.ttf",
+  "PlayfairDisplay-Bold": "https://fonts.gstatic.com/s/playfairdisplay/v40/nuFvD-vYSZviVYUb_rj3ij__anPXJzDwcbmjWBN2PKeiunDXbtY.ttf",
+  "Great Vibes": "https://fonts.gstatic.com/s/greatvibes/v21/RWmMoKWR9v4ksMfaWd_JN9XFiaE.ttf",
+  "GreatVibes-Regular": "https://fonts.gstatic.com/s/greatvibes/v21/RWmMoKWR9v4ksMfaWd_JN9XFiaE.ttf",
+  "Anton": "https://fonts.gstatic.com/s/anton/v27/1Ptgg87LROyAm3Kz-Co.ttf",
+  "Anton-Regular": "https://fonts.gstatic.com/s/anton/v27/1Ptgg87LROyAm3Kz-Co.ttf",
+  "Oswald": "https://fonts.gstatic.com/s/oswald/v57/TK3_WkUHHAIjg75cFRf3bXL8LICs1xZosUZiYA.ttf",
+  "Oswald-Bold": "https://fonts.gstatic.com/s/oswald/v57/TK3_WkUHHAIjg75cFRf3bXL8LICs1xZosUZiYA.ttf",
+  "Montserrat": "https://fonts.gstatic.com/s/montserrat/v31/JTUHjIg1_i6t8kCHKm4532VJOt5-QNFgpCuM73w5aX8.ttf",
+  "Montserrat-Bold": "https://fonts.gstatic.com/s/montserrat/v31/JTUHjIg1_i6t8kCHKm4532VJOt5-QNFgpCuM73w5aX8.ttf",
+  "Caveat": "https://fonts.gstatic.com/s/caveat/v23/WnznHAc5bAfYB2QRah7pcpNvOx-pjRV6eIWpZA.ttf",
+  "Caveat-Bold": "https://fonts.gstatic.com/s/caveat/v23/WnznHAc5bAfYB2QRah7pcpNvOx-pjRV6eIWpZA.ttf",
+  "Lora": "https://fonts.gstatic.com/s/lora/v37/0QI6MX1D_JOuGQbT0gvTJPa787z5vBJBkqg.ttf",
+  "Lora-Bold": "https://fonts.gstatic.com/s/lora/v37/0QI6MX1D_JOuGQbT0gvTJPa787z5vBJBkqg.ttf"
 };
 
 /**
@@ -62,7 +62,16 @@ export async function resolveFontPath(fontFamily: string): Promise<string> {
     const fontFilePath = path.join(fontsDir, fontFileName);
 
     if (fs.existsSync(fontFilePath)) {
-      return fontFilePath;
+      try {
+        const stats = fs.statSync(fontFilePath);
+        if (stats.size > 5000) {
+          return fontFilePath;
+        }
+        console.warn(`[Composer] Cached font at ${fontFilePath} is corrupt/empty (${stats.size} bytes). Deleting and re-downloading...`);
+        fs.unlinkSync(fontFilePath);
+      } catch (err) {
+        console.warn(`[Composer] Failed to validate cached font file:`, err);
+      }
     }
 
     try {
@@ -130,21 +139,33 @@ function applyCasing(text: string, casing: string): string {
  * Splits text into lines of roughly maxChars length without cutting words.
  */
 export function wrapText(text: string, maxCharsPerLine: number = 25): string {
-  const words = text.split(/\s+/);
-  const lines: string[] = [];
-  let currentLine = "";
+  // Strip all carriage returns
+  const cleanText = text.replace(/\r/g, "");
+  
+  // Split on newlines to preserve manual line breaks
+  const rawLines = cleanText.split("\n");
+  const finalLines: string[] = [];
 
-  for (const word of words) {
-    if ((currentLine + " " + word).trim().length <= maxCharsPerLine) {
-      currentLine = currentLine ? currentLine + " " + word : word;
-    } else {
-      if (currentLine) lines.push(currentLine);
-      currentLine = word;
+  for (const rawLine of rawLines) {
+    const words = rawLine.split(/\s+/).filter(Boolean);
+    if (words.length === 0) {
+      finalLines.push(""); // preserve empty lines
+      continue;
     }
-  }
-  if (currentLine) lines.push(currentLine);
 
-  return lines.join("\n");
+    let currentLine = "";
+    for (const word of words) {
+      if ((currentLine + " " + word).trim().length <= maxCharsPerLine) {
+        currentLine = currentLine ? currentLine + " " + word : word;
+      } else {
+        if (currentLine) finalLines.push(currentLine);
+        currentLine = word;
+      }
+    }
+    if (currentLine) finalLines.push(currentLine);
+  }
+
+  return finalLines.join("\n");
 }
 
 /**
@@ -204,7 +225,7 @@ export async function composeVideo(options: ComposeOptions): Promise<string> {
   if (curveText) {
     // True curved text along an SVG path
     const casedText = applyCasing(quoteText, textCase);
-    const displayQuote = casedText.trim();
+    const displayQuote = casedText.replace(/\r/g, "").trim();
     const posPercent = Math.min(Math.max(10, positionY), 90);
 
     // Proportionally scale standard 9:16 coordinates to 720x1280 resolution
