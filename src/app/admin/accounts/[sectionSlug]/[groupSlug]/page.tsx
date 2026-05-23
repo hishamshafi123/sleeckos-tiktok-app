@@ -88,6 +88,54 @@ export default function GroupPage({
   const [newSlot, setNewSlot] = useState("12:00");
   const [driveUrl, setDriveUrl] = useState("");
   const [linkingDrive, setLinkingDrive] = useState(false);
+  const [foldersList, setFoldersList] = useState<{ id: string; name: string }[]>([]);
+  const [loadingFolders, setLoadingFolders] = useState(false);
+  const [selectedFolderId, setSelectedFolderId] = useState("");
+
+  const fetchFolders = async (accountId: string) => {
+    setLoadingFolders(true);
+    setFoldersList([]);
+    try {
+      const res = await fetch(`/api/managed/accounts/${accountId}/drive-folders`);
+      if (res.ok) {
+        const data = await res.json();
+        setFoldersList(data.folders || []);
+        if (data.folders && data.folders.length > 0) {
+          setSelectedFolderId(data.folders[0].id);
+        }
+      }
+    } catch (err) {
+      console.warn("Failed to fetch folders list:", err);
+    } finally {
+      setLoadingFolders(false);
+    }
+  };
+
+  const linkSelectedFolder = async (accountId: string) => {
+    if (!selectedFolderId) return;
+    setLinkingDrive(true);
+    try {
+      const folder = foldersList.find(f => f.id === selectedFolderId);
+      const folderName = folder ? folder.name : "Drive Folder";
+
+      const res = await fetch(`/api/managed/accounts/${accountId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          driveFolderId: selectedFolderId,
+          driveFolderName: folderName,
+        }),
+      });
+
+      if (!res.ok) throw new Error("Failed to link folder");
+      toast.success(`Linked folder: ${folderName}`);
+      fetchGroup();
+    } catch (err: any) {
+      toast.error(err.message || "Failed to link folder");
+    } finally {
+      setLinkingDrive(false);
+    }
+  };
   const [postingNow, setPostingNow] = useState<string | null>(null);
   const [showAddForm, setShowAddForm] = useState(false);
   const [addForm, setAddForm] = useState({ tiktokUsername: "", postpeerAccountId: "" });
@@ -238,6 +286,9 @@ export default function GroupPage({
       captionSource: acc.captionSource,
       postpeerAccountId: acc.postpeerAccountId || "",
     });
+    setDriveUrl("");
+    setSelectedFolderId("");
+    fetchFolders(acc.id);
   };
 
   const addSlot = () => {
@@ -808,9 +859,52 @@ export default function GroupPage({
                             </div>
                           </div>
 
+                          {/* Folder Selector Dropdown (Render only if folders are loaded) */}
+                          {foldersList.length > 0 ? (
+                            <div className="space-y-2 pl-3 border-l-2 border-blue-500/20">
+                              <div className="flex justify-between items-center">
+                                <label className="block text-[10px] text-gray-500 font-bold uppercase tracking-wider">Select Folder Specifically</label>
+                                <button
+                                  onClick={() => fetchFolders(acc.id)}
+                                  className="text-[9px] text-blue-400 hover:text-blue-300 transition-colors"
+                                  type="button"
+                                >
+                                  🔄 Refresh List
+                                </button>
+                              </div>
+                              <div className="flex gap-2">
+                                <select
+                                  value={selectedFolderId}
+                                  onChange={(e) => setSelectedFolderId(e.target.value)}
+                                  className="flex-1 bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-white text-xs focus:outline-none focus:border-blue-500 transition-colors"
+                                >
+                                  <option value="" className="bg-[#11111c]">-- Choose Folder --</option>
+                                  {foldersList.map((f) => (
+                                    <option key={f.id} value={f.id} className="bg-[#11111c]">
+                                      {f.name}
+                                    </option>
+                                  ))}
+                                </select>
+                                <button
+                                  onClick={() => linkSelectedFolder(acc.id)}
+                                  disabled={!selectedFolderId || linkingDrive}
+                                  className="bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white text-xs font-semibold px-4 py-2 rounded-xl transition-all flex items-center gap-1.5 flex-shrink-0"
+                                >
+                                  {linkingDrive && <Loader2 className="w-3 h-3 animate-spin" />}
+                                  Select
+                                </button>
+                              </div>
+                            </div>
+                          ) : loadingFolders ? (
+                            <div className="flex items-center gap-2 text-xs text-gray-400 pl-3">
+                              <Loader2 className="w-3.5 h-3.5 animate-spin text-blue-400" />
+                              Fetching folders list from Google...
+                            </div>
+                          ) : null}
+
                           {/* Quick Change Folder Link block */}
                           <div className="space-y-2 pl-3 border-l-2 border-blue-500/20">
-                            <label className="block text-[10px] text-gray-500 font-bold uppercase tracking-wider">Change Folder Link</label>
+                            <label className="block text-[10px] text-gray-500 font-bold uppercase tracking-wider">Or Paste Folder Link</label>
                             <div className="flex gap-2">
                               <input
                                 type="text"
@@ -853,10 +947,53 @@ export default function GroupPage({
                             <div className="flex-grow border-t border-white/5"></div>
                           </div>
 
+                          {/* Folder Selector Dropdown (Render only if folders are loaded) */}
+                          {foldersList.length > 0 ? (
+                            <div className="space-y-2">
+                              <div className="flex justify-between items-center">
+                                <label className="block text-[10px] text-gray-500 font-bold uppercase tracking-wider">Select Folder Specifically</label>
+                                <button
+                                  onClick={() => fetchFolders(acc.id)}
+                                  className="text-[9px] text-blue-400 hover:text-blue-300 transition-colors"
+                                  type="button"
+                                >
+                                  🔄 Refresh List
+                                </button>
+                              </div>
+                              <div className="flex gap-2">
+                                <select
+                                  value={selectedFolderId}
+                                  onChange={(e) => setSelectedFolderId(e.target.value)}
+                                  className="flex-1 bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-white text-xs focus:outline-none focus:border-blue-500 transition-colors"
+                                >
+                                  <option value="" className="bg-[#11111c]">-- Choose Folder --</option>
+                                  {foldersList.map((f) => (
+                                    <option key={f.id} value={f.id} className="bg-[#11111c]">
+                                      {f.name}
+                                    </option>
+                                  ))}
+                                </select>
+                                <button
+                                  onClick={() => linkSelectedFolder(acc.id)}
+                                  disabled={!selectedFolderId || linkingDrive}
+                                  className="bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white text-xs font-semibold px-4 py-2 rounded-xl transition-all flex items-center gap-1.5 flex-shrink-0"
+                                >
+                                  {linkingDrive && <Loader2 className="w-3 h-3 animate-spin" />}
+                                  Select
+                                </button>
+                              </div>
+                            </div>
+                          ) : loadingFolders ? (
+                            <div className="flex items-center gap-2 text-xs text-gray-400">
+                              <Loader2 className="w-3.5 h-3.5 animate-spin text-blue-400" />
+                              Fetching folders list from Google...
+                            </div>
+                          ) : null}
+
                           {/* Folder URL Fallback */}
                           <div className="space-y-2">
                             <p className="text-[10px] text-gray-500">
-                              Paste a Google Drive folder URL or ID. This will automatically authenticate uploads using the Master/Global Google OAuth credentials.
+                              Or paste a Google Drive folder URL or ID. This will automatically authenticate uploads using the Master/Global Google OAuth credentials.
                             </p>
                             <div className="flex gap-2">
                               <input

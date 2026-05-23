@@ -66,7 +66,11 @@ export async function getOAuth2ClientForAccount(account: any) {
 }
 
 // ── Build authenticated Drive client (OAuth or fallback to Service Account) ───
-async function getDriveClient(accountId?: string) {
+async function getDriveClient(accountId?: string, useServiceAccount = false) {
+  if (useServiceAccount) {
+    return getServiceAccountDriveClient();
+  }
+
   if (accountId) {
     const account = await prisma.managedAccount.findUnique({
       where: { id: accountId },
@@ -89,10 +93,13 @@ async function getDriveClient(accountId?: string) {
     return google.drive({ version: "v3", auth });
   }
 
-  // Fallback: build with Service Account
+  return getServiceAccountDriveClient();
+}
+
+async function getServiceAccountDriveClient() {
   const b64 = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
   if (!b64) {
-    throw new Error("Google Drive credentials not set (OAuth not connected and GOOGLE_SERVICE_ACCOUNT_JSON not set)");
+    throw new Error("Google Drive credentials not set (Service Account GOOGLE_SERVICE_ACCOUNT_JSON not set)");
   }
 
   const json = JSON.parse(Buffer.from(b64, "base64").toString("utf-8"));
@@ -104,8 +111,8 @@ async function getDriveClient(accountId?: string) {
 }
 
 // ── List video files in a Drive folder (sorted by name ascending) ─────────────
-export async function listVideoFilesInFolder(folderId: string, accountId?: string) {
-  const drive = await getDriveClient(accountId);
+export async function listVideoFilesInFolder(folderId: string, accountId?: string, useServiceAccount = true) {
+  const drive = await getDriveClient(accountId, useServiceAccount);
   const res = await drive.files.list({
     q: `'${folderId}' in parents and mimeType contains 'video/' and trashed = false`,
     orderBy: "name",
@@ -118,8 +125,8 @@ export async function listVideoFilesInFolder(folderId: string, accountId?: strin
 }
 
 // ── Get folder metadata (name, existence check) ───────────────────────────────
-export async function getFolderMeta(folderId: string, accountId?: string) {
-  const drive = await getDriveClient(accountId);
+export async function getFolderMeta(folderId: string, accountId?: string, useServiceAccount = true) {
+  const drive = await getDriveClient(accountId, useServiceAccount);
   const res = await drive.files.get({
     fileId: folderId,
     fields: "id,name,mimeType",
@@ -129,8 +136,8 @@ export async function getFolderMeta(folderId: string, accountId?: string) {
 }
 
 // ── Download a Drive file as a Buffer ────────────────────────────────────────
-export async function downloadDriveFile(fileId: string, accountId?: string): Promise<Buffer> {
-  const drive = await getDriveClient(accountId);
+export async function downloadDriveFile(fileId: string, accountId?: string, useServiceAccount = true): Promise<Buffer> {
+  const drive = await getDriveClient(accountId, useServiceAccount);
   const res = await drive.files.get(
     { fileId, alt: "media", supportsAllDrives: true },
     { responseType: "arraybuffer" }
@@ -139,8 +146,8 @@ export async function downloadDriveFile(fileId: string, accountId?: string): Pro
 }
 
 // ── Delete/trash a file from Drive (after successful post) ───────────────────
-export async function deleteDriveFile(fileId: string, accountId?: string): Promise<void> {
-  const drive = await getDriveClient(accountId);
+export async function deleteDriveFile(fileId: string, accountId?: string, useServiceAccount = true): Promise<void> {
+  const drive = await getDriveClient(accountId, useServiceAccount);
 
   // Try permanent delete
   try {
@@ -184,8 +191,8 @@ export async function deleteDriveFile(fileId: string, accountId?: string): Promi
 }
 
 // ── Make a file temporarily public (anyone with link can view) ────────────────
-export async function makeFilePublic(fileId: string, accountId?: string): Promise<void> {
-  const drive = await getDriveClient(accountId);
+export async function makeFilePublic(fileId: string, accountId?: string, useServiceAccount = true): Promise<void> {
+  const drive = await getDriveClient(accountId, useServiceAccount);
   await drive.permissions.create({
     fileId,
     supportsAllDrives: true,
@@ -198,8 +205,8 @@ export async function makeFilePublic(fileId: string, accountId?: string): Promis
 }
 
 // ── Revoke public access from a file ─────────────────────────────────────────
-export async function revokeFilePublic(fileId: string, accountId?: string): Promise<void> {
-  const drive = await getDriveClient(accountId);
+export async function revokeFilePublic(fileId: string, accountId?: string, useServiceAccount = true): Promise<void> {
+  const drive = await getDriveClient(accountId, useServiceAccount);
   try {
     await drive.permissions.delete({ fileId, permissionId: "anyoneWithLink", supportsAllDrives: true });
   } catch {
@@ -213,10 +220,11 @@ export async function uploadFileToFolder(
   fileName: string,
   fileBuffer: Buffer,
   mimeType: string = "video/mp4",
-  accountId?: string
+  accountId?: string,
+  useServiceAccount = false
 ): Promise<string> {
   const { Readable } = await import("stream");
-  const drive = await getDriveClient(accountId);
+  const drive = await getDriveClient(accountId, useServiceAccount);
   
   const readableStream = new Readable();
   readableStream.push(fileBuffer);

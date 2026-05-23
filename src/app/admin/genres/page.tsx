@@ -301,6 +301,54 @@ export default function GenresDashboard() {
   const [savingConfig, setSavingConfig] = useState(false);
   const [driveUrl, setDriveUrl] = useState("");
   const [linkingDrive, setLinkingDrive] = useState(false);
+  const [foldersList, setFoldersList] = useState<{ id: string; name: string }[]>([]);
+  const [loadingFolders, setLoadingFolders] = useState(false);
+  const [selectedFolderId, setSelectedFolderId] = useState("");
+
+  const fetchFolders = async (accountId: string) => {
+    setLoadingFolders(true);
+    setFoldersList([]);
+    try {
+      const res = await fetch(`/api/managed/accounts/${accountId}/drive-folders`);
+      if (res.ok) {
+        const data = await res.json();
+        setFoldersList(data.folders || []);
+        if (data.folders && data.folders.length > 0) {
+          setSelectedFolderId(data.folders[0].id);
+        }
+      }
+    } catch (err) {
+      console.warn("Failed to fetch folders list:", err);
+    } finally {
+      setLoadingFolders(false);
+    }
+  };
+
+  const linkSelectedFolder = async (accountId: string) => {
+    if (!selectedFolderId) return;
+    setLinkingDrive(true);
+    try {
+      const folder = foldersList.find(f => f.id === selectedFolderId);
+      const folderName = folder ? folder.name : "Drive Folder";
+
+      const res = await fetch(`/api/managed/accounts/${accountId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          driveFolderId: selectedFolderId,
+          driveFolderName: folderName,
+        }),
+      });
+
+      if (!res.ok) throw new Error("Failed to link folder");
+      toast.success(`Linked folder: ${folderName}`);
+      fetchAccounts();
+    } catch (err: any) {
+      toast.error(err.message || "Failed to link folder");
+    } finally {
+      setLinkingDrive(false);
+    }
+  };
 
   // Cascading Dropdown Selectors for Niche & Group under Accounts Config Tab
   const [selectedNicheFilter, setSelectedNicheFilter] = useState("all");
@@ -376,6 +424,10 @@ export default function GenresDashboard() {
       setCurvature(config?.curvature !== undefined ? config.curvature : 30);
       setPositionY(config?.positionY ?? 50);
       setPreviewBgIndex(0);
+
+      setSelectedFolderId("");
+      setFoldersList([]);
+      fetchFolders(selectedAccount.id);
     } else {
       setThemeText("");
       setCurveText(false);
@@ -383,6 +435,8 @@ export default function GenresDashboard() {
       setBoxColor("none");
       setPositionY(50);
       setPreviewBgIndex(0);
+      setSelectedFolderId("");
+      setFoldersList([]);
     }
   }, [selectedAccountId, accounts]);
 
@@ -2209,9 +2263,53 @@ export default function GenresDashboard() {
                         </div>
                       </div>
 
+                      {/* Folder Selector Dropdown (Render only if folders are loaded) */}
+                      {foldersList.length > 0 ? (
+                        <div className="space-y-2.5 pl-3.5 border-l-2 border-blue-500/20">
+                          <div className="flex justify-between items-center">
+                            <label className="block text-[10px] text-gray-500 font-extrabold uppercase tracking-wider">Select Folder Specifically</label>
+                            <button
+                              onClick={() => fetchFolders(selectedAccount.id)}
+                              className="text-[9px] text-blue-400 hover:text-blue-300 transition-colors font-semibold"
+                              type="button"
+                            >
+                              🔄 Refresh List
+                            </button>
+                          </div>
+                          <div className="flex gap-2">
+                            <select
+                              value={selectedFolderId}
+                              onChange={(e) => setSelectedFolderId(e.target.value)}
+                              className="flex-1 bg-[#141423] border border-white/5 rounded-2xl px-4 py-3 text-xs text-white focus:outline-none focus:border-blue-500 placeholder-gray-700 transition-colors"
+                            >
+                              <option value="" className="bg-[#11111c]">-- Choose Folder --</option>
+                              {foldersList.map((f) => (
+                                <option key={f.id} value={f.id} className="bg-[#11111c]">
+                                  {f.name}
+                                </option>
+                              ))}
+                            </select>
+                            <button
+                              type="button"
+                              onClick={() => linkSelectedFolder(selectedAccount.id)}
+                              disabled={!selectedFolderId || linkingDrive}
+                              className="bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-xs font-bold text-white px-4 py-3 rounded-2xl transition-all flex items-center gap-1.5 flex-shrink-0"
+                            >
+                              {linkingDrive && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                              Select
+                            </button>
+                          </div>
+                        </div>
+                      ) : loadingFolders ? (
+                        <div className="flex items-center gap-2 text-xs text-gray-400 pl-3.5">
+                          <Loader2 className="w-3.5 h-3.5 animate-spin text-blue-400" />
+                          Fetching folders list from Google...
+                        </div>
+                      ) : null}
+
                       {/* Inline Overwrite Link paste */}
                       <div className="space-y-2.5 pl-3.5 border-l-2 border-blue-500/20">
-                        <label className="block text-[10px] text-gray-500 font-extrabold uppercase tracking-wider">Change Folder Link</label>
+                        <label className="block text-[10px] text-gray-500 font-extrabold uppercase tracking-wider">Or Paste Folder Link</label>
                         <div className="flex gap-2">
                           <input
                             type="text"
@@ -2247,6 +2345,50 @@ export default function GenresDashboard() {
                         </a>
                       </div>
 
+                      {/* Folder Selector Dropdown (Render only if folders are loaded) */}
+                      {foldersList.length > 0 ? (
+                        <div className="space-y-2.5">
+                          <div className="flex justify-between items-center">
+                            <label className="block text-[10px] text-gray-500 font-extrabold uppercase tracking-wider">Select Folder Specifically</label>
+                            <button
+                              onClick={() => fetchFolders(selectedAccount.id)}
+                              className="text-[9px] text-blue-400 hover:text-blue-300 transition-colors font-semibold"
+                              type="button"
+                            >
+                              🔄 Refresh List
+                            </button>
+                          </div>
+                          <div className="flex gap-2">
+                            <select
+                              value={selectedFolderId}
+                              onChange={(e) => setSelectedFolderId(e.target.value)}
+                              className="flex-1 bg-[#141423] border border-white/5 rounded-2xl px-4 py-3 text-xs text-white focus:outline-none focus:border-blue-500 placeholder-gray-700 transition-colors"
+                            >
+                              <option value="" className="bg-[#11111c]">-- Choose Folder --</option>
+                              {foldersList.map((f) => (
+                                <option key={f.id} value={f.id} className="bg-[#11111c]">
+                                  {f.name}
+                                </option>
+                              ))}
+                            </select>
+                            <button
+                              type="button"
+                              onClick={() => linkSelectedFolder(selectedAccount.id)}
+                              disabled={!selectedFolderId || linkingDrive}
+                              className="bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-xs font-bold text-white px-4 py-3 rounded-2xl transition-all flex items-center gap-1.5 flex-shrink-0"
+                            >
+                              {linkingDrive && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                              Select
+                            </button>
+                          </div>
+                        </div>
+                      ) : loadingFolders ? (
+                        <div className="flex items-center gap-2 text-xs text-gray-400">
+                          <Loader2 className="w-3.5 h-3.5 animate-spin text-blue-400" />
+                          Fetching folders list from Google...
+                        </div>
+                      ) : null}
+
                       {/* Divider */}
                       <div className="relative flex py-1 items-center">
                         <div className="flex-grow border-t border-white/5"></div>
@@ -2257,7 +2399,7 @@ export default function GenresDashboard() {
                       {/* Paste URL linking */}
                       <div className="space-y-2">
                         <p className="text-[10px] text-gray-500 leading-relaxed">
-                          Paste a Google Drive folder URL or ID. Uploads will automatically authorize using your Master/Global Google OAuth account quota.
+                          Or paste a Google Drive folder URL or ID. Uploads will automatically authorize using your Master/Global Google OAuth account quota.
                         </p>
                         <div className="flex gap-2">
                           <input
