@@ -304,10 +304,12 @@ export default function GenresDashboard() {
   const [foldersList, setFoldersList] = useState<{ id: string; name: string }[]>([]);
   const [loadingFolders, setLoadingFolders] = useState(false);
   const [selectedFolderId, setSelectedFolderId] = useState("");
+  const [folderSearchQuery, setFolderSearchQuery] = useState("");
 
   const fetchFolders = async (accountId: string) => {
     setLoadingFolders(true);
     setFoldersList([]);
+    setFolderSearchQuery("");
     try {
       const res = await fetch(`/api/managed/accounts/${accountId}/drive-folders`);
       if (res.ok) {
@@ -2263,7 +2265,6 @@ export default function GenresDashboard() {
                         </div>
                       </div>
 
-                      {/* Folder Selector Dropdown (Render only if folders are loaded) */}
                       {foldersList.length > 0 ? (
                         <div className="space-y-2.5 pl-3.5 border-l-2 border-blue-500/20">
                           <div className="flex justify-between items-center">
@@ -2276,6 +2277,16 @@ export default function GenresDashboard() {
                               🔄 Refresh List
                             </button>
                           </div>
+                          
+                          {/* Search input filter */}
+                          <input
+                            type="text"
+                            placeholder="🔍 Filter folders by name or ID..."
+                            value={folderSearchQuery}
+                            onChange={(e) => setFolderSearchQuery(e.target.value)}
+                            className="w-full bg-[#141423] border border-white/5 rounded-2xl px-4 py-2.5 text-xs text-white focus:outline-none focus:border-blue-500 placeholder-gray-600 transition-colors"
+                          />
+
                           <div className="flex gap-2">
                             <select
                               value={selectedFolderId}
@@ -2283,7 +2294,10 @@ export default function GenresDashboard() {
                               className="flex-1 bg-[#141423] border border-white/5 rounded-2xl px-4 py-3 text-xs text-white focus:outline-none focus:border-blue-500 placeholder-gray-700 transition-colors"
                             >
                               <option value="" className="bg-[#11111c]">-- Choose Folder --</option>
-                              {foldersList.map((f) => (
+                              {foldersList.filter(f => 
+                                f.name.toLowerCase().includes(folderSearchQuery.toLowerCase()) || 
+                                f.id.toLowerCase().includes(folderSearchQuery.toLowerCase())
+                              ).map((f) => (
                                 <option key={f.id} value={f.id} className="bg-[#11111c]">
                                   {f.name}
                                 </option>
@@ -2299,6 +2313,13 @@ export default function GenresDashboard() {
                               Select
                             </button>
                           </div>
+                          
+                          {foldersList.filter(f => 
+                            f.name.toLowerCase().includes(folderSearchQuery.toLowerCase()) || 
+                            f.id.toLowerCase().includes(folderSearchQuery.toLowerCase())
+                          ).length === 0 && folderSearchQuery && (
+                            <p className="text-[10px] text-amber-400/80 italic pl-1">No matching folders found.</p>
+                          )}
                         </div>
                       ) : loadingFolders ? (
                         <div className="flex items-center gap-2 text-xs text-gray-400 pl-3.5">
@@ -2345,7 +2366,6 @@ export default function GenresDashboard() {
                         </a>
                       </div>
 
-                      {/* Folder Selector Dropdown (Render only if folders are loaded) */}
                       {foldersList.length > 0 ? (
                         <div className="space-y-2.5">
                           <div className="flex justify-between items-center">
@@ -2358,6 +2378,16 @@ export default function GenresDashboard() {
                               🔄 Refresh List
                             </button>
                           </div>
+                          
+                          {/* Search input filter */}
+                          <input
+                            type="text"
+                            placeholder="🔍 Filter folders by name or ID..."
+                            value={folderSearchQuery}
+                            onChange={(e) => setFolderSearchQuery(e.target.value)}
+                            className="w-full bg-[#141423] border border-white/5 rounded-2xl px-4 py-2.5 text-xs text-white focus:outline-none focus:border-blue-500 placeholder-gray-600 transition-colors"
+                          />
+
                           <div className="flex gap-2">
                             <select
                               value={selectedFolderId}
@@ -2365,7 +2395,10 @@ export default function GenresDashboard() {
                               className="flex-1 bg-[#141423] border border-white/5 rounded-2xl px-4 py-3 text-xs text-white focus:outline-none focus:border-blue-500 placeholder-gray-700 transition-colors"
                             >
                               <option value="" className="bg-[#11111c]">-- Choose Folder --</option>
-                              {foldersList.map((f) => (
+                              {foldersList.filter(f => 
+                                f.name.toLowerCase().includes(folderSearchQuery.toLowerCase()) || 
+                                f.id.toLowerCase().includes(folderSearchQuery.toLowerCase())
+                              ).map((f) => (
                                 <option key={f.id} value={f.id} className="bg-[#11111c]">
                                   {f.name}
                                 </option>
@@ -2381,6 +2414,13 @@ export default function GenresDashboard() {
                               Select
                             </button>
                           </div>
+
+                          {foldersList.filter(f => 
+                            f.name.toLowerCase().includes(folderSearchQuery.toLowerCase()) || 
+                            f.id.toLowerCase().includes(folderSearchQuery.toLowerCase())
+                          ).length === 0 && folderSearchQuery && (
+                            <p className="text-[10px] text-amber-400/80 italic pl-1">No matching folders found.</p>
+                          )}
                         </div>
                       ) : loadingFolders ? (
                         <div className="flex items-center gap-2 text-xs text-gray-400">

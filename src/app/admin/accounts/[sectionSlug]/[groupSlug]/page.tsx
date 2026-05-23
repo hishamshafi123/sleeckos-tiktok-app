@@ -91,10 +91,12 @@ export default function GroupPage({
   const [foldersList, setFoldersList] = useState<{ id: string; name: string }[]>([]);
   const [loadingFolders, setLoadingFolders] = useState(false);
   const [selectedFolderId, setSelectedFolderId] = useState("");
+  const [folderSearchQuery, setFolderSearchQuery] = useState("");
 
   const fetchFolders = async (accountId: string) => {
     setLoadingFolders(true);
     setFoldersList([]);
+    setFolderSearchQuery("");
     try {
       const res = await fetch(`/api/managed/accounts/${accountId}/drive-folders`);
       if (res.ok) {
@@ -872,6 +874,16 @@ export default function GroupPage({
                                   🔄 Refresh List
                                 </button>
                               </div>
+                              
+                              {/* Search input filter */}
+                              <input
+                                type="text"
+                                placeholder="🔍 Filter folders by name or ID..."
+                                value={folderSearchQuery}
+                                onChange={(e) => setFolderSearchQuery(e.target.value)}
+                                className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-white text-xs placeholder-gray-600 focus:outline-none focus:border-blue-500 transition-colors"
+                              />
+
                               <div className="flex gap-2">
                                 <select
                                   value={selectedFolderId}
@@ -879,7 +891,10 @@ export default function GroupPage({
                                   className="flex-1 bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-white text-xs focus:outline-none focus:border-blue-500 transition-colors"
                                 >
                                   <option value="" className="bg-[#11111c]">-- Choose Folder --</option>
-                                  {foldersList.map((f) => (
+                                  {foldersList.filter(f => 
+                                    f.name.toLowerCase().includes(folderSearchQuery.toLowerCase()) || 
+                                    f.id.toLowerCase().includes(folderSearchQuery.toLowerCase())
+                                  ).map((f) => (
                                     <option key={f.id} value={f.id} className="bg-[#11111c]">
                                       {f.name}
                                     </option>
@@ -894,6 +909,13 @@ export default function GroupPage({
                                   Select
                                 </button>
                               </div>
+
+                              {foldersList.filter(f => 
+                                f.name.toLowerCase().includes(folderSearchQuery.toLowerCase()) || 
+                                f.id.toLowerCase().includes(folderSearchQuery.toLowerCase())
+                              ).length === 0 && folderSearchQuery && (
+                                <p className="text-[10px] text-amber-400/80 italic pl-1">No matching folders found.</p>
+                              )}
                             </div>
                           ) : loadingFolders ? (
                             <div className="flex items-center gap-2 text-xs text-gray-400 pl-3">
@@ -960,6 +982,16 @@ export default function GroupPage({
                                   🔄 Refresh List
                                 </button>
                               </div>
+
+                              {/* Search input filter */}
+                              <input
+                                type="text"
+                                placeholder="🔍 Filter folders by name or ID..."
+                                value={folderSearchQuery}
+                                onChange={(e) => setFolderSearchQuery(e.target.value)}
+                                className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-white text-xs placeholder-gray-600 focus:outline-none focus:border-blue-500 transition-colors"
+                              />
+
                               <div className="flex gap-2">
                                 <select
                                   value={selectedFolderId}
@@ -967,7 +999,10 @@ export default function GroupPage({
                                   className="flex-1 bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-white text-xs focus:outline-none focus:border-blue-500 transition-colors"
                                 >
                                   <option value="" className="bg-[#11111c]">-- Choose Folder --</option>
-                                  {foldersList.map((f) => (
+                                  {foldersList.filter(f => 
+                                    f.name.toLowerCase().includes(folderSearchQuery.toLowerCase()) || 
+                                    f.id.toLowerCase().includes(folderSearchQuery.toLowerCase())
+                                  ).map((f) => (
                                     <option key={f.id} value={f.id} className="bg-[#11111c]">
                                       {f.name}
                                     </option>
@@ -982,6 +1017,13 @@ export default function GroupPage({
                                   Select
                                 </button>
                               </div>
+
+                              {foldersList.filter(f => 
+                                f.name.toLowerCase().includes(folderSearchQuery.toLowerCase()) || 
+                                f.id.toLowerCase().includes(folderSearchQuery.toLowerCase())
+                              ).length === 0 && folderSearchQuery && (
+                                <p className="text-[10px] text-amber-400/80 italic pl-1">No matching folders found.</p>
+                              )}
                             </div>
                           ) : loadingFolders ? (
                             <div className="flex items-center gap-2 text-xs text-gray-400">
