@@ -87,6 +87,7 @@ export default function MultiplierPage() {
   const [stripPaddingY, setStripPaddingY] = useState(20);
   const [positionYPercent, setPositionYPercent] = useState(5);
   const [marginX, setMarginX] = useState(0);
+  const [borderRadius, setBorderRadius] = useState(12);
 
   // Rendering
   const [renderingBatchId, setRenderingBatchId] = useState<string | null>(null);
@@ -280,6 +281,7 @@ export default function MultiplierPage() {
       formData.append("stripPaddingY", String(stripPaddingY));
       formData.append("positionYPercent", String(positionYPercent));
       formData.append("marginX", String(marginX));
+      formData.append("borderRadius", String(borderRadius));
 
       const res = await fetch("/api/managed/multiplier", { method: "POST", body: formData });
       if (!res.ok) { const err = await res.json(); throw new Error(err.error || "Upload failed"); }
@@ -496,6 +498,7 @@ export default function MultiplierPage() {
                 opacity: bgStripOpacity,
                 cursor: isDragging ? "grabbing" : "grab",
                 padding: `0 ${Math.max(4, marginX * (300 / OUTPUT_W))}px`,
+                borderRadius: `${Math.max(0, borderRadius * (300 / OUTPUT_W))}px`,
                 transition: isDragging ? "none" : "top 0.15s ease-out",
               }}
             >
@@ -646,6 +649,12 @@ export default function MultiplierPage() {
             <div>
               <label className="block text-[10px] text-gray-500 mb-1 uppercase tracking-wider">Inner Padding: {stripPaddingY}px</label>
               <input type="range" min={0} max={60} value={stripPaddingY} onChange={(e) => setStripPaddingY(Number(e.target.value))} className="w-full accent-cyan-500" />
+            </div>
+
+            {/* Border Radius */}
+            <div>
+              <label className="block text-[10px] text-gray-500 mb-1 uppercase tracking-wider">Corner Radius: {borderRadius}px</label>
+              <input type="range" min={0} max={40} value={borderRadius} onChange={(e) => setBorderRadius(Number(e.target.value))} className="w-full accent-cyan-500" />
             </div>
           </div>
         </div>

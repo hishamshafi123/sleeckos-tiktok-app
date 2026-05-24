@@ -62,6 +62,7 @@ export async function POST(req: Request) {
     const stripPaddingY = parseInt(formData.get("stripPaddingY") as string) || 20;
     const positionYPercent = parseInt(formData.get("positionYPercent") as string) || 5;
     const marginX = parseInt(formData.get("marginX") as string) || 0;
+    const borderRadius = parseInt(formData.get("borderRadius") as string) ?? 12;
 
     if (!videoFile) {
       return NextResponse.json({ error: "Please upload a video file" }, { status: 400 });
@@ -111,6 +112,7 @@ export async function POST(req: Request) {
         stripPaddingY,
         positionYPercent,
         marginX,
+        borderRadius,
         items: {
           create: hooks.map((hook) => ({
             hookText: hook,

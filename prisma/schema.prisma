@@ -648,6 +648,7 @@ model MultiplierBatch {
   stripPaddingY   Int                   @default(20)
   positionYPercent Int                  @default(5)           // 0=top, 100=bottom
   marginX         Int                   @default(0)           // Horizontal margin from edges (px)
+  borderRadius    Int                   @default(12)          // Corner radius in px
 
   errorMessage    String?
   createdAt       DateTime              @default(now())

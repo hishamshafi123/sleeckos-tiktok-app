@@ -113,6 +113,7 @@ async function processMultiplierBatch(batchId: string) {
           stripPaddingY: batch.stripPaddingY,
           positionYPercent: batch.positionYPercent,
           marginX: batch.marginX,
+          borderRadius: batch.borderRadius,
           outputPath,
         });
 
