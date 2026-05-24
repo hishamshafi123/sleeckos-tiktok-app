@@ -697,3 +697,129 @@ export function allocateTracks(
 
   return allocation;
 }
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Video Multiplier Composer — Overlay text hook on a colored strip
+// ══════════════════════════════════════════════════════════════════════════════
+
+export interface MultiplierComposeOptions {
+  inputVideoPath: string;    // Original video file (audio preserved)
+  hookText: string;          // Text to overlay
+  fontFamily: string;
+  fontSize: number;
+  fontColor: string;
+  textCase: string;
+  bgStripColor: string;      // Hex color for the background strip
+  bgStripOpacity: number;    // 0.0 - 1.0
+  textPosition: "TOP" | "BOTTOM";
+  stripPaddingY: number;     // Vertical padding inside the strip
+  outputPath: string;
+}
+
+/**
+ * Overlays hook text on a colored background strip at the top or bottom of a video.
+ * Keeps the original video's audio track.
+ * Output is 720×1280 (TikTok 9:16).
+ */
+export async function composeMultiplierVideo(options: MultiplierComposeOptions): Promise<string> {
+  const {
+    inputVideoPath,
+    hookText,
+    fontFamily,
+    fontSize,
+    fontColor,
+    textCase,
+    bgStripColor,
+    bgStripOpacity,
+    textPosition,
+    stripPaddingY,
+    outputPath,
+  } = options;
+
+  // Resolve font
+  const resolvedFont = await resolveFontPath(fontFamily);
+  const escapedFontPath = resolvedFont.replace(/\\/g, "/").replace(/:/g, "\\:");
+
+  // Apply casing
+  const cleanText = sanitizeQuoteText(hookText);
+  const casedText = applyCasing(cleanText, textCase);
+
+  // Write text to temp file for FFmpeg textfile= (avoids shell escaping issues)
+  const tempDir = path.join(os.tmpdir(), "temp_multiplier");
+  if (!fs.existsSync(tempDir)) {
+    fs.mkdirSync(tempDir, { recursive: true });
+  }
+  const wrappedText = wrapText(casedText, 35); // Wider wrap for horizontal text strip
+  const textFilePath = path.join(tempDir, `hook_${Math.random().toString(36).substring(2, 9)}.txt`);
+  fs.writeFileSync(textFilePath, wrappedText);
+  const escapedTextFilePath = textFilePath.replace(/\\/g, "/").replace(/:/g, "\\:");
+
+  // Convert hex bg strip color to FFmpeg format + opacity
+  const bgColorFfmpeg = bgStripColor.startsWith("#")
+    ? "0x" + bgStripColor.slice(1)
+    : bgStripColor;
+  const bgAlpha = Math.max(0, Math.min(1, bgStripOpacity));
+
+  // Font color
+  const drawFontColor = formatFfmpegColor(fontColor);
+
+  // Calculate strip geometry
+  // Strip height = fontSize * numberOfLines + padding
+  const lineCount = wrappedText.split("\n").length;
+  const lineHeight = fontSize * 1.4; // Approximate line height
+  const stripHeight = Math.round(lineCount * lineHeight + stripPaddingY * 2 + 10);
+
+  // Position: TOP strip starts at y=0, BOTTOM strip starts at (h - stripHeight)
+  const stripY = textPosition === "TOP" ? 0 : `(h-${stripHeight})`;
+  const textY = textPosition === "TOP"
+    ? `${stripPaddingY}`
+    : `(h-${stripHeight}+${stripPaddingY})`;
+
+  // Build FFmpeg filter_complex:
+  // 1. Scale & crop video to 720x1280
+  // 2. Draw background strip (semi-transparent box)
+  // 3. Draw text on top
+  const filterComplex = [
+    // Scale & crop to 9:16
+    `[0:v]scale='if(gte(iw/ih,720/1280),-1,720)':'if(gte(iw/ih,720/1280),1280,-1)',crop=720:1280`,
+    // Draw the background strip
+    `drawbox=x=0:y=${stripY}:w=iw:h=${stripHeight}:color=${bgColorFfmpeg}@${bgAlpha}:t=fill`,
+    // Draw the text
+    `drawtext=fontfile='${escapedFontPath}':textfile='${escapedTextFilePath}':fontcolor=${drawFontColor}:fontsize=${fontSize}:x=(w-text_w)/2:y=${textY}:line_spacing=6[v]`,
+  ].join(",");
+
+  const cmd = [
+    `ffmpeg -y`,
+    `-i "${inputVideoPath}"`,
+    `-filter_complex "${filterComplex}"`,
+    `-map "[v]" -map 0:a?`,
+    `-c:v libx264 -preset fast -crf 23`,
+    `-c:a aac -b:a 128k`,
+    `-shortest`,
+    `-movflags +faststart`,
+    `"${outputPath}"`,
+  ].join(" ");
+
+  console.log(`[Multiplier Composer] Running: ${cmd.substring(0, 200)}...`);
+
+  return new Promise<string>((resolve, reject) => {
+    exec(cmd, { maxBuffer: 50 * 1024 * 1024 }, (error, stdout, stderr) => {
+      // Clean up temp text file
+      try { if (fs.existsSync(textFilePath)) fs.unlinkSync(textFilePath); } catch {}
+
+      if (error) {
+        console.error(`[Multiplier Composer] FFmpeg failed:`, stderr?.substring(0, 500));
+        reject(new Error(`FFmpeg composition failed: ${error.message}`));
+        return;
+      }
+
+      if (!fs.existsSync(outputPath)) {
+        reject(new Error("FFmpeg did not produce output file"));
+        return;
+      }
+
+      console.log(`[Multiplier Composer] Successfully rendered: ${outputPath}`);
+      resolve(outputPath);
+    });
+  });
+}

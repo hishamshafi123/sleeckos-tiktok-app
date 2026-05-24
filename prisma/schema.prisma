@@ -610,3 +610,57 @@ model GenreBatchItem {
   createdAt           DateTime             @default(now())
   updatedAt           DateTime             @updatedAt
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Video Multiplier — Bulk text overlay generation
+// ═══════════════════════════════════════════════════════════════════════════════
+
+enum MultiplierBatchStatus {
+  UPLOADING
+  READY
+  RENDERING
+  COMPLETED
+  FAILED
+}
+
+enum MultiplierItemStatus {
+  PENDING
+  RENDERING
+  RENDERED
+  FAILED
+}
+
+model MultiplierBatch {
+  id              String                @id @default(uuid())
+  name            String                @default("")
+  sourceVideoUrl  String                // Uploaded base video path in public/uploads/
+  totalItems      Int                   @default(0)
+  status          MultiplierBatchStatus @default(UPLOADING)
+
+  // Text overlay styling
+  fontFamily      String                @default("Outfit-Bold")
+  fontSize        Int                   @default(42)
+  fontColor       String                @default("#FFFFFF")
+  textCase        String                @default("UPPERCASE")
+  bgStripColor    String                @default("#000000")
+  bgStripOpacity  Float                 @default(1.0)
+  textPosition    String                @default("TOP")       // TOP | BOTTOM
+  stripPaddingY   Int                   @default(20)
+
+  errorMessage    String?
+  createdAt       DateTime              @default(now())
+  updatedAt       DateTime              @updatedAt
+  items           MultiplierItem[]
+}
+
+model MultiplierItem {
+  id               String               @id @default(uuid())
+  batchId          String
+  batch            MultiplierBatch      @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  hookText         String
+  renderedVideoUrl String?
+  status           MultiplierItemStatus @default(PENDING)
+  errorMessage     String?
+  createdAt        DateTime             @default(now())
+  updatedAt        DateTime             @updatedAt
+}

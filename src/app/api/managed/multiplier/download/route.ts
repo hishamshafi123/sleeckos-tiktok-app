@@ -1,0 +1,125 @@
+export const dynamic = "force-dynamic";
+import { NextResponse } from "next/server";
+import prisma from "@/lib/db";
+import { getSession } from "@/lib/session";
+import fs from "fs";
+import path from "path";
+import { exec } from "child_process";
+
+// GET /api/managed/multiplier/download?batchId=... — Download all rendered videos as ZIP
+export async function GET(req: Request) {
+  const session = await getSession();
+  if (!session || session.role !== "ADMIN") {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  const { searchParams } = new URL(req.url);
+  const batchId = searchParams.get("batchId");
+
+  if (!batchId) {
+    return NextResponse.json({ error: "Missing batchId" }, { status: 400 });
+  }
+
+  try {
+    const batch = await prisma.multiplierBatch.findUnique({
+      where: { id: batchId },
+      include: {
+        items: {
+          where: { status: "RENDERED" },
+          orderBy: { createdAt: "asc" },
+        },
+      },
+    });
+
+    if (!batch) {
+      return NextResponse.json({ error: "Batch not found" }, { status: 404 });
+    }
+
+    const renderedItems = batch.items.filter((i) => i.renderedVideoUrl);
+    if (renderedItems.length === 0) {
+      return NextResponse.json({ error: "No rendered videos available for download" }, { status: 400 });
+    }
+
+    // Collect file paths
+    const publicDir = path.join(process.cwd(), "public");
+    const filePaths: { absPath: string; name: string }[] = [];
+
+    for (let i = 0; i < renderedItems.length; i++) {
+      const item = renderedItems[i];
+      const absPath = path.join(publicDir, item.renderedVideoUrl!);
+      if (fs.existsSync(absPath)) {
+        // Name with a clean index and sanitized hook text
+        const hookSlug = item.hookText
+          .replace(/[^a-zA-Z0-9 ]/g, "")
+          .trim()
+          .replace(/\s+/g, "_")
+          .substring(0, 40);
+        filePaths.push({
+          absPath,
+          name: `${String(i + 1).padStart(3, "0")}_${hookSlug}.mp4`,
+        });
+      }
+    }
+
+    if (filePaths.length === 0) {
+      return NextResponse.json({ error: "Rendered video files not found on disk" }, { status: 400 });
+    }
+
+    // Create ZIP using system zip command
+    const tempDir = path.join(process.cwd(), "public", "uploads", "multiplier", "temp");
+    if (!fs.existsSync(tempDir)) {
+      fs.mkdirSync(tempDir, { recursive: true });
+    }
+
+    const zipFileName = `multiplier_${batch.name || batchId.substring(0, 8)}_${Date.now()}.zip`;
+    const zipPath = path.join(tempDir, zipFileName);
+
+    // Create a temp directory with symlinks for clean naming
+    const linkDir = path.join(tempDir, `links_${batchId.substring(0, 8)}`);
+    if (fs.existsSync(linkDir)) {
+      fs.rmSync(linkDir, { recursive: true });
+    }
+    fs.mkdirSync(linkDir, { recursive: true });
+
+    for (const fp of filePaths) {
+      const linkPath = path.join(linkDir, fp.name);
+      fs.copyFileSync(fp.absPath, linkPath);
+    }
+
+    // Create ZIP
+    await new Promise<void>((resolve, reject) => {
+      exec(
+        `cd "${linkDir}" && zip -j "${zipPath}" *.mp4`,
+        { maxBuffer: 100 * 1024 * 1024 },
+        (error) => {
+          // Clean up link directory
+          try { fs.rmSync(linkDir, { recursive: true }); } catch {}
+          if (error) reject(error);
+          else resolve();
+        }
+      );
+    });
+
+    if (!fs.existsSync(zipPath)) {
+      return NextResponse.json({ error: "Failed to create ZIP file" }, { status: 500 });
+    }
+
+    // Stream the ZIP file as response
+    const zipBuffer = fs.readFileSync(zipPath);
+
+    // Clean up ZIP file after reading
+    try { fs.unlinkSync(zipPath); } catch {}
+
+    return new NextResponse(zipBuffer, {
+      status: 200,
+      headers: {
+        "Content-Type": "application/zip",
+        "Content-Disposition": `attachment; filename="${zipFileName}"`,
+        "Content-Length": zipBuffer.length.toString(),
+      },
+    });
+  } catch (err) {
+    console.error("[Multiplier Download API] Error:", err);
+    return NextResponse.json({ error: "Failed to generate download" }, { status: 500 });
+  }
+}

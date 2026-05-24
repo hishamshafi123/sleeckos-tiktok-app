@@ -1,7 +1,7 @@
 "use client";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { LayoutDashboard, Shield, Users, Megaphone, FileText, AlertTriangle, ScrollText, LogOut, MonitorPlay, BarChart3, Clock, History, Sparkles } from "lucide-react";
+import { LayoutDashboard, Shield, Users, Megaphone, FileText, AlertTriangle, ScrollText, LogOut, MonitorPlay, BarChart3, Clock, History, Sparkles, Layers } from "lucide-react";
 import { toast } from "sonner";
 
 const NAV = [
@@ -20,6 +20,7 @@ const ACCOUNTS_NAV = [
   { href: "/admin/accounts/queue", label: "Post Queue", icon: Clock },
   { href: "/admin/accounts/history", label: "History", icon: History },
   { href: "/admin/genres", label: "Bulk Genres", icon: Sparkles },
+  { href: "/admin/multiplier", label: "Multiplier", icon: Layers },
 ];
 
 export default function AdminSidebar() {
