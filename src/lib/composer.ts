@@ -755,7 +755,6 @@ export async function composeMultiplierVideo(options: MultiplierComposeOptions):
   const OUTPUT_H = 1280;
 
   const resolvedFont = await resolveFontPath(fontFamily);
-  const escapedFontPath = resolvedFont.replace(/\\/g, "/").replace(/:/g, "\\:");
 
   const cleanText = sanitizeQuoteText(hookText);
   const casedText = applyCasing(cleanText, textCase);
@@ -770,8 +769,6 @@ export async function composeMultiplierVideo(options: MultiplierComposeOptions):
   const wrappedText = wrapText(casedText, charsPerLine);
   const lines = wrappedText.split("\n").map((line) => line.trim().replace(/\r/g, ""));
 
-  const drawFontColor = formatFfmpegColor(fontColor);
-
   const lineCount = lines.length;
   const lineHeight = fontSize * 1.4;
   const stripHeight = Math.round(lineCount * lineHeight + stripPaddingY * 2 + 10);
@@ -784,67 +781,66 @@ export async function composeMultiplierVideo(options: MultiplierComposeOptions):
   const bgAlpha = Math.max(0, Math.min(1, bgStripOpacity));
   const R = Math.max(0, Math.min(borderRadius, Math.floor(stripHeight / 2)));
 
-  // Write filter_complex to a temp file to avoid shell escaping issues
-  const filterFile = path.join(tempDir, "filter_" + Math.random().toString(36).substring(2, 9) + ".txt");
+  // Generate Advanced SVG file overlaying background and text
+  const svgFilePath = path.join(tempDir, `overlay_${Math.random().toString(36).substring(2, 9)}.svg`);
+  const formattedFontUrl = resolvedFont.replace(/\\/g, "/");
 
-  let filterComplex: string;
+  // Format background color (ensure valid HEX format #123456)
+  const bgHex = bgStripColor.startsWith("#") ? bgStripColor : "#" + bgStripColor.replace("0x", "");
 
-  if (R > 0) {
-    const bgHex = bgStripColor.startsWith("#") ? bgStripColor.slice(1) : bgStripColor;
-    const cR = parseInt(bgHex.substring(0, 2), 16) || 0;
-    const cG = parseInt(bgHex.substring(2, 4), 16) || 0;
-    const cB = parseInt(bgHex.substring(4, 6), 16) || 0;
-    const alphaVal = Math.round(255 * bgAlpha);
-
-    // Build the drawtext filters chain (no textfile used, completely bypassing EOL/BOM bugs)
-    let lastLabel = "[bg]";
-    const drawtextFilters: string[] = [];
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-      const lineY = Math.round(textY + i * lineHeight);
-      const nextLabel = i === lines.length - 1 ? "[v]" : `[t${i}]`;
-      const escapedLineText = escapeFfmpegDrawtext(line);
-
-      drawtextFilters.push(
-        `${lastLabel}drawtext=fontfile='${escapedFontPath}':text='${escapedLineText}':fontcolor=${drawFontColor}:fontsize=${fontSize}:x='max(${stripX + paddingX},${stripX}+(${stripW}-text_w)/2)':y=${lineY}${nextLabel}`
-      );
-      lastLabel = nextLabel;
+  const firstLineY = Math.round(textY + fontSize * 0.85);
+  let tspanContent = "";
+  for (let i = 0; i < lines.length; i++) {
+    const escapedLine = lines[i]
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;");
+    if (i === 0) {
+      tspanContent += `<tspan x="360" y="${firstLineY}">${escapedLine}</tspan>`;
+    } else {
+      tspanContent += `<tspan x="360" dy="${fontSize * 1.4}">${escapedLine}</tspan>`;
     }
-
-    filterComplex = [
-      `[0:v]scale='if(gte(iw/ih,${OUTPUT_W}/${OUTPUT_H}),-1,${OUTPUT_W})':'if(gte(iw/ih,${OUTPUT_W}/${OUTPUT_H}),${OUTPUT_H},-1)',crop=${OUTPUT_W}:${OUTPUT_H}[scaled]`,
-      `color=c=0x${bgHex.padEnd(6, "0")}:s=${stripW}x${stripHeight},format=yuva420p,geq=r='${cR}':g='${cG}':b='${cB}':a='if(gt(hypot(max(0,${R}-min(X,W-1-X)),max(0,${R}-min(Y,H-1-Y))),${R}),0,${alphaVal})'[rrect]`,
-      `[scaled][rrect]overlay=x=${stripX}:y=${stripY}:shortest=1[bg]`,
-      ...drawtextFilters
-    ].join(";\n");
-  } else {
-    const bgColorFfmpeg = bgStripColor.startsWith("#") ? "0x" + bgStripColor.slice(1) : bgStripColor;
-
-    let lastLabel = "[bg]";
-    const drawtextFilters: string[] = [];
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-      const lineY = Math.round(textY + i * lineHeight);
-      const nextLabel = i === lines.length - 1 ? "[v]" : `[t${i}]`;
-      const escapedLineText = escapeFfmpegDrawtext(line);
-
-      drawtextFilters.push(
-        `${lastLabel}drawtext=fontfile='${escapedFontPath}':text='${escapedLineText}':fontcolor=${drawFontColor}:fontsize=${fontSize}:x='max(${stripX + paddingX},${stripX}+(${stripW}-text_w)/2)':y=${lineY}${nextLabel}`
-      );
-      lastLabel = nextLabel;
-    }
-
-    filterComplex = [
-      `[0:v]scale='if(gte(iw/ih,${OUTPUT_W}/${OUTPUT_H}),-1,${OUTPUT_W})':'if(gte(iw/ih,${OUTPUT_W}/${OUTPUT_H}),${OUTPUT_H},-1)',crop=${OUTPUT_W}:${OUTPUT_H},drawbox=x=${stripX}:y=${stripY}:w=${stripW}:h=${stripHeight}:color=${bgColorFfmpeg}@${bgAlpha}:t=fill[bg]`,
-      ...drawtextFilters
-    ].join(";\n");
   }
 
+  const svgContent = `
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 1280" width="720" height="1280">
+  <style>
+    @font-face {
+      font-family: 'StoicFont';
+      src: url('file://${formattedFontUrl}');
+    }
+    .quote-text {
+      font-family: 'StoicFont', 'Arial', sans-serif;
+      font-size: ${fontSize}px;
+      font-weight: bold;
+      fill: ${fontColor};
+      text-anchor: middle;
+      letter-spacing: 1px;
+    }
+  </style>
+  <rect x="${stripX}" y="${stripY}" width="${stripW}" height="${stripHeight}" rx="${R}" ry="${R}" fill="${bgHex}" fill-opacity="${bgAlpha}" />
+  <text x="360" class="quote-text">
+    ${tspanContent}
+  </text>
+</svg>
+`.trim();
+
+  fs.writeFileSync(svgFilePath, svgContent);
+
+  // Scale background and overlay SVG
+  const filterComplex = [
+    `[0:v]scale='if(gte(iw/ih,${OUTPUT_W}/${OUTPUT_H}),-1,${OUTPUT_W})':'if(gte(iw/ih,${OUTPUT_W}/${OUTPUT_H}),${OUTPUT_H},-1)',crop=${OUTPUT_W}:${OUTPUT_H}[bg]`,
+    `[1:v]format=yuva420p[v_overlay]`,
+    `[bg][v_overlay]overlay=x=0:y=0[v]`
+  ].join(";\n");
+
+  const filterFile = path.join(tempDir, "filter_" + Math.random().toString(36).substring(2, 9) + ".txt");
   fs.writeFileSync(filterFile, filterComplex);
 
   const cmd = [
     "ffmpeg -y",
     `-i "${inputVideoPath}"`,
+    `-i "${svgFilePath}"`,
     `-filter_complex_script "${filterFile}"`,
     '-map "[v]" -map 0:a?',
     "-c:v libx264 -preset fast -crf 23",
@@ -854,11 +850,12 @@ export async function composeMultiplierVideo(options: MultiplierComposeOptions):
     `"${outputPath}"`,
   ].join(" ");
 
-  console.log("[Multiplier Composer] Running:", cmd.substring(0, 400) + "...");
+  console.log("[Multiplier Composer] Running SVG overlay:", cmd.substring(0, 400) + "...");
 
   return new Promise<string>((resolve, reject) => {
     exec(cmd, { maxBuffer: 50 * 1024 * 1024 }, (error, _stdout, stderr) => {
       try { if (fs.existsSync(filterFile)) fs.unlinkSync(filterFile); } catch {}
+      try { if (fs.existsSync(svgFilePath)) fs.unlinkSync(svgFilePath); } catch {}
 
       if (error) {
         console.error("[Multiplier Composer] FFmpeg failed:", stderr?.substring(0, 500));
@@ -869,7 +866,7 @@ export async function composeMultiplierVideo(options: MultiplierComposeOptions):
         reject(new Error("FFmpeg did not produce output file"));
         return;
       }
-      console.log("[Multiplier Composer] Successfully rendered:", outputPath);
+      console.log("[Multiplier Composer] Successfully rendered SVG overlay:", outputPath);
       resolve(outputPath);
     });
   });
