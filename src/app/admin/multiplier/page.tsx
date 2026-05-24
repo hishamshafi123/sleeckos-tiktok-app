@@ -247,7 +247,7 @@ export default function MultiplierPage() {
 
   const handleDownload = async (batchId: string) => {
     try {
-      toast.info("Preparing ZIP download...");
+      toast.info("Preparing download...");
       const res = await fetch(`/api/managed/multiplier/download?batchId=${batchId}`);
       if (!res.ok) {
         const err = await res.json().catch(() => ({ error: "Download failed" }));
@@ -258,7 +258,10 @@ export default function MultiplierPage() {
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `multiplier_${batchId.substring(0, 8)}.zip`;
+      // Use the Content-Disposition filename if available, otherwise fallback
+      const disposition = res.headers.get("Content-Disposition");
+      const filenameMatch = disposition?.match(/filename="([^"]+)"/);
+      a.download = filenameMatch?.[1] || `multiplier_${batchId.substring(0, 8)}.tar.gz`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -708,7 +711,7 @@ export default function MultiplierPage() {
                           className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-emerald-500/15 text-emerald-300 border border-emerald-500/20 text-xs font-medium hover:bg-emerald-500/25 transition-all"
                         >
                           <Download className="w-3.5 h-3.5" />
-                          Download ZIP
+                          Download All
                         </button>
                       )}
 
@@ -778,7 +781,7 @@ export default function MultiplierPage() {
               </button>
             </div>
             <video
-              src={`/api/uploads${previewUrl}`}
+              src={`/api${previewUrl}`}
               controls
               autoPlay
               className="w-full rounded-xl"

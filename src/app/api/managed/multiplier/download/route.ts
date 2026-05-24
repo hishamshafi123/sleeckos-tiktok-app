@@ -6,7 +6,7 @@ import fs from "fs";
 import path from "path";
 import { exec } from "child_process";
 
-// GET /api/managed/multiplier/download?batchId=... — Download all rendered videos as ZIP
+// GET /api/managed/multiplier/download?batchId=... — Download all rendered videos as a tar.gz archive
 export async function GET(req: Request) {
   const session = await getSession();
   if (!session || session.role !== "ADMIN") {
@@ -65,57 +65,61 @@ export async function GET(req: Request) {
       return NextResponse.json({ error: "Rendered video files not found on disk" }, { status: 400 });
     }
 
-    // Create ZIP using system zip command
+    // Create a temp directory with clean-named copies for archiving
     const tempDir = path.join(process.cwd(), "public", "uploads", "multiplier", "temp");
     if (!fs.existsSync(tempDir)) {
       fs.mkdirSync(tempDir, { recursive: true });
     }
 
-    const zipFileName = `multiplier_${batch.name || batchId.substring(0, 8)}_${Date.now()}.zip`;
-    const zipPath = path.join(tempDir, zipFileName);
-
-    // Create a temp directory with symlinks for clean naming
-    const linkDir = path.join(tempDir, `links_${batchId.substring(0, 8)}`);
+    const batchLabel = batch.name || batchId.substring(0, 8);
+    const linkDir = path.join(tempDir, `dl_${batchId.substring(0, 8)}`);
     if (fs.existsSync(linkDir)) {
       fs.rmSync(linkDir, { recursive: true });
     }
     fs.mkdirSync(linkDir, { recursive: true });
 
     for (const fp of filePaths) {
-      const linkPath = path.join(linkDir, fp.name);
-      fs.copyFileSync(fp.absPath, linkPath);
+      const dest = path.join(linkDir, fp.name);
+      fs.copyFileSync(fp.absPath, dest);
     }
 
-    // Create ZIP
+    // Use tar (available on Alpine Linux) instead of zip (not installed)
+    const archiveName = `multiplier_${batchLabel.replace(/[^a-zA-Z0-9_-]/g, "_")}_${Date.now()}.tar.gz`;
+    const archivePath = path.join(tempDir, archiveName);
+
     await new Promise<void>((resolve, reject) => {
       exec(
-        `cd "${linkDir}" && zip -j "${zipPath}" *.mp4`,
+        `tar -czf "${archivePath}" -C "${linkDir}" .`,
         { maxBuffer: 100 * 1024 * 1024 },
-        (error) => {
+        (error, _stdout, stderr) => {
           // Clean up link directory
           try { fs.rmSync(linkDir, { recursive: true }); } catch {}
-          if (error) reject(error);
-          else resolve();
+          if (error) {
+            console.error("[Multiplier Download] tar failed:", stderr);
+            reject(error);
+          } else {
+            resolve();
+          }
         }
       );
     });
 
-    if (!fs.existsSync(zipPath)) {
-      return NextResponse.json({ error: "Failed to create ZIP file" }, { status: 500 });
+    if (!fs.existsSync(archivePath)) {
+      return NextResponse.json({ error: "Failed to create archive" }, { status: 500 });
     }
 
-    // Stream the ZIP file as response
-    const zipBuffer = fs.readFileSync(zipPath);
+    // Stream the archive as response
+    const archiveBuffer = fs.readFileSync(archivePath);
 
-    // Clean up ZIP file after reading
-    try { fs.unlinkSync(zipPath); } catch {}
+    // Clean up archive file after reading
+    try { fs.unlinkSync(archivePath); } catch {}
 
-    return new NextResponse(zipBuffer, {
+    return new NextResponse(archiveBuffer, {
       status: 200,
       headers: {
-        "Content-Type": "application/zip",
-        "Content-Disposition": `attachment; filename="${zipFileName}"`,
-        "Content-Length": zipBuffer.length.toString(),
+        "Content-Type": "application/gzip",
+        "Content-Disposition": `attachment; filename="${archiveName}"`,
+        "Content-Length": archiveBuffer.length.toString(),
       },
     });
   } catch (err) {
