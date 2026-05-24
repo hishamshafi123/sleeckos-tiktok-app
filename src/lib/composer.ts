@@ -170,13 +170,22 @@ function sanitizeQuoteText(text: string): string {
     .replace(/[\u00AC\u2310]/g, "")
     // Strip box-drawing / misc symbols that FFmpeg can't render
     .replace(/[\u2500-\u257F\u2580-\u259F\u25A0-\u25FF]/g, "")
-    // Normalize smart/curly quotes to straight quotes
-    .replace(/[\u2018\u2019]/g, "'")
-    .replace(/[\u201C\u201D]/g, '"')
-    // Normalize em/en dashes to simple dash
-    .replace(/[\u2013\u2014]/g, "-")
+    // Normalize ALL smart/curly quote variants to straight quotes
+    // Single quotes: U+2018 ' U+2019 ' U+201A ‚ U+201B ‛ U+2032 ′ U+02BC ʼ U+FF07 '
+    .replace(/[\u2018\u2019\u201A\u201B\u2032\u02BC\uFF07]/g, "'")
+    // Double quotes: U+201C " U+201D " U+201E „ U+201F ‟ U+2033 ″ U+FF02 "
+    .replace(/[\u201C\u201D\u201E\u201F\u2033\uFF02]/g, '"')
+    // Normalize em/en dashes and horizontal bar to simple dash
+    .replace(/[\u2013\u2014\u2015]/g, "-")
     // Normalize ellipsis character to three dots
     .replace(/\u2026/g, "...")
+    // Normalize bullet and middle dot to dash
+    .replace(/[\u2022\u2023\u25E6\u00B7]/g, "-")
+    // Normalize non-breaking space and other space variants to regular space
+    .replace(/[\u00A0\u2002-\u200A\u205F\u3000]/g, " ")
+    // Final safety net: strip any remaining characters outside basic printable ASCII + common Latin
+    // Keep: space (0x20) through tilde (0x7E), newline (0x0A), and Latin-1 Supplement letters (0xC0-0xFF)
+    .replace(/[^\x0A\x20-\x7E\u00C0-\u00FF]/g, "")
     .trim();
 }
 
