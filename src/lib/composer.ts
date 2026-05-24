@@ -190,6 +190,16 @@ function sanitizeQuoteText(text: string): string {
 }
 
 /**
+ * Escapes text for FFmpeg's drawtext filter string literal parameter.
+ * Enclosed in single quotes, backslashes are escaped as \\ and single quotes as '\''
+ */
+function escapeFfmpegDrawtext(text: string): string {
+  return text
+    .replace(/\\/g, "\\\\")
+    .replace(/'/g, "'\\''");
+}
+
+/**
  * Formats casing according to config settings
  */
 function applyCasing(text: string, casing: string): string {
@@ -425,8 +435,14 @@ export async function composeVideo(options: ComposeOptions): Promise<string> {
       fullText += `\n\n— ${quoteAuthor.trim()}`;
     }
 
+    // Force strict Unix line endings (LF) and strip any carriage returns or trailing whitespace
+    const finalFullText = fullText
+      .split("\n")
+      .map((line) => line.trim().replace(/\r/g, ""))
+      .join("\n");
+
     textFilePath = path.join(tempDir, `quote_${Math.random().toString(36).substring(2, 9)}.txt`);
-    fs.writeFileSync(textFilePath, fullText);
+    fs.writeFileSync(textFilePath, finalFullText);
 
     const drawFontColor = formatFfmpegColor(fontColor);
     
@@ -752,13 +768,11 @@ export async function composeMultiplierVideo(options: MultiplierComposeOptions):
   const effectiveTextWidth = OUTPUT_W - marginX * 2 - paddingX * 2;
   const charsPerLine = Math.max(10, Math.floor(effectiveTextWidth / (fontSize * 0.62)));
   const wrappedText = wrapText(casedText, charsPerLine);
-  const textFilePath = path.join(tempDir, "hook_" + Math.random().toString(36).substring(2, 9) + ".txt");
-  fs.writeFileSync(textFilePath, wrappedText);
-  const escapedTextFilePath = textFilePath.replace(/\\/g, "/").replace(/:/g, "\\:");
+  const lines = wrappedText.split("\n").map((line) => line.trim().replace(/\r/g, ""));
 
   const drawFontColor = formatFfmpegColor(fontColor);
 
-  const lineCount = wrappedText.split("\n").length;
+  const lineCount = lines.length;
   const lineHeight = fontSize * 1.4;
   const stripHeight = Math.round(lineCount * lineHeight + stripPaddingY * 2 + 10);
   const yPercent = Math.max(0, Math.min(100, positionYPercent));
@@ -782,17 +796,48 @@ export async function composeMultiplierVideo(options: MultiplierComposeOptions):
     const cB = parseInt(bgHex.substring(4, 6), 16) || 0;
     const alphaVal = Math.round(255 * bgAlpha);
 
+    // Build the drawtext filters chain (no textfile used, completely bypassing EOL/BOM bugs)
+    let lastLabel = "[bg]";
+    const drawtextFilters: string[] = [];
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const lineY = Math.round(textY + i * lineHeight);
+      const nextLabel = i === lines.length - 1 ? "[v]" : `[t${i}]`;
+      const escapedLineText = escapeFfmpegDrawtext(line);
+
+      drawtextFilters.push(
+        `${lastLabel}drawtext=fontfile='${escapedFontPath}':text='${escapedLineText}':fontcolor=${drawFontColor}:fontsize=${fontSize}:x='max(${stripX + paddingX},${stripX}+(${stripW}-text_w)/2)':y=${lineY}${nextLabel}`
+      );
+      lastLabel = nextLabel;
+    }
+
     filterComplex = [
       `[0:v]scale='if(gte(iw/ih,${OUTPUT_W}/${OUTPUT_H}),-1,${OUTPUT_W})':'if(gte(iw/ih,${OUTPUT_W}/${OUTPUT_H}),${OUTPUT_H},-1)',crop=${OUTPUT_W}:${OUTPUT_H}[scaled]`,
       `color=c=0x${bgHex.padEnd(6, "0")}:s=${stripW}x${stripHeight},format=yuva420p,geq=r='${cR}':g='${cG}':b='${cB}':a='if(gt(hypot(max(0,${R}-min(X,W-1-X)),max(0,${R}-min(Y,H-1-Y))),${R}),0,${alphaVal})'[rrect]`,
       `[scaled][rrect]overlay=x=${stripX}:y=${stripY}:shortest=1[bg]`,
-      `[bg]drawtext=fontfile='${escapedFontPath}':textfile='${escapedTextFilePath}':fontcolor=${drawFontColor}:fontsize=${fontSize}:x='max(${stripX + paddingX},${stripX}+(${stripW}-text_w)/2)':y=${textY}:line_spacing=6[v]`,
+      ...drawtextFilters
     ].join(";\n");
   } else {
     const bgColorFfmpeg = bgStripColor.startsWith("#") ? "0x" + bgStripColor.slice(1) : bgStripColor;
+
+    let lastLabel = "[bg]";
+    const drawtextFilters: string[] = [];
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const lineY = Math.round(textY + i * lineHeight);
+      const nextLabel = i === lines.length - 1 ? "[v]" : `[t${i}]`;
+      const escapedLineText = escapeFfmpegDrawtext(line);
+
+      drawtextFilters.push(
+        `${lastLabel}drawtext=fontfile='${escapedFontPath}':text='${escapedLineText}':fontcolor=${drawFontColor}:fontsize=${fontSize}:x='max(${stripX + paddingX},${stripX}+(${stripW}-text_w)/2)':y=${lineY}${nextLabel}`
+      );
+      lastLabel = nextLabel;
+    }
+
     filterComplex = [
-      `[0:v]scale='if(gte(iw/ih,${OUTPUT_W}/${OUTPUT_H}),-1,${OUTPUT_W})':'if(gte(iw/ih,${OUTPUT_W}/${OUTPUT_H}),${OUTPUT_H},-1)',crop=${OUTPUT_W}:${OUTPUT_H},drawbox=x=${stripX}:y=${stripY}:w=${stripW}:h=${stripHeight}:color=${bgColorFfmpeg}@${bgAlpha}:t=fill,drawtext=fontfile='${escapedFontPath}':textfile='${escapedTextFilePath}':fontcolor=${drawFontColor}:fontsize=${fontSize}:x='max(${stripX + paddingX},${stripX}+(${stripW}-text_w)/2)':y=${textY}:line_spacing=6[v]`,
-    ].join("");
+      `[0:v]scale='if(gte(iw/ih,${OUTPUT_W}/${OUTPUT_H}),-1,${OUTPUT_W})':'if(gte(iw/ih,${OUTPUT_W}/${OUTPUT_H}),${OUTPUT_H},-1)',crop=${OUTPUT_W}:${OUTPUT_H},drawbox=x=${stripX}:y=${stripY}:w=${stripW}:h=${stripHeight}:color=${bgColorFfmpeg}@${bgAlpha}:t=fill[bg]`,
+      ...drawtextFilters
+    ].join(";\n");
   }
 
   fs.writeFileSync(filterFile, filterComplex);
@@ -813,7 +858,6 @@ export async function composeMultiplierVideo(options: MultiplierComposeOptions):
 
   return new Promise<string>((resolve, reject) => {
     exec(cmd, { maxBuffer: 50 * 1024 * 1024 }, (error, _stdout, stderr) => {
-      try { if (fs.existsSync(textFilePath)) fs.unlinkSync(textFilePath); } catch {}
       try { if (fs.existsSync(filterFile)) fs.unlinkSync(filterFile); } catch {}
 
       if (error) {
