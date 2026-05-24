@@ -730,7 +730,7 @@ export async function composeMultiplierVideo(options: MultiplierComposeOptions):
   const OUTPUT_H = 1280;
 
   const resolvedFont = await resolveFontPath(fontFamily);
-  const escapedFontPath = resolvedFont.replace(/\\/g, "/").replace(/:/g, "\\\\:");
+  const escapedFontPath = resolvedFont.replace(/\\/g, "/").replace(/:/g, "\\:");
 
   const cleanText = sanitizeQuoteText(hookText);
   const casedText = applyCasing(cleanText, textCase);
@@ -745,7 +745,7 @@ export async function composeMultiplierVideo(options: MultiplierComposeOptions):
   const wrappedText = wrapText(casedText, charsPerLine);
   const textFilePath = path.join(tempDir, "hook_" + Math.random().toString(36).substring(2, 9) + ".txt");
   fs.writeFileSync(textFilePath, wrappedText);
-  const escapedTextFilePath = textFilePath.replace(/\\/g, "/").replace(/:/g, "\\\\:");
+  const escapedTextFilePath = textFilePath.replace(/\\/g, "/").replace(/:/g, "\\:");
 
   const drawFontColor = formatFfmpegColor(fontColor);
 
@@ -777,12 +777,12 @@ export async function composeMultiplierVideo(options: MultiplierComposeOptions):
       `[0:v]scale='if(gte(iw/ih,${OUTPUT_W}/${OUTPUT_H}),-1,${OUTPUT_W})':'if(gte(iw/ih,${OUTPUT_W}/${OUTPUT_H}),${OUTPUT_H},-1)',crop=${OUTPUT_W}:${OUTPUT_H}[scaled]`,
       `color=c=0x${bgHex.padEnd(6, "0")}:s=${stripW}x${stripHeight},format=yuva420p,geq=r='${cR}':g='${cG}':b='${cB}':a='if(gt(hypot(max(0,${R}-min(X,W-1-X)),max(0,${R}-min(Y,H-1-Y))),${R}),0,${alphaVal})'[rrect]`,
       `[scaled][rrect]overlay=x=${stripX}:y=${stripY}:shortest=1[bg]`,
-      `[bg]drawtext=fontfile='${escapedFontPath}':textfile='${escapedTextFilePath}':fontcolor=${drawFontColor}:fontsize=${fontSize}:x=max(${stripX + paddingX},${stripX}+(${stripW}-text_w)/2):y=${textY}:line_spacing=6[v]`,
+      `[bg]drawtext=fontfile='${escapedFontPath}':textfile='${escapedTextFilePath}':fontcolor=${drawFontColor}:fontsize=${fontSize}:x='max(${stripX + paddingX},${stripX}+(${stripW}-text_w)/2)':y=${textY}:line_spacing=6[v]`,
     ].join(";\n");
   } else {
     const bgColorFfmpeg = bgStripColor.startsWith("#") ? "0x" + bgStripColor.slice(1) : bgStripColor;
     filterComplex = [
-      `[0:v]scale='if(gte(iw/ih,${OUTPUT_W}/${OUTPUT_H}),-1,${OUTPUT_W})':'if(gte(iw/ih,${OUTPUT_W}/${OUTPUT_H}),${OUTPUT_H},-1)',crop=${OUTPUT_W}:${OUTPUT_H},drawbox=x=${stripX}:y=${stripY}:w=${stripW}:h=${stripHeight}:color=${bgColorFfmpeg}@${bgAlpha}:t=fill,drawtext=fontfile='${escapedFontPath}':textfile='${escapedTextFilePath}':fontcolor=${drawFontColor}:fontsize=${fontSize}:x=max(${stripX + paddingX},${stripX}+(${stripW}-text_w)/2):y=${textY}:line_spacing=6[v]`,
+      `[0:v]scale='if(gte(iw/ih,${OUTPUT_W}/${OUTPUT_H}),-1,${OUTPUT_W})':'if(gte(iw/ih,${OUTPUT_W}/${OUTPUT_H}),${OUTPUT_H},-1)',crop=${OUTPUT_W}:${OUTPUT_H},drawbox=x=${stripX}:y=${stripY}:w=${stripW}:h=${stripHeight}:color=${bgColorFfmpeg}@${bgAlpha}:t=fill,drawtext=fontfile='${escapedFontPath}':textfile='${escapedTextFilePath}':fontcolor=${drawFontColor}:fontsize=${fontSize}:x='max(${stripX + paddingX},${stripX}+(${stripW}-text_w)/2)':y=${textY}:line_spacing=6[v]`,
     ].join("");
   }
 
