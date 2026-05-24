@@ -4,6 +4,8 @@ import prisma from "@/lib/db";
 import { getSession } from "@/lib/session";
 import fs from "fs";
 import path from "path";
+import { Readable } from "stream";
+import { pipeline } from "stream/promises";
 
 // GET /api/managed/multiplier — List all multiplier batches
 export async function GET() {
@@ -80,8 +82,12 @@ export async function POST(req: Request) {
     const videoExt = path.extname(videoFile.name) || ".mp4";
     const videoFileName = `source_${Date.now()}${videoExt}`;
     const videoLocalPath = path.join(uploadsDir, videoFileName);
-    const videoBuffer = Buffer.from(await videoFile.arrayBuffer());
-    fs.writeFileSync(videoLocalPath, videoBuffer);
+    
+    // Save file using lightweight streaming to avoid Out of Memory (OOM) crashes with large videos
+    const writeStream = fs.createWriteStream(videoLocalPath);
+    const readableWebStream = videoFile.stream();
+    const nodeReadable = Readable.fromWeb(readableWebStream as any);
+    await pipeline(nodeReadable, writeStream);
 
     const videoUrl = `/uploads/multiplier/${videoFileName}`;
 

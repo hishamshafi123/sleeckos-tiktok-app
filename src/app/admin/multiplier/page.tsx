@@ -63,6 +63,25 @@ const TEXT_CASE_OPTIONS = [
 const OUTPUT_W = 720;
 const OUTPUT_H = 1280;
 
+// ─── Helper for Safe Error Handling ──────────────────────────────────────────
+
+async function getErrorMessage(res: Response, fallback: string): Promise<string> {
+  try {
+    const contentType = res.headers.get("content-type");
+    if (contentType && contentType.includes("application/json")) {
+      const err = await res.json();
+      return err.error || fallback;
+    }
+    const text = await res.text();
+    if (text && text.length < 200 && !text.includes("<html") && !text.includes("<HTML")) {
+      return text;
+    }
+    return `${fallback} (${res.status} ${res.statusText})`;
+  } catch {
+    return `${fallback} (${res.status} ${res.statusText})`;
+  }
+}
+
 // ─── Component ───────────────────────────────────────────────────────────────
 
 export default function MultiplierPage() {
@@ -285,7 +304,10 @@ export default function MultiplierPage() {
       formData.append("borderRadius", String(borderRadius));
 
       const res = await fetch("/api/managed/multiplier", { method: "POST", body: formData });
-      if (!res.ok) { const err = await res.json(); throw new Error(err.error || "Upload failed"); }
+      if (!res.ok) {
+        const errMsg = await getErrorMessage(res, "Upload failed");
+        throw new Error(errMsg);
+      }
 
       toast.success(`Batch created with ${parsedHooks.length} hooks!`);
       setVideoFile(null); setCsvFile(null); setBatchName(""); setParsedHooks([]);
@@ -307,7 +329,10 @@ export default function MultiplierPage() {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ batchId }),
       });
-      if (!res.ok) { const err = await res.json(); throw new Error(err.error || "Render failed"); }
+      if (!res.ok) {
+        const errMsg = await getErrorMessage(res, "Render failed");
+        throw new Error(errMsg);
+      }
       toast.success("Rendering started!");
       setRenderingBatchId(batchId);
       fetchBatches();
@@ -318,7 +343,10 @@ export default function MultiplierPage() {
     try {
       toast.info("Preparing download...");
       const res = await fetch(`/api/managed/multiplier/download?batchId=${batchId}`);
-      if (!res.ok) { const err = await res.json().catch(() => ({ error: "Download failed" })); throw new Error(err.error || "Download failed"); }
+      if (!res.ok) {
+        const errMsg = await getErrorMessage(res, "Download failed");
+        throw new Error(errMsg);
+      }
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
@@ -336,7 +364,10 @@ export default function MultiplierPage() {
     if (!confirm("Delete this batch and all its rendered videos?")) return;
     try {
       const res = await fetch(`/api/managed/multiplier?batchId=${batchId}`, { method: "DELETE" });
-      if (!res.ok) throw new Error("Delete failed");
+      if (!res.ok) {
+        const errMsg = await getErrorMessage(res, "Delete failed");
+        throw new Error(errMsg);
+      }
       toast.success("Batch deleted"); fetchBatches();
     } catch (err: any) { toast.error(err.message || "Failed to delete batch"); }
   };
