@@ -60,6 +60,8 @@ export async function POST(req: Request) {
     const bgStripOpacity = parseFloat(formData.get("bgStripOpacity") as string) || 1.0;
     const textPosition = (formData.get("textPosition") as string) || "TOP";
     const stripPaddingY = parseInt(formData.get("stripPaddingY") as string) || 20;
+    const positionYPercent = parseInt(formData.get("positionYPercent") as string) || 5;
+    const marginX = parseInt(formData.get("marginX") as string) || 0;
 
     if (!videoFile) {
       return NextResponse.json({ error: "Please upload a video file" }, { status: 400 });
@@ -107,6 +109,8 @@ export async function POST(req: Request) {
         bgStripOpacity,
         textPosition,
         stripPaddingY,
+        positionYPercent,
+        marginX,
         items: {
           create: hooks.map((hook) => ({
             hookText: hook,

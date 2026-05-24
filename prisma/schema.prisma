@@ -644,8 +644,10 @@ model MultiplierBatch {
   textCase        String                @default("UPPERCASE")
   bgStripColor    String                @default("#000000")
   bgStripOpacity  Float                 @default(1.0)
-  textPosition    String                @default("TOP")       // TOP | BOTTOM
+  textPosition    String                @default("TOP")       // TOP | BOTTOM (legacy, use positionYPercent)
   stripPaddingY   Int                   @default(20)
+  positionYPercent Int                  @default(5)           // 0=top, 100=bottom
+  marginX         Int                   @default(0)           // Horizontal margin from edges (px)
 
   errorMessage    String?
   createdAt       DateTime              @default(now())

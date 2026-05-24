@@ -111,6 +111,8 @@ async function processMultiplierBatch(batchId: string) {
           bgStripOpacity: batch.bgStripOpacity,
           textPosition: batch.textPosition as "TOP" | "BOTTOM",
           stripPaddingY: batch.stripPaddingY,
+          positionYPercent: batch.positionYPercent,
+          marginX: batch.marginX,
           outputPath,
         });
 

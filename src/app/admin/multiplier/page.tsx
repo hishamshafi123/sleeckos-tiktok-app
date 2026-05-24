@@ -1,9 +1,9 @@
 "use client";
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { toast } from "sonner";
 import {
   Upload, FileText, Play, Download, Trash2, Loader2,
-  Check, X, Layers, RefreshCw, Type, Palette, ArrowUp, ArrowDown,
+  Check, X, Layers, RefreshCw, Palette, Move,
 } from "lucide-react";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -30,6 +30,8 @@ interface MultiplierBatch {
   bgStripOpacity: number;
   textPosition: string;
   stripPaddingY: number;
+  positionYPercent: number;
+  marginX: number;
   errorMessage: string | null;
   createdAt: string;
   items: MultiplierItem[];
@@ -51,11 +53,15 @@ const FONT_OPTIONS = [
 ];
 
 const TEXT_CASE_OPTIONS = [
-  { value: "UPPERCASE", label: "UPPERCASE" },
-  { value: "lowercase", label: "lowercase" },
-  { value: "capitalize", label: "Title Case" },
+  { value: "UPPERCASE", label: "ABC" },
+  { value: "lowercase", label: "abc" },
+  { value: "capitalize", label: "Abc" },
   { value: "none", label: "As Is" },
 ];
+
+// Output dimensions (TikTok 9:16)
+const OUTPUT_W = 720;
+const OUTPUT_H = 1280;
 
 // ─── Component ───────────────────────────────────────────────────────────────
 
@@ -78,19 +84,121 @@ export default function MultiplierPage() {
   const [textCase, setTextCase] = useState("UPPERCASE");
   const [bgStripColor, setBgStripColor] = useState("#000000");
   const [bgStripOpacity, setBgStripOpacity] = useState(1.0);
-  const [textPosition, setTextPosition] = useState("TOP");
   const [stripPaddingY, setStripPaddingY] = useState(20);
+  const [positionYPercent, setPositionYPercent] = useState(5);
+  const [marginX, setMarginX] = useState(0);
 
   // Rendering
   const [renderingBatchId, setRenderingBatchId] = useState<string | null>(null);
 
   // Preview
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [videoObjectUrl, setVideoObjectUrl] = useState<string | null>(null);
 
   // Refs
   const videoInputRef = useRef<HTMLInputElement>(null);
   const csvInputRef = useRef<HTMLInputElement>(null);
   const pollRef = useRef<NodeJS.Timeout | null>(null);
+  const previewContainerRef = useRef<HTMLDivElement>(null);
+
+  // Dragging state
+  const [isDragging, setIsDragging] = useState(false);
+  const dragStartRef = useRef<{ startY: number; startPercent: number } | null>(null);
+
+  // ─── Video Object URL ─────────────────────────────────────────────────────
+
+  useEffect(() => {
+    if (videoFile) {
+      const url = URL.createObjectURL(videoFile);
+      setVideoObjectUrl(url);
+      return () => URL.revokeObjectURL(url);
+    } else {
+      setVideoObjectUrl(null);
+    }
+  }, [videoFile]);
+
+  // ─── Preview Text (apply casing) ─────────────────────────────────────────
+
+  const previewText = useMemo(() => {
+    const raw = parsedHooks[0] || "Sample hook text preview";
+    switch (textCase) {
+      case "UPPERCASE": return raw.toUpperCase();
+      case "lowercase": return raw.toLowerCase();
+      case "capitalize": return raw.replace(/\b\w/g, (c) => c.toUpperCase());
+      default: return raw;
+    }
+  }, [parsedHooks, textCase]);
+
+  // ─── Strip Geometry (mirroring FFmpeg logic) ──────────────────────────────
+
+  const stripGeometry = useMemo(() => {
+    // Estimate line count based on chars per line (matching FFmpeg logic)
+    const effectiveWidth = OUTPUT_W - marginX * 2;
+    const charsPerLine = Math.max(10, Math.floor(effectiveWidth / (fontSize * 0.55)));
+    const words = previewText.split(" ");
+    let lines = 1;
+    let currentLineLength = 0;
+    for (const word of words) {
+      if (currentLineLength + word.length + 1 > charsPerLine && currentLineLength > 0) {
+        lines++;
+        currentLineLength = word.length;
+      } else {
+        currentLineLength += (currentLineLength > 0 ? 1 : 0) + word.length;
+      }
+    }
+
+    const lineHeight = fontSize * 1.4;
+    const stripHeight = lines * lineHeight + stripPaddingY * 2 + 10;
+    const maxY = OUTPUT_H - stripHeight;
+    const yPercent = Math.max(0, Math.min(100, positionYPercent));
+    const stripY = (maxY * yPercent) / 100;
+
+    return {
+      stripHeight,
+      stripY,
+      stripX: marginX,
+      stripW: OUTPUT_W - marginX * 2,
+      lines,
+    };
+  }, [fontSize, marginX, stripPaddingY, positionYPercent, previewText]);
+
+  // ─── Drag to Position ─────────────────────────────────────────────────────
+
+  const handlePreviewMouseDown = (e: React.MouseEvent) => {
+    if (!previewContainerRef.current) return;
+    e.preventDefault();
+    setIsDragging(true);
+    dragStartRef.current = {
+      startY: e.clientY,
+      startPercent: positionYPercent,
+    };
+  };
+
+  useEffect(() => {
+    if (!isDragging) return;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!dragStartRef.current || !previewContainerRef.current) return;
+      const containerRect = previewContainerRef.current.getBoundingClientRect();
+      const containerH = containerRect.height;
+      const deltaY = e.clientY - dragStartRef.current.startY;
+      const deltaPercent = (deltaY / containerH) * 100;
+      const newPercent = Math.max(0, Math.min(100, dragStartRef.current.startPercent + deltaPercent));
+      setPositionYPercent(Math.round(newPercent));
+    };
+
+    const handleMouseUp = () => {
+      setIsDragging(false);
+      dragStartRef.current = null;
+    };
+
+    window.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("mouseup", handleMouseUp);
+    return () => {
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseup", handleMouseUp);
+    };
+  }, [isDragging]);
 
   // ─── Data Fetching ───────────────────────────────────────────────────────
 
@@ -100,8 +208,6 @@ export default function MultiplierPage() {
       if (res.ok) {
         const data = await res.json();
         setBatches(data);
-
-        // Check if any batch is still rendering
         const rendering = data.find((b: MultiplierBatch) => b.status === "RENDERING");
         if (rendering) {
           setRenderingBatchId(rendering.id);
@@ -116,9 +222,7 @@ export default function MultiplierPage() {
     }
   }, []);
 
-  useEffect(() => {
-    fetchBatches();
-  }, [fetchBatches]);
+  useEffect(() => { fetchBatches(); }, [fetchBatches]);
 
   // Poll while rendering
   useEffect(() => {
@@ -128,9 +232,7 @@ export default function MultiplierPage() {
       clearInterval(pollRef.current);
       pollRef.current = null;
     }
-    return () => {
-      if (pollRef.current) clearInterval(pollRef.current);
-    };
+    return () => { if (pollRef.current) clearInterval(pollRef.current); };
   }, [renderingBatchId, fetchBatches]);
 
   // ─── CSV Parsing ─────────────────────────────────────────────────────────
@@ -139,43 +241,28 @@ export default function MultiplierPage() {
     setCsvFile(file);
     const text = await file.text();
     const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
-
-    if (lines.length === 0) {
-      setParsedHooks([]);
-      return;
-    }
+    if (lines.length === 0) { setParsedHooks([]); return; }
 
     const firstLine = lines[0].toLowerCase();
     const isHeader = firstLine.includes("hook") || firstLine.includes("text") || firstLine === "caption" || firstLine === "title";
     const dataLines = isHeader ? lines.slice(1) : lines;
 
-    const hooks = dataLines
-      .map((line) => {
-        if (line.startsWith('"') && line.endsWith('"')) {
-          return line.slice(1, -1).replace(/""/g, '"');
-        }
-        if (line.includes(",")) {
-          const first = line.split(",")[0].trim();
-          return first.startsWith('"') && first.endsWith('"') ? first.slice(1, -1) : first;
-        }
-        return line;
-      })
-      .filter((h) => h.length > 0);
-
+    const hooks = dataLines.map((line) => {
+      if (line.startsWith('"') && line.endsWith('"')) return line.slice(1, -1).replace(/""/g, '"');
+      if (line.includes(",")) {
+        const first = line.split(",")[0].trim();
+        return first.startsWith('"') && first.endsWith('"') ? first.slice(1, -1) : first;
+      }
+      return line;
+    }).filter((h) => h.length > 0);
     setParsedHooks(hooks);
   };
 
   // ─── Upload & Create Batch ───────────────────────────────────────────────
 
   const handleCreateBatch = async () => {
-    if (!videoFile || !csvFile) {
-      toast.error("Please upload both a video and a CSV file");
-      return;
-    }
-    if (parsedHooks.length === 0) {
-      toast.error("No text hooks found in the CSV");
-      return;
-    }
+    if (!videoFile || !csvFile) { toast.error("Please upload both a video and a CSV file"); return; }
+    if (parsedHooks.length === 0) { toast.error("No text hooks found in the CSV"); return; }
 
     setUploading(true);
     try {
@@ -189,29 +276,18 @@ export default function MultiplierPage() {
       formData.append("textCase", textCase);
       formData.append("bgStripColor", bgStripColor);
       formData.append("bgStripOpacity", String(bgStripOpacity));
-      formData.append("textPosition", textPosition);
+      formData.append("textPosition", positionYPercent <= 50 ? "TOP" : "BOTTOM");
       formData.append("stripPaddingY", String(stripPaddingY));
+      formData.append("positionYPercent", String(positionYPercent));
+      formData.append("marginX", String(marginX));
 
-      const res = await fetch("/api/managed/multiplier", {
-        method: "POST",
-        body: formData,
-      });
-
-      if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.error || "Upload failed");
-      }
+      const res = await fetch("/api/managed/multiplier", { method: "POST", body: formData });
+      if (!res.ok) { const err = await res.json(); throw new Error(err.error || "Upload failed"); }
 
       toast.success(`Batch created with ${parsedHooks.length} hooks!`);
-
-      // Reset form
-      setVideoFile(null);
-      setCsvFile(null);
-      setBatchName("");
-      setParsedHooks([]);
+      setVideoFile(null); setCsvFile(null); setBatchName(""); setParsedHooks([]);
       if (videoInputRef.current) videoInputRef.current.value = "";
       if (csvInputRef.current) csvInputRef.current.value = "";
-
       fetchBatches();
     } catch (err: any) {
       toast.error(err.message || "Failed to create batch");
@@ -220,72 +296,46 @@ export default function MultiplierPage() {
     }
   };
 
-  // ─── Start Rendering ─────────────────────────────────────────────────────
+  // ─── Actions ──────────────────────────────────────────────────────────────
 
   const handleStartRender = async (batchId: string) => {
     try {
       const res = await fetch("/api/managed/multiplier/render", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
+        method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ batchId }),
       });
-
-      if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.error || "Render failed");
-      }
-
+      if (!res.ok) { const err = await res.json(); throw new Error(err.error || "Render failed"); }
       toast.success("Rendering started!");
       setRenderingBatchId(batchId);
       fetchBatches();
-    } catch (err: any) {
-      toast.error(err.message || "Failed to start rendering");
-    }
+    } catch (err: any) { toast.error(err.message || "Failed to start rendering"); }
   };
-
-  // ─── Download ZIP ─────────────────────────────────────────────────────────
 
   const handleDownload = async (batchId: string) => {
     try {
       toast.info("Preparing download...");
       const res = await fetch(`/api/managed/multiplier/download?batchId=${batchId}`);
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({ error: "Download failed" }));
-        throw new Error(err.error || "Download failed");
-      }
-
+      if (!res.ok) { const err = await res.json().catch(() => ({ error: "Download failed" })); throw new Error(err.error || "Download failed"); }
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      // Use the Content-Disposition filename if available, otherwise fallback
       const disposition = res.headers.get("Content-Disposition");
       const filenameMatch = disposition?.match(/filename="([^"]+)"/);
       a.download = filenameMatch?.[1] || `multiplier_${batchId.substring(0, 8)}.tar.gz`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
       URL.revokeObjectURL(url);
-
       toast.success("Download started!");
-    } catch (err: any) {
-      toast.error(err.message || "Failed to download");
-    }
+    } catch (err: any) { toast.error(err.message || "Failed to download"); }
   };
-
-  // ─── Delete Batch ─────────────────────────────────────────────────────────
 
   const handleDeleteBatch = async (batchId: string) => {
     if (!confirm("Delete this batch and all its rendered videos?")) return;
-
     try {
       const res = await fetch(`/api/managed/multiplier?batchId=${batchId}`, { method: "DELETE" });
       if (!res.ok) throw new Error("Delete failed");
-      toast.success("Batch deleted");
-      fetchBatches();
-    } catch (err: any) {
-      toast.error(err.message || "Failed to delete batch");
-    }
+      toast.success("Batch deleted"); fetchBatches();
+    } catch (err: any) { toast.error(err.message || "Failed to delete batch"); }
   };
 
   // ─── Status Helpers ────────────────────────────────────────────────────────
@@ -296,8 +346,6 @@ export default function MultiplierPage() {
       case "RENDERING": return "text-amber-400 bg-amber-500/10 border-amber-500/20";
       case "COMPLETED": return "text-emerald-400 bg-emerald-500/10 border-emerald-500/20";
       case "FAILED": return "text-red-400 bg-red-500/10 border-red-500/20";
-      case "RENDERED": return "text-emerald-400";
-      case "PENDING": return "text-gray-500";
       default: return "text-gray-500";
     }
   };
@@ -326,185 +374,228 @@ export default function MultiplierPage() {
         </p>
       </div>
 
-      {/* ─── Upload & Configure Section ─────────────────────────────────── */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Left: Upload */}
-        <div className="lg:col-span-2 space-y-5">
-          <div className="rounded-2xl border border-white/5 bg-[#111118] p-6 space-y-5">
-            <h2 className="text-lg font-semibold text-white flex items-center gap-2">
-              <Upload className="w-5 h-5 text-cyan-400" />
-              Upload Files
-            </h2>
-
-            {/* Batch Name */}
-            <div>
-              <label className="block text-xs text-gray-500 mb-1.5 uppercase tracking-wider">Batch Name (optional)</label>
-              <input
-                type="text"
-                value={batchName}
-                onChange={(e) => setBatchName(e.target.value)}
-                placeholder="e.g., Campaign hooks v1"
-                className="w-full px-4 py-2.5 rounded-xl bg-white/5 border border-white/10 text-white placeholder:text-gray-600 focus:outline-none focus:border-cyan-500/50 text-sm"
-              />
-            </div>
-
-            {/* Video Upload */}
-            <div>
-              <label className="block text-xs text-gray-500 mb-1.5 uppercase tracking-wider">Base Video</label>
-              <div
-                onClick={() => videoInputRef.current?.click()}
-                className={`relative cursor-pointer rounded-xl border-2 border-dashed p-6 text-center transition-all ${
-                  videoFile
-                    ? "border-cyan-500/40 bg-cyan-500/5"
-                    : "border-white/10 hover:border-white/20 bg-white/[0.02]"
-                }`}
-              >
-                <input
-                  ref={videoInputRef}
-                  type="file"
-                  accept="video/*"
-                  onChange={(e) => {
-                    const f = e.target.files?.[0];
-                    if (f) setVideoFile(f);
-                  }}
-                  className="hidden"
-                />
-                {videoFile ? (
-                  <div className="flex items-center justify-center gap-3">
-                    <Play className="w-5 h-5 text-cyan-400" />
-                    <span className="text-cyan-300 text-sm font-medium">{videoFile.name}</span>
-                    <span className="text-gray-600 text-xs">({(videoFile.size / 1024 / 1024).toFixed(1)} MB)</span>
-                  </div>
-                ) : (
-                  <div>
-                    <Upload className="w-8 h-8 mx-auto text-gray-600 mb-2" />
-                    <p className="text-gray-500 text-sm">Click to upload video (MP4, MOV)</p>
-                  </div>
-                )}
+      {/* ─── Upload Section ──────────────────────────────────────────────── */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+        <div className="rounded-2xl border border-white/5 bg-[#111118] p-5 space-y-4">
+          <h2 className="text-sm font-semibold text-white flex items-center gap-2">
+            <Upload className="w-4 h-4 text-cyan-400" />
+            Upload Files
+          </h2>
+          {/* Batch Name */}
+          <input
+            type="text"
+            value={batchName}
+            onChange={(e) => setBatchName(e.target.value)}
+            placeholder="Batch name (optional)"
+            className="w-full px-3.5 py-2 rounded-xl bg-white/5 border border-white/10 text-white placeholder:text-gray-600 focus:outline-none focus:border-cyan-500/50 text-sm"
+          />
+          {/* Video Upload */}
+          <div
+            onClick={() => videoInputRef.current?.click()}
+            className={`cursor-pointer rounded-xl border-2 border-dashed p-5 text-center transition-all ${
+              videoFile ? "border-cyan-500/40 bg-cyan-500/5" : "border-white/10 hover:border-white/20 bg-white/[0.02]"
+            }`}
+          >
+            <input ref={videoInputRef} type="file" accept="video/*" onChange={(e) => { const f = e.target.files?.[0]; if (f) setVideoFile(f); }} className="hidden" />
+            {videoFile ? (
+              <div className="flex items-center justify-center gap-3">
+                <Play className="w-4 h-4 text-cyan-400" />
+                <span className="text-cyan-300 text-sm font-medium truncate">{videoFile.name}</span>
+                <span className="text-gray-600 text-xs">({(videoFile.size / 1024 / 1024).toFixed(1)} MB)</span>
               </div>
-            </div>
-
-            {/* CSV Upload */}
-            <div>
-              <label className="block text-xs text-gray-500 mb-1.5 uppercase tracking-wider">
-                CSV File with Text Hooks
-              </label>
-              <div
-                onClick={() => csvInputRef.current?.click()}
-                className={`relative cursor-pointer rounded-xl border-2 border-dashed p-6 text-center transition-all ${
-                  csvFile
-                    ? "border-emerald-500/40 bg-emerald-500/5"
-                    : "border-white/10 hover:border-white/20 bg-white/[0.02]"
-                }`}
-              >
-                <input
-                  ref={csvInputRef}
-                  type="file"
-                  accept=".csv,.txt"
-                  onChange={(e) => {
-                    const f = e.target.files?.[0];
-                    if (f) handleCsvUpload(f);
-                  }}
-                  className="hidden"
-                />
-                {csvFile ? (
-                  <div className="flex items-center justify-center gap-3">
-                    <FileText className="w-5 h-5 text-emerald-400" />
-                    <span className="text-emerald-300 text-sm font-medium">{csvFile.name}</span>
-                    <span className="text-gray-600 text-xs">({parsedHooks.length} hooks found)</span>
-                  </div>
-                ) : (
-                  <div>
-                    <FileText className="w-8 h-8 mx-auto text-gray-600 mb-2" />
-                    <p className="text-gray-500 text-sm">Click to upload CSV or TXT file</p>
-                    <p className="text-gray-600 text-xs mt-1">One hook per line, or column &quot;hook&quot;</p>
-                  </div>
-                )}
+            ) : (
+              <div><Upload className="w-6 h-6 mx-auto text-gray-600 mb-1" /><p className="text-gray-500 text-xs">Upload base video (MP4, MOV)</p></div>
+            )}
+          </div>
+          {/* CSV Upload */}
+          <div
+            onClick={() => csvInputRef.current?.click()}
+            className={`cursor-pointer rounded-xl border-2 border-dashed p-5 text-center transition-all ${
+              csvFile ? "border-emerald-500/40 bg-emerald-500/5" : "border-white/10 hover:border-white/20 bg-white/[0.02]"
+            }`}
+          >
+            <input ref={csvInputRef} type="file" accept=".csv,.txt" onChange={(e) => { const f = e.target.files?.[0]; if (f) handleCsvUpload(f); }} className="hidden" />
+            {csvFile ? (
+              <div className="flex items-center justify-center gap-3">
+                <FileText className="w-4 h-4 text-emerald-400" />
+                <span className="text-emerald-300 text-sm font-medium truncate">{csvFile.name}</span>
+                <span className="text-gray-600 text-xs">({parsedHooks.length} hooks)</span>
               </div>
-            </div>
-
-            {/* Parsed Hooks Preview */}
-            {parsedHooks.length > 0 && (
-              <div>
-                <label className="block text-xs text-gray-500 mb-1.5 uppercase tracking-wider">
-                  Parsed Hooks ({parsedHooks.length})
-                </label>
-                <div className="max-h-48 overflow-y-auto rounded-xl bg-white/[0.02] border border-white/5 divide-y divide-white/5">
-                  {parsedHooks.map((hook, i) => (
-                    <div key={i} className="px-4 py-2.5 text-sm text-gray-300 flex items-start gap-3">
-                      <span className="text-gray-600 text-xs font-mono w-6 text-right flex-shrink-0 mt-0.5">{i + 1}</span>
-                      <span>{hook}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
+            ) : (
+              <div><FileText className="w-6 h-6 mx-auto text-gray-600 mb-1" /><p className="text-gray-500 text-xs">Upload CSV / TXT (one hook per line)</p></div>
             )}
           </div>
         </div>
 
-        {/* Right: Styling */}
-        <div className="space-y-5">
-          <div className="rounded-2xl border border-white/5 bg-[#111118] p-6 space-y-4">
-            <h2 className="text-lg font-semibold text-white flex items-center gap-2">
-              <Palette className="w-5 h-5 text-cyan-400" />
-              Text Styling
+        {/* Parsed Hooks */}
+        <div className="rounded-2xl border border-white/5 bg-[#111118] p-5 flex flex-col">
+          <h2 className="text-sm font-semibold text-white mb-3">
+            Parsed Hooks {parsedHooks.length > 0 && <span className="text-gray-500 font-normal">({parsedHooks.length})</span>}
+          </h2>
+          {parsedHooks.length > 0 ? (
+            <div className="flex-1 max-h-64 overflow-y-auto rounded-xl bg-white/[0.02] border border-white/5 divide-y divide-white/5">
+              {parsedHooks.map((hook, i) => (
+                <div key={i} className="px-3.5 py-2 text-sm text-gray-300 flex items-start gap-2.5">
+                  <span className="text-gray-600 text-xs font-mono w-5 text-right flex-shrink-0 mt-0.5">{i + 1}</span>
+                  <span className="truncate">{hook}</span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="flex-1 flex items-center justify-center text-gray-600 text-xs">
+              Upload a CSV to see hooks here
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* ─── Preview + Controls ──────────────────────────────────────────── */}
+      <div className="grid grid-cols-1 lg:grid-cols-[340px_1fr] gap-6">
+        {/* Left: Live Preview (9:16 phone frame) */}
+        <div className="space-y-3">
+          <h2 className="text-sm font-semibold text-white flex items-center gap-2">
+            <Move className="w-4 h-4 text-cyan-400" />
+            Live Preview
+            <span className="text-gray-600 text-[10px] font-normal ml-1">Drag strip to position</span>
+          </h2>
+          <div
+            ref={previewContainerRef}
+            className="relative rounded-2xl overflow-hidden border-2 border-white/10 bg-black mx-auto select-none"
+            style={{
+              width: 300,
+              height: 300 * (OUTPUT_H / OUTPUT_W), // 9:16 aspect
+            }}
+          >
+            {/* Video Background */}
+            {videoObjectUrl ? (
+              <video
+                src={videoObjectUrl}
+                muted
+                loop
+                autoPlay
+                playsInline
+                className="absolute inset-0 w-full h-full object-cover"
+              />
+            ) : (
+              <div className="absolute inset-0 bg-gradient-to-b from-gray-800 to-gray-900 flex items-center justify-center">
+                <span className="text-gray-700 text-xs">Upload video to preview</span>
+              </div>
+            )}
+
+            {/* Text Strip Overlay — Draggable */}
+            <div
+              onMouseDown={handlePreviewMouseDown}
+              className="absolute left-0 right-0 flex items-center justify-center"
+              style={{
+                top: `${(stripGeometry.stripY / OUTPUT_H) * 100}%`,
+                height: `${(stripGeometry.stripHeight / OUTPUT_H) * 100}%`,
+                left: `${(stripGeometry.stripX / OUTPUT_W) * 100}%`,
+                right: `${(stripGeometry.stripX / OUTPUT_W) * 100}%`,
+                width: `${(stripGeometry.stripW / OUTPUT_W) * 100}%`,
+                backgroundColor: bgStripColor,
+                opacity: bgStripOpacity,
+                cursor: isDragging ? "grabbing" : "grab",
+                padding: `0 ${Math.max(4, marginX * (300 / OUTPUT_W))}px`,
+                transition: isDragging ? "none" : "top 0.15s ease-out",
+              }}
+            >
+              <span
+                className="text-center leading-tight"
+                style={{
+                  color: fontColor,
+                  fontSize: Math.max(8, fontSize * (300 / OUTPUT_W)),
+                  fontWeight: "bold",
+                  letterSpacing: "0.3px",
+                  wordBreak: "break-word",
+                }}
+              >
+                {previewText}
+              </span>
+            </div>
+
+            {/* Drag indicator lines */}
+            {isDragging && (
+              <>
+                <div className="absolute left-2 right-2 border-t border-cyan-500/50 border-dashed" style={{ top: `${(stripGeometry.stripY / OUTPUT_H) * 100}%` }} />
+                <div className="absolute left-2 right-2 border-t border-cyan-500/50 border-dashed" style={{ top: `${((stripGeometry.stripY + stripGeometry.stripHeight) / OUTPUT_H) * 100}%` }} />
+              </>
+            )}
+
+            {/* Position indicator */}
+            <div className="absolute bottom-2 right-2 bg-black/70 text-gray-300 text-[9px] px-1.5 py-0.5 rounded font-mono">
+              Y: {positionYPercent}%
+            </div>
+          </div>
+
+          {/* Quick position buttons */}
+          <div className="flex gap-1.5">
+            {[
+              { label: "Top", value: 0 },
+              { label: "25%", value: 25 },
+              { label: "Center", value: 50 },
+              { label: "75%", value: 75 },
+              { label: "Bottom", value: 100 },
+            ].map((p) => (
+              <button
+                key={p.value}
+                onClick={() => setPositionYPercent(p.value)}
+                className={`flex-1 py-1.5 rounded-lg text-[10px] font-medium transition-all border ${
+                  positionYPercent === p.value
+                    ? "bg-cyan-500/15 text-cyan-300 border-cyan-500/30"
+                    : "bg-white/5 text-gray-600 border-white/5 hover:border-white/10 hover:text-gray-400"
+                }`}
+              >
+                {p.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Right: Controls */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+          {/* Text Controls */}
+          <div className="rounded-2xl border border-white/5 bg-[#111118] p-5 space-y-4">
+            <h2 className="text-sm font-semibold text-white flex items-center gap-2">
+              <Palette className="w-4 h-4 text-cyan-400" />
+              Text
             </h2>
 
             {/* Font Family */}
             <div>
-              <label className="block text-xs text-gray-500 mb-1.5">Font Family</label>
+              <label className="block text-[10px] text-gray-500 mb-1 uppercase tracking-wider">Font</label>
               <select
                 value={fontFamily}
                 onChange={(e) => setFontFamily(e.target.value)}
                 className="w-full px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white text-sm focus:outline-none focus:border-cyan-500/50"
               >
-                {FONT_OPTIONS.map((f) => (
-                  <option key={f} value={f}>{f}</option>
-                ))}
+                {FONT_OPTIONS.map((f) => (<option key={f} value={f}>{f}</option>))}
               </select>
             </div>
 
             {/* Font Size */}
             <div>
-              <label className="block text-xs text-gray-500 mb-1.5">Font Size: {fontSize}px</label>
-              <input
-                type="range"
-                min={18}
-                max={72}
-                value={fontSize}
-                onChange={(e) => setFontSize(Number(e.target.value))}
-                className="w-full accent-cyan-500"
-              />
+              <label className="block text-[10px] text-gray-500 mb-1 uppercase tracking-wider">Size: {fontSize}px</label>
+              <input type="range" min={18} max={72} value={fontSize} onChange={(e) => setFontSize(Number(e.target.value))} className="w-full accent-cyan-500" />
             </div>
 
             {/* Font Color */}
             <div>
-              <label className="block text-xs text-gray-500 mb-1.5">Font Color</label>
-              <div className="flex items-center gap-3">
-                <input
-                  type="color"
-                  value={fontColor}
-                  onChange={(e) => setFontColor(e.target.value)}
-                  className="w-10 h-8 rounded border border-white/10 cursor-pointer bg-transparent"
-                />
-                <input
-                  type="text"
-                  value={fontColor}
-                  onChange={(e) => setFontColor(e.target.value)}
-                  className="flex-1 px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-white text-sm font-mono"
-                />
+              <label className="block text-[10px] text-gray-500 mb-1 uppercase tracking-wider">Color</label>
+              <div className="flex items-center gap-2">
+                <input type="color" value={fontColor} onChange={(e) => setFontColor(e.target.value)} className="w-8 h-7 rounded border border-white/10 cursor-pointer bg-transparent" />
+                <input type="text" value={fontColor} onChange={(e) => setFontColor(e.target.value)} className="flex-1 px-2.5 py-1.5 rounded-lg bg-white/5 border border-white/10 text-white text-xs font-mono" />
               </div>
             </div>
 
             {/* Text Case */}
             <div>
-              <label className="block text-xs text-gray-500 mb-1.5">Text Case</label>
-              <div className="grid grid-cols-2 gap-2">
+              <label className="block text-[10px] text-gray-500 mb-1 uppercase tracking-wider">Case</label>
+              <div className="grid grid-cols-4 gap-1.5">
                 {TEXT_CASE_OPTIONS.map((opt) => (
                   <button
                     key={opt.value}
                     onClick={() => setTextCase(opt.value)}
-                    className={`px-3 py-2 rounded-lg text-xs font-medium transition-all border ${
+                    className={`px-2 py-1.5 rounded-lg text-[10px] font-medium transition-all border ${
                       textCase === opt.value
                         ? "bg-cyan-500/15 text-cyan-300 border-cyan-500/30"
                         : "bg-white/5 text-gray-500 border-white/5 hover:border-white/10"
@@ -515,148 +606,75 @@ export default function MultiplierPage() {
                 ))}
               </div>
             </div>
-
-            <hr className="border-white/5" />
-
-            {/* Background Strip Color */}
-            <div>
-              <label className="block text-xs text-gray-500 mb-1.5">Strip Background Color</label>
-              <div className="flex items-center gap-3">
-                <input
-                  type="color"
-                  value={bgStripColor}
-                  onChange={(e) => setBgStripColor(e.target.value)}
-                  className="w-10 h-8 rounded border border-white/10 cursor-pointer bg-transparent"
-                />
-                <input
-                  type="text"
-                  value={bgStripColor}
-                  onChange={(e) => setBgStripColor(e.target.value)}
-                  className="flex-1 px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-white text-sm font-mono"
-                />
-              </div>
-            </div>
-
-            {/* Strip Opacity */}
-            <div>
-              <label className="block text-xs text-gray-500 mb-1.5">Strip Opacity: {Math.round(bgStripOpacity * 100)}%</label>
-              <input
-                type="range"
-                min={0}
-                max={100}
-                value={Math.round(bgStripOpacity * 100)}
-                onChange={(e) => setBgStripOpacity(Number(e.target.value) / 100)}
-                className="w-full accent-cyan-500"
-              />
-            </div>
-
-            {/* Text Position */}
-            <div>
-              <label className="block text-xs text-gray-500 mb-1.5">Text Position</label>
-              <div className="flex gap-2">
-                <button
-                  onClick={() => setTextPosition("TOP")}
-                  className={`flex-1 flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg text-xs font-medium transition-all border ${
-                    textPosition === "TOP"
-                      ? "bg-cyan-500/15 text-cyan-300 border-cyan-500/30"
-                      : "bg-white/5 text-gray-500 border-white/5 hover:border-white/10"
-                  }`}
-                >
-                  <ArrowUp className="w-3.5 h-3.5" /> Top
-                </button>
-                <button
-                  onClick={() => setTextPosition("BOTTOM")}
-                  className={`flex-1 flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg text-xs font-medium transition-all border ${
-                    textPosition === "BOTTOM"
-                      ? "bg-cyan-500/15 text-cyan-300 border-cyan-500/30"
-                      : "bg-white/5 text-gray-500 border-white/5 hover:border-white/10"
-                  }`}
-                >
-                  <ArrowDown className="w-3.5 h-3.5" /> Bottom
-                </button>
-              </div>
-            </div>
-
-            {/* Strip Padding */}
-            <div>
-              <label className="block text-xs text-gray-500 mb-1.5">Strip Padding: {stripPaddingY}px</label>
-              <input
-                type="range"
-                min={5}
-                max={60}
-                value={stripPaddingY}
-                onChange={(e) => setStripPaddingY(Number(e.target.value))}
-                className="w-full accent-cyan-500"
-              />
-            </div>
-
-            {/* Live Preview Strip */}
-            <div>
-              <label className="block text-xs text-gray-500 mb-1.5">Preview</label>
-              <div className="rounded-xl overflow-hidden border border-white/5 bg-gray-800 relative" style={{ height: 120 }}>
-                <div
-                  className="absolute left-0 right-0 flex items-center justify-center"
-                  style={{
-                    top: textPosition === "TOP" ? 0 : undefined,
-                    bottom: textPosition === "BOTTOM" ? 0 : undefined,
-                    backgroundColor: bgStripColor,
-                    opacity: bgStripOpacity,
-                    padding: `${stripPaddingY / 2}px 16px`,
-                  }}
-                >
-                  <span
-                    style={{
-                      color: fontColor,
-                      fontSize: Math.min(fontSize * 0.4, 18),
-                      textTransform: textCase === "UPPERCASE" ? "uppercase" : textCase === "lowercase" ? "lowercase" : textCase === "capitalize" ? "capitalize" : "none",
-                      fontWeight: "bold",
-                      letterSpacing: "0.5px",
-                    }}
-                  >
-                    {parsedHooks[0] || "Sample hook text preview"}
-                  </span>
-                </div>
-              </div>
-            </div>
           </div>
 
-          {/* Create Button */}
-          <button
-            onClick={handleCreateBatch}
-            disabled={uploading || !videoFile || !csvFile || parsedHooks.length === 0}
-            className="w-full py-3 rounded-xl font-semibold text-sm transition-all disabled:opacity-40 disabled:cursor-not-allowed bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white shadow-lg shadow-cyan-500/20 flex items-center justify-center gap-2"
-          >
-            {uploading ? (
-              <>
-                <Loader2 className="w-4 h-4 animate-spin" />
-                Uploading...
-              </>
-            ) : (
-              <>
-                <Layers className="w-4 h-4" />
-                Create Batch ({parsedHooks.length} videos)
-              </>
-            )}
-          </button>
+          {/* Strip & Position Controls */}
+          <div className="rounded-2xl border border-white/5 bg-[#111118] p-5 space-y-4">
+            <h2 className="text-sm font-semibold text-white flex items-center gap-2">
+              <Move className="w-4 h-4 text-cyan-400" />
+              Strip & Position
+            </h2>
+
+            {/* Background Color */}
+            <div>
+              <label className="block text-[10px] text-gray-500 mb-1 uppercase tracking-wider">Background</label>
+              <div className="flex items-center gap-2">
+                <input type="color" value={bgStripColor} onChange={(e) => setBgStripColor(e.target.value)} className="w-8 h-7 rounded border border-white/10 cursor-pointer bg-transparent" />
+                <input type="text" value={bgStripColor} onChange={(e) => setBgStripColor(e.target.value)} className="flex-1 px-2.5 py-1.5 rounded-lg bg-white/5 border border-white/10 text-white text-xs font-mono" />
+              </div>
+            </div>
+
+            {/* Opacity */}
+            <div>
+              <label className="block text-[10px] text-gray-500 mb-1 uppercase tracking-wider">Opacity: {Math.round(bgStripOpacity * 100)}%</label>
+              <input type="range" min={0} max={100} value={Math.round(bgStripOpacity * 100)} onChange={(e) => setBgStripOpacity(Number(e.target.value) / 100)} className="w-full accent-cyan-500" />
+            </div>
+
+            {/* Vertical Position */}
+            <div>
+              <label className="block text-[10px] text-gray-500 mb-1 uppercase tracking-wider">Y Position: {positionYPercent}%</label>
+              <input type="range" min={0} max={100} value={positionYPercent} onChange={(e) => setPositionYPercent(Number(e.target.value))} className="w-full accent-cyan-500" />
+            </div>
+
+            {/* Horizontal Margin */}
+            <div>
+              <label className="block text-[10px] text-gray-500 mb-1 uppercase tracking-wider">Horizontal Margin: {marginX}px</label>
+              <input type="range" min={0} max={200} value={marginX} onChange={(e) => setMarginX(Number(e.target.value))} className="w-full accent-cyan-500" />
+            </div>
+
+            {/* Inner Padding */}
+            <div>
+              <label className="block text-[10px] text-gray-500 mb-1 uppercase tracking-wider">Inner Padding: {stripPaddingY}px</label>
+              <input type="range" min={0} max={60} value={stripPaddingY} onChange={(e) => setStripPaddingY(Number(e.target.value))} className="w-full accent-cyan-500" />
+            </div>
+          </div>
         </div>
       </div>
+
+      {/* Create Button */}
+      <button
+        onClick={handleCreateBatch}
+        disabled={uploading || !videoFile || !csvFile || parsedHooks.length === 0}
+        className="w-full py-3.5 rounded-xl font-semibold text-sm transition-all disabled:opacity-40 disabled:cursor-not-allowed bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white shadow-lg shadow-cyan-500/20 flex items-center justify-center gap-2"
+      >
+        {uploading ? (
+          <><Loader2 className="w-4 h-4 animate-spin" /> Uploading...</>
+        ) : (
+          <><Layers className="w-4 h-4" /> Create Batch {parsedHooks.length > 0 && `(${parsedHooks.length} videos)`}</>
+        )}
+      </button>
 
       {/* ─── Batches List ────────────────────────────────────────────────── */}
       <div className="space-y-4">
         <div className="flex items-center justify-between">
           <h2 className="text-lg font-semibold text-white">Batch History</h2>
-          <button
-            onClick={fetchBatches}
-            className="p-2 rounded-lg hover:bg-white/5 text-gray-500 hover:text-white transition-all"
-          >
+          <button onClick={fetchBatches} className="p-2 rounded-lg hover:bg-white/5 text-gray-500 hover:text-white transition-all">
             <RefreshCw className="w-4 h-4" />
           </button>
         </div>
 
         {loading ? (
-          <div className="flex items-center justify-center py-12">
-            <Loader2 className="w-6 h-6 text-cyan-400 animate-spin" />
-          </div>
+          <div className="flex items-center justify-center py-12"><Loader2 className="w-6 h-6 text-cyan-400 animate-spin" /></div>
         ) : batches.length === 0 ? (
           <div className="text-center py-12 text-gray-600">
             <Layers className="w-12 h-12 mx-auto mb-3 opacity-30" />
@@ -671,10 +689,7 @@ export default function MultiplierPage() {
               const progress = totalCount > 0 ? Math.round((renderedCount / totalCount) * 100) : 0;
 
               return (
-                <div
-                  key={batch.id}
-                  className="rounded-2xl border border-white/5 bg-[#111118] overflow-hidden"
-                >
+                <div key={batch.id} className="rounded-2xl border border-white/5 bg-[#111118] overflow-hidden">
                   {/* Batch Header */}
                   <div className="p-5 flex items-center justify-between">
                     <div className="flex-1 min-w-0">
@@ -693,32 +708,18 @@ export default function MultiplierPage() {
                         {new Date(batch.createdAt).toLocaleDateString()}
                       </p>
                     </div>
-
                     <div className="flex items-center gap-2">
                       {batch.status === "READY" && (
-                        <button
-                          onClick={() => handleStartRender(batch.id)}
-                          className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-gradient-to-r from-cyan-500 to-blue-600 text-white text-xs font-medium hover:from-cyan-400 hover:to-blue-500 transition-all"
-                        >
-                          <Play className="w-3.5 h-3.5" />
-                          Render All
+                        <button onClick={() => handleStartRender(batch.id)} className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-gradient-to-r from-cyan-500 to-blue-600 text-white text-xs font-medium hover:from-cyan-400 hover:to-blue-500 transition-all">
+                          <Play className="w-3.5 h-3.5" /> Render All
                         </button>
                       )}
-
                       {batch.status === "COMPLETED" && renderedCount > 0 && (
-                        <button
-                          onClick={() => handleDownload(batch.id)}
-                          className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-emerald-500/15 text-emerald-300 border border-emerald-500/20 text-xs font-medium hover:bg-emerald-500/25 transition-all"
-                        >
-                          <Download className="w-3.5 h-3.5" />
-                          Download All
+                        <button onClick={() => handleDownload(batch.id)} className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-emerald-500/15 text-emerald-300 border border-emerald-500/20 text-xs font-medium hover:bg-emerald-500/25 transition-all">
+                          <Download className="w-3.5 h-3.5" /> Download All
                         </button>
                       )}
-
-                      <button
-                        onClick={() => handleDeleteBatch(batch.id)}
-                        className="p-2 rounded-lg text-gray-600 hover:text-red-400 hover:bg-red-500/10 transition-all"
-                      >
+                      <button onClick={() => handleDeleteBatch(batch.id)} className="p-2 rounded-lg text-gray-600 hover:text-red-400 hover:bg-red-500/10 transition-all">
                         <Trash2 className="w-4 h-4" />
                       </button>
                     </div>
@@ -728,10 +729,7 @@ export default function MultiplierPage() {
                   {batch.status === "RENDERING" && (
                     <div className="px-5 pb-3">
                       <div className="h-1.5 rounded-full bg-white/5 overflow-hidden">
-                        <div
-                          className="h-full rounded-full bg-gradient-to-r from-cyan-500 to-blue-500 transition-all duration-500"
-                          style={{ width: `${progress}%` }}
-                        />
+                        <div className="h-full rounded-full bg-gradient-to-r from-cyan-500 to-blue-500 transition-all duration-500" style={{ width: `${progress}%` }} />
                       </div>
                       <p className="text-gray-600 text-[10px] mt-1.5 text-right">{progress}% complete</p>
                     </div>
@@ -740,18 +738,12 @@ export default function MultiplierPage() {
                   {/* Items List */}
                   <div className="border-t border-white/5 max-h-64 overflow-y-auto">
                     {batch.items.map((item, idx) => (
-                      <div
-                        key={item.id}
-                        className="flex items-center gap-3 px-5 py-2.5 border-b border-white/[0.03] last:border-b-0 hover:bg-white/[0.02] transition-all"
-                      >
+                      <div key={item.id} className="flex items-center gap-3 px-5 py-2.5 border-b border-white/[0.03] last:border-b-0 hover:bg-white/[0.02] transition-all">
                         <span className="text-gray-700 text-xs font-mono w-6 text-right flex-shrink-0">{idx + 1}</span>
                         {itemIcon(item.status)}
                         <span className="text-gray-400 text-sm flex-1 truncate">{item.hookText}</span>
                         {item.renderedVideoUrl && (
-                          <button
-                            onClick={() => setPreviewUrl(item.renderedVideoUrl)}
-                            className="text-cyan-500 hover:text-cyan-300 transition-all"
-                          >
+                          <button onClick={() => setPreviewUrl(item.renderedVideoUrl)} className="text-cyan-500 hover:text-cyan-300 transition-all">
                             <Play className="w-3.5 h-3.5" />
                           </button>
                         )}
@@ -776,17 +768,9 @@ export default function MultiplierPage() {
           <div className="bg-[#16161f] rounded-2xl border border-white/10 p-4 max-w-lg w-full mx-4 shadow-2xl" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between mb-3">
               <h3 className="text-white text-sm font-medium">Video Preview</h3>
-              <button onClick={() => setPreviewUrl(null)} className="text-gray-500 hover:text-white">
-                <X className="w-5 h-5" />
-              </button>
+              <button onClick={() => setPreviewUrl(null)} className="text-gray-500 hover:text-white"><X className="w-5 h-5" /></button>
             </div>
-            <video
-              src={`/api${previewUrl}`}
-              controls
-              autoPlay
-              className="w-full rounded-xl"
-              style={{ maxHeight: "70vh" }}
-            />
+            <video src={`/api${previewUrl}`} controls autoPlay className="w-full rounded-xl" style={{ maxHeight: "70vh" }} />
           </div>
         </div>
       )}
