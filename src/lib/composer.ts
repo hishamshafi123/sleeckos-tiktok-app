@@ -738,8 +738,10 @@ export async function composeMultiplierVideo(options: MultiplierComposeOptions):
   const tempDir = path.join(os.tmpdir(), "temp_multiplier");
   if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
 
-  const effectiveWidth = OUTPUT_W - marginX * 2;
-  const charsPerLine = Math.max(10, Math.floor(effectiveWidth / (fontSize * 0.55)));
+  // Use stripPaddingY as uniform inner padding (horizontal + vertical)
+  const paddingX = Math.max(stripPaddingY, 16); // Ensure at least 16px inner horizontal padding
+  const effectiveTextWidth = OUTPUT_W - marginX * 2 - paddingX * 2;
+  const charsPerLine = Math.max(10, Math.floor(effectiveTextWidth / (fontSize * 0.62)));
   const wrappedText = wrapText(casedText, charsPerLine);
   const textFilePath = path.join(tempDir, "hook_" + Math.random().toString(36).substring(2, 9) + ".txt");
   fs.writeFileSync(textFilePath, wrappedText);
@@ -775,12 +777,12 @@ export async function composeMultiplierVideo(options: MultiplierComposeOptions):
       `[0:v]scale='if(gte(iw/ih,${OUTPUT_W}/${OUTPUT_H}),-1,${OUTPUT_W})':'if(gte(iw/ih,${OUTPUT_W}/${OUTPUT_H}),${OUTPUT_H},-1)',crop=${OUTPUT_W}:${OUTPUT_H}[scaled]`,
       `color=c=0x${bgHex.padEnd(6, "0")}:s=${stripW}x${stripHeight},format=yuva420p,geq=r='${cR}':g='${cG}':b='${cB}':a='if(gt(hypot(max(0,${R}-min(X,W-1-X)),max(0,${R}-min(Y,H-1-Y))),${R}),0,${alphaVal})'[rrect]`,
       `[scaled][rrect]overlay=x=${stripX}:y=${stripY}:shortest=1[bg]`,
-      `[bg]drawtext=fontfile='${escapedFontPath}':textfile='${escapedTextFilePath}':fontcolor=${drawFontColor}:fontsize=${fontSize}:x=${stripX}+(${stripW}-text_w)/2:y=${textY}:line_spacing=6[v]`,
+      `[bg]drawtext=fontfile='${escapedFontPath}':textfile='${escapedTextFilePath}':fontcolor=${drawFontColor}:fontsize=${fontSize}:x=max(${stripX + paddingX},${stripX}+(${stripW}-text_w)/2):y=${textY}:line_spacing=6[v]`,
     ].join(";\n");
   } else {
     const bgColorFfmpeg = bgStripColor.startsWith("#") ? "0x" + bgStripColor.slice(1) : bgStripColor;
     filterComplex = [
-      `[0:v]scale='if(gte(iw/ih,${OUTPUT_W}/${OUTPUT_H}),-1,${OUTPUT_W})':'if(gte(iw/ih,${OUTPUT_W}/${OUTPUT_H}),${OUTPUT_H},-1)',crop=${OUTPUT_W}:${OUTPUT_H},drawbox=x=${stripX}:y=${stripY}:w=${stripW}:h=${stripHeight}:color=${bgColorFfmpeg}@${bgAlpha}:t=fill,drawtext=fontfile='${escapedFontPath}':textfile='${escapedTextFilePath}':fontcolor=${drawFontColor}:fontsize=${fontSize}:x=${stripX}+(${stripW}-text_w)/2:y=${textY}:line_spacing=6[v]`,
+      `[0:v]scale='if(gte(iw/ih,${OUTPUT_W}/${OUTPUT_H}),-1,${OUTPUT_W})':'if(gte(iw/ih,${OUTPUT_W}/${OUTPUT_H}),${OUTPUT_H},-1)',crop=${OUTPUT_W}:${OUTPUT_H},drawbox=x=${stripX}:y=${stripY}:w=${stripW}:h=${stripHeight}:color=${bgColorFfmpeg}@${bgAlpha}:t=fill,drawtext=fontfile='${escapedFontPath}':textfile='${escapedTextFilePath}':fontcolor=${drawFontColor}:fontsize=${fontSize}:x=max(${stripX + paddingX},${stripX}+(${stripW}-text_w)/2):y=${textY}:line_spacing=6[v]`,
     ].join("");
   }
 

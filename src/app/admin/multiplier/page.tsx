@@ -134,8 +134,9 @@ export default function MultiplierPage() {
 
   const stripGeometry = useMemo(() => {
     // Estimate line count based on chars per line (matching FFmpeg logic)
-    const effectiveWidth = OUTPUT_W - marginX * 2;
-    const charsPerLine = Math.max(10, Math.floor(effectiveWidth / (fontSize * 0.55)));
+    const paddingX = Math.max(stripPaddingY, 16);
+    const effectiveTextWidth = OUTPUT_W - marginX * 2 - paddingX * 2;
+    const charsPerLine = Math.max(10, Math.floor(effectiveTextWidth / (fontSize * 0.62)));
     const words = previewText.split(" ");
     let lines = 1;
     let currentLineLength = 0;
@@ -497,7 +498,7 @@ export default function MultiplierPage() {
                 backgroundColor: bgStripColor,
                 opacity: bgStripOpacity,
                 cursor: isDragging ? "grabbing" : "grab",
-                padding: `0 ${Math.max(4, marginX * (300 / OUTPUT_W))}px`,
+                padding: `${Math.max(2, stripPaddingY * (300 / OUTPUT_W))}px ${Math.max(6, Math.max(stripPaddingY, 16) * (300 / OUTPUT_W))}px`,
                 borderRadius: `${Math.max(0, borderRadius * (300 / OUTPUT_W))}px`,
                 transition: isDragging ? "none" : "top 0.15s ease-out",
               }}
