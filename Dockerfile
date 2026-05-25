@@ -28,7 +28,7 @@ ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV NODE_PATH=/usr/local/lib/node_modules
 
-RUN apk add --no-cache ffmpeg ttf-dejavu curl && \
+RUN apk add --no-cache ffmpeg ttf-dejavu curl librsvg && \
     addgroup --system --gid 1001 nodejs && \
     adduser --system --uid 1001 nextjs && \
     npm install -g prisma@7

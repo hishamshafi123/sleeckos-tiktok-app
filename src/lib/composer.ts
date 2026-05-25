@@ -1,4 +1,4 @@
-import { exec } from "child_process";
+import { exec, execSync } from "child_process";
 import fs from "fs";
 import path from "path";
 import os from "os";
@@ -421,7 +421,17 @@ export async function composeVideo(options: ComposeOptions): Promise<string> {
 
     fs.writeFileSync(svgFilePath, svgContent);
 
-    // Build the filter complex overlaying the SVG onto scaled/cropped background
+    // Convert SVG to PNG using rsvg-convert because FFmpeg's standard Alpine build lacks native SVG decoding support
+    const pngFilePath = svgFilePath.replace(/\.svg$/, ".png");
+    try {
+      execSync(`rsvg-convert -w 720 -h 1280 -o "${pngFilePath}" "${svgFilePath}"`);
+      svgFilePath = pngFilePath;
+      console.log(`[Composer] Curved SVG successfully rasterized to transparent PNG at: ${svgFilePath}`);
+    } catch (err) {
+      console.error("[Composer] Failed to convert curved SVG to PNG. Falling back to SVG.", err);
+    }
+
+    // Build the filter complex overlaying the rasterized image onto scaled/cropped background
     filterComplex = [
       `[0:v]scale='if(gte(iw/ih,720/1280),-1,720)':'if(gte(iw/ih,720/1280),1280,-1)',crop=720:1280[bg]`,
       `[2:v]format=yuva420p,fade=in:st=0:d=0.5:alpha=1,fade=out:st=${fadeStart}:d=0.5:alpha=1[v_overlay]`,
@@ -571,11 +581,17 @@ export async function composeVideo(options: ComposeOptions): Promise<string> {
       }
 
       try {
-        if (curveText && svgFilePath && fs.existsSync(svgFilePath)) {
-          fs.unlinkSync(svgFilePath);
+        if (curveText && svgFilePath) {
+          if (fs.existsSync(svgFilePath)) {
+            fs.unlinkSync(svgFilePath);
+          }
+          const originalSvg = svgFilePath.replace(/\.png$/, ".svg");
+          if (fs.existsSync(originalSvg)) {
+            fs.unlinkSync(originalSvg);
+          }
         }
       } catch (err) {
-        console.error("[Composer] Failed to cleanup temp SVG file", err);
+        console.error("[Composer] Failed to cleanup temp SVG/PNG files", err);
       }
 
       if (error) {
