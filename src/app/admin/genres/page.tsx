@@ -4,7 +4,7 @@ import { useState, useEffect, useRef } from "react";
 import { 
   Sparkles, Music, Sliders, Play, Pause, Trash2, Plus, 
   Upload, Film, CheckCircle2, AlertCircle, RefreshCw, ChevronRight, ChevronDown, Check, X, Lock, Tag, Folder, Eye, Filter,
-  Loader2, ExternalLink
+  Loader2, ExternalLink, Download
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -391,6 +391,14 @@ export default function GenresDashboard() {
   const [isPreviewModalOpen, setIsPreviewModalOpen] = useState(false);
   const [uploadingItems, setUploadingItems] = useState<Record<string, boolean>>({});
   const [uploadingBatch, setUploadingBatch] = useState(false);
+
+  // Download states (batchId -> DownloadState)
+  interface DownloadState {
+    progress: number;
+    totalSize: string;
+    loadedSize: string;
+  }
+  const [downloads, setDownloads] = useState<Record<string, DownloadState>>({});
 
   // Derived autocomplete lists
   const uniqueMusiciansList = Array.from(new Set(tracks.map(t => t.musician || t.artist).filter(Boolean))) as string[];
@@ -1144,6 +1152,92 @@ export default function GenresDashboard() {
       toast.error("An error occurred during bulk Google Drive upload");
     } finally {
       setUploadingBatch(false);
+    }
+  };
+
+  const handleDownload = async (batchId: string) => {
+    try {
+      setDownloads((prev) => ({
+        ...prev,
+        [batchId]: { progress: 0, totalSize: "Preparing...", loadedSize: "0%" }
+      }));
+
+      const getErrorMessage = async (res: Response, fallback: string) => {
+        try {
+          const contentType = res.headers.get("content-type");
+          if (contentType && contentType.includes("application/json")) {
+            const err = await res.json();
+            return err.error || fallback;
+          }
+          return fallback;
+        } catch {
+          return fallback;
+        }
+      };
+
+      let isPrepared = false;
+      let statusData: any = null;
+
+      // Poll the status every 2 seconds
+      while (!isPrepared) {
+        const res = await fetch(`/api/managed/genres/batches/download?batchId=${batchId}`);
+        if (!res.ok) {
+          const errMsg = await getErrorMessage(res, "Failed to prepare download");
+          throw new Error(errMsg);
+        }
+
+        statusData = await res.json();
+
+        if (statusData.status === "COMPLETED") {
+          isPrepared = true;
+          break;
+        } else if (statusData.status === "FAILED") {
+          throw new Error(statusData.message || "Archive preparation failed");
+        } else if (statusData.status === "PREPARING") {
+          setDownloads((prev) => ({
+            ...prev,
+            [batchId]: {
+              progress: statusData.progress || 5,
+              totalSize: "Preparing Archive...",
+              loadedSize: statusData.message || "Processing...",
+            }
+          }));
+          // Wait 2 seconds before the next status poll
+          await new Promise((resolve) => setTimeout(resolve, 2000));
+        } else {
+          await new Promise((resolve) => setTimeout(resolve, 2000));
+        }
+      }
+
+      if (statusData && statusData.downloadUrl) {
+        setDownloads((prev) => ({
+          ...prev,
+          [batchId]: {
+            progress: 100,
+            totalSize: "Completed",
+            loadedSize: "Downloading file...",
+          }
+        }));
+
+        // Trigger a high-performance native browser download
+        const fileUrl = `/api${statusData.downloadUrl}`;
+        const link = document.createElement("a");
+        link.href = fileUrl;
+        link.download = statusData.downloadUrl.split("/").pop() || `genre_batch_${batchId.substring(0, 8)}.tar.gz`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+
+        toast.success("Download started!");
+      }
+    } catch (err: any) {
+      toast.error(err.message || "Failed to download");
+    } finally {
+      setDownloads((prev) => {
+        const next = { ...prev };
+        delete next[batchId];
+        return next;
+      });
     }
   };
 
@@ -3533,6 +3627,16 @@ export default function GenresDashboard() {
                               Preview
                             </button>
 
+                            <a
+                              href={`/api${item.renderedVideoUrl}`}
+                              download={`video_${item.id.substring(0, 8)}.mp4`}
+                              className="flex items-center gap-1 px-3 py-1.5 bg-blue-500/15 hover:bg-blue-500 text-blue-400 hover:text-black border border-blue-500/20 hover:border-blue-500 rounded-xl text-xs font-extrabold transition-all duration-300 flex items-center justify-center"
+                              title="Download video clip"
+                            >
+                              <Download className="w-3.5 h-3.5" />
+                              Download
+                            </a>
+
                             <button
                               onClick={() => handleUploadToDrive(item.id)}
                               disabled={!!uploadingItems[item.id] || uploadingBatch}
@@ -3590,6 +3694,26 @@ export default function GenresDashboard() {
 
               {/* Close or Cancel Button */}
               <div className="pt-6 border-t border-white/5 flex flex-wrap gap-4">
+                {activeBatch.items?.some(i => i.status === "RENDERED" || i.status === "UPLOADED") && (
+                  <button
+                    onClick={() => handleDownload(activeBatch.id)}
+                    disabled={activeBatch.id in downloads}
+                    className="bg-[#1d1b38] hover:bg-[#25224e] text-amber-400 hover:text-amber-300 font-extrabold py-3.5 px-6 rounded-2xl border border-amber-500/20 hover:border-amber-500/50 transition-all flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-amber-500/5"
+                  >
+                    {activeBatch.id in downloads ? (
+                      <>
+                        <Loader2 className="w-5 h-5 animate-spin" />
+                        Downloading...
+                      </>
+                    ) : (
+                      <>
+                        <Download className="w-5 h-5" />
+                        Download All Rendered ({activeBatch.items?.filter(i => i.status === "RENDERED" || i.status === "UPLOADED").length})
+                      </>
+                    )}
+                  </button>
+                )}
+
                 {activeBatch.items?.some(i => i.status === "RENDERED") && (
                   <button
                     onClick={() => handleUploadAllToDrive(activeBatch.id)}
@@ -3650,6 +3774,31 @@ export default function GenresDashboard() {
                   </>
                 )}
               </div>
+
+              {/* Bulk Download Progress Bar */}
+              {activeBatch.id in downloads && (
+                <div className="mt-4 px-6 py-4 bg-amber-500/5 border border-amber-500/10 rounded-2xl space-y-2">
+                  <div className="flex justify-between items-center text-xs">
+                    <span className="text-[10px] font-black text-amber-400 uppercase tracking-wider flex items-center gap-1.5 animate-pulse">
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      Streaming Archive Chunks...
+                    </span>
+                    <span className="text-[10px] text-gray-500 font-semibold uppercase">
+                      {downloads[activeBatch.id].loadedSize} / {downloads[activeBatch.id].totalSize}
+                    </span>
+                  </div>
+                  <div className="w-full bg-black/40 h-1.5 rounded-full overflow-hidden border border-white/5">
+                    <div 
+                      className="h-full rounded-full bg-gradient-to-r from-amber-500 to-yellow-500 transition-all duration-300" 
+                      style={{ width: `${downloads[activeBatch.id].progress || 5}%` }} 
+                    />
+                  </div>
+                  <div className="flex justify-between items-center text-[10px]">
+                    <span className="text-gray-600 font-semibold uppercase">Do not close this tab</span>
+                    <span className="text-amber-400 font-bold">{downloads[activeBatch.id].progress}% Complete</span>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
