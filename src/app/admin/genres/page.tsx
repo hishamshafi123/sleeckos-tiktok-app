@@ -385,6 +385,7 @@ export default function GenresDashboard() {
   const [quotesSource, setQuotesSource] = useState<"gemini" | "csv">("gemini");
   const [parsedCsvQuotes, setParsedCsvQuotes] = useState<{ text: string; author: string }[]>([]);
   const [cancellingBatchId, setCancellingBatchId] = useState<string | null>(null);
+  const [retryingBatchId, setRetryingBatchId] = useState<string | null>(null);
 
   // Local video preview & manual upload states
   const [previewVideoUrl, setPreviewVideoUrl] = useState<string | null>(null);
@@ -1094,6 +1095,36 @@ export default function GenresDashboard() {
       toast.error("Error cancelling batch");
     } finally {
       setCancellingBatchId(null);
+    }
+  };
+
+  const handleRetryFailedRenders = async (batchId: string) => {
+    setRetryingBatchId(batchId);
+    try {
+      const res = await fetch("/api/managed/genres/batches", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "RETRY_FAILED",
+          batchId,
+        }),
+      });
+
+      if (res.ok) {
+        toast.success("Retrying failed renders initiated!");
+        fetchBatches();
+        if (activeBatch?.id === batchId) {
+          const statusRes = await fetch(`/api/managed/genres/batches?batchId=${batchId}`);
+          if (statusRes.ok) setActiveBatch(await statusRes.json());
+        }
+      } else {
+        const errData = await res.json();
+        toast.error(errData.error || "Failed to retry failed renders");
+      }
+    } catch {
+      toast.error("Error retrying failed renders");
+    } finally {
+      setRetryingBatchId(null);
     }
   };
 
@@ -3422,24 +3453,51 @@ export default function GenresDashboard() {
                 {/* Reuse Slider */}
                 <div>
                   <div className="flex justify-between items-center mb-2">
-                    <label className="block text-xs uppercase tracking-wider font-bold text-gray-400">
-                      Maximum Audio Track Reuse
-                    </label>
-                    <span className="text-xs font-black text-amber-500 bg-amber-500/15 border border-amber-500/25 px-2 py-0.5 rounded-lg">
-                      Max {audioReuseMax} times
+                    <div className="flex items-center gap-2">
+                      <label className="block text-xs uppercase tracking-wider font-bold text-gray-400">
+                        Maximum Audio Track Reuse
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => setAudioReuseMax(audioReuseMax === 0 ? 2 : 0)}
+                        className={`px-2 py-0.5 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all border ${
+                          audioReuseMax !== 0
+                            ? "bg-green-500/10 text-green-400 border-green-500/20 shadow-lg shadow-green-500/5 hover:bg-green-500/20"
+                            : "bg-red-500/10 text-red-400 border-red-500/20 shadow-lg shadow-red-500/5 hover:bg-red-500/20"
+                        }`}
+                      >
+                        {audioReuseMax !== 0 ? "Limit: ON" : "Limit: OFF"}
+                      </button>
+                    </div>
+                    <span className={`text-xs font-black px-2 py-0.5 rounded-lg border ${
+                      audioReuseMax !== 0
+                        ? "text-amber-500 bg-amber-500/15 border-amber-500/25"
+                        : "text-purple-400 bg-purple-500/15 border-purple-500/25"
+                    }`}>
+                      {audioReuseMax !== 0 ? `Max ${audioReuseMax} times` : "Unlimited"}
                     </span>
                   </div>
-                  <input
-                    type="range"
-                    min="1"
-                    max="10"
-                    value={audioReuseMax}
-                    onChange={(e) => setAudioReuseMax(parseInt(e.target.value))}
-                    className="w-full h-1.5 bg-[#141423] rounded-lg appearance-none cursor-pointer accent-amber-500"
-                  />
-                  <p className="text-[10px] text-gray-500 mt-1 font-semibold">
-                    Guarantees variety by ensuring no account repeats the same song more than {audioReuseMax} times.
-                  </p>
+                  {audioReuseMax !== 0 ? (
+                    <>
+                      <input
+                        type="range"
+                        min="1"
+                        max="10"
+                        value={audioReuseMax}
+                        onChange={(e) => setAudioReuseMax(parseInt(e.target.value))}
+                        className="w-full h-1.5 bg-[#141423] rounded-lg appearance-none cursor-pointer accent-amber-500"
+                      />
+                      <p className="text-[10px] text-gray-500 mt-1 font-semibold">
+                        Guarantees variety by ensuring no account repeats the same song more than {audioReuseMax} times.
+                      </p>
+                    </>
+                  ) : (
+                    <div className="py-2.5 px-3 bg-purple-500/5 border border-purple-500/10 rounded-xl">
+                      <p className="text-[10px] text-purple-400/80 font-medium leading-relaxed">
+                        No maximum reuse limit active. Music tracks will be distributed purely in round-robin sequence without any constraints.
+                      </p>
+                    </div>
+                  )}
                 </div>
               </div>
 
@@ -3735,16 +3793,37 @@ export default function GenresDashboard() {
                 )}
 
                 {activeBatch.status !== "RENDERING" ? (
-                  <button
-                    onClick={() => {
-                      setWizardStep(1);
-                      setActiveBatch(null);
-                      fetchBatches();
-                    }}
-                    className="bg-[#141423] hover:bg-[#1a1a2e] text-gray-400 hover:text-white font-bold py-3.5 px-6 rounded-2xl border border-white/5 transition-all"
-                  >
-                    Finish and Back to Wizard
-                  </button>
+                  <div className="flex gap-3">
+                    {activeBatch.items?.some(i => i.status === "FAILED") && (
+                      <button
+                        onClick={() => handleRetryFailedRenders(activeBatch.id)}
+                        disabled={retryingBatchId === activeBatch.id}
+                        className="bg-amber-500/10 hover:bg-amber-500 text-amber-400 hover:text-black font-extrabold py-3.5 px-6 rounded-2xl border border-amber-500/20 hover:border-amber-500 transition-all flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-amber-500/5 transition-all duration-300"
+                      >
+                        {retryingBatchId === activeBatch.id ? (
+                          <>
+                            <RefreshCw className="w-4 h-4 animate-spin" />
+                            Retrying Failed...
+                          </>
+                        ) : (
+                          <>
+                            <RefreshCw className="w-4 h-4" />
+                            Retry Failed Renders ({activeBatch.items?.filter(i => i.status === "FAILED").length})
+                          </>
+                        )}
+                      </button>
+                    )}
+                    <button
+                      onClick={() => {
+                        setWizardStep(1);
+                        setActiveBatch(null);
+                        fetchBatches();
+                      }}
+                      className="bg-[#141423] hover:bg-[#1a1a2e] text-gray-400 hover:text-white font-bold py-3.5 px-6 rounded-2xl border border-white/5 transition-all"
+                    >
+                      Finish and Back to Wizard
+                    </button>
+                  </div>
                 ) : (
                   <>
                     <button

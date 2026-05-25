@@ -235,7 +235,7 @@ export async function POST(req: Request) {
     // ─────────────────────────────────────────────────────────────────────────
     if (action === "START_RENDERING") {
       const { batchId, trackIds } = body;
-      const audioReuseMax = Math.max(1, Math.round(Number(body.audioReuseMax)) || 2);
+      const audioReuseMax = body.audioReuseMax !== undefined ? Math.round(Number(body.audioReuseMax)) : 2;
 
       if (!batchId) {
         return NextResponse.json({ error: "Missing batchId" }, { status: 400 });
@@ -458,6 +458,55 @@ export async function POST(req: Request) {
 
       console.log(`[Batches API] Batch ${batchId} cancelled by user`);
       return NextResponse.json({ success: true, message: "Batch processing cancelled" });
+    }
+
+    if (action === "RETRY_FAILED") {
+      const { batchId } = body;
+      if (!batchId) {
+        return NextResponse.json({ error: "Missing batchId" }, { status: 400 });
+      }
+
+      const batch = await prisma.genreBatch.findUnique({
+        where: { id: batchId },
+        include: { items: true },
+      });
+
+      if (!batch) {
+        return NextResponse.json({ error: "Batch not found" }, { status: 404 });
+      }
+
+      // Check if there are failed items
+      const failedItems = batch.items.filter(item => item.status === "FAILED");
+      if (failedItems.length === 0) {
+        return NextResponse.json({ error: "No failed items to retry in this batch" }, { status: 400 });
+      }
+
+      // Update failed items back to PENDING and clear their errorMessage
+      await prisma.genreBatchItem.updateMany({
+        where: {
+          batchId: batchId,
+          status: "FAILED",
+        },
+        data: {
+          status: "PENDING",
+          errorMessage: null,
+        },
+      });
+
+      // Reset batch status to RENDERING
+      await prisma.genreBatch.update({
+        where: { id: batchId },
+        data: {
+          status: "RENDERING",
+        },
+      });
+
+      // Trigger asynchronous rendering loop in the background!
+      processBatchRendering(batchId).catch(err => {
+        console.error(`[Batches API] Retry render process background failure for batch ${batchId}:`, err);
+      });
+
+      return NextResponse.json({ success: true, message: "Retrying failed renders started in the background" });
     }
 
     return NextResponse.json({ error: "Invalid action" }, { status: 400 });

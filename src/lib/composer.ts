@@ -745,6 +745,7 @@ export function allocateTracks(
     throw new Error("No tracks available in the pool to allocate");
   }
 
+  const effectiveMaxReuse = maxReuse <= 0 ? 999999 : maxReuse;
   const allocation: { trackId: string }[] = [];
   const trackUsage: Record<string, number> = {};
   for (const track of tracks) {
@@ -759,7 +760,7 @@ export function allocateTracks(
     // Search for a track that hasn't exceeded the maxReuse threshold
     while (checkedCount < tracks.length) {
       const track = tracks[trackIndex];
-      if (trackUsage[track.id] < maxReuse) {
+      if (trackUsage[track.id] < effectiveMaxReuse) {
         selectedTrackId = track.id;
         trackUsage[track.id]++;
         trackIndex = (trackIndex + 1) % tracks.length;
