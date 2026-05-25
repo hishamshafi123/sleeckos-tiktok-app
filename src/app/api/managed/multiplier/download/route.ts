@@ -108,18 +108,34 @@ export async function GET(req: Request) {
       return NextResponse.json({ error: "Failed to create archive" }, { status: 500 });
     }
 
-    // Stream the archive as response
-    const archiveBuffer = fs.readFileSync(archivePath);
+    // Stream the archive as response using lightweight chunks to prevent OOM / 502 crashes
+    const fileStream = fs.createReadStream(archivePath);
+    const size = fs.statSync(archivePath).size;
 
-    // Clean up archive file after reading
-    try { fs.unlinkSync(archivePath); } catch {}
+    const readableWebStream = new ReadableStream({
+      start(controller) {
+        fileStream.on("data", (chunk) => controller.enqueue(chunk));
+        fileStream.on("end", () => {
+          controller.close();
+          try { fs.unlinkSync(archivePath); } catch {}
+        });
+        fileStream.on("error", (err) => {
+          controller.error(err);
+          try { fs.unlinkSync(archivePath); } catch {}
+        });
+      },
+      cancel() {
+        fileStream.destroy();
+        try { fs.unlinkSync(archivePath); } catch {}
+      }
+    });
 
-    return new NextResponse(archiveBuffer, {
+    return new NextResponse(readableWebStream, {
       status: 200,
       headers: {
         "Content-Type": "application/gzip",
         "Content-Disposition": `attachment; filename="${archiveName}"`,
-        "Content-Length": archiveBuffer.length.toString(),
+        "Content-Length": size.toString(),
       },
     });
   } catch (err) {
