@@ -89,11 +89,13 @@ export default function MultiplierPage() {
   const [batches, setBatches] = useState<MultiplierBatch[]>([]);
   const [loading, setLoading] = useState(true);
 
-  // Download states
-  const [downloadingBatchId, setDownloadingBatchId] = useState<string | null>(null);
-  const [downloadProgress, setDownloadProgress] = useState<number>(0);
-  const [downloadTotalSize, setDownloadTotalSize] = useState<string>("0 MB");
-  const [downloadLoadedSize, setDownloadLoadedSize] = useState<string>("0 MB");
+  // Download states (batchId -> DownloadState)
+  interface DownloadState {
+    progress: number;
+    totalSize: string;
+    loadedSize: string;
+  }
+  const [downloads, setDownloads] = useState<Record<string, DownloadState>>({});
 
   // Upload form
   const [videoFile, setVideoFile] = useState<File | null>(null);
@@ -368,10 +370,10 @@ export default function MultiplierPage() {
 
   const handleDownload = async (batchId: string) => {
     try {
-      setDownloadingBatchId(batchId);
-      setDownloadProgress(0);
-      setDownloadTotalSize("Preparing...");
-      setDownloadLoadedSize("0%");
+      setDownloads((prev) => ({
+        ...prev,
+        [batchId]: { progress: 0, totalSize: "Preparing...", loadedSize: "0%" }
+      }));
 
       let isPrepared = false;
       let statusData: any = null;
@@ -392,9 +394,14 @@ export default function MultiplierPage() {
         } else if (statusData.status === "FAILED") {
           throw new Error(statusData.message || "Archive preparation failed");
         } else if (statusData.status === "PREPARING") {
-          setDownloadProgress(statusData.progress || 5);
-          setDownloadTotalSize("Preparing Archive...");
-          setDownloadLoadedSize(statusData.message || "Processing...");
+          setDownloads((prev) => ({
+            ...prev,
+            [batchId]: {
+              progress: statusData.progress || 5,
+              totalSize: "Preparing Archive...",
+              loadedSize: statusData.message || "Processing...",
+            }
+          }));
           // Wait 2 seconds before the next status poll
           await new Promise((resolve) => setTimeout(resolve, 2000));
         } else {
@@ -403,9 +410,14 @@ export default function MultiplierPage() {
       }
 
       if (statusData && statusData.downloadUrl) {
-        setDownloadProgress(100);
-        setDownloadTotalSize("Completed");
-        setDownloadLoadedSize("Downloading file...");
+        setDownloads((prev) => ({
+          ...prev,
+          [batchId]: {
+            progress: 100,
+            totalSize: "Completed",
+            loadedSize: "Downloading file...",
+          }
+        }));
 
         // Trigger a high-performance native browser download
         const fileUrl = `/api${statusData.downloadUrl}`;
@@ -421,8 +433,11 @@ export default function MultiplierPage() {
     } catch (err: any) {
       toast.error(err.message || "Failed to download");
     } finally {
-      setDownloadingBatchId(null);
-      setDownloadProgress(0);
+      setDownloads((prev) => {
+        const next = { ...prev };
+        delete next[batchId];
+        return next;
+      });
     }
   };
 
@@ -854,10 +869,10 @@ export default function MultiplierPage() {
                       {batch.status === "COMPLETED" && renderedCount > 0 && (
                         <button 
                           onClick={() => handleDownload(batch.id)} 
-                          disabled={downloadingBatchId !== null}
+                          disabled={batch.id in downloads}
                           className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-emerald-500/15 text-emerald-300 border border-emerald-500/20 text-xs font-medium hover:bg-emerald-500/25 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
                         >
-                          {downloadingBatchId === batch.id ? (
+                          {batch.id in downloads ? (
                             <>
                               <Loader2 className="w-3.5 h-3.5 animate-spin" /> Downloading...
                             </>
@@ -875,7 +890,7 @@ export default function MultiplierPage() {
                   </div>
 
                   {/* Download Progress Bar */}
-                  {downloadingBatchId === batch.id && (
+                  {batch.id in downloads && (
                     <div className="px-5 pb-4 bg-emerald-500/5 border-t border-white/5 pt-3">
                       <div className="flex justify-between items-center mb-1.5">
                         <span className="text-[10px] font-black text-emerald-400 uppercase tracking-wider flex items-center gap-1.5 animate-pulse">
@@ -883,18 +898,18 @@ export default function MultiplierPage() {
                           Streaming Archive Chunks...
                         </span>
                         <span className="text-[10px] text-gray-500 font-semibold uppercase">
-                          {downloadLoadedSize} / {downloadTotalSize}
+                          {downloads[batch.id].loadedSize} / {downloads[batch.id].totalSize}
                         </span>
                       </div>
                       <div className="h-1.5 rounded-full bg-white/5 overflow-hidden">
                         <div 
                           className="h-full rounded-full bg-gradient-to-r from-emerald-500 to-teal-500 transition-all duration-300" 
-                          style={{ width: `${downloadProgress || 5}%` }} 
+                          style={{ width: `${downloads[batch.id].progress || 5}%` }} 
                         />
                       </div>
                       <div className="flex justify-between items-center mt-1.5">
                         <span className="text-[9px] text-gray-600 font-semibold uppercase">Do not close this tab</span>
-                        <span className="text-[10px] text-emerald-400 font-bold">{downloadProgress}% Complete</span>
+                        <span className="text-[10px] text-emerald-400 font-bold">{downloads[batch.id].progress}% Complete</span>
                       </div>
                     </div>
                   )}
