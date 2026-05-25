@@ -510,7 +510,8 @@ export async function composeVideo(options: ComposeOptions): Promise<string> {
         `[0:v]scale='if(gte(iw/ih,${OUTPUT_W}/${OUTPUT_H}),-1,${OUTPUT_W})':'if(gte(iw/ih,${OUTPUT_W}/${OUTPUT_H}),${OUTPUT_H},-1)',crop=${OUTPUT_W}:${OUTPUT_H}[scaled]`,
         `color=c=0x${bgHex.padEnd(6, "0")}:s=${stripW}x${stripHeight},format=yuva420p,geq=r='${cR}':g='${cG}':b='${cB}':a='if(gt(hypot(max(0,${R}-min(X,W-1-X)),max(0,${R}-min(Y,H-1-Y))),${R}),0,${alphaVal})'[rrect]`,
         `[scaled][rrect]overlay=x=${stripX}:y=${stripY}:shortest=1[bg]`,
-        ...drawtextFilters
+        ...drawtextFilters,
+        `[1:a]afade=t=out:st=${fadeStart}:d=1[a]`
       ].join(";\n");
     } else {
       const bgColorFfmpeg = bgStripColor.startsWith("#") ? "0x" + bgStripColor.slice(1) : bgStripColor;
@@ -520,7 +521,8 @@ export async function composeVideo(options: ComposeOptions): Promise<string> {
 
       filterComplex = [
         drawBoxOverlay,
-        ...drawtextFilters
+        ...drawtextFilters,
+        `[1:a]afade=t=out:st=${fadeStart}:d=1[a]`
       ].join(";\n");
     }
 
