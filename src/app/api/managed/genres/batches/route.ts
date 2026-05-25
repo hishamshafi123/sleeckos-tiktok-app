@@ -461,7 +461,7 @@ export async function POST(req: Request) {
     }
 
     if (action === "RETRY_FAILED") {
-      const { batchId } = body;
+      const { batchId, itemId } = body;
       if (!batchId) {
         return NextResponse.json({ error: "Missing batchId" }, { status: 400 });
       }
@@ -475,23 +475,41 @@ export async function POST(req: Request) {
         return NextResponse.json({ error: "Batch not found" }, { status: 404 });
       }
 
-      // Check if there are failed items
-      const failedItems = batch.items.filter(item => item.status === "FAILED");
-      if (failedItems.length === 0) {
-        return NextResponse.json({ error: "No failed items to retry in this batch" }, { status: 400 });
-      }
+      if (itemId) {
+        // Single item retry
+        const item = batch.items.find(i => i.id === itemId);
+        if (!item) {
+          return NextResponse.json({ error: "Batch item not found" }, { status: 404 });
+        }
+        if (item.status !== "FAILED") {
+          return NextResponse.json({ error: "This item did not fail" }, { status: 400 });
+        }
 
-      // Update failed items back to PENDING and clear their errorMessage
-      await prisma.genreBatchItem.updateMany({
-        where: {
-          batchId: batchId,
-          status: "FAILED",
-        },
-        data: {
-          status: "PENDING",
-          errorMessage: null,
-        },
-      });
+        await prisma.genreBatchItem.update({
+          where: { id: itemId },
+          data: {
+            status: "PENDING",
+            errorMessage: null,
+          },
+        });
+      } else {
+        // Bulk retry on all failed items
+        const failedItems = batch.items.filter(item => item.status === "FAILED");
+        if (failedItems.length === 0) {
+          return NextResponse.json({ error: "No failed items to retry in this batch" }, { status: 400 });
+        }
+
+        await prisma.genreBatchItem.updateMany({
+          where: {
+            batchId: batchId,
+            status: "FAILED",
+          },
+          data: {
+            status: "PENDING",
+            errorMessage: null,
+          },
+        });
+      }
 
       // Reset batch status to RENDERING
       await prisma.genreBatch.update({
