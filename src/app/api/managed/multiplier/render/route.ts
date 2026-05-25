@@ -38,10 +38,10 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Source video file not found" }, { status: 400 });
     }
 
-    // Update batch status to RENDERING
+    // Update batch status to RENDERING and clear errorMessage
     await prisma.multiplierBatch.update({
       where: { id: batchId },
-      data: { status: "RENDERING" },
+      data: { status: "RENDERING", errorMessage: null },
     });
 
     // Trigger background rendering

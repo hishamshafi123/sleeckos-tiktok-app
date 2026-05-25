@@ -553,7 +553,7 @@ export async function composeVideo(options: ComposeOptions): Promise<string> {
 
     console.log(`[Composer] Spawning FFmpeg command: ${cmd}`);
 
-    exec(cmd, { maxBuffer: 1024 * 1024 * 50 }, (error, stdout, stderr) => {
+    exec(cmd, { maxBuffer: 1024 * 1024 * 50, timeout: 300000, killSignal: "SIGKILL" }, (error, stdout, stderr) => {
       // Always cleanup temporary files
       try {
         if (!curveText && textFilePath && fs.existsSync(textFilePath)) {
@@ -913,7 +913,7 @@ export async function composeMultiplierVideo(options: MultiplierComposeOptions):
   console.log("[Multiplier Composer] Running drawtext chain:", cmd.substring(0, 400) + "...");
 
   return new Promise<string>((resolve, reject) => {
-    exec(cmd, { maxBuffer: 50 * 1024 * 1024 }, (error, _stdout, stderr) => {
+    exec(cmd, { maxBuffer: 50 * 1024 * 1024, timeout: 300000, killSignal: "SIGKILL" }, (error, _stdout, stderr) => {
       try { if (fs.existsSync(filterFile)) fs.unlinkSync(filterFile); } catch {}
 
       if (error) {

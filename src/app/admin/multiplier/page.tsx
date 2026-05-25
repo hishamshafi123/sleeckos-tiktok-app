@@ -3,7 +3,7 @@ import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { toast } from "sonner";
 import {
   Upload, FileText, Play, Download, Trash2, Loader2,
-  Check, X, Layers, RefreshCw, Palette, Move,
+  Check, X, Layers, RefreshCw, Palette, Move, Pause,
 } from "lucide-react";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -116,6 +116,7 @@ export default function MultiplierPage() {
 
   // Rendering
   const [renderingBatchId, setRenderingBatchId] = useState<string | null>(null);
+  const [pausingBatchId, setPausingBatchId] = useState<string | null>(null);
 
   // Preview
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
@@ -343,6 +344,26 @@ export default function MultiplierPage() {
       setRenderingBatchId(batchId);
       fetchBatches();
     } catch (err: any) { toast.error(err.message || "Failed to start rendering"); }
+  };
+
+  const handlePauseRender = async (batchId: string) => {
+    try {
+      setPausingBatchId(batchId);
+      const res = await fetch("/api/managed/multiplier/pause", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ batchId }),
+      });
+      if (!res.ok) {
+        const errMsg = await getErrorMessage(res, "Pause failed");
+        throw new Error(errMsg);
+      }
+      toast.success("Batch paused/stopped. Active renders will stop at the next item.");
+      fetchBatches();
+    } catch (err: any) {
+      toast.error(err.message || "Failed to pause rendering");
+    } finally {
+      setPausingBatchId(null);
+    }
   };
 
   const handleDownload = async (batchId: string) => {
@@ -804,9 +825,26 @@ export default function MultiplierPage() {
                       </p>
                     </div>
                     <div className="flex items-center gap-2">
-                      {batch.status === "READY" && (
+                      {(batch.status === "READY" || batch.status === "FAILED") && (
                         <button onClick={() => handleStartRender(batch.id)} className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-gradient-to-r from-cyan-500 to-blue-600 text-white text-xs font-medium hover:from-cyan-400 hover:to-blue-500 transition-all">
-                          <Play className="w-3.5 h-3.5" /> Render All
+                          <Play className="w-3.5 h-3.5" /> {batch.status === "FAILED" ? "Resume Render" : "Render All"}
+                        </button>
+                      )}
+                      {batch.status === "RENDERING" && (
+                        <button 
+                          onClick={() => handlePauseRender(batch.id)} 
+                          disabled={pausingBatchId !== null}
+                          className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-amber-500/15 text-amber-300 border border-amber-500/20 text-xs font-medium hover:bg-amber-500/25 transition-all disabled:opacity-50"
+                        >
+                          {pausingBatchId === batch.id ? (
+                            <>
+                              <Loader2 className="w-3.5 h-3.5 animate-spin" /> Pausing...
+                            </>
+                          ) : (
+                            <>
+                              <Pause className="w-3.5 h-3.5" /> Pause Render
+                            </>
+                          )}
                         </button>
                       )}
                       {batch.status === "COMPLETED" && renderedCount > 0 && (
