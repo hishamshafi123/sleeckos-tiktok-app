@@ -89,6 +89,12 @@ export default function MultiplierPage() {
   const [batches, setBatches] = useState<MultiplierBatch[]>([]);
   const [loading, setLoading] = useState(true);
 
+  // Download states
+  const [downloadingBatchId, setDownloadingBatchId] = useState<string | null>(null);
+  const [downloadProgress, setDownloadProgress] = useState<number>(0);
+  const [downloadTotalSize, setDownloadTotalSize] = useState<string>("0 MB");
+  const [downloadLoadedSize, setDownloadLoadedSize] = useState<string>("0 MB");
+
   // Upload form
   const [videoFile, setVideoFile] = useState<File | null>(null);
   const [csvFile, setCsvFile] = useState<File | null>(null);
@@ -341,23 +347,71 @@ export default function MultiplierPage() {
 
   const handleDownload = async (batchId: string) => {
     try {
-      toast.info("Preparing download...");
+      setDownloadingBatchId(batchId);
+      setDownloadProgress(0);
+      setDownloadTotalSize("Calculating...");
+      setDownloadLoadedSize("0 MB");
+
       const res = await fetch(`/api/managed/multiplier/download?batchId=${batchId}`);
       if (!res.ok) {
         const errMsg = await getErrorMessage(res, "Download failed");
         throw new Error(errMsg);
       }
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      const disposition = res.headers.get("Content-Disposition");
-      const filenameMatch = disposition?.match(/filename="([^"]+)"/);
-      a.download = filenameMatch?.[1] || `multiplier_${batchId.substring(0, 8)}.tar.gz`;
-      document.body.appendChild(a); a.click(); document.body.removeChild(a);
-      URL.revokeObjectURL(url);
+
+      const contentLength = res.headers.get("Content-Length");
+      const totalBytes = contentLength ? parseInt(contentLength, 10) : 0;
+      if (totalBytes > 0) {
+        setDownloadTotalSize(`${(totalBytes / (1024 * 1024)).toFixed(1)} MB`);
+      } else {
+        setDownloadTotalSize("Unknown Size");
+      }
+
+      const reader = res.body?.getReader();
+      if (!reader) {
+        const blob = await res.blob();
+        triggerBlobDownload(blob, batchId, res);
+        return;
+      }
+
+      const chunks: any[] = [];
+      let receivedBytes = 0;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        if (value) {
+          chunks.push(value);
+          receivedBytes += value.length;
+          setDownloadLoadedSize(`${(receivedBytes / (1024 * 1024)).toFixed(1)} MB`);
+          if (totalBytes > 0) {
+            setDownloadProgress(Math.round((receivedBytes / totalBytes) * 100));
+          }
+        }
+      }
+
+      const blob = new Blob(chunks, { type: "application/gzip" });
+      triggerBlobDownload(blob, batchId, res);
       toast.success("Download started!");
-    } catch (err: any) { toast.error(err.message || "Failed to download"); }
+    } catch (err: any) {
+      toast.error(err.message || "Failed to download");
+    } finally {
+      setDownloadingBatchId(null);
+      setDownloadProgress(0);
+    }
+  };
+
+  const triggerBlobDownload = (blob: Blob, batchId: string, res: Response) => {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    const disposition = res.headers.get("Content-Disposition");
+    const filenameMatch = disposition?.match(/filename="([^"]+)"/);
+    a.download = filenameMatch?.[1] || `multiplier_${batchId.substring(0, 8)}.tar.gz`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
   };
 
   const handleDeleteBatch = async (batchId: string) => {
@@ -756,8 +810,20 @@ export default function MultiplierPage() {
                         </button>
                       )}
                       {batch.status === "COMPLETED" && renderedCount > 0 && (
-                        <button onClick={() => handleDownload(batch.id)} className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-emerald-500/15 text-emerald-300 border border-emerald-500/20 text-xs font-medium hover:bg-emerald-500/25 transition-all">
-                          <Download className="w-3.5 h-3.5" /> Download All
+                        <button 
+                          onClick={() => handleDownload(batch.id)} 
+                          disabled={downloadingBatchId !== null}
+                          className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-emerald-500/15 text-emerald-300 border border-emerald-500/20 text-xs font-medium hover:bg-emerald-500/25 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          {downloadingBatchId === batch.id ? (
+                            <>
+                              <Loader2 className="w-3.5 h-3.5 animate-spin" /> Downloading...
+                            </>
+                          ) : (
+                            <>
+                              <Download className="w-3.5 h-3.5" /> Download All
+                            </>
+                          )}
                         </button>
                       )}
                       <button onClick={() => handleDeleteBatch(batch.id)} className="p-2 rounded-lg text-gray-600 hover:text-red-400 hover:bg-red-500/10 transition-all">
@@ -765,6 +831,31 @@ export default function MultiplierPage() {
                       </button>
                     </div>
                   </div>
+
+                  {/* Download Progress Bar */}
+                  {downloadingBatchId === batch.id && (
+                    <div className="px-5 pb-4 bg-emerald-500/5 border-t border-white/5 pt-3">
+                      <div className="flex justify-between items-center mb-1.5">
+                        <span className="text-[10px] font-black text-emerald-400 uppercase tracking-wider flex items-center gap-1.5 animate-pulse">
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          Streaming Archive Chunks...
+                        </span>
+                        <span className="text-[10px] text-gray-500 font-semibold uppercase">
+                          {downloadLoadedSize} / {downloadTotalSize}
+                        </span>
+                      </div>
+                      <div className="h-1.5 rounded-full bg-white/5 overflow-hidden">
+                        <div 
+                          className="h-full rounded-full bg-gradient-to-r from-emerald-500 to-teal-500 transition-all duration-300" 
+                          style={{ width: `${downloadProgress || 5}%` }} 
+                        />
+                      </div>
+                      <div className="flex justify-between items-center mt-1.5">
+                        <span className="text-[9px] text-gray-600 font-semibold uppercase">Do not close this tab</span>
+                        <span className="text-[10px] text-emerald-400 font-bold">{downloadProgress}% Complete</span>
+                      </div>
+                    </div>
+                  )}
 
                   {/* Progress Bar */}
                   {batch.status === "RENDERING" && (
