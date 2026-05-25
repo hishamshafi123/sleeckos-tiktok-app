@@ -26,13 +26,31 @@ function parseSlot(slot: string): number {
   return (h || 0) * 60 + (m || 0);
 }
 
-function matchesAnySlot(
+function getDeterministicJitter(accountId: string, slot: string, dateStr: string): number {
+  const seedStr = `${accountId}-${slot}-${dateStr}`;
+  let hash = 0;
+  for (let i = 0; i < seedStr.length; i++) {
+    const char = seedStr.charCodeAt(i);
+    hash = (hash << 5) - hash + char;
+    hash |= 0;
+  }
+  const val = Math.abs(hash) % 61; // 0 to 60
+  return val - 30; // -30 to +30
+}
+
+function matchesAnySlotWithJitter(
   slots: string[],
-  currentMinutes: number
-): string | null {
+  currentMinutes: number,
+  accountId: string,
+  dateStr: string
+): { slot: string; jitteredMinutes: number; jitter: number } | null {
   for (const slot of slots) {
     const slotMinutes = parseSlot(slot);
-    if (Math.abs(currentMinutes - slotMinutes) <= 5) return slot;
+    const jitter = getDeterministicJitter(accountId, slot, dateStr);
+    const jitteredMinutes = slotMinutes + jitter;
+    if (Math.abs(currentMinutes - jitteredMinutes) <= 5) {
+      return { slot, jitteredMinutes, jitter };
+    }
   }
   return null;
 }
@@ -83,11 +101,18 @@ export async function GET(req: NextRequest) {
               `${account.postTimeHour.toString().padStart(2, "0")}:${account.postTimeMinute.toString().padStart(2, "0")}`,
             ];
 
-      const matchedSlot = matchesAnySlot(slots, currentMinutes);
-      if (!matchedSlot) {
+      const year = zonedNow.getFullYear();
+      const month = String(zonedNow.getMonth() + 1).padStart(2, "0");
+      const day = String(zonedNow.getDate()).padStart(2, "0");
+      const dateStr = `${year}-${month}-${day}`;
+
+      const matched = matchesAnySlotWithJitter(slots, currentMinutes, account.id, dateStr);
+      if (!matched) {
         results[accountKey] = `not_scheduled_time`;
         continue;
       }
+
+      const { slot: matchedSlot, jitteredMinutes, jitter } = matched;
 
       // Check slot already posted
       const todayStart = new Date(
@@ -97,9 +122,9 @@ export async function GET(req: NextRequest) {
       );
       const slotMinutes = parseSlot(matchedSlot);
       const slotWindowStart = new Date(todayStart);
-      slotWindowStart.setMinutes(slotMinutes - 10);
+      slotWindowStart.setMinutes(jitteredMinutes - 10);
       const slotWindowEnd = new Date(todayStart);
-      slotWindowEnd.setMinutes(slotMinutes + 10);
+      slotWindowEnd.setMinutes(jitteredMinutes + 10);
 
       const postedForSlot = await prisma.scheduledPost.count({
         where: {
@@ -220,7 +245,11 @@ export async function GET(req: NextRequest) {
           console.error(`Drive delete failed for ${nextFile.id}:`, delErr);
         }
 
-        results[accountKey] = `published via PostPeer (slot ${matchedSlot})`;
+        const jitterSign = jitter >= 0 ? `+${jitter}` : `${jitter}`;
+        const jitterHour = Math.floor(jitteredMinutes / 60);
+        const jitterMin = jitteredMinutes % 60;
+        const jitteredTimeStr = `${jitterHour.toString().padStart(2, "0")}:${jitterMin.toString().padStart(2, "0")}`;
+        results[accountKey] = `published via PostPeer (slot ${matchedSlot}, jittered ${jitterSign}m to ${jitteredTimeStr})`;
       } catch (err) {
         await prisma.scheduledPost.update({
           where: { id: post.id },
