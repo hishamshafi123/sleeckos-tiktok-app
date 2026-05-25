@@ -370,50 +370,54 @@ export default function MultiplierPage() {
     try {
       setDownloadingBatchId(batchId);
       setDownloadProgress(0);
-      setDownloadTotalSize("Calculating...");
-      setDownloadLoadedSize("0 MB");
+      setDownloadTotalSize("Preparing...");
+      setDownloadLoadedSize("0%");
 
-      const res = await fetch(`/api/managed/multiplier/download?batchId=${batchId}`);
-      if (!res.ok) {
-        const errMsg = await getErrorMessage(res, "Download failed");
-        throw new Error(errMsg);
-      }
+      let isPrepared = false;
+      let statusData: any = null;
 
-      const contentLength = res.headers.get("Content-Length");
-      const totalBytes = contentLength ? parseInt(contentLength, 10) : 0;
-      if (totalBytes > 0) {
-        setDownloadTotalSize(`${(totalBytes / (1024 * 1024)).toFixed(1)} MB`);
-      } else {
-        setDownloadTotalSize("Unknown Size");
-      }
+      // Poll the status every 2 seconds
+      while (!isPrepared) {
+        const res = await fetch(`/api/managed/multiplier/download?batchId=${batchId}`);
+        if (!res.ok) {
+          const errMsg = await getErrorMessage(res, "Failed to prepare download");
+          throw new Error(errMsg);
+        }
 
-      const reader = res.body?.getReader();
-      if (!reader) {
-        const blob = await res.blob();
-        triggerBlobDownload(blob, batchId, res);
-        return;
-      }
+        statusData = await res.json();
 
-      const chunks: any[] = [];
-      let receivedBytes = 0;
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        if (value) {
-          chunks.push(value);
-          receivedBytes += value.length;
-          setDownloadLoadedSize(`${(receivedBytes / (1024 * 1024)).toFixed(1)} MB`);
-          if (totalBytes > 0) {
-            setDownloadProgress(Math.round((receivedBytes / totalBytes) * 100));
-          }
+        if (statusData.status === "COMPLETED") {
+          isPrepared = true;
+          break;
+        } else if (statusData.status === "FAILED") {
+          throw new Error(statusData.message || "Archive preparation failed");
+        } else if (statusData.status === "PREPARING") {
+          setDownloadProgress(statusData.progress || 5);
+          setDownloadTotalSize("Preparing Archive...");
+          setDownloadLoadedSize(statusData.message || "Processing...");
+          // Wait 2 seconds before the next status poll
+          await new Promise((resolve) => setTimeout(resolve, 2000));
+        } else {
+          await new Promise((resolve) => setTimeout(resolve, 2000));
         }
       }
 
-      const blob = new Blob(chunks, { type: "application/gzip" });
-      triggerBlobDownload(blob, batchId, res);
-      toast.success("Download started!");
+      if (statusData && statusData.downloadUrl) {
+        setDownloadProgress(100);
+        setDownloadTotalSize("Completed");
+        setDownloadLoadedSize("Downloading file...");
+
+        // Trigger a high-performance native browser download
+        const fileUrl = `/api${statusData.downloadUrl}`;
+        const link = document.createElement("a");
+        link.href = fileUrl;
+        link.download = statusData.downloadUrl.split("/").pop() || `multiplier_${batchId.substring(0, 8)}.tar.gz`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+
+        toast.success("Download started!");
+      }
     } catch (err: any) {
       toast.error(err.message || "Failed to download");
     } finally {
