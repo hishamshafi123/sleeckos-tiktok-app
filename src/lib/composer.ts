@@ -499,7 +499,7 @@ export async function composeVideo(options: ComposeOptions): Promise<string> {
       const alphaStr = `:alpha='if(lt(t,0.5),t/0.5,if(gt(t,${videoLength}-0.5),(${videoLength}-t)/0.5,1))'`;
 
       drawtextFilters.push(
-        `${lastLabel}drawtext=fontfile='${escapedFontPath}':text='${escapedLineText}':fontcolor=${drawFontColor}:fontsize=${fontSize}:x='max(${stripX + paddingX},${stripX}+(${stripW}-text_w)/2)':y=${lineY}${drawShadowStr}${alphaStr}${nextLabel}`
+        `${lastLabel}drawtext=fontfile='${escapedFontPath}':text='${escapedLineText}':fontcolor=${drawFontColor}:fontsize=${fontSize}:x='max(${stripX + paddingX},${stripX}+(${stripW}-text_w)/2)':y=${lineY}${drawShadowStr}${alphaStr}:expansion=none${nextLabel}`
       );
       lastLabel = nextLabel;
     }
@@ -869,7 +869,7 @@ export async function composeMultiplierVideo(options: MultiplierComposeOptions):
       const escapedLineText = escapeFfmpegDrawtext(line);
 
       drawtextFilters.push(
-        `${lastLabel}drawtext=fontfile='${escapedFontPath}':text='${escapedLineText}':fontcolor=${drawFontColor}:fontsize=${fontSize}:x='max(${stripX + paddingX},${stripX}+(${stripW}-text_w)/2)':y=${lineY}${nextLabel}`
+        `${lastLabel}drawtext=fontfile='${escapedFontPath}':text='${escapedLineText}':fontcolor=${drawFontColor}:fontsize=${fontSize}:x='max(${stripX + paddingX},${stripX}+(${stripW}-text_w)/2)':y=${lineY}:expansion=none${nextLabel}`
       );
       lastLabel = nextLabel;
     }
@@ -894,7 +894,7 @@ export async function composeMultiplierVideo(options: MultiplierComposeOptions):
       const escapedLineText = escapeFfmpegDrawtext(line);
 
       drawtextFilters.push(
-        `${lastLabel}drawtext=fontfile='${escapedFontPath}':text='${escapedLineText}':fontcolor=${drawFontColor}:fontsize=${fontSize}:x='max(${stripX + paddingX},${stripX}+(${stripW}-text_w)/2)':y=${lineY}${nextLabel}`
+        `${lastLabel}drawtext=fontfile='${escapedFontPath}':text='${escapedLineText}':fontcolor=${drawFontColor}:fontsize=${fontSize}:x='max(${stripX + paddingX},${stripX}+(${stripW}-text_w)/2)':y=${lineY}:expansion=none${nextLabel}`
       );
       lastLabel = nextLabel;
     }
