@@ -508,7 +508,7 @@ export async function composeVideo(options: ComposeOptions): Promise<string> {
         drawShadowStr = `:shadowcolor=${drawShadowColor}:shadowx=2:shadowy=2`;
       }
 
-      const alphaStr = `:alpha='if(lt(t,0.5),t/0.5,if(gt(t,${videoLength}-0.5),(${videoLength}-t)/0.5,1))'`;
+      const alphaStr = `:alpha='if(lt(t\\,0.5)\\,t/0.5\\,if(gt(t\\,${videoLength}-0.5)\\,(${videoLength}-t)/0.5\\,1))'`;
 
       drawtextFilters.push(
         `${lastLabel}drawtext=fontfile='${escapedFontPath}':text='${escapedLineText}':fontcolor=${drawFontColor}:fontsize=${fontSize}:x='max(${stripX + paddingX}\\,${stripX}+(${stripW}-text_w)/2)':y=${lineY}${drawShadowStr}${alphaStr}:expansion=none${nextLabel}`
