@@ -425,50 +425,106 @@ export async function composeVideo(options: ComposeOptions): Promise<string> {
     ].join(";");
 
   } else {
-    // Standard horizontal text using drawtext file rendering
+    // Advanced chained drawtext rendering with full background strip, margins, padding, and rounded corners visual parity with Multiplier
+    const OUTPUT_W = 720;
+    const OUTPUT_H = 1280;
+
+    const marginX = 40;
+    const stripPaddingY = 20;
+    const paddingX = 20;
+    const borderRadius = 12;
+
+    const effectiveTextWidth = OUTPUT_W - marginX * 2 - paddingX * 2;
+    const charsPerLine = Math.max(10, Math.floor(effectiveTextWidth / (fontSize * 0.62)));
+
     const cleanQuote = sanitizeQuoteText(quoteText);
     const casedText = applyCasing(cleanQuote, textCase);
-    const wrappedText = wrapText(casedText, 25);
-    
+    const wrappedText = wrapText(casedText, charsPerLine);
+
     let fullText = wrappedText;
     if (quoteAuthor && quoteAuthor.trim()) {
       fullText += `\n\n— ${quoteAuthor.trim()}`;
     }
-
-    // Force strict Unix line endings (LF) and strip any carriage returns or trailing whitespace
-    const finalFullText = fullText
-      .split("\n")
-      .map((line) => line.trim().replace(/\r/g, ""))
-      .join("\n");
-
-    textFilePath = path.join(tempDir, `quote_${Math.random().toString(36).substring(2, 9)}.txt`);
-    fs.writeFileSync(textFilePath, finalFullText);
+    const lines = fullText.split("\n").map((line) => line.trim().replace(/\r/g, ""));
 
     const drawFontColor = formatFfmpegColor(fontColor);
-    
-    // Format box color
-    const isTransparent = !boxColor || boxColor.toLowerCase() === "none";
-    let drawBoxStr = "";
-    if (!isTransparent) {
-      const drawBoxColor = formatFfmpegColor(boxColor);
-      drawBoxStr = `:box=1:boxcolor=${drawBoxColor}:boxborderw=20`;
-    }
+    const lineCount = lines.length;
+    const lineHeight = fontSize * 1.4;
+    const stripHeight = Math.round(lineCount * lineHeight + stripPaddingY * 2 + 10);
+    const yPercent = Math.max(0, Math.min(100, positionY));
+    const maxY = OUTPUT_H - stripHeight;
+    const stripY = Math.round((maxY * yPercent) / 100);
+    const textY = stripY + stripPaddingY;
+    const stripX = marginX;
+    const stripW = OUTPUT_W - marginX * 2;
 
-    // Format shadow color
-    let drawShadowStr = "";
-    if (shadowColor && shadowColor.toLowerCase() !== "none") {
-      const drawShadowColor = formatFfmpegColor(shadowColor);
-      drawShadowStr = `:shadowcolor=${drawShadowColor}:shadowx=2:shadowy=2`;
+    let bgStripColor = "#000000";
+    let bgStripOpacity = 0.0;
+    const isTransparent = !boxColor || boxColor.toLowerCase() === "none";
+    if (!isTransparent) {
+      const parts = boxColor.split("@");
+      if (parts.length === 2) {
+        bgStripColor = parts[0];
+        bgStripOpacity = parseFloat(parts[1]) ?? 0.4;
+      } else {
+        bgStripColor = boxColor;
+        bgStripOpacity = 1.0;
+      }
     }
+    const bgAlpha = Math.max(0, Math.min(1, bgStripOpacity));
+    const R = isTransparent ? 0 : Math.max(0, Math.min(borderRadius, Math.floor(stripHeight / 2)));
 
     const escapedFontPath = resolvedFont.replace(/\\/g, "/").replace(/:/g, "\\:");
-    const escapedTextFilePath = textFilePath.replace(/\\/g, "/").replace(/:/g, "\\:");
-    const posPercent = Math.min(Math.max(10, positionY), 90);
+    textFilePath = path.join(tempDir, `filter_genre_${Math.random().toString(36).substring(2, 9)}.txt`);
 
-    filterComplex = [
-      `[0:v]scale='if(gte(iw/ih,720/1280),-1,720)':'if(gte(iw/ih,720/1280),1280,-1)',crop=720:1280,drawtext=fontfile='${escapedFontPath}':textfile='${escapedTextFilePath}':fontcolor=${drawFontColor}:fontsize=${fontSize}:x=(w-text_w)/2:y=((h-text_h)*${posPercent}/100):line_spacing=${lineSpacing}${drawBoxStr}${drawShadowStr}:alpha='if(lt(t,0.5),t/0.5,if(gt(t,${videoLength}-0.5),(${videoLength}-t)/0.5,1))'[v]`,
-      `[1:a]afade=t=out:st=${fadeStart}:d=1[a]`
-    ].join(";");
+    let lastLabel = "[bg]";
+    const drawtextFilters: string[] = [];
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const lineY = Math.round(textY + i * lineHeight);
+      const nextLabel = i === lines.length - 1 ? "[v]" : `[t${i}]`;
+      const escapedLineText = escapeFfmpegDrawtext(line);
+
+      let drawShadowStr = "";
+      if (shadowColor && shadowColor.toLowerCase() !== "none") {
+        const drawShadowColor = formatFfmpegColor(shadowColor);
+        drawShadowStr = `:shadowcolor=${drawShadowColor}:shadowx=2:shadowy=2`;
+      }
+
+      const alphaStr = `:alpha='if(lt(t,0.5),t/0.5,if(gt(t,${videoLength}-0.5),(${videoLength}-t)/0.5,1))'`;
+
+      drawtextFilters.push(
+        `${lastLabel}drawtext=fontfile='${escapedFontPath}':text='${escapedLineText}':fontcolor=${drawFontColor}:fontsize=${fontSize}:x='max(${stripX + paddingX},${stripX}+(${stripW}-text_w)/2)':y=${lineY}${drawShadowStr}${alphaStr}${nextLabel}`
+      );
+      lastLabel = nextLabel;
+    }
+
+    if (R > 0) {
+      const bgHex = bgStripColor.startsWith("#") ? bgStripColor.slice(1) : bgStripColor;
+      const cR = parseInt(bgHex.substring(0, 2), 16) || 0;
+      const cG = parseInt(bgHex.substring(2, 4), 16) || 0;
+      const cB = parseInt(bgHex.substring(4, 6), 16) || 0;
+      const alphaVal = Math.round(255 * bgAlpha);
+
+      filterComplex = [
+        `[0:v]scale='if(gte(iw/ih,${OUTPUT_W}/${OUTPUT_H}),-1,${OUTPUT_W})':'if(gte(iw/ih,${OUTPUT_W}/${OUTPUT_H}),${OUTPUT_H},-1)',crop=${OUTPUT_W}:${OUTPUT_H}[scaled]`,
+        `color=c=0x${bgHex.padEnd(6, "0")}:s=${stripW}x${stripHeight},format=yuva420p,geq=r='${cR}':g='${cG}':b='${cB}':a='if(gt(hypot(max(0,${R}-min(X,W-1-X)),max(0,${R}-min(Y,H-1-Y))),${R}),0,${alphaVal})'[rrect]`,
+        `[scaled][rrect]overlay=x=${stripX}:y=${stripY}:shortest=1[bg]`,
+        ...drawtextFilters
+      ].join(";\n");
+    } else {
+      const bgColorFfmpeg = bgStripColor.startsWith("#") ? "0x" + bgStripColor.slice(1) : bgStripColor;
+      const drawBoxOverlay = isTransparent
+        ? `[0:v]scale='if(gte(iw/ih,${OUTPUT_W}/${OUTPUT_H}),-1,${OUTPUT_W})':'if(gte(iw/ih,${OUTPUT_W}/${OUTPUT_H}),${OUTPUT_H},-1)',crop=${OUTPUT_W}:${OUTPUT_H}[bg]`
+        : `[0:v]scale='if(gte(iw/ih,${OUTPUT_W}/${OUTPUT_H}),-1,${OUTPUT_W})':'if(gte(iw/ih,${OUTPUT_W}/${OUTPUT_H}),${OUTPUT_H},-1)',crop=${OUTPUT_W}:${OUTPUT_H},drawbox=x=${stripX}:y=${stripY}:w=${stripW}:h=${stripHeight}:color=${bgColorFfmpeg}@${bgAlpha}:t=fill[bg]`;
+
+      filterComplex = [
+        drawBoxOverlay,
+        ...drawtextFilters
+      ].join(";\n");
+    }
+
+    fs.writeFileSync(textFilePath, filterComplex);
   }
 
   return new Promise((resolve, reject) => {
@@ -482,9 +538,7 @@ export async function composeVideo(options: ComposeOptions): Promise<string> {
       `-ss ${trackStart}`,
       `-t ${videoLength}`,
       `-i "${audioPath}"`,
-      ...(curveText ? [`-i "${svgFilePath}"`] : []),
-      "-filter_complex",
-      `"${filterComplex}"`,
+      ...(curveText ? [`-i "${svgFilePath}"`, "-filter_complex", `"${filterComplex}"`] : ["-filter_complex_script", `"${textFilePath}"`]),
       '-map "[v]"',
       '-map "[a]"',
       "-c:v libx264",
@@ -497,10 +551,10 @@ export async function composeVideo(options: ComposeOptions): Promise<string> {
 
     console.log(`[Composer] Spawning FFmpeg command: ${cmd}`);
 
-    exec(cmd, { maxBuffer: 1024 * 1024 * 10 }, (error, stdout, stderr) => {
+    exec(cmd, { maxBuffer: 1024 * 1024 * 50 }, (error, stdout, stderr) => {
       // Always cleanup temporary files
       try {
-        if (textFilePath && fs.existsSync(textFilePath)) {
+        if (!curveText && textFilePath && fs.existsSync(textFilePath)) {
           fs.unlinkSync(textFilePath);
         }
       } catch (err) {
@@ -508,7 +562,7 @@ export async function composeVideo(options: ComposeOptions): Promise<string> {
       }
 
       try {
-        if (svgFilePath && fs.existsSync(svgFilePath)) {
+        if (curveText && svgFilePath && fs.existsSync(svgFilePath)) {
           fs.unlinkSync(svgFilePath);
         }
       } catch (err) {

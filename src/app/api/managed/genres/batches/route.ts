@@ -82,7 +82,7 @@ export async function POST(req: Request) {
     // ACTION 1: GENERATE_QUOTES
     // ─────────────────────────────────────────────────────────────────────────
     if (action === "GENERATE_QUOTES") {
-      const { accountIds, postsPerAccount, videoLength = 7.0 } = body;
+      const { accountIds, postsPerAccount, videoLength = 7.0, csvQuotes } = body;
 
       if (!accountIds || !Array.isArray(accountIds) || accountIds.length === 0) {
         return NextResponse.json({ error: "Please select at least one TikTok account" }, { status: 400 });
@@ -104,7 +104,7 @@ export async function POST(req: Request) {
         },
       });
 
-      // Generate quotes for each account
+      // Generate/assign quotes for each account
       for (const accountId of accountIds) {
         const account = await prisma.managedAccount.findUnique({
           where: { id: accountId },
@@ -116,10 +116,10 @@ export async function POST(req: Request) {
 
         if (!account) continue;
 
-        // Ensure account has styling/theme configured
+        // Ensure account has styling configured
         const config = account.genreConfigs[0];
-        if (!config || !config.themeText) {
-          console.warn(`[Batches API] Account ${account.tiktokUsername} lacks a quote theme configuration`);
+        if (!config) {
+          console.warn(`[Batches API] Account ${account.tiktokUsername} lacks a quote style configuration`);
           continue;
         }
 
@@ -130,16 +130,35 @@ export async function POST(req: Request) {
           continue;
         }
 
-        // Fetch duplicate check seed (all previous quotes generated globally)
-        const previousItems = await prisma.genreBatchItem.findMany({
-          select: { quoteText: true },
-        });
-        const existingQuotes = Array.from(
-          new Set(previousItems.map(item => item.quoteText.trim()).filter(Boolean))
-        );
+        let quotes: { text: string; author: string | null }[] = [];
 
-        // Call Gemini generator
-        const quotes = await generateQuotesForTheme(config.themeText, postsPerAccount, existingQuotes);
+        if (csvQuotes && Array.isArray(csvQuotes) && csvQuotes.length > 0) {
+          // Sequentially assign quotes from CSV list, cycling if there are fewer quotes than total needed
+          const accIdx = accountIds.indexOf(accountId);
+          for (let i = 0; i < postsPerAccount; i++) {
+            const quoteIdx = (accIdx * postsPerAccount + i) % csvQuotes.length;
+            const q = csvQuotes[quoteIdx];
+            quotes.push({
+              text: q.text || q.quoteText || "",
+              author: q.author || q.quoteAuthor || null
+            });
+          }
+        } else {
+          // Gemini AI Generation
+          // Fetch duplicate check seed (all previous quotes generated globally)
+          const previousItems = await prisma.genreBatchItem.findMany({
+            select: { quoteText: true },
+          });
+          const existingQuotes = Array.from(
+            new Set(previousItems.map(item => item.quoteText.trim()).filter(Boolean))
+          );
+
+          const theme = (!config.themeText || config.themeText === "__DISABLED__") 
+            ? "Daily motivational and inspiring wisdom" 
+            : config.themeText;
+
+          quotes = await generateQuotesForTheme(theme, postsPerAccount, existingQuotes);
+        }
 
         // Fetch first track to act as placeholder until allocation
         const defaultTrack = await prisma.track.findFirst();

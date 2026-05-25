@@ -287,6 +287,7 @@ export default function GenresDashboard() {
 
   // 2. Account Settings Form State
   const [themeText, setThemeText] = useState("");
+  const [themeEnabled, setThemeEnabled] = useState(true);
   const [fontFamily, setFontFamily] = useState("Outfit-Bold");
   const [fontSize, setFontSize] = useState(44);
   const [fontColor, setFontColor] = useState("#FFFFFF");
@@ -381,6 +382,8 @@ export default function GenresDashboard() {
   const [selectedTrackIds, setSelectedTrackIds] = useState<string[]>([]);
   const [audioReuseMax, setAudioReuseMax] = useState(2);
   const [triggeringRender, setTriggeringRender] = useState(false);
+  const [quotesSource, setQuotesSource] = useState<"gemini" | "csv">("gemini");
+  const [parsedCsvQuotes, setParsedCsvQuotes] = useState<{ text: string; author: string }[]>([]);
   const [cancellingBatchId, setCancellingBatchId] = useState<string | null>(null);
 
   // Local video preview & manual upload states
@@ -414,7 +417,8 @@ export default function GenresDashboard() {
   useEffect(() => {
     if (selectedAccount) {
       const config = selectedAccount.genreConfigs[0];
-      setThemeText(config?.themeText || "");
+      setThemeEnabled(config?.themeText !== "__DISABLED__");
+      setThemeText(config?.themeText === "__DISABLED__" ? "" : config?.themeText || "");
       setFontFamily(config?.fontFamily || "Outfit-Bold");
       setFontSize(config?.fontSize || 44);
       setFontColor(config?.fontColor || "#FFFFFF");
@@ -432,6 +436,7 @@ export default function GenresDashboard() {
       fetchFolders(selectedAccount.id);
     } else {
       setThemeText("");
+      setThemeEnabled(true);
       setCurveText(false);
       setCurvature(30);
       setBoxColor("none");
@@ -623,7 +628,7 @@ export default function GenresDashboard() {
     setSavingConfig(true);
     const data = new FormData();
     data.append("accountId", selectedAccountId);
-    data.append("themeText", themeText);
+    data.append("themeText", themeEnabled ? themeText : "__DISABLED__");
     data.append("fontFamily", fontFamily);
     data.append("fontSize", fontSize.toString());
     data.append("fontColor", fontColor);
@@ -836,10 +841,115 @@ export default function GenresDashboard() {
     }
   };
 
+  // CSV Parser & Upload Helpers for Bulk Quote Import
+  const parseCSVText = (csvText: string): { text: string; author: string }[] => {
+    const lines = csvText
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+
+    if (lines.length === 0) return [];
+
+    const firstLine = lines[0].toLowerCase();
+    const isHeader =
+      firstLine === "hook" ||
+      firstLine === "text" ||
+      firstLine === "hooks" ||
+      firstLine === "hook_text" ||
+      firstLine === "hooktext" ||
+      firstLine === "quote" ||
+      firstLine === "quotes" ||
+      firstLine === "quote_text" ||
+      firstLine === "quotetext" ||
+      firstLine === "caption" ||
+      firstLine === "title" ||
+      firstLine.includes("hook") ||
+      firstLine.includes("text") ||
+      firstLine.includes("quote");
+
+    const dataLines = isHeader ? lines.slice(1) : lines;
+
+    return dataLines
+      .map((line) => {
+        let text = "";
+        let author = "";
+
+        if (line.startsWith('"')) {
+          const parts: string[] = [];
+          let current = "";
+          let inQuotes = false;
+          for (let i = 0; i < line.length; i++) {
+            const char = line[i];
+            if (char === '"') {
+              if (inQuotes && line[i + 1] === '"') {
+                current += '"';
+                i++;
+              } else {
+                inQuotes = !inQuotes;
+              }
+            } else if (char === ',' && !inQuotes) {
+              parts.push(current);
+              current = "";
+            } else {
+              current += char;
+            }
+          }
+          parts.push(current);
+
+          text = parts[0]?.trim() || "";
+          author = parts[1]?.trim() || "";
+        } else {
+          if (line.includes(",")) {
+            const idx = line.indexOf(",");
+            text = line.substring(0, idx).trim();
+            author = line.substring(idx + 1).trim();
+          } else {
+            text = line;
+          }
+        }
+
+        if (text.startsWith('"') && text.endsWith('"')) text = text.slice(1, -1);
+        if (author.startsWith('"') && author.endsWith('"')) author = author.slice(1, -1);
+
+        return { text: text.trim(), author: author.trim() };
+      })
+      .filter((q) => q.text.length > 0);
+  };
+
+  const handleCsvUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+
+    let combinedQuotes: { text: string; author: string }[] = [];
+    let filesProcessed = 0;
+
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        const text = event.target?.result as string;
+        const parsed = parseCSVText(text);
+        combinedQuotes = [...combinedQuotes, ...parsed];
+        
+        filesProcessed++;
+        if (filesProcessed === files.length) {
+          setParsedCsvQuotes(combinedQuotes);
+          toast.success(`Parsed ${combinedQuotes.length} quotes from ${files.length} CSV files!`);
+        }
+      };
+      reader.readAsText(file);
+    }
+  };
+
   // Batch Compositing Actions
   const handleStartQuoteGeneration = async () => {
     if (selectedBatchAccountIds.length === 0) {
       toast.error("Please select at least one TikTok account for the batch");
+      return;
+    }
+
+    if (quotesSource === "csv" && parsedCsvQuotes.length === 0) {
+      toast.error("Please upload at least one CSV file with quotes");
       return;
     }
 
@@ -853,6 +963,7 @@ export default function GenresDashboard() {
           accountIds: selectedBatchAccountIds,
           postsPerAccount,
           videoLength,
+          csvQuotes: quotesSource === "csv" ? parsedCsvQuotes : undefined,
         }),
       });
 
@@ -861,7 +972,11 @@ export default function GenresDashboard() {
         setActiveBatch(batchData);
         setReviewItems(batchData.items || []);
         setWizardStep(2);
-        toast.success("Quotes bulk generated successfully via Gemini API");
+        toast.success(
+          quotesSource === "csv"
+            ? "CSV quotes imported and allocated successfully"
+            : "Quotes bulk generated successfully via Gemini API"
+        );
       } else {
         const err = await res.json();
         toast.error(err.error || "Failed to generate quotes");
@@ -1756,19 +1871,38 @@ export default function GenresDashboard() {
 
                     <form onSubmit={handleSaveConfig} className="space-y-6">
                       <div>
-                        <label className="block text-xs uppercase tracking-wider font-bold text-gray-400 mb-2">
-                          Account Theme / Topic Prompt (Gemini AI context)
-                        </label>
-                        <textarea
-                          rows={3}
-                          placeholder="e.g. Daily motivational quote, stoic wisdom for men, self discipline advice, ancient philosophy..."
-                          value={themeText}
-                          onChange={(e) => setThemeText(e.target.value)}
-                          className="w-full bg-[#141423] border border-white/5 rounded-2xl px-4 py-3 text-sm text-white focus:outline-none focus:border-amber-500/50 focus:ring-1 focus:ring-amber-500/30"
-                        />
-                        <p className="text-[11px] text-gray-500 mt-1.5 font-medium">
-                          Used to bulk generate original, context-aligned quotes via Gemini API.
-                        </p>
+                        <div className="flex justify-between items-center mb-2">
+                          <label className="block text-xs uppercase tracking-wider font-bold text-gray-400">
+                            Account Theme / Topic Prompt (Gemini AI context)
+                          </label>
+                          <div className="flex items-center gap-2">
+                            <span className="text-[10px] text-gray-400 font-bold uppercase tracking-wider">Include Theme</span>
+                            <input 
+                              type="checkbox" 
+                              checked={themeEnabled}
+                              onChange={(e) => setThemeEnabled(e.target.checked)}
+                              className="w-4 h-4 rounded border-white/10 text-amber-500 focus:ring-amber-500/30 bg-[#141423]"
+                            />
+                          </div>
+                        </div>
+                        {themeEnabled ? (
+                          <>
+                            <textarea
+                              rows={3}
+                              placeholder="e.g. Daily motivational quote, stoic wisdom for men, self discipline advice, ancient philosophy..."
+                              value={themeText}
+                              onChange={(e) => setThemeText(e.target.value)}
+                              className="w-full bg-[#141423] border border-white/5 rounded-2xl px-4 py-3 text-sm text-white focus:outline-none focus:border-amber-500/50 focus:ring-1 focus:ring-amber-500/30"
+                            />
+                            <p className="text-[11px] text-gray-500 mt-1.5 font-medium">
+                              Used to bulk generate original, context-aligned quotes via Gemini API.
+                            </p>
+                          </>
+                        ) : (
+                          <div className="bg-[#141423]/50 border border-dashed border-white/5 rounded-2xl px-4 py-3 text-xs text-gray-500 font-semibold uppercase tracking-wider flex items-center justify-center h-24">
+                            Account Theme Disabled (Generic Prompt Fallback)
+                          </div>
+                        )}
                       </div>
 
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -2998,6 +3132,99 @@ export default function GenresDashboard() {
                   })()}
                 </div>
 
+              {/* Quotes Input Source Selection */}
+              <div className="bg-[#0c0c14]/40 border border-white/5 p-6 rounded-3xl space-y-4">
+                <div>
+                  <h4 className="text-sm font-black text-white uppercase tracking-wider">Quote Content Input Source</h4>
+                  <p className="text-[10px] text-gray-500 font-semibold uppercase tracking-wider mt-0.5">Choose how you want to supply the quote texts for this batch</p>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {/* Option 1: Gemini */}
+                  <button
+                    type="button"
+                    onClick={() => setQuotesSource("gemini")}
+                    className={`flex items-start gap-4 p-4 rounded-2xl border text-left transition-all ${
+                      quotesSource === "gemini"
+                        ? "bg-amber-500/10 border-amber-500/30 text-white"
+                        : "bg-[#141423]/40 border-white/5 text-gray-400 hover:border-white/10"
+                    }`}
+                  >
+                    <div className={`p-2 rounded-xl ${quotesSource === "gemini" ? "bg-amber-500 text-black animate-pulse" : "bg-[#141423] text-gray-400"}`}>
+                      <Sparkles className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <h5 className="text-sm font-bold text-white">Generate with Gemini AI</h5>
+                      <p className="text-[11px] text-gray-500 mt-1 leading-relaxed">
+                        Gemini will dynamically bulk generate highly original quotes matching each account's theme or topic prompt.
+                      </p>
+                    </div>
+                  </button>
+
+                  {/* Option 2: CSV Import */}
+                  <button
+                    type="button"
+                    onClick={() => setQuotesSource("csv")}
+                    className={`flex items-start gap-4 p-4 rounded-2xl border text-left transition-all ${
+                      quotesSource === "csv"
+                        ? "bg-amber-500/10 border-amber-500/30 text-white"
+                        : "bg-[#141423]/40 border-white/5 text-gray-400 hover:border-white/10"
+                    }`}
+                  >
+                    <div className={`p-2 rounded-xl ${quotesSource === "csv" ? "bg-amber-500 text-black" : "bg-[#141423] text-gray-400"}`}>
+                      <Upload className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <h5 className="text-sm font-bold text-white">Upload Quote CSV(s)</h5>
+                      <p className="text-[11px] text-gray-500 mt-1 leading-relaxed">
+                        Import one or multiple CSV files containing your own custom quotes. Quotes will be distributed sequentially across video accounts.
+                      </p>
+                    </div>
+                  </button>
+                </div>
+
+                {/* CSV File Upload Drop Zone */}
+                {quotesSource === "csv" && (
+                  <div className="bg-[#141423]/30 border border-white/5 p-4 rounded-2xl space-y-4">
+                    <div className="flex flex-col items-center justify-center border-2 border-dashed border-white/10 hover:border-amber-500/30 rounded-2xl p-6 transition-all text-center relative">
+                      <input
+                        type="file"
+                        accept=".csv"
+                        multiple
+                        onChange={handleCsvUpload}
+                        className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
+                      />
+                      <Upload className="w-8 h-8 text-gray-400 mb-2" />
+                      <p className="text-xs text-gray-300 font-bold">Select or drag one or multiple CSV files</p>
+                      <p className="text-[10px] text-gray-500 mt-1 uppercase font-semibold">Only .csv files containing quote lists</p>
+                    </div>
+
+                    {parsedCsvQuotes.length > 0 && (
+                      <div className="space-y-2">
+                        <div className="flex justify-between items-center">
+                          <span className="text-xs font-bold text-gray-400 uppercase tracking-wider">Loaded CSV Quotes ({parsedCsvQuotes.length})</span>
+                          <button
+                            type="button"
+                            onClick={() => setParsedCsvQuotes([])}
+                            className="text-xs text-red-400 hover:underline font-bold uppercase tracking-wider"
+                          >
+                            Clear All
+                          </button>
+                        </div>
+                        <div className="max-h-[150px] overflow-y-auto border border-white/5 rounded-2xl p-3 bg-black/40 space-y-2 text-left">
+                          {parsedCsvQuotes.map((q, idx) => (
+                            <div key={idx} className="text-xs text-gray-300 leading-snug border-b border-white/5 pb-1 last:border-b-0 last:pb-0">
+                              <span className="text-amber-500 font-bold mr-1">#{idx + 1}</span>
+                              "{q.text}" {q.author && <span className="text-gray-500">— {q.author}</span>}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+
               {/* Trigger */}
               <div className="pt-6 border-t border-white/5">
                 <button
@@ -3008,7 +3235,12 @@ export default function GenresDashboard() {
                   {generatingQuotes ? (
                     <>
                       <RefreshCw className="w-5 h-5 animate-spin" />
-                      Gemini Generating Quotes...
+                      Processing Quotes...
+                    </>
+                  ) : quotesSource === "csv" ? (
+                    <>
+                      <Check className="w-5 h-5" />
+                      Proceed with CSV Quotes
                     </>
                   ) : (
                     <>
