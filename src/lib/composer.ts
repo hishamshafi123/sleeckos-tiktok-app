@@ -198,10 +198,12 @@ function escapeFfmpegDrawtext(text: string): string {
   // - Escape backslash as \\
   // - Escape single quote as \'
   // - Escape colon as \: (prevents breaking filter parameter boundaries)
+  // - Escape comma as \, (prevents breaking filterchain boundaries)
   return text
     .replace(/\\/g, "\\\\")
     .replace(/'/g, "\\'")
-    .replace(/:/g, "\\:");
+    .replace(/:/g, "\\:")
+    .replace(/,/g, "\\,");
 }
 
 /**
