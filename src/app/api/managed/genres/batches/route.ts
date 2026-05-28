@@ -673,7 +673,7 @@ export async function POST(req: Request) {
   }
 }
 
-// DELETE /api/managed/genres/batches?batchId=... — Delete a batch history from database
+// DELETE /api/managed/genres/batches?batchId=...&itemId=... — Delete a batch or individual item
 export async function DELETE(req: Request) {
   const session = await getSession();
   if (!session || session.role !== "ADMIN") {
@@ -682,18 +682,43 @@ export async function DELETE(req: Request) {
 
   const { searchParams } = new URL(req.url);
   const batchId = searchParams.get("batchId");
+  const itemId = searchParams.get("itemId");
 
   if (!batchId) {
     return NextResponse.json({ error: "Missing batchId" }, { status: 400 });
   }
 
   try {
+    // Delete a single item from the batch
+    if (itemId) {
+      const item = await prisma.genreBatchItem.findUnique({ where: { id: itemId } });
+      if (item?.renderedVideoUrl) {
+        const filePath = path.join(process.cwd(), "public", item.renderedVideoUrl);
+        if (fs.existsSync(filePath)) {
+          fs.unlinkSync(filePath);
+          console.log(`[Batches API] Deleted rendered video file: ${filePath}`);
+        }
+      }
+      await prisma.genreBatchItem.delete({ where: { id: itemId } });
+      console.log(`[Batches API] Deleted batch item: ${itemId} from batch: ${batchId}`);
+
+      // Update batch totalPosts count
+      const remaining = await prisma.genreBatchItem.count({ where: { batchId } });
+      await prisma.genreBatch.update({
+        where: { id: batchId },
+        data: { totalPosts: remaining },
+      });
+
+      return NextResponse.json({ success: true, remainingItems: remaining });
+    }
+
+    // Delete entire batch
     await prisma.genreBatch.delete({ where: { id: batchId } });
     console.log(`[Batches API] Deleted batch history: ${batchId}`);
     return NextResponse.json({ success: true });
   } catch (err) {
-    console.error("[Batches API] Error deleting batch:", err);
-    return NextResponse.json({ error: "Failed to delete batch history" }, { status: 500 });
+    console.error("[Batches API] Error deleting:", err);
+    return NextResponse.json({ error: "Failed to delete" }, { status: 500 });
   }
 }
 

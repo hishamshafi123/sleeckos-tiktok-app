@@ -482,6 +482,7 @@ export default function GenresDashboard() {
   const [isPreviewModalOpen, setIsPreviewModalOpen] = useState(false);
   const [uploadingItems, setUploadingItems] = useState<Record<string, boolean>>({});
   const [retryingItemIds, setRetryingItemIds] = useState<Record<string, boolean>>({});
+  const [deletingItemIds, setDeletingItemIds] = useState<Record<string, boolean>>({});
   const [uploadingBatch, setUploadingBatch] = useState(false);
 
   // Download states (batchId -> DownloadState)
@@ -1398,6 +1399,32 @@ export default function GenresDashboard() {
       toast.error("Error retrying failed renders");
     } finally {
       setRetryingBatchId(null);
+    }
+  };
+
+  const handleDeleteBatchItem = async (batchId: string, itemId: string) => {
+    if (!confirm("Delete this render permanently? This cannot be undone.")) return;
+    setDeletingItemIds(prev => ({ ...prev, [itemId]: true }));
+    try {
+      const res = await fetch(`/api/managed/genres/batches?batchId=${batchId}&itemId=${itemId}`, {
+        method: "DELETE",
+      });
+      if (res.ok) {
+        toast.success("Render deleted successfully");
+        // Refresh batch details
+        if (activeBatch?.id === batchId) {
+          const statusRes = await fetch(`/api/managed/genres/batches?batchId=${batchId}`);
+          if (statusRes.ok) setActiveBatch(await statusRes.json());
+        }
+        fetchBatches();
+      } else {
+        const errData = await res.json();
+        toast.error(errData.error || "Failed to delete render");
+      }
+    } catch {
+      toast.error("Error deleting render");
+    } finally {
+      setDeletingItemIds(prev => ({ ...prev, [itemId]: false }));
     }
   };
 
@@ -5136,6 +5163,19 @@ export default function GenresDashboard() {
                       </div>
 
                       <div className="flex flex-wrap items-center gap-3 self-end sm:self-center">
+                        {/* Delete button (always visible) */}
+                        <button
+                          onClick={() => handleDeleteBatchItem(activeBatch.id, item.id)}
+                          disabled={!!deletingItemIds[item.id]}
+                          className="flex items-center gap-1 px-2.5 py-1.5 bg-red-500/10 hover:bg-red-500 text-red-400 hover:text-black border border-red-500/15 hover:border-red-500 rounded-xl text-xs font-bold transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed"
+                          title="Delete this render"
+                        >
+                          {deletingItemIds[item.id] ? (
+                            <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                          ) : (
+                            <Trash2 className="w-3.5 h-3.5" />
+                          )}
+                        </button>
                         <div className="text-right text-xs mr-2">
                           <p className="text-gray-500 font-semibold">{item.track?.title || "No track"}</p>
                           <p className="text-[10px] text-gray-600 font-semibold uppercase tracking-wider">Audio clip</p>
