@@ -8,6 +8,36 @@ import {
 } from "lucide-react";
 import { toast as originalToast } from "sonner";
 
+// Robust HTTP + HTTPS compatible clipboard copy helper
+const copyTextToClipboard = (text: string): boolean => {
+  try {
+    if (typeof navigator !== "undefined" && navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch (err) {
+    console.warn("navigator.clipboard failed, trying fallback:", err);
+  }
+
+  try {
+    const textArea = document.createElement("textarea");
+    textArea.value = text;
+    textArea.style.top = "0";
+    textArea.style.left = "0";
+    textArea.style.position = "fixed";
+    textArea.style.opacity = "0";
+    document.body.appendChild(textArea);
+    textArea.focus();
+    textArea.select();
+    const successful = document.execCommand("copy");
+    document.body.removeChild(textArea);
+    return successful;
+  } catch (err) {
+    console.error("Fallback copy failed:", err);
+    return false;
+  }
+};
+
 const toast = {
   ...originalToast,
   error: (message: any, options?: any) => {
@@ -21,12 +51,16 @@ const toast = {
     
     return originalToast.error(errorMsg, {
       ...options,
-      duration: 15000, // 15 seconds
+      duration: 20000, // Extend to 20 seconds to give plenty of time
       action: {
         label: "Copy",
         onClick: () => {
-          navigator.clipboard.writeText(errorMsg);
-          originalToast.success("Error copied to clipboard!");
+          const success = copyTextToClipboard(errorMsg);
+          if (success) {
+            originalToast.success("Error copied to clipboard!");
+          } else {
+            originalToast.error("Failed to copy automatically. Please open browser console to copy.");
+          }
         }
       }
     });
