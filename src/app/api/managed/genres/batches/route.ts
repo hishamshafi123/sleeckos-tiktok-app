@@ -769,13 +769,85 @@ async function processBatchRendering(batchId: string) {
         if (item.lyricalTemplateId && item.lyricalTemplate) {
           // Bypassing quote drawing entirely!
           // We will run an ultra-fast FFmpeg command that overlays the pre-rendered transparent overlay MOV onto the account's background video.
-          const overlayUrl = item.lyricalTemplate.overlayVideoUrl;
+          let overlayUrl = item.lyricalTemplate.overlayVideoUrl;
           if (!overlayUrl) {
-            throw new Error(`Styling template '${item.lyricalTemplate.templateName}' is not fully pre-rendered yet. Please pre-render it.`);
+            // Auto-generate the expected URL path from template name
+            const sanitizedName = item.lyricalTemplate.templateName.replace(/[^a-zA-Z0-9]/g, "_").toLowerCase();
+            overlayUrl = `/uploads/lyrical/overlays/track_${item.lyricalTemplate.trackId}_${sanitizedName}.mov`;
           }
-          const overlayPath = path.join(process.cwd(), "public", overlayUrl);
+          let overlayPath = path.join(process.cwd(), "public", overlayUrl);
+
+          // ── SELF-HEALING: Auto-compile missing overlay on-the-fly ──
           if (!fs.existsSync(overlayPath)) {
-            throw new Error(`Pre-rendered Lyrical overlay video not found at: ${overlayPath}. This happens if the template was created locally but the file wasn't generated on the VPS. To fix this instantly, please open the Tracks Library on your VPS Admin Panel, launch the Lyrical Setup Studio for this song, and click 'Pre-render styling overlays' to compile it on the VPS.`);
+            console.log(`[Batch Worker Lyrical] Overlay missing at ${overlayPath}. Auto-compiling on-the-fly...`);
+
+            // Verify we have the raw ingredients
+            const trackAudioPath = path.join(process.cwd(), "public", item.track.fileUrl);
+            if (!fs.existsSync(trackAudioPath)) {
+              throw new Error(`Cannot auto-compile overlay: audio source file missing at ${trackAudioPath}`);
+            }
+            if (!item.track.lyricalTranscription) {
+              throw new Error(`Cannot auto-compile overlay: track ${item.track.title} has no Whisper transcription data. Run alignment first.`);
+            }
+
+            // Build preview path
+            const sanitizedName = item.lyricalTemplate.templateName.replace(/[^a-zA-Z0-9]/g, "_").toLowerCase();
+            const previewRelPath = `/uploads/lyrical/previews/track_${item.lyricalTemplate.trackId}_${sanitizedName}.png`;
+            const previewAbsPath = path.join(process.cwd(), "public", previewRelPath);
+
+            // Ensure directories exist
+            fs.mkdirSync(path.dirname(overlayPath), { recursive: true });
+            fs.mkdirSync(path.dirname(previewAbsPath), { recursive: true });
+
+            // Write transcription to a temp file to avoid shell escaping issues with huge JSON
+            const tmpJsonPath = path.join(process.cwd(), `tmp_transcription_${item.lyricalTemplate.id}.json`);
+            fs.writeFileSync(tmpJsonPath, item.track.lyricalTranscription, "utf-8");
+
+            const tpl = item.lyricalTemplate;
+            const compileCmd = [
+              `./venv/bin/python3 "scripts/lyrical_composer.py"`,
+              `-i "${trackAudioPath}"`,
+              `-o "${overlayPath}"`,
+              `--only-overlay`,
+              `--preview-frame "${previewAbsPath}"`,
+              `--transcription-json "$(cat '${tmpJsonPath}')"`,
+              `--font "${tpl.fontFamily}"`,
+              `--font-size ${tpl.fontSize}`,
+              `--active-color "${tpl.activeColor}"`,
+              `--stroke-width ${tpl.strokeWidth}`,
+              `--stroke-color "${tpl.strokeColor}"`,
+              `--position-y ${tpl.positionY}`,
+              `--fps 60`,
+            ].join(" ");
+
+            console.log(`[Batch Worker Lyrical] Spawning auto-compile: ${compileCmd.substring(0, 200)}...`);
+
+            const { execSync } = require("child_process");
+            try {
+              execSync(compileCmd, {
+                cwd: process.cwd(),
+                timeout: 300000, // 5 min max
+                maxBuffer: 1024 * 1024 * 50,
+                env: { ...process.env, HF_HOME: process.env.HF_HOME || "/home/nextjs/.cache/huggingface" },
+              });
+            } finally {
+              // Cleanup temp file
+              try { fs.unlinkSync(tmpJsonPath); } catch {}
+            }
+
+            // Update DB record with the new overlay path
+            if (fs.existsSync(overlayPath)) {
+              console.log(`[Batch Worker Lyrical] ✅ Auto-compiled overlay successfully at: ${overlayPath}`);
+              await prisma.trackLyricalTemplate.update({
+                where: { id: tpl.id },
+                data: {
+                  overlayVideoUrl: overlayUrl,
+                  previewImageUrl: previewRelPath,
+                },
+              });
+            } else {
+              throw new Error(`Auto-compilation completed but overlay file was not created at: ${overlayPath}`);
+            }
           }
 
           const duration = batch.videoLength || item.track.duration || 7.0;
