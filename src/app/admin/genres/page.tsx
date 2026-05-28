@@ -708,6 +708,30 @@ export default function GenresDashboard() {
     }
   };
 
+  const handleDeleteLyricalTemplate = async (templateId: string, trackId: string) => {
+    if (!confirm("Are you sure you want to delete this styling template and all its pre-rendered assets? This cannot be undone.")) {
+      return;
+    }
+    toast.info("Deleting styling template assets...");
+    try {
+      const res = await fetch(`/api/managed/genres/tracks/lyrical?templateId=${templateId}`, {
+        method: "DELETE",
+      });
+      if (res.ok) {
+        toast.success("Template deleted successfully!");
+        if (selectedPreviewTemplateId === templateId) {
+          setSelectedPreviewTemplateId(null);
+        }
+        await fetchLyricalTemplates(trackId);
+      } else {
+        const data = await res.json();
+        toast.error(data.error || "Failed to delete template");
+      }
+    } catch (err: any) {
+      toast.error(err.message || "Failed to delete template");
+    }
+  };
+
   const fetchAccounts = async () => {
     setLoadingAccounts(true);
     try {
@@ -1566,14 +1590,50 @@ export default function GenresDashboard() {
   return (
     <div className="space-y-8 text-gray-200 pb-16">
       <style>{`
+        /* 1. Golden Dust (Upwards across full container) */
         @keyframes float-dust {
           0% { transform: translateY(0) scale(0.8); opacity: 0; }
           10% { opacity: 0.8; }
           90% { opacity: 0.8; }
-          100% { transform: translateY(-160px) scale(1.1); opacity: 0; }
+          100% { transform: translateY(-330px) scale(1.1); opacity: 0; }
         }
         .animate-float-dust {
           animation: float-dust infinite linear;
+        }
+
+        /* 2. Golden Bokeh (Drifting slow across full container) */
+        @keyframes float-bokeh {
+          0% { transform: translateY(0) scale(0.8); opacity: 0; }
+          20% { opacity: 0.35; }
+          80% { opacity: 0.35; }
+          100% { transform: translateY(-330px) scale(1.4); opacity: 0; }
+        }
+        .animate-float-bokeh {
+          animation: float-bokeh infinite ease-in-out;
+        }
+
+        /* 3. Glowing Fireflies (Wandering rise across full container) */
+        @keyframes float-fireflies {
+          0% { transform: translateY(0) translateX(0); opacity: 0; }
+          20% { opacity: 1; transform: translateY(-60px) translateX(12px); }
+          45% { transform: translateY(-130px) translateX(-12px); }
+          65% { transform: translateY(-200px) translateX(8px); }
+          85% { opacity: 1; transform: translateY(-270px) translateX(-6px); }
+          100% { transform: translateY(-330px) translateX(0); opacity: 0; }
+        }
+        .animate-float-fireflies {
+          animation: float-fireflies infinite ease-in-out;
+        }
+
+        /* 4. Falling Snow (Downwards + Sway across full container) */
+        @keyframes fall-snow {
+          0% { transform: translateY(-20px) translateX(0) rotate(0deg); opacity: 0; }
+          10% { opacity: 0.9; }
+          90% { opacity: 0.9; }
+          100% { transform: translateY(340px) translateX(16px) rotate(360deg); opacity: 0; }
+        }
+        .animate-fall-snow {
+          animation: fall-snow infinite linear;
         }
       `}</style>
       {/* Import premium styling fonts dynamically */}
@@ -2503,11 +2563,59 @@ export default function GenresDashboard() {
                                           {/* Animated Floating Particles Layer */}
                                           {setupLyricalParticleFx !== "none" && (
                                             <div className="absolute inset-0 z-[2] overflow-hidden pointer-events-none select-none">
-                                              <div className="absolute w-1.5 h-1.5 bg-amber-400/50 rounded-full blur-[0.5px] top-[90%] left-[15%] animate-float-dust" style={{ animationDelay: "0s", animationDuration: "6s" }} />
-                                              <div className="absolute w-2.5 h-2.5 bg-yellow-200/40 rounded-full blur-[1px] top-[80%] left-[45%] animate-float-dust" style={{ animationDelay: "1.5s", animationDuration: "5s" }} />
-                                              <div className="absolute w-1.5 h-1.5 bg-white/60 rounded-full top-[95%] left-[75%] animate-float-dust" style={{ animationDelay: "3s", animationDuration: "7s" }} />
-                                              <div className="absolute w-2 h-2 bg-amber-300/35 rounded-full blur-[1.5px] top-[75%] left-[60%] animate-float-dust" style={{ animationDelay: "0.5s", animationDuration: "8s" }} />
-                                              <div className="absolute w-1.5 h-1.5 bg-yellow-100/50 rounded-full blur-[0.5px] top-[85%] left-[30%] animate-float-dust" style={{ animationDelay: "2.2s", animationDuration: "6.5s" }} />
+                                              {setupLyricalParticleFx === "gold_dust.mp4" && (
+                                                <>
+                                                  <div className="absolute w-1 h-1 bg-amber-400/50 rounded-full blur-[0.3px] top-[95%] left-[10%] animate-float-dust" style={{ animationDelay: "0s", animationDuration: "5.5s" }} />
+                                                  <div className="absolute w-2 h-2 bg-yellow-200/40 rounded-full blur-[0.8px] top-[90%] left-[45%] animate-float-dust" style={{ animationDelay: "1.2s", animationDuration: "4.8s" }} />
+                                                  <div className="absolute w-1 h-1 bg-white/60 rounded-full top-[98%] left-[75%] animate-float-dust" style={{ animationDelay: "2.5s", animationDuration: "6.5s" }} />
+                                                  <div className="absolute w-1.5 h-1.5 bg-amber-300/35 rounded-full blur-[1.2px] top-[92%] left-[60%] animate-float-dust" style={{ animationDelay: "0.5s", animationDuration: "7.2s" }} />
+                                                  <div className="absolute w-1 h-1 bg-yellow-100/50 rounded-full blur-[0.3px] top-[94%] left-[30%] animate-float-dust" style={{ animationDelay: "1.8s", animationDuration: "5.8s" }} />
+                                                  <div className="absolute w-2 h-2 bg-amber-400/30 rounded-full blur-[0.5px] top-[96%] left-[85%] animate-float-dust" style={{ animationDelay: "3.2s", animationDuration: "6s" }} />
+                                                  <div className="absolute w-1.5 h-1.5 bg-yellow-300/40 rounded-full top-[91%] left-[20%] animate-float-dust" style={{ animationDelay: "4.1s", animationDuration: "5.2s" }} />
+                                                  <div className="absolute w-1 h-1 bg-white/50 rounded-full blur-[0.4px] top-[97%] left-[55%] animate-float-dust" style={{ animationDelay: "0.8s", animationDuration: "7s" }} />
+                                                  <div className="absolute w-2.5 h-2.5 bg-amber-200/25 rounded-full blur-[1.5px] top-[93%] left-[70%] animate-float-dust" style={{ animationDelay: "2.9s", animationDuration: "8s" }} />
+                                                  <div className="absolute w-1 h-1 bg-yellow-400/60 rounded-full top-[95%] left-[40%] animate-float-dust" style={{ animationDelay: "5s", animationDuration: "6.2s" }} />
+                                                </>
+                                              )}
+                                              {setupLyricalParticleFx === "bokeh.mp4" && (
+                                                <>
+                                                  <div className="absolute w-7 h-7 bg-yellow-300/10 rounded-full blur-[3px] top-[95%] left-[15%] animate-float-bokeh" style={{ animationDelay: "0s", animationDuration: "9s" }} />
+                                                  <div className="absolute w-11 h-11 bg-amber-200/8 rounded-full blur-[4.5px] top-[98%] left-[50%] animate-float-bokeh" style={{ animationDelay: "2s", animationDuration: "12s" }} />
+                                                  <div className="absolute w-6 h-6 bg-yellow-100/12 rounded-full blur-[2px] top-[92%] left-[78%] animate-float-bokeh" style={{ animationDelay: "4.5s", animationDuration: "8s" }} />
+                                                  <div className="absolute w-8 h-8 bg-amber-400/8 rounded-full blur-[3.5px] top-[96%] left-[35%] animate-float-bokeh" style={{ animationDelay: "1.2s", animationDuration: "10.5s" }} />
+                                                  <div className="absolute w-10 h-10 bg-yellow-400/8 rounded-full blur-[4px] top-[94%] left-[65%] animate-float-bokeh" style={{ animationDelay: "3.5s", animationDuration: "11s" }} />
+                                                  <div className="absolute w-5 h-5 bg-amber-200/15 rounded-full blur-[1.8px] top-[97%] left-[10%] animate-float-bokeh" style={{ animationDelay: "5.8s", animationDuration: "8.5s" }} />
+                                                  <div className="absolute w-7 h-7 bg-white/10 rounded-full blur-[2.5px] top-[91%] left-[88%] animate-float-bokeh" style={{ animationDelay: "2.8s", animationDuration: "9.5s" }} />
+                                                </>
+                                              )}
+                                              {setupLyricalParticleFx === "fireflies.mp4" && (
+                                                <>
+                                                  <div className="absolute w-2 h-2 bg-lime-400 rounded-full shadow-[0_0_8px_#84cc16] top-[95%] left-[20%] animate-float-fireflies" style={{ animationDelay: "0s", animationDuration: "6.8s" }} />
+                                                  <div className="absolute w-1.5 h-1.5 bg-yellow-300 rounded-full shadow-[0_0_6px_#fde047] top-[92%] left-[65%] animate-float-fireflies" style={{ animationDelay: "1.5s", animationDuration: "5.8s" }} />
+                                                  <div className="absolute w-2 h-2 bg-lime-300 rounded-full shadow-[0_0_8px_#bef264] top-[96%] left-[45%] animate-float-fireflies" style={{ animationDelay: "3s", animationDuration: "7.5s" }} />
+                                                  <div className="absolute w-1 h-1 bg-yellow-200 rounded-full shadow-[0_0_4px_#fef08a] top-[90%] left-[80%] animate-float-fireflies" style={{ animationDelay: "0.8s", animationDuration: "8.5s" }} />
+                                                  <div className="absolute w-2.5 h-2.5 bg-lime-400 rounded-full shadow-[0_0_9px_#84cc16] top-[94%] left-[10%] animate-float-fireflies" style={{ animationDelay: "2.2s", animationDuration: "7.2s" }} />
+                                                  <div className="absolute w-1.5 h-1.5 bg-lime-300 rounded-full shadow-[0_0_6px_#bef264] top-[97%] left-[30%] animate-float-fireflies" style={{ animationDelay: "4.1s", animationDuration: "6.2s" }} />
+                                                  <div className="absolute w-2 h-2 bg-yellow-300 rounded-full shadow-[0_0_8px_#fde047] top-[93%] left-[55%] animate-float-fireflies" style={{ animationDelay: "5.3s", animationDuration: "8s" }} />
+                                                  <div className="absolute w-1.5 h-1.5 bg-lime-400 rounded-full shadow-[0_0_6px_#84cc16] top-[98%] left-[72%] animate-float-fireflies" style={{ animationDelay: "1.9s", animationDuration: "6.5s" }} />
+                                                </>
+                                              )}
+                                              {setupLyricalParticleFx === "snow.mp4" && (
+                                                <>
+                                                  <div className="absolute w-2 h-2 bg-white rounded-full top-[-10px] left-[15%] animate-fall-snow" style={{ animationDelay: "0s", animationDuration: "4.8s" }} />
+                                                  <div className="absolute w-1.5 h-1.5 bg-slate-100/80 rounded-full top-[-10px] left-[45%] animate-fall-snow" style={{ animationDelay: "1.2s", animationDuration: "4.2s" }} />
+                                                  <div className="absolute w-2.5 h-2.5 bg-white/90 rounded-full blur-[0.5px] top-[-10px] left-[70%] animate-fall-snow" style={{ animationDelay: "2.5s", animationDuration: "5.8s" }} />
+                                                  <div className="absolute w-1.5 h-1.5 bg-white/70 rounded-full top-[-10px] left-[30%] animate-fall-snow" style={{ animationDelay: "0.5s", animationDuration: "5.2s" }} />
+                                                  <div className="absolute w-2.5 h-2.5 bg-slate-200/90 rounded-full top-[-10px] left-[85%] animate-fall-snow" style={{ animationDelay: "3.2s", animationDuration: "4.5s" }} />
+                                                  <div className="absolute w-1.5 h-1.5 bg-white/80 rounded-full top-[-10px] left-[5%] animate-fall-snow" style={{ animationDelay: "1.8s", animationDuration: "5s" }} />
+                                                  <div className="absolute w-2 h-2 bg-white rounded-full top-[-10px] left-[60%] animate-fall-snow" style={{ animationDelay: "0.9s", animationDuration: "4.6s" }} />
+                                                  <div className="absolute w-1 h-1 bg-slate-100 rounded-full top-[-10px] left-[38%] animate-fall-snow" style={{ animationDelay: "2.9s", animationDuration: "3.8s" }} />
+                                                  <div className="absolute w-2 h-2 bg-white/95 rounded-full top-[-10px] left-[80%] animate-fall-snow" style={{ animationDelay: "4.1s", animationDuration: "5.5s" }} />
+                                                  <div className="absolute w-1.5 h-1.5 bg-white/75 rounded-full top-[-10px] left-[52%] animate-fall-snow" style={{ animationDelay: "1.5s", animationDuration: "4.9s" }} />
+                                                  <div className="absolute w-2 h-2 bg-slate-100 rounded-full top-[-10px] left-[22%] animate-fall-snow" style={{ animationDelay: "3.6s", animationDuration: "5.1s" }} />
+                                                  <div className="absolute w-1 h-1 bg-white rounded-full top-[-10px] left-[95%] animate-fall-snow" style={{ animationDelay: "0.3s", animationDuration: "4.3s" }} />
+                                                </>
+                                              )}
                                             </div>
                                           )}
 
@@ -2607,41 +2715,110 @@ export default function GenresDashboard() {
 
                                   {/* Pre-rendered templates grid and preview */}
                                   <div className="space-y-3">
-                                    <h5 className="text-[10px] font-extrabold uppercase tracking-widest text-gray-400">Available Templates & Captions Preview</h5>
+                                    <div className="flex justify-between items-center">
+                                      <h5 className="text-[10px] font-extrabold uppercase tracking-widest text-gray-400">Available Templates & Captions Preview</h5>
+                                      <span className="text-[9px] font-extrabold text-gray-500 uppercase bg-white/5 px-2.5 py-0.5 rounded-full">{lyricalTemplates.length} Custom Templates</span>
+                                    </div>
                                     
                                     {loadingTemplatesTrackId === track.id ? (
                                       <div className="flex justify-center items-center py-6">
                                         <RefreshCw className="w-5 h-5 text-purple-500 animate-spin" />
                                       </div>
                                     ) : lyricalTemplates.length === 0 ? (
-                                      <p className="text-[10px] text-gray-600 italic">No templates created for this track yet.</p>
+                                      <p className="text-[10px] text-gray-600 italic py-2 bg-black/20 rounded-xl px-3 border border-white/5">No templates created for this track yet.</p>
                                     ) : (
                                       <div className="space-y-4">
                                         {/* Templates Select Grid */}
-                                        <div className="grid grid-cols-2 gap-2 max-h-[160px] overflow-y-auto pr-1">
-                                          {lyricalTemplates.map((tpl) => (
-                                            <div 
-                                              key={tpl.id}
-                                              onClick={() => {
-                                                setSelectedPreviewTemplateId(tpl.id);
-                                                setLyricalTemplateName(tpl.templateName);
-                                                setLyricalFontFamily(tpl.fontFamily);
-                                                setLyricalFontSize(tpl.fontSize);
-                                                setLyricalActiveColor(tpl.activeColor);
-                                                setLyricalStrokeWidth(tpl.strokeWidth);
-                                                setLyricalStrokeColor(tpl.strokeColor);
-                                                setLyricalPositionY(tpl.positionY);
-                                              }}
-                                              className={`p-2.5 rounded-xl border text-left cursor-pointer transition-all ${
-                                                selectedPreviewTemplateId === tpl.id 
-                                                  ? "bg-purple-500/15 border-purple-500/40 text-white shadow-lg shadow-purple-500/5" 
-                                                  : "bg-black/30 border-white/5 text-gray-400 hover:border-white/10"
-                                              }`}
-                                            >
-                                              <p className="text-[11px] font-bold text-white truncate">{tpl.templateName}</p>
-                                              <p className="text-[9px] text-gray-500 truncate mt-0.5">{tpl.fontFamily} ({tpl.fontSize}px)</p>
-                                            </div>
-                                          ))}
+                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5 max-h-[260px] overflow-y-auto pr-1">
+                                          {lyricalTemplates.map((tpl) => {
+                                            const isActive = selectedPreviewTemplateId === tpl.id;
+                                            // Get display font family
+                                            const displayFont = tpl.fontFamily.replace("-Black", "").replace("-Bold", "").replace("Montserrat", "Mont");
+                                            
+                                            // Generate monogram style based on color
+                                            const monogramBg = tpl.activeColor === "multi"
+                                              ? "bg-gradient-to-tr from-yellow-400 via-green-400 to-pink-500 shadow-[0_0_8px_rgba(244,63,94,0.3)] animate-gradient"
+                                              : "border border-white/10 shadow-lg";
+                                            
+                                            return (
+                                              <div 
+                                                key={tpl.id}
+                                                onClick={() => {
+                                                  setSelectedPreviewTemplateId(tpl.id);
+                                                  setLyricalTemplateName(tpl.templateName);
+                                                  setLyricalFontFamily(tpl.fontFamily);
+                                                  setLyricalFontSize(tpl.fontSize);
+                                                  setLyricalActiveColor(tpl.activeColor);
+                                                  setLyricalStrokeWidth(tpl.strokeWidth);
+                                                  setLyricalStrokeColor(tpl.strokeColor);
+                                                  setLyricalPositionY(tpl.positionY);
+                                                }}
+                                                className={`p-4 rounded-3xl border text-left cursor-pointer transition-all duration-300 flex items-center justify-between gap-3 group/card relative overflow-hidden ${
+                                                  isActive 
+                                                    ? "bg-purple-500/10 border-purple-500/50 text-white shadow-xl shadow-purple-500/5 scale-[1.01]" 
+                                                    : "bg-black/35 border-white/5 text-gray-400 hover:border-white/15 hover:bg-black/50 hover:scale-[1.005]"
+                                                }`}
+                                              >
+                                                {/* Backdrop glow for active card */}
+                                                {isActive && (
+                                                  <div className="absolute -right-4 -bottom-4 w-12 h-12 bg-purple-500/10 rounded-full blur-xl pointer-events-none" />
+                                                )}
+                                                
+                                                <div className="flex items-center gap-3 min-w-0 flex-1">
+                                                  {/* Premium Color Monogram Circle */}
+                                                  <div 
+                                                    className={`w-8 h-8 rounded-full flex-shrink-0 flex items-center justify-center text-[10px] font-black uppercase text-black ${monogramBg}`}
+                                                    style={tpl.activeColor !== "multi" ? {
+                                                      backgroundColor: tpl.activeColor || "#ffffff",
+                                                      color: "#000000",
+                                                      boxShadow: `0 0 10px ${(tpl.activeColor || "#ffffff")}60`
+                                                    } : {}}
+                                                  >
+                                                    {tpl.templateName.substring(0, 2)}
+                                                  </div>
+                                                  
+                                                  <div className="min-w-0 flex-1 space-y-1">
+                                                    <div className="flex items-center gap-2">
+                                                      <p className="text-[12px] font-extrabold text-white truncate leading-none">{tpl.templateName}</p>
+                                                      {isActive && (
+                                                        <span className="text-[7px] font-black bg-purple-500 text-white px-1.5 py-0.5 rounded-full uppercase tracking-wider scale-90">Active</span>
+                                                      )}
+                                                    </div>
+                                                    
+                                                    {/* Config tags */}
+                                                    <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+                                                      <span className="text-[8px] font-black uppercase tracking-wider bg-white/5 border border-white/5 px-2 py-0.5 rounded-lg text-gray-400">
+                                                        {displayFont}
+                                                      </span>
+                                                      <span className="text-[8px] font-black uppercase tracking-wider bg-white/5 border border-white/5 px-2 py-0.5 rounded-lg text-gray-400">
+                                                        {tpl.fontSize}px
+                                                      </span>
+                                                      <span className="text-[8px] font-black uppercase tracking-wider bg-white/5 border border-white/5 px-2 py-0.5 rounded-lg text-gray-400">
+                                                        Y: {Math.round(tpl.positionY * 100)}%
+                                                      </span>
+                                                      <span className="text-[8px] font-black uppercase tracking-wider bg-white/5 border border-white/5 px-2 py-0.5 rounded-lg text-gray-400">
+                                                        {tpl.strokeWidth}px Stroke
+                                                      </span>
+                                                    </div>
+                                                  </div>
+                                                </div>
+                                                
+                                                <div className="flex items-center gap-1.5 flex-shrink-0 z-10">
+                                                  <button
+                                                    type="button"
+                                                    onClick={(e) => {
+                                                      e.stopPropagation();
+                                                      handleDeleteLyricalTemplate(tpl.id, track.id);
+                                                    }}
+                                                    className="p-2 rounded-2xl text-gray-500 hover:text-red-400 hover:bg-red-500/10 transition-all duration-300 opacity-40 group-hover/card:opacity-100 cursor-pointer flex items-center justify-center border border-transparent hover:border-red-500/20"
+                                                    title="Delete Styling Template"
+                                                  >
+                                                    <Trash2 className="w-3.5 h-3.5" />
+                                                  </button>
+                                                </div>
+                                              </div>
+                                            );
+                                          })}
                                         </div>
 
                                         {/* Premium Live Render Preview Box (9:16 aspect ratio representation) */}
@@ -4339,7 +4516,27 @@ export default function GenresDashboard() {
                               No styling templates pre-rendered for this track. Please go to Tracks Library, open this track, customize a style and click "Pre-render styling overlays" first!
                             </p>
                           ) : (
-                            <div className="grid grid-cols-1 gap-2.5 max-h-[220px] overflow-y-auto pr-1">
+                                        <div className="grid grid-cols-1 gap-2.5 max-h-[220px] overflow-y-auto pr-1">
+                              {/* Special card for mixing all templates */}
+                              <div
+                                onClick={() => setSelectedLyricalTemplateId("mix_all")}
+                                className={`p-3.5 rounded-2xl border text-left cursor-pointer transition-all flex items-center justify-between gap-2 ${
+                                  selectedLyricalTemplateId === "mix_all"
+                                    ? "bg-purple-500/10 border-purple-500/40 text-white shadow-lg shadow-purple-500/5"
+                                    : "bg-[#141423]/40 border-white/5 text-gray-400 hover:border-white/10"
+                                }`}
+                              >
+                                <div>
+                                  <p className="text-xs font-black text-transparent bg-clip-text bg-gradient-to-r from-amber-400 to-purple-400 leading-tight">🌀 MIX ALL PRE-RENDERED TEMPLATES</p>
+                                  <p className="text-[10px] text-amber-500 font-bold uppercase tracking-wider mt-1">Cycles through all {lyricalTemplates.length} templates dynamically for each post!</p>
+                                </div>
+                                <div className={`w-4 h-4 rounded-full border flex items-center justify-center flex-shrink-0 ${
+                                  selectedLyricalTemplateId === "mix_all" ? "bg-purple-500 border-purple-500 text-white" : "border-white/10"
+                                }`}>
+                                  {selectedLyricalTemplateId === "mix_all" && <Check className="w-2.5 h-2.5 stroke-[4]" />}
+                                </div>
+                              </div>
+
                               {lyricalTemplates.map((tpl) => (
                                 <div
                                   key={tpl.id}
@@ -4366,10 +4563,25 @@ export default function GenresDashboard() {
                         </div>
                       )}
                     </div>
-
+ 
                     {/* Preview Image Column */}
                     <div>
                       {(() => {
+                        if (selectedLyricalTemplateId === "mix_all") {
+                          return (
+                            <div className="space-y-2 text-center bg-[#0c0c14] p-3 rounded-2xl border border-white/5">
+                              <span className="text-[10px] uppercase tracking-wider font-extrabold text-amber-400 block animate-pulse">Dynamic Multi-Template Mix-up</span>
+                              <div className="relative aspect-[9/16] w-full max-w-[150px] mx-auto bg-gradient-to-b from-[#180f33] via-[#050616] to-[#04101e] border border-amber-500/30 rounded-3xl overflow-hidden shadow-2xl flex flex-col items-center justify-center p-4 text-center">
+                                <div className="absolute top-[20%] left-[20%] w-[80px] h-[80px] bg-purple-600/15 rounded-full blur-[30px] animate-pulse z-0" />
+                                <div className="absolute bottom-[20%] right-[20%] w-[80px] h-[80px] bg-amber-500/15 rounded-full blur-[30px] animate-pulse z-0" />
+                                <Sparkles className="w-8 h-8 text-amber-400 animate-spin z-10" style={{ animationDuration: "12s" }} />
+                                <span className="text-[10px] text-white font-extrabold uppercase tracking-wider mt-3 z-10 font-bold leading-tight">Dynamic overlay cycling</span>
+                                <span className="text-[8px] text-gray-400 uppercase tracking-widest mt-2 z-10 leading-normal font-semibold">Randomized & Distributed sequentially across 100% of posts</span>
+                              </div>
+                            </div>
+                          );
+                        }
+
                         const activeTpl = lyricalTemplates.find(t => t.id === selectedLyricalTemplateId);
                         if (!activeTpl) {
                           return (

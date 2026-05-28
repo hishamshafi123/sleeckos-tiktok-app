@@ -98,12 +98,27 @@ export async function POST(req: Request) {
         where: { id: trackId },
       });
 
-      const template = await prisma.trackLyricalTemplate.findUnique({
-        where: { id: lyricalTemplateId },
-      });
+      if (!track) {
+        return NextResponse.json({ error: "Lyrical track not found" }, { status: 404 });
+      }
 
-      if (!track || !template) {
-        return NextResponse.json({ error: "Lyrical track or template configuration not found" }, { status: 404 });
+      let template = null;
+      let templatesPool: any[] = [];
+
+      if (lyricalTemplateId === "mix_all") {
+        templatesPool = await prisma.trackLyricalTemplate.findMany({
+          where: { trackId },
+        });
+        if (templatesPool.length === 0) {
+          return NextResponse.json({ error: "No pre-rendered caption templates found for this track. Please pre-render at least one template first!" }, { status: 400 });
+        }
+      } else {
+        template = await prisma.trackLyricalTemplate.findUnique({
+          where: { id: lyricalTemplateId },
+        });
+        if (!template) {
+          return NextResponse.json({ error: "Caption styling template not found" }, { status: 404 });
+        }
       }
 
       const totalPosts = accountIds.length * postsPerAccount;
@@ -143,7 +158,7 @@ export async function POST(req: Request) {
         }
 
         for (let i = 0; i < postsPerAccount; i++) {
-          const randomBg = bgs[Math.floor(Math.random() * bgs.length)];
+          const randomBg = bgs[i % bgs.length];
 
           let colorFilter = "none";
           let particleFx = "none";
@@ -160,12 +175,17 @@ export async function POST(req: Request) {
             mirrorBg = mutationCounter % 2 === 1;
             const speedOptions = [0.95, 1.0, 1.05];
             bgSpeed = speedOptions[mutationCounter % speedOptions.length];
-            
-            mutationCounter++;
           }
 
+          // Cycle through templates sequentially from the pool or use the single selected template
+          const currentTemplate = lyricalTemplateId === "mix_all"
+            ? templatesPool[mutationCounter % templatesPool.length]
+            : template;
+
+          mutationCounter++;
+
           const serializedMetadata = JSON.stringify({
-            title: `Lyrical - ${track.title} (${template.templateName})`,
+            title: `Lyrical - ${track.title} (${currentTemplate.templateName})`,
             colorFilter,
             particleFx,
             vignette,
@@ -182,7 +202,7 @@ export async function POST(req: Request) {
               trackId: track.id,
               trackStart: 0.0,
               backgroundVideoUrl: randomBg.videoUrl,
-              lyricalTemplateId: template.id,
+              lyricalTemplateId: currentTemplate.id,
               status: "PENDING",
             },
           });

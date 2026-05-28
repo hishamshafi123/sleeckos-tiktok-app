@@ -260,6 +260,69 @@ export async function GET(req: Request) {
   }
 }
 
+// 4. DELETE /api/managed/genres/tracks/lyrical — Delete template configuration and pre-rendered overlay/preview assets
+export async function DELETE(req: Request) {
+  const session = await getSession();
+  if (!session || session.role !== "ADMIN") {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  try {
+    const { searchParams } = new URL(req.url);
+    const templateId = searchParams.get("templateId");
+
+    if (!templateId) {
+      return NextResponse.json({ error: "Missing templateId" }, { status: 400 });
+    }
+
+    // Find template to retrieve asset filepaths for deletion
+    const template = await prisma.trackLyricalTemplate.findUnique({
+      where: { id: templateId },
+    });
+
+    if (!template) {
+      return NextResponse.json({ error: "Template not found" }, { status: 404 });
+    }
+
+    // Safely delete pre-rendered MOV overlay video if exists
+    if (template.overlayVideoUrl) {
+      const videoPath = path.join(process.cwd(), "public", ...template.overlayVideoUrl.split("/"));
+      if (fs.existsSync(videoPath)) {
+        try {
+          fs.unlinkSync(videoPath);
+          console.log(`[Lyrical API] Successfully unlinked video: ${videoPath}`);
+        } catch (e) {
+          console.warn(`[Lyrical API] Failed to unlink video at ${videoPath}:`, e);
+        }
+      }
+    }
+
+    // Safely delete pre-rendered PNG preview frame if exists
+    if (template.previewImageUrl) {
+      const previewPath = path.join(process.cwd(), "public", ...template.previewImageUrl.split("/"));
+      if (fs.existsSync(previewPath)) {
+        try {
+          fs.unlinkSync(previewPath);
+          console.log(`[Lyrical API] Successfully unlinked preview frame: ${previewPath}`);
+        } catch (e) {
+          console.warn(`[Lyrical API] Failed to unlink preview frame at ${previewPath}:`, e);
+        }
+      }
+    }
+
+    // Delete template database record
+    await prisma.trackLyricalTemplate.delete({
+      where: { id: templateId },
+    });
+
+    console.log(`[Lyrical API] Deleted template record: ${templateId} (${template.templateName})`);
+    return NextResponse.json({ success: true });
+  } catch (err: any) {
+    console.error("[Lyrical API] Error deleting template:", err);
+    return NextResponse.json({ error: err.message || "Failed to delete styling template" }, { status: 500 });
+  }
+}
+
 // Helper to resolve OS temporary directories
 function osTempDir(): string {
   try {
