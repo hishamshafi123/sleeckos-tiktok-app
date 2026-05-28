@@ -790,25 +790,21 @@ async function processBatchRendering(batchId: string) {
               throw new Error(`Cannot auto-compile overlay: track ${item.track.title} has no Whisper transcription data. Run alignment first.`);
             }
 
-            // Build preview path
-            const sanitizedName = item.lyricalTemplate.templateName.replace(/[^a-zA-Z0-9]/g, "_").toLowerCase();
-            const previewRelPath = `/uploads/lyrical/previews/track_${item.lyricalTemplate.trackId}_${sanitizedName}.png`;
-            const previewAbsPath = path.join(process.cwd(), "public", previewRelPath);
-
-            // Ensure directories exist
+            // Ensure overlay directory exists
             fs.mkdirSync(path.dirname(overlayPath), { recursive: true });
-            fs.mkdirSync(path.dirname(previewAbsPath), { recursive: true });
 
             const tpl = item.lyricalTemplate;
 
             // Use spawnSync with argument array to avoid ALL shell escaping issues with JSON
+            // IMPORTANT: Do NOT pass --preview-frame here! The Python script treats it as
+            // Mode A (instant PNG preview) which returns BEFORE Mode B (overlay MOV) runs.
+            // We only need the overlay MOV for batch rendering.
             const { spawnSync } = require("child_process");
             const pyArgs = [
               "scripts/lyrical_composer.py",
               "-i", trackAudioPath,
               "-o", overlayPath,
               "--only-overlay",
-              "--preview-frame", previewAbsPath,
               "--transcription-json", item.track.lyricalTranscription,
               "--font", tpl.fontFamily,
               "--font-size", String(tpl.fontSize),
@@ -847,7 +843,6 @@ async function processBatchRendering(batchId: string) {
                 where: { id: tpl.id },
                 data: {
                   overlayVideoUrl: overlayUrl,
-                  previewImageUrl: previewRelPath,
                 },
               });
             } else {

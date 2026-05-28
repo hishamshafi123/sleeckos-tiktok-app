@@ -153,14 +153,15 @@ export async function PATCH(req: Request) {
 
     const trackFilePath = path.join(process.cwd(), "public", track.fileUrl);
 
-    // Spawning compiler script with pre-loaded transcription to bypass Whisper (takes seconds!)
-    const cmd = [
-      `./venv/bin/python3 "scripts/lyrical_composer.py"`,
-      `-i "${trackFilePath}"`,
-      `-o "${overlayAbsolutePath}"`,
-      `--only-overlay`,
-      `--preview-frame "${previewAbsolutePath}"`,
-      `--transcription-json '${track.lyricalTranscription.replace(/'/g, "'\\''")}'`, // Escaping nested single quotes safely for bash
+    // The Python script has mutually exclusive modes:
+    //   --preview-frame → Mode A (renders PNG, returns immediately)
+    //   --only-overlay  → Mode B (renders overlay MOV)
+    // Passing BOTH causes Mode A to short-circuit before Mode B runs.
+    // Solution: two sequential calls.
+
+    const escapedTranscription = track.lyricalTranscription.replace(/'/g, "'\\''");
+    const sharedArgs = [
+      `--transcription-json '${escapedTranscription}'`,
       `--font "${fontFamily}"`,
       `--font-size ${fontSize}`,
       `--active-color "${activeColor}"`,
@@ -170,60 +171,91 @@ export async function PATCH(req: Request) {
       `--fps 60`,
     ].join(" ");
 
-    console.log(`[Lyrical API] Pre-rendering caption assets for template '${templateName}': ${cmd}`);
+    // Step 1: Compile the overlay MOV (Mode B)
+    const overlayCmd = [
+      `./venv/bin/python3 "scripts/lyrical_composer.py"`,
+      `-i "${trackFilePath}"`,
+      `-o "${overlayAbsolutePath}"`,
+      `--only-overlay`,
+      sharedArgs,
+    ].join(" ");
+
+    // Step 2: Generate the preview PNG (Mode A)
+    const previewCmd = [
+      `./venv/bin/python3 "scripts/lyrical_composer.py"`,
+      `-i "${trackFilePath}"`,
+      `-o "/dev/null"`,
+      `--preview-frame "${previewAbsolutePath}"`,
+      sharedArgs,
+    ].join(" ");
+
+    console.log(`[Lyrical API] Step 1: Pre-rendering overlay MOV for template '${templateName}'`);
 
     return new Promise<NextResponse>((resolve) => {
-      exec(cmd, { 
+      exec(overlayCmd, { 
         maxBuffer: 1024 * 1024 * 50, 
         timeout: 300000,
         env: { ...process.env, HF_HOME: process.env.HF_HOME || "/home/nextjs/.cache/huggingface" }
       }, async (error, stdout, stderr) => {
         if (error) {
-          console.error("[Lyrical API] Pre-render failed:", stderr);
+          console.error("[Lyrical API] Overlay MOV pre-render failed:", stderr);
           return resolve(
-            NextResponse.json({ error: `Pre-rendering failed: ${error.message}. Stderr: ${stderr}` }, { status: 500 })
+            NextResponse.json({ error: `Pre-rendering overlay failed: ${error.message}. Stderr: ${stderr}` }, { status: 500 })
           );
         }
 
-        try {
-          // Upsert Template record
-          const template = await prisma.trackLyricalTemplate.upsert({
-            where: {
-              trackId_templateName: {
+        console.log(`[Lyrical API] Step 2: Generating preview PNG for template '${templateName}'`);
+
+        // Generate preview PNG (fast, just one frame)
+        exec(previewCmd, {
+          maxBuffer: 1024 * 1024 * 50,
+          timeout: 60000,
+          env: { ...process.env, HF_HOME: process.env.HF_HOME || "/home/nextjs/.cache/huggingface" }
+        }, async (previewErr) => {
+          if (previewErr) {
+            console.warn("[Lyrical API] Preview PNG generation failed (non-critical):", previewErr.message);
+          }
+
+          try {
+            // Upsert Template record
+            const template = await prisma.trackLyricalTemplate.upsert({
+              where: {
+                trackId_templateName: {
+                  trackId,
+                  templateName,
+                },
+              },
+              update: {
+                fontFamily,
+                fontSize,
+                activeColor,
+                strokeWidth,
+                strokeColor,
+                positionY,
+                overlayVideoUrl: overlayRelativePath,
+                previewImageUrl: previewRelativePath,
+              },
+              create: {
                 trackId,
                 templateName,
+                fontFamily,
+                fontSize,
+                activeColor,
+                strokeWidth,
+                strokeColor,
+                positionY,
+                overlayVideoUrl: overlayRelativePath,
+                previewImageUrl: previewRelativePath,
               },
-            },
-            update: {
-              fontFamily,
-              fontSize,
-              activeColor,
-              strokeWidth,
-              strokeColor,
-              positionY,
-              overlayVideoUrl: overlayRelativePath,
-              previewImageUrl: previewRelativePath,
-            },
-            create: {
-              trackId,
-              templateName,
-              fontFamily,
-              fontSize,
-              activeColor,
-              strokeWidth,
-              strokeColor,
-              positionY,
-              overlayVideoUrl: overlayRelativePath,
-              previewImageUrl: previewRelativePath,
-            },
-          });
+            });
 
-          console.log(`[Lyrical API] Successfully rendered template '${templateName}' for track: ${trackId}`);
-          return resolve(NextResponse.json(template));
-        } catch (dbErr: any) {
-          console.error("[Lyrical API] Error upserting template:", dbErr);
-          return resolve(NextResponse.json({ error: `Failed to save template record: ${dbErr.message}` }, { status: 500 }));
-        }
+            console.log(`[Lyrical API] Successfully rendered template '${templateName}' for track: ${trackId}`);
+            return resolve(NextResponse.json(template));
+          } catch (dbErr: any) {
+            console.error("[Lyrical API] Error upserting template:", dbErr);
+            return resolve(NextResponse.json({ error: `Failed to save template record: ${dbErr.message}` }, { status: 500 }));
+          }
+        });
       });
     });
 
