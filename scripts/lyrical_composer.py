@@ -109,23 +109,56 @@ def ensure_font(font_path_or_name):
     Checks if a custom font is present or system fallbacks.
     If 'montserrat' is requested, it can dynamically pull it from a raw GitHub repo to cache locally.
     """
+    # 1. Check direct file path if it exists
     if os.path.exists(font_path_or_name):
         return font_path_or_name
         
-    cache_dir = os.path.join(os.getcwd(), "fonts")
-    os.makedirs(cache_dir, exist_ok=True)
-    cache_path = os.path.join(cache_dir, f"{font_path_or_name}.ttf")
+    # 2. Check under public/fonts/ in current directory (e.g., inside Docker container or local workspace)
+    public_fonts_dir = os.path.join(os.getcwd(), "public", "fonts")
     
+    # Try variations in public/fonts
+    variations = [
+        font_path_or_name,
+        f"{font_path_or_name}.ttf",
+        f"{font_path_or_name.replace('-Bold', '')}.ttf",
+        f"{font_path_or_name.replace('-Black', '')}.ttf"
+    ]
+    for var in variations:
+        path_in_public = os.path.join(public_fonts_dir, var)
+        if os.path.exists(path_in_public):
+            print(f"[+] Found baked-in font: {path_in_public}")
+            return path_in_public
+
+    # 3. Determine cache directory: prefer public/fonts if writable, fallback to a writable tmp directory
+    cache_dir = public_fonts_dir
+    if not os.path.exists(cache_dir):
+        try:
+            os.makedirs(cache_dir, exist_ok=True)
+        except Exception:
+            cache_dir = os.path.join(tempfile.gettempdir(), "sleeckos_fonts")
+            os.makedirs(cache_dir, exist_ok=True)
+            
+    # Check if cache_dir is writable by writing a small test file
+    try:
+        test_file = os.path.join(cache_dir, ".font_write_test")
+        with open(test_file, "w") as f:
+            f.write("test")
+        os.unlink(test_file)
+    except Exception:
+        # If public/fonts is not writable, fall back to /tmp/sleeckos_fonts
+        cache_dir = os.path.join(tempfile.gettempdir(), "sleeckos_fonts")
+        os.makedirs(cache_dir, exist_ok=True)
+
+    cache_path = os.path.join(cache_dir, f"{font_path_or_name}.ttf")
     if os.path.exists(cache_path):
         return cache_path
-        
-    # Direct fetch utility for Montserrat-Black if specified and not found
+
+    # Direct fetch utility for Montserrat-Black or Montserrat if specified and not found
     if "montserrat" in font_path_or_name.lower():
         url = "https://github.com/google/fonts/raw/main/ofl/montserrat/Montserrat-Black.ttf"
         print(f"[*] Cache miss. Downloading '{font_path_or_name}' dynamically from: {url}")
         try:
             import urllib.request
-            # Create standard user agent to avoid bots block
             req = urllib.request.Request(
                 url, 
                 headers={'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)'}
@@ -154,7 +187,7 @@ def ensure_font(font_path_or_name):
         ]
     elif sys.platform == "win32":
         fallbacks = [
-            "C:\\Windows\\Fonts\\ariblk.ttf",  # Arial Black
+            "C:\\Windows\\Fonts\\ariblk.ttf",
             "C:\\Windows\\Fonts\\impact.ttf",
             "C:\\Windows\\Fonts\\arial.ttf"
         ]
