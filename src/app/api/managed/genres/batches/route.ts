@@ -800,7 +800,7 @@ async function processBatchRendering(batchId: string) {
             fs.mkdirSync(path.dirname(previewAbsPath), { recursive: true });
 
             // Write transcription to a temp file to avoid shell escaping issues with huge JSON
-            const tmpJsonPath = path.join(process.cwd(), `tmp_transcription_${item.lyricalTemplate.id}.json`);
+            const tmpJsonPath = `/tmp/tmp_transcription_${item.lyricalTemplate.id}.json`;
             fs.writeFileSync(tmpJsonPath, item.track.lyricalTranscription, "utf-8");
 
             const tpl = item.lyricalTemplate;
