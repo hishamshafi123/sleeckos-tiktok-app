@@ -53,5 +53,53 @@ def generate_vignettes(output_dir="public/uploads/effects"):
     else:
         print("[+] Radial vignette already exists.")
 
+    # 3. Sunset Glow PNG (warm sun flare top-left corner)
+    sunset_path = os.path.join(output_dir, "sunset_glow.png")
+    if not os.path.exists(sunset_path):
+        print("[*] Generating sunset lens flare...")
+        img = Image.new("RGBA", (720, 1280), (0, 0, 0, 0))
+        # Center of flare at top-left
+        cx, cy = 0, 0
+        max_r = 600.0
+        for y in range(int(max_r)):
+            for x in range(int(max_r)):
+                if x < 720 and y < 1280:
+                    r = (x**2 + y**2)**0.5
+                    if r < max_r:
+                        # Smooth decay from golden amber to transparent
+                        ratio = r / max_r
+                        # Soft ease out curve
+                        factor = (1.0 - ratio) ** 2
+                        r_color = 255
+                        g_color = int(140 + factor * 60)
+                        b_color = int(20 + factor * 30)
+                        opacity = int(factor * 160) # max 160 opacity
+                        img.putpixel((x, y), (r_color, g_color, b_color, opacity))
+        img.save(sunset_path, "PNG")
+        print(f"[+] Sunset glow generated at: {sunset_path}")
+    else:
+        print("[+] Sunset glow already exists.")
+
+    # 4. Emerald Deep Green Vignette PNG
+    emerald_path = os.path.join(output_dir, "emerald_fade.png")
+    if not os.path.exists(emerald_path):
+        print("[*] Generating emerald deep green vignette...")
+        img = Image.new("RGBA", (720, 1280), (0, 0, 0, 0))
+        cx, cy = 360, 640
+        max_r = (cx**2 + cy**2)**0.5
+        for y in range(1280):
+            for x in range(720):
+                r = ((x - cx)**2 + (y - cy)**2)**0.5
+                if r > 200:
+                    ratio = (r - 200) / (max_r - 200)
+                    opacity = int(ratio * 140)
+                    # Deep stoic green tone: R=5, G=28, B=15
+                    img.putpixel((x, y), (5, 28, 15, min(opacity, 140)))
+        img.save(emerald_path, "PNG")
+        print(f"[+] Emerald vignette generated at: {emerald_path}")
+    else:
+        print("[+] Emerald vignette already exists.")
+
 if __name__ == "__main__":
     generate_vignettes()
+

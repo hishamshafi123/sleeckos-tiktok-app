@@ -119,9 +119,9 @@ export async function POST(req: Request) {
         },
       });
 
-      const filterOptions = ["none", "cyberpunk", "cinema", "vhs", "monochrome"];
+      const filterOptions = ["none", "cyberpunk", "cinema", "vhs", "monochrome", "emerald", "polaroid", "midnight"];
       const particleOptions = ["none", "gold_dust.mp4", "bokeh.mp4", "fireflies.mp4", "snow.mp4"];
-      const vignetteOptions = ["none", "bottom_fade", "radial_vignette"];
+      const vignetteOptions = ["none", "bottom_fade", "radial_vignette", "sunset_glow", "emerald_fade"];
 
       let mutationCounter = 0;
 
@@ -148,11 +148,19 @@ export async function POST(req: Request) {
           let colorFilter = "none";
           let particleFx = "none";
           let vignette = "none";
+          let mirrorBg = false;
+          let bgSpeed = 1.0;
 
           if (mixupVisuals === true) {
             colorFilter = filterOptions[mutationCounter % filterOptions.length];
             particleFx = particleOptions[mutationCounter % particleOptions.length];
             vignette = vignetteOptions[mutationCounter % vignetteOptions.length];
+            
+            // Transformation mutations
+            mirrorBg = mutationCounter % 2 === 1;
+            const speedOptions = [0.95, 1.0, 1.05];
+            bgSpeed = speedOptions[mutationCounter % speedOptions.length];
+            
             mutationCounter++;
           }
 
@@ -160,7 +168,9 @@ export async function POST(req: Request) {
             title: `Lyrical - ${track.title} (${template.templateName})`,
             colorFilter,
             particleFx,
-            vignette
+            vignette,
+            mirrorBg,
+            bgSpeed
           });
 
           await prisma.genreBatchItem.create({
@@ -762,6 +772,8 @@ async function processBatchRendering(batchId: string) {
           let colorFilter = "none";
           let particleFx = "none";
           let vignette = "none";
+          let mirrorBg = false;
+          let bgSpeed = 1.0;
 
           if (item.quoteText && item.quoteText.startsWith("{")) {
             try {
@@ -769,6 +781,8 @@ async function processBatchRendering(batchId: string) {
               colorFilter = meta.colorFilter || "none";
               particleFx = meta.particleFx || "none";
               vignette = meta.vignette || "none";
+              mirrorBg = meta.mirrorBg === true;
+              bgSpeed = typeof meta.bgSpeed === "number" ? meta.bgSpeed : 1.0;
             } catch (e) {
               console.warn("[Batch Worker Lyrical] Failed to parse item quoteText metadata:", e);
             }
@@ -781,7 +795,20 @@ async function processBatchRendering(batchId: string) {
           let lastLabel = "0:v";
           let currentInputIdx = 1;
 
-          // 1. Apply built-in FFmpeg Color Balance filters
+          // A. Apply Background Transformations (Horizontal Mirroring & Speed Shifting)
+          const transformFilters: string[] = [];
+          if (mirrorBg) {
+            transformFilters.push("hflip");
+          }
+          if (bgSpeed !== 1.0) {
+            transformFilters.push(`setpts=${(1.0 / bgSpeed).toFixed(3)}*PTS`);
+          }
+          if (transformFilters.length > 0) {
+            filterComplex += `[0:v]${transformFilters.join(",")}[transformed_bg];`;
+            lastLabel = "transformed_bg";
+          }
+
+          // B. Apply built-in FFmpeg Color Balance and Eq filters
           if (colorFilter !== "none") {
             let filterString = "";
             if (colorFilter === "cyberpunk") {
@@ -792,15 +819,63 @@ async function processBatchRendering(batchId: string) {
               filterString = "colorchannelmixer=.3:.4:.3:0:.3:.4:.3:0:.3:.4:.3:0";
             } else if (colorFilter === "vhs") {
               filterString = "noise=alls=12:allf=t+u,hue=s=0.7";
+            } else if (colorFilter === "emerald") {
+              filterString = "colorbalance=rs=-0.1:gs=0.12:bs=-0.1:rm=-0.08:gm=0.1:bm=-0.08";
+            } else if (colorFilter === "polaroid") {
+              filterString = "eq=contrast=0.95:brightness=0.02:saturation=1.1,colorbalance=rs=0.08:gs=0.04:bs=-0.08:rm=0.04:gm=0.02:bm=-0.04";
+            } else if (colorFilter === "midnight") {
+              filterString = "colorbalance=rs=-0.12:gs=-0.05:bs=0.2:rm=-0.08:gm=-0.02:bm=0.15";
             }
 
             if (filterString) {
-              filterComplex += `[0:v]${filterString}[color_bg];`;
+              filterComplex += `[${lastLabel}]${filterString}[color_bg];`;
               lastLabel = "color_bg";
             }
           }
 
-          // 2. Apply Bottom Gradient / Circle Vignette overlay PNGs
+          // C. Parse transcription for line start timestamps to construct beat-responsive brightness flashes
+          let lineStartTimes: number[] = [];
+          if (item.track.lyricalTranscription) {
+            try {
+              const wordsList = JSON.parse(item.track.lyricalTranscription);
+              if (Array.isArray(wordsList) && wordsList.length > 0) {
+                let currentChunkStart = wordsList[0].start;
+                lineStartTimes.push(currentChunkStart);
+                let wordCount = 1;
+                let lastEnd = wordsList[0].end;
+                for (let idx = 1; idx < wordsList.length; idx++) {
+                  const w = wordsList[idx];
+                  const gap = w.start - lastEnd;
+                  if (wordCount >= 3 || gap > 1.5) {
+                    lineStartTimes.push(w.start);
+                    currentChunkStart = w.start;
+                    wordCount = 1;
+                  } else {
+                    wordCount++;
+                  }
+                  lastEnd = w.end;
+                }
+              }
+            } catch (e) {
+              console.warn("[Batch Worker Lyrical] Failed to parse transcription for flash transitions:", e);
+            }
+          }
+
+          let flashFilterString = "";
+          if (lineStartTimes.length > 0) {
+            let expr = "0";
+            for (const t of lineStartTimes) {
+              expr = `if(between(t\\,${t.toFixed(2)}\\,${(t + 0.25).toFixed(2)})\\,0.15\\,${expr})`;
+            }
+            flashFilterString = `eq=brightness='${expr}'`;
+          }
+
+          if (flashFilterString) {
+            filterComplex += `[${lastLabel}]${flashFilterString}[flashed_bg];`;
+            lastLabel = "flashed_bg";
+          }
+
+          // D. Apply Bottom Gradient / Circle Vignette overlay PNGs
           let vignetteInputIdx = -1;
           if (vignette !== "none") {
             const vigPath = path.join(process.cwd(), "public", "uploads", "effects", `${vignette}.png`);
@@ -812,7 +887,25 @@ async function processBatchRendering(batchId: string) {
             }
           }
 
-          // 3. Screen-blend high-efficiency black background MP4 particle loop overlays
+          // E. Dynamically generate and overlay glassmorphic account watermark badge
+          let watermarkInputIdx = -1;
+          const accountHandle = item.account.tiktokUsername || "sleeckos";
+          const watermarkPath = path.join(process.cwd(), "public", "uploads", "effects", `watermark_${item.accountId}.png`);
+          try {
+            const { execSync } = require("child_process");
+            execSync(`./venv/bin/python3 scripts/watermark_generator.py --handle "@${accountHandle.replace("@", "")}" --output "${watermarkPath}"`, { timeout: 10000 });
+          } catch (e) {
+            console.warn("[Batch Worker Lyrical] Watermark generation failed:", e);
+          }
+
+          if (fs.existsSync(watermarkPath)) {
+            watermarkInputIdx = currentInputIdx++;
+            inputs.push(`-i "${watermarkPath}"`);
+            filterComplex += `[${lastLabel}][${watermarkInputIdx}:v]overlay=W-w-30:H-h-120[watermarked];`;
+            lastLabel = "watermarked";
+          }
+
+          // F. Screen-blend high-efficiency black background MP4 particle loop overlays
           let particleInputIdx = -1;
           if (particleFx !== "none") {
             const pPath = path.join(process.cwd(), "public", "uploads", "effects", particleFx);
@@ -824,7 +917,7 @@ async function processBatchRendering(batchId: string) {
             }
           }
 
-          // 4. Overlay silent lossless MOV typography subtitles overlay
+          // G. Overlay silent lossless MOV typography subtitles overlay
           const captionInputIdx = currentInputIdx++;
           inputs.push(`-i "${overlayPath}"`);
           filterComplex += `[${lastLabel}][${captionInputIdx}:v]overlay=0:0[v]`;

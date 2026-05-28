@@ -471,6 +471,8 @@ export default function GenresDashboard() {
   const [setupLyricalColorFilter, setSetupLyricalColorFilter] = useState<string>("none");
   const [setupLyricalVignette, setSetupLyricalVignette] = useState<string>("none");
   const [setupLyricalParticleFx, setSetupLyricalParticleFx] = useState<string>("none");
+  const [setupLyricalMirrorBg, setSetupLyricalMirrorBg] = useState<boolean>(false);
+  const [setupLyricalBgSpeed, setSetupLyricalBgSpeed] = useState<number>(1.0);
   const [mixupVisuals, setMixupVisuals] = useState<boolean>(true);
 
 
@@ -516,6 +518,9 @@ export default function GenresDashboard() {
     const video = previewVideoRef.current;
     if (!video) return;
 
+    // Apply custom speed to video preview
+    video.playbackRate = setupLyricalBgSpeed;
+
     const isPlayingThis = playingTrackId === setupLyricalTrackId && setupLyricalTrackId !== null;
     if (isPlayingThis) {
       video.play().catch(err => console.warn("Video play failed:", err));
@@ -531,7 +536,7 @@ export default function GenresDashboard() {
     } else {
       video.pause();
     }
-  }, [playingTrackId, setupLyricalTrackId, lyricalPlaybackTime]);
+  }, [playingTrackId, setupLyricalTrackId, lyricalPlaybackTime, setupLyricalBgSpeed]);
 
   // Automatically select the first background video as the default lyrical preview background
   useEffect(() => {
@@ -2237,6 +2242,9 @@ export default function GenresDashboard() {
                                           <option value="cinema">Cinema (Warm)</option>
                                           <option value="vhs">VHS (Retro Grain)</option>
                                           <option value="monochrome">Moody Mono</option>
+                                          <option value="emerald">Stoic Emerald</option>
+                                          <option value="polaroid">Retro Polaroid</option>
+                                          <option value="midnight">Midnight Blues</option>
                                         </select>
                                       </div>
                                       <div className="space-y-1">
@@ -2249,6 +2257,8 @@ export default function GenresDashboard() {
                                           <option value="none">None (Clear)</option>
                                           <option value="bottom_fade">Bottom Shadow</option>
                                           <option value="radial_vignette">Cinema Vignette</option>
+                                          <option value="sunset_glow">Sunset Lens Flare</option>
+                                          <option value="emerald_fade">Stoic Emerald Vignette</option>
                                         </select>
                                       </div>
                                       <div className="space-y-1">
@@ -2263,6 +2273,32 @@ export default function GenresDashboard() {
                                           <option value="bokeh.mp4">Golden Bokeh</option>
                                           <option value="fireflies.mp4">Fireflies</option>
                                           <option value="snow.mp4">Falling Snow</option>
+                                        </select>
+                                      </div>
+                                    </div>
+
+                                    <div className="grid grid-cols-2 gap-2">
+                                      <div className="space-y-1">
+                                        <label className="block text-[9px] uppercase tracking-wider font-extrabold text-gray-500">Background Mirror</label>
+                                        <select
+                                          value={setupLyricalMirrorBg ? "true" : "false"}
+                                          onChange={(e) => setSetupLyricalMirrorBg(e.target.value === "true")}
+                                          className="w-full bg-black/40 border border-white/5 rounded-xl px-1.5 py-1.5 text-[10px] text-gray-300 focus:outline-none"
+                                        >
+                                          <option value="false">Normal (Standard)</option>
+                                          <option value="true">Mirrored (Horiz. Flip)</option>
+                                        </select>
+                                      </div>
+                                      <div className="space-y-1">
+                                        <label className="block text-[9px] uppercase tracking-wider font-extrabold text-gray-500">Background Speed</label>
+                                        <select
+                                          value={setupLyricalBgSpeed.toString()}
+                                          onChange={(e) => setSetupLyricalBgSpeed(parseFloat(e.target.value))}
+                                          className="w-full bg-black/40 border border-white/5 rounded-xl px-1.5 py-1.5 text-[10px] text-gray-300 focus:outline-none"
+                                        >
+                                          <option value="0.95">0.95x (Slow)</option>
+                                          <option value="1.0">1.00x (Normal)</option>
+                                          <option value="1.05">1.05x (Fast)</option>
                                         </select>
                                       </div>
                                     </div>
@@ -2359,6 +2395,15 @@ export default function GenresDashboard() {
                                       if (setupLyricalColorFilter === "vhs") {
                                         return "contrast(1.1) saturate(0.85) sepia(0.1) brightness(0.95)";
                                       }
+                                      if (setupLyricalColorFilter === "emerald") {
+                                        return "contrast(1.15) saturate(0.7) sepia(0.1) hue-rotate(80deg) brightness(0.9)";
+                                      }
+                                      if (setupLyricalColorFilter === "polaroid") {
+                                        return "contrast(0.95) saturate(1.1) sepia(0.15) brightness(1.02)";
+                                      }
+                                      if (setupLyricalColorFilter === "midnight") {
+                                        return "contrast(1.1) saturate(1.15) hue-rotate(190deg) brightness(0.85)";
+                                      }
                                       return "none";
                                     })();
 
@@ -2406,7 +2451,10 @@ export default function GenresDashboard() {
                                                 ref={previewVideoRef}
                                                 src={resolveUrl(setupLyricalBgVideoUrl)}
                                                 className="absolute inset-0 w-full h-full object-cover z-0"
-                                                style={{ filter: cssColorFilterStyle }}
+                                                style={{ 
+                                                  filter: cssColorFilterStyle,
+                                                  transform: setupLyricalMirrorBg ? "scaleX(-1)" : "none"
+                                                }}
                                                 muted
                                                 loop
                                                 playsInline
@@ -2433,6 +2481,24 @@ export default function GenresDashboard() {
                                           {setupLyricalVignette === "radial_vignette" && (
                                             <div className="absolute inset-0 bg-[radial-gradient(circle,transparent_40%,rgba(0,0,0,0.65)_95%)] z-[1] pointer-events-none select-none" />
                                           )}
+                                          {setupLyricalVignette === "sunset_glow" && (
+                                            <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(255,140,0,0.65)_0%,rgba(255,69,0,0)_60%)] z-[1] pointer-events-none select-none" />
+                                          )}
+                                          {setupLyricalVignette === "emerald_fade" && (
+                                            <div className="absolute inset-0 bg-[radial-gradient(circle,transparent_40%,rgba(5,28,15,0.65)_95%)] z-[1] pointer-events-none select-none" />
+                                          )}
+
+                                          {/* Live Glassmorphic Watermark Badge preview */}
+                                          <div className="absolute right-2 bottom-[70px] z-[5] pointer-events-none select-none scale-75 origin-bottom-right">
+                                            <div className="bg-[#0f0f0f]/60 border border-white/15 px-3 py-1.5 rounded-full backdrop-blur-md flex items-center gap-1.5 shadow-lg shadow-black/40">
+                                              <div className="flex items-center">
+                                                <div className="w-1.5 h-1.5 bg-purple-500 rounded-full shadow-[0_0_8px_rgba(168,85,247,0.8)]" />
+                                                <div className="w-[1.5px] h-3 bg-pink-500 rounded-t -mt-2 -ml-0.5" />
+                                                <div className="w-1.5 h-[1.5px] bg-pink-500 rounded-r -mt-2 -ml-0.5" />
+                                              </div>
+                                              <span className="text-[8px] font-extrabold tracking-wide text-white/95 uppercase">@sleeckos</span>
+                                            </div>
+                                          </div>
 
                                           {/* Animated Floating Particles Layer */}
                                           {setupLyricalParticleFx !== "none" && (
