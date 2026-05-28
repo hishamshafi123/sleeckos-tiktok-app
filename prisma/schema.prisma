@@ -530,20 +530,45 @@ enum GenreBatchItemStatus {
 }
 
 model Track {
-  id              String           @id @default(uuid())
+  id              String                 @id @default(uuid())
   title           String
   artist          String
   fileUrl         String
   duration        Float
-  defaultStart    Float            @default(0.0)
-  defaultDuration Float            @default(7.0)
+  defaultStart    Float                  @default(0.0)
+  defaultDuration Float                  @default(7.0)
   genre           String?
   musician        String?
-  campaignOn      Boolean          @default(false)
+  campaignOn      Boolean                @default(false)
   campaignActiveAt DateTime?
+  createdAt       DateTime               @default(now())
+  updatedAt       DateTime               @updatedAt
+  batchItems      GenreBatchItem[]
+
+  isLyrical           Boolean                @default(false)
+  lyricalTranscription String?                // JSON array of word-level aligned timestamps
+  lyricalTemplates    TrackLyricalTemplate[]
+}
+
+model TrackLyricalTemplate {
+  id              String           @id @default(uuid())
+  trackId         String
+  track           Track            @relation(fields: [trackId], references: [id], onDelete: Cascade)
+  templateName    String           // e.g. "Neon Rainbow", "Vibrant Yellow"
+  fontFamily      String           @default("Montserrat-Black")
+  fontSize        Int              @default(48)
+  activeColor     String           @default("multi")
+  strokeWidth     Int              @default(5)
+  strokeColor     String           @default("#000000")
+  positionY       Float            @default(0.75)
+  overlayVideoUrl String?          // Local transparent .mov video overlay file URL
+  previewImageUrl String?          // Local transparent preview PNG image file URL
   createdAt       DateTime         @default(now())
   updatedAt       DateTime         @updatedAt
+
   batchItems      GenreBatchItem[]
+
+  @@unique([trackId, templateName])
 }
 
 model AccountGenreConfig {
@@ -609,6 +634,9 @@ model GenreBatchItem {
   errorMessage        String?
   createdAt           DateTime             @default(now())
   updatedAt           DateTime             @updatedAt
+
+  lyricalTemplateId   String?
+  lyricalTemplate     TrackLyricalTemplate? @relation(fields: [lyricalTemplateId], references: [id], onDelete: SetNull)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

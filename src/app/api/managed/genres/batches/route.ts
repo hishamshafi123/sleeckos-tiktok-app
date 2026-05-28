@@ -79,6 +79,91 @@ export async function POST(req: Request) {
     const { action } = body;
 
     // ─────────────────────────────────────────────────────────────────────────
+    // ACTION 0.5: CREATE_LYRICAL_BATCH
+    // ─────────────────────────────────────────────────────────────────────────
+    if (action === "CREATE_LYRICAL_BATCH") {
+      const { accountIds, postsPerAccount, trackId, lyricalTemplateId } = body;
+
+      if (!accountIds || !Array.isArray(accountIds) || accountIds.length === 0) {
+        return NextResponse.json({ error: "Please select at least one TikTok account" }, { status: 400 });
+      }
+      if (!postsPerAccount || postsPerAccount <= 0) {
+        return NextResponse.json({ error: "Please specify number of posts per account" }, { status: 400 });
+      }
+      if (!trackId || !lyricalTemplateId) {
+        return NextResponse.json({ error: "Please select a Lyrical track and styling template" }, { status: 400 });
+      }
+
+      const track = await prisma.track.findUnique({
+        where: { id: trackId },
+      });
+
+      const template = await prisma.trackLyricalTemplate.findUnique({
+        where: { id: lyricalTemplateId },
+      });
+
+      if (!track || !template) {
+        return NextResponse.json({ error: "Lyrical track or template configuration not found" }, { status: 404 });
+      }
+
+      const totalPosts = accountIds.length * postsPerAccount;
+
+      // Create a Lyrical Batch directly in RENDERING status
+      const batch = await prisma.genreBatch.create({
+        data: {
+          genre: "lyrical",
+          status: "RENDERING",
+          totalPosts,
+          postsPerAccount,
+          videoLength: track.duration,
+        },
+      });
+
+      // Populate batch items with pre-rendered template overlays
+      for (const accountId of accountIds) {
+        const account = await prisma.managedAccount.findUnique({
+          where: { id: accountId },
+          include: {
+            backgroundVideos: true, // vertical loops
+          },
+        });
+
+        if (!account) continue;
+
+        const bgs = account.backgroundVideos;
+        if (bgs.length === 0) {
+          console.warn(`[Batches API] Account ${account.tiktokUsername} has no vertical background loops uploaded`);
+          continue;
+        }
+
+        for (let i = 0; i < postsPerAccount; i++) {
+          const randomBg = bgs[Math.floor(Math.random() * bgs.length)];
+
+          await prisma.genreBatchItem.create({
+            data: {
+              batchId: batch.id,
+              accountId,
+              quoteText: `Lyrical - ${track.title} (${template.templateName})`,
+              quoteAuthor: track.artist,
+              trackId: track.id,
+              trackStart: 0.0,
+              backgroundVideoUrl: randomBg.videoUrl,
+              lyricalTemplateId: template.id,
+              status: "PENDING",
+            },
+          });
+        }
+      }
+
+      // Kick off background rendering immediately (no manual start rendering required!)
+      processBatchRendering(batch.id).catch(err => {
+        console.error(`[Batches API] Lyrical bulk background render queue failure for batch ${batch.id}:`, err);
+      });
+
+      return NextResponse.json({ success: true, batchId: batch.id, message: "Lyrical video composition started in the background" });
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
     // ACTION 1: GENERATE_QUOTES
     // ─────────────────────────────────────────────────────────────────────────
     if (action === "GENERATE_QUOTES") {
@@ -573,6 +658,7 @@ async function processBatchRendering(batchId: string) {
           include: {
             account: true,
             track: true,
+            lyricalTemplate: true,
           },
         },
       },
@@ -619,20 +705,6 @@ async function processBatchRendering(batchId: string) {
           throw new Error(`Audio file not found at: ${audioPath}`);
         }
 
-        // Resolve account quote styling configurations
-        const styleConfig = await prisma.accountGenreConfig.findUnique({
-          where: {
-            accountId_genre: {
-              accountId: item.accountId,
-              genre: "quote",
-            },
-          },
-        });
-
-        if (!styleConfig) {
-          throw new Error("TikTok account has no Quote typography configuration saved. Please configure it first.");
-        }
-
         // Generate dynamic local output destination in public/uploads/renders
         const rendersDir = path.join(process.cwd(), "public", "uploads", "renders");
         if (!fs.existsSync(rendersDir)) {
@@ -640,27 +712,88 @@ async function processBatchRendering(batchId: string) {
         }
         const localOutFile = path.join(rendersDir, `render_${item.id}.mp4`);
 
-        // Trigger visual composition via FFmpeg
-        const { composeVideo } = await import("@/lib/composer");
-        await composeVideo({
-          bgVideoPath: bgPath,
-          audioPath: audioPath,
-          quoteText: item.quoteText,
-          quoteAuthor: item.quoteAuthor,
-          fontFamily: styleConfig.fontFamily,
-          fontSize: styleConfig.fontSize,
-          fontColor: styleConfig.fontColor,
-          textCase: styleConfig.textCase,
-          boxColor: styleConfig.boxColor,
-          shadowColor: styleConfig.shadowColor,
-          lineSpacing: styleConfig.lineSpacing,
-          videoLength: batch.videoLength,
-          trackStart: item.trackStart,
-          outputPath: localOutFile,
-          curveText: styleConfig.curveText,
-          curvature: styleConfig.curvature,
-          positionY: styleConfig.positionY,
-        });
+        if (item.lyricalTemplateId && item.lyricalTemplate) {
+          // Bypassing quote drawing entirely!
+          // We will run an ultra-fast FFmpeg command that overlays the pre-rendered transparent overlay MOV onto the account's background video.
+          const overlayUrl = item.lyricalTemplate.overlayVideoUrl;
+          if (!overlayUrl) {
+            throw new Error(`Styling template '${item.lyricalTemplate.templateName}' is not fully pre-rendered yet. Please pre-render it.`);
+          }
+          const overlayPath = path.join(process.cwd(), "public", overlayUrl);
+          if (!fs.existsSync(overlayPath)) {
+            throw new Error(`Pre-rendered Lyrical overlay video not found at: ${overlayPath}`);
+          }
+
+          const duration = batch.videoLength || item.track.duration || 7.0;
+
+          // Build FFmpeg overlay command:
+          // Stream-loop the background video to match track duration, overlay transparent subtitles at 0:0, and copy audio.
+          const cmd = [
+            `ffmpeg -y`,
+            `-stream_loop -1 -i "${bgPath}"`,
+            `-i "${overlayPath}"`,
+            `-filter_complex "[0:v][1:v]overlay=0:0[v]"`,
+            `-map "[v]"`,
+            `-map 1:a`,
+            `-c:v libx264`,
+            `-pix_fmt yuv420p`,
+            `-preset superfast`,
+            `-c:a copy`,
+            `-t ${duration}`,
+            `"${localOutFile}"`,
+          ].join(" ");
+
+          console.log(`[Batch Worker Lyrical] Spawning FFmpeg overlay merge: ${cmd}`);
+
+          await new Promise<void>((resolvePromise, rejectPromise) => {
+            const { exec: execCmd } = require("child_process");
+            execCmd(cmd, { timeout: 120000 }, (error: any, stdout: any, stderr: any) => {
+              if (error) {
+                console.error("[Batch Worker Lyrical] FFmpeg execution error:", stderr);
+                rejectPromise(new Error(`FFmpeg composition failed: ${error.message}`));
+              } else {
+                resolvePromise();
+              }
+            });
+          });
+
+        } else {
+          // Resolve account quote styling configurations
+          const styleConfig = await prisma.accountGenreConfig.findUnique({
+            where: {
+              accountId_genre: {
+                accountId: item.accountId,
+                genre: "quote",
+              },
+            },
+          });
+
+          if (!styleConfig) {
+            throw new Error("TikTok account has no Quote typography configuration saved. Please configure it first.");
+          }
+
+          // Trigger visual composition via FFmpeg
+          const { composeVideo } = await import("@/lib/composer");
+          await composeVideo({
+            bgVideoPath: bgPath,
+            audioPath: audioPath,
+            quoteText: item.quoteText,
+            quoteAuthor: item.quoteAuthor,
+            fontFamily: styleConfig.fontFamily,
+            fontSize: styleConfig.fontSize,
+            fontColor: styleConfig.fontColor,
+            textCase: styleConfig.textCase,
+            boxColor: styleConfig.boxColor,
+            shadowColor: styleConfig.shadowColor,
+            lineSpacing: styleConfig.lineSpacing,
+            videoLength: batch.videoLength,
+            trackStart: item.trackStart,
+            outputPath: localOutFile,
+            curveText: styleConfig.curveText,
+            curvature: styleConfig.curvature,
+            positionY: styleConfig.positionY,
+          });
+        }
 
         // Update DB item record to RENDERED with local URL path
         await prisma.genreBatchItem.update({

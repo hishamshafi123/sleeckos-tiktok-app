@@ -73,6 +73,8 @@ interface Track {
   videosPosted?: number;
   totalViews?: number;
   createdAt: string;
+  isLyrical?: boolean;
+  lyricalTranscription?: string | null;
 }
 
 interface BackgroundVideo {
@@ -387,6 +389,24 @@ export default function GenresDashboard() {
   const [cancellingBatchId, setCancellingBatchId] = useState<string | null>(null);
   const [retryingBatchId, setRetryingBatchId] = useState<string | null>(null);
 
+  // Lyrical composition states
+  const [wizardGenre, setWizardGenre] = useState<"quote" | "lyrical">("quote");
+  const [setupLyricalTrackId, setSetupLyricalTrackId] = useState<string | null>(null);
+  const [designatingLyrical, setDesignatingLyrical] = useState<Record<string, boolean>>({});
+  const [lyricalTemplateName, setLyricalTemplateName] = useState("Vibrant Neon");
+  const [lyricalFontFamily, setLyricalFontFamily] = useState("Montserrat-Black");
+  const [lyricalFontSize, setLyricalFontSize] = useState(48);
+  const [lyricalActiveColor, setLyricalActiveColor] = useState("multi");
+  const [lyricalStrokeWidth, setLyricalStrokeWidth] = useState(5);
+  const [lyricalStrokeColor, setLyricalStrokeColor] = useState("#000000");
+  const [lyricalPositionY, setLyricalPositionY] = useState(0.75);
+  const [preRenderingTemplate, setPreRenderingTemplate] = useState(false);
+  const [lyricalTemplates, setLyricalTemplates] = useState<any[]>([]);
+  const [loadingTemplatesTrackId, setLoadingTemplatesTrackId] = useState<string | null>(null);
+  const [selectedLyricalTrackId, setSelectedLyricalTrackId] = useState<string>("");
+  const [selectedLyricalTemplateId, setSelectedLyricalTemplateId] = useState<string>("");
+  const [selectedPreviewTemplateId, setSelectedPreviewTemplateId] = useState<string | null>(null);
+
   // Local video preview & manual upload states
   const [previewVideoUrl, setPreviewVideoUrl] = useState<string | null>(null);
   const [isPreviewModalOpen, setIsPreviewModalOpen] = useState(false);
@@ -505,6 +525,81 @@ export default function GenresDashboard() {
       toast.error("Failed to load music tracks");
     } finally {
       setLoadingTracks(false);
+    }
+  };
+
+  const fetchLyricalTemplates = async (trackId: string) => {
+    setLoadingTemplatesTrackId(trackId);
+    try {
+      const res = await fetch(`/api/managed/genres/tracks/lyrical?trackId=${trackId}`);
+      if (res.ok) {
+        const data = await res.json();
+        setLyricalTemplates(data);
+        if (data.length > 0 && !selectedPreviewTemplateId) {
+          setSelectedPreviewTemplateId(data[0].id);
+        }
+      }
+    } catch {
+      toast.error("Failed to load styling templates");
+    } finally {
+      setLoadingTemplatesTrackId(null);
+    }
+  };
+
+  const handleDesignateLyrical = async (trackId: string) => {
+    setDesignatingLyrical(prev => ({ ...prev, [trackId]: true }));
+    toast.info("Starting Whisper audio alignment in the background... this may take up to 2-3 minutes.");
+    try {
+      const res = await fetch("/api/managed/genres/tracks/lyrical", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ trackId }),
+      });
+      if (res.ok) {
+        toast.success("Successfully transcribed and aligned lyrical track!");
+        fetchTracks();
+      } else {
+        const data = await res.json();
+        toast.error(data.error || "Whisper alignment failed");
+      }
+    } catch (err: any) {
+      toast.error(err.message || "Failed to designate lyrical track");
+    } finally {
+      setDesignatingLyrical(prev => ({ ...prev, [trackId]: false }));
+    }
+  };
+
+  const handlePreRenderTemplate = async (trackId: string) => {
+    setPreRenderingTemplate(true);
+    toast.info("Generating caption PNG preview frame and pre-rendering MOV transparent overlay clip... this may take up to 1-2 minutes.");
+    try {
+      const res = await fetch("/api/managed/genres/tracks/lyrical", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          trackId,
+          templateName: lyricalTemplateName,
+          fontFamily: lyricalFontFamily,
+          fontSize: lyricalFontSize,
+          activeColor: lyricalActiveColor,
+          strokeWidth: lyricalStrokeWidth,
+          strokeColor: lyricalStrokeColor,
+          positionY: lyricalPositionY,
+        }),
+      });
+      if (res.ok) {
+        toast.success(`Successfully rendered template '${lyricalTemplateName}'`);
+        const data = await res.json();
+        await fetchLyricalTemplates(trackId);
+        setSelectedPreviewTemplateId(data.id);
+      } else {
+        const data = await res.json();
+        toast.error(data.error || "Pre-rendering overlays failed");
+      }
+    } catch (err: any) {
+      toast.error(err.message || "Failed to pre-render templates");
+    } finally {
+      setPreRenderingTemplate(false);
     }
   };
 
@@ -993,6 +1088,53 @@ export default function GenresDashboard() {
       }
     } catch {
       toast.error("Network error generating quotes");
+    } finally {
+      setGeneratingQuotes(false);
+    }
+  };
+
+  const handleStartLyricalGeneration = async () => {
+    if (selectedBatchAccountIds.length === 0) {
+      toast.error("Please select at least one TikTok account");
+      return;
+    }
+    if (!selectedLyricalTrackId || !selectedLyricalTemplateId) {
+      toast.error("Please select a Lyrical Track and Styling Template");
+      return;
+    }
+
+    setGeneratingQuotes(true);
+    try {
+      const res = await fetch("/api/managed/genres/batches", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "CREATE_LYRICAL_BATCH",
+          accountIds: selectedBatchAccountIds,
+          postsPerAccount: postsPerAccount,
+          trackId: selectedLyricalTrackId,
+          lyricalTemplateId: selectedLyricalTemplateId,
+        }),
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        toast.success("Lyrical bulk composition queued successfully!");
+        
+        // Fetch fresh batch info to show progress immediately
+        const batchRes = await fetch(`/api/managed/genres/batches?batchId=${data.batchId}`);
+        if (batchRes.ok) {
+          setActiveBatch(await batchRes.json());
+        }
+        
+        // Transition directly to Step 4 (Render progress list)
+        setWizardStep(4);
+      } else {
+        const data = await res.json();
+        toast.error(data.error || "Failed to create lyrical composition batch");
+      }
+    } catch (err: any) {
+      toast.error(err.message || "Failed to start composition batch");
     } finally {
       setGeneratingQuotes(false);
     }
@@ -1713,7 +1855,291 @@ export default function GenresDashboard() {
                                 </div>
                               </div>
                             )}
+
+                            {/* Lyrical Configurator Action Button */}
+                            <div className="border-t border-white/5 pt-3.5 flex flex-col gap-2">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  if (setupLyricalTrackId === track.id) {
+                                    setSetupLyricalTrackId(null);
+                                  } else {
+                                    setSetupLyricalTrackId(track.id);
+                                    if (track.isLyrical) {
+                                      fetchLyricalTemplates(track.id);
+                                    }
+                                  }
+                                }}
+                                className={`w-full py-2.5 px-4 rounded-2xl text-xs font-bold transition-all duration-300 flex items-center justify-center gap-2 border ${
+                                  track.isLyrical 
+                                    ? "bg-purple-500/10 text-purple-300 border-purple-500/30 hover:bg-purple-500/25 shadow-lg shadow-purple-500/5" 
+                                    : "bg-white/5 text-gray-400 border-white/5 hover:text-white hover:bg-white/10"
+                                }`}
+                              >
+                                <Music className="w-3.5 h-3.5" />
+                                {track.isLyrical ? "Lyrical Setup & Templates" : "Use for Lyrical Videos"}
+                              </button>
+                            </div>
                           </div>
+
+                          {/* Lyrical Config Drawer Block */}
+                          {setupLyricalTrackId === track.id && (
+                            <div className="border-t border-white/5 pt-4 mt-2 px-5 pb-5 space-y-4 text-left bg-black/20 rounded-b-3xl">
+                              <div className="flex justify-between items-center">
+                                <h4 className="text-xs font-black uppercase tracking-widest text-purple-400 flex items-center gap-1.5">
+                                  <Sparkles className="w-3.5 h-3.5" />
+                                  Lyrical Video Setup
+                                </h4>
+                                <button 
+                                  type="button" 
+                                  onClick={() => setSetupLyricalTrackId(null)}
+                                  className="text-gray-500 hover:text-gray-300 text-xs font-bold"
+                                >
+                                  Close
+                                </button>
+                              </div>
+
+                              {!track.isLyrical ? (
+                                <div className="bg-purple-950/20 border border-purple-500/20 rounded-2xl p-4 space-y-3">
+                                  <p className="text-[11px] text-purple-300 leading-relaxed">
+                                    This track needs to be transcribed and word-aligned by Whisper. This runs once and creates exact timing coordinates, allowing subsequent styling changes and overlay creations in under 2 seconds!
+                                  </p>
+                                  <button
+                                    type="button"
+                                    disabled={designatingLyrical[track.id]}
+                                    onClick={() => handleDesignateLyrical(track.id)}
+                                    className="w-full bg-gradient-to-r from-purple-500 to-indigo-600 hover:from-purple-600 hover:to-indigo-700 text-white font-bold py-2 px-4 rounded-xl text-xs flex items-center justify-center gap-2 shadow-lg disabled:opacity-50"
+                                  >
+                                    {designatingLyrical[track.id] ? (
+                                      <>
+                                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                                        Whisper Aligning...
+                                      </>
+                                    ) : (
+                                      <>
+                                        <Sparkles className="w-3.5 h-3.5 animate-pulse" />
+                                        Designate & Align Now
+                                      </>
+                                    )}
+                                  </button>
+                                </div>
+                              ) : (
+                                <div className="space-y-4">
+                                  {/* Styling form */}
+                                  <div className="bg-[#141423] p-3 rounded-2xl border border-white/5 space-y-3">
+                                    <div className="space-y-1">
+                                      <label className="block text-[9px] uppercase tracking-wider font-extrabold text-gray-500">Preset Theme</label>
+                                      <select
+                                        onChange={(e) => {
+                                          const val = e.target.value;
+                                          if (val === "neon-rainbow") {
+                                            setLyricalTemplateName("Neon Rainbow");
+                                            setLyricalFontFamily("Montserrat-Black");
+                                            setLyricalFontSize(48);
+                                            setLyricalActiveColor("multi");
+                                            setLyricalStrokeWidth(5);
+                                            setLyricalStrokeColor("#000000");
+                                            setLyricalPositionY(0.75);
+                                          } else if (val === "vibrant-yellow") {
+                                            setLyricalTemplateName("Vibrant Yellow");
+                                            setLyricalFontFamily("Anton");
+                                            setLyricalFontSize(50);
+                                            setLyricalActiveColor("#ffff00");
+                                            setLyricalStrokeWidth(4);
+                                            setLyricalStrokeColor("#000000");
+                                            setLyricalPositionY(0.70);
+                                          } else if (val === "electric-green") {
+                                            setLyricalTemplateName("Electric Green");
+                                            setLyricalFontFamily("Outfit-Bold");
+                                            setLyricalFontSize(46);
+                                            setLyricalActiveColor("#00ff00");
+                                            setLyricalStrokeWidth(6);
+                                            setLyricalStrokeColor("#111111");
+                                            setLyricalPositionY(0.80);
+                                          } else if (val === "hot-pink") {
+                                            setLyricalTemplateName("Hot Pink");
+                                            setLyricalFontFamily("Inter-Bold");
+                                            setLyricalFontSize(48);
+                                            setLyricalActiveColor("#ff007f");
+                                            setLyricalStrokeWidth(5);
+                                            setLyricalStrokeColor("#000000");
+                                            setLyricalPositionY(0.75);
+                                          }
+                                        }}
+                                        className="w-full bg-black/40 border border-white/5 rounded-xl px-2 py-1.5 text-xs text-gray-300 focus:outline-none"
+                                      >
+                                        <option value="custom">-- Choose Preset Styling --</option>
+                                        <option value="neon-rainbow">Neon Rainbow (Active Multi-color)</option>
+                                        <option value="vibrant-yellow">Vibrant Yellow (Anton Bold)</option>
+                                        <option value="electric-green">Electric Green (Outfit Active)</option>
+                                        <option value="hot-pink">Hot Pink (Vibrant Neon Pink)</option>
+                                      </select>
+                                    </div>
+
+                                    <div className="grid grid-cols-2 gap-2">
+                                      <div className="space-y-1">
+                                        <label className="block text-[9px] uppercase tracking-wider font-extrabold text-gray-500">Template Name</label>
+                                        <input
+                                          type="text"
+                                          value={lyricalTemplateName}
+                                          onChange={(e) => setLyricalTemplateName(e.target.value)}
+                                          placeholder="e.g. My Style"
+                                          className="w-full bg-black/40 border border-white/5 rounded-xl px-2 py-1.5 text-xs text-white focus:outline-none"
+                                        />
+                                      </div>
+                                      <div className="space-y-1">
+                                        <label className="block text-[9px] uppercase tracking-wider font-extrabold text-gray-500">Font Family</label>
+                                        <select
+                                          value={lyricalFontFamily}
+                                          onChange={(e) => setLyricalFontFamily(e.target.value)}
+                                          className="w-full bg-black/40 border border-white/5 rounded-xl px-2 py-1.5 text-xs text-gray-300 focus:outline-none"
+                                        >
+                                          <option value="Montserrat-Black">Montserrat Black</option>
+                                          <option value="Outfit-Bold">Outfit Bold</option>
+                                          <option value="Anton">Anton</option>
+                                          <option value="Inter-Bold">Inter Bold</option>
+                                          <option value="Caveat-Bold">Caveat Bold</option>
+                                        </select>
+                                      </div>
+                                    </div>
+
+                                    <div className="grid grid-cols-2 gap-2">
+                                      <div className="space-y-1">
+                                        <label className="block text-[9px] uppercase tracking-wider font-extrabold text-gray-500">Font Size ({lyricalFontSize}px)</label>
+                                        <input
+                                          type="range"
+                                          min="24"
+                                          max="72"
+                                          value={lyricalFontSize}
+                                          onChange={(e) => setLyricalFontSize(parseInt(e.target.value))}
+                                          className="w-full h-1 bg-gray-800 rounded-lg appearance-none cursor-pointer accent-purple-500"
+                                        />
+                                      </div>
+                                      <div className="space-y-1">
+                                        <label className="block text-[9px] uppercase tracking-wider font-extrabold text-gray-500">Stroke Width ({lyricalStrokeWidth}px)</label>
+                                        <input
+                                          type="range"
+                                          min="0"
+                                          max="12"
+                                          value={lyricalStrokeWidth}
+                                          onChange={(e) => setLyricalStrokeWidth(parseInt(e.target.value))}
+                                          className="w-full h-1 bg-gray-800 rounded-lg appearance-none cursor-pointer accent-purple-500"
+                                        />
+                                      </div>
+                                    </div>
+
+                                    <div className="grid grid-cols-2 gap-2">
+                                      <div className="space-y-1">
+                                        <label className="block text-[9px] uppercase tracking-wider font-extrabold text-gray-500">Active Neon Color</label>
+                                        <select
+                                          value={lyricalActiveColor}
+                                          onChange={(e) => setLyricalActiveColor(e.target.value)}
+                                          className="w-full bg-black/40 border border-white/5 rounded-xl px-2 py-1.5 text-xs text-gray-300 focus:outline-none"
+                                        >
+                                          <option value="multi">Neon Rainbow (Cycles Colors)</option>
+                                          <option value="#ffff00">Neon Yellow</option>
+                                          <option value="#00ff00">Neon Green</option>
+                                          <option value="#00ffff">Neon Cyan</option>
+                                          <option value="#ff007f">Neon Pink</option>
+                                          <option value="#ff5500">Neon Orange</option>
+                                        </select>
+                                      </div>
+                                      <div className="space-y-1">
+                                        <label className="block text-[9px] uppercase tracking-wider font-extrabold text-gray-500">Position Y ({(lyricalPositionY * 100).toFixed(0)}%)</label>
+                                        <input
+                                          type="range"
+                                          min="30"
+                                          max="90"
+                                          step="5"
+                                          value={lyricalPositionY * 100}
+                                          onChange={(e) => setLyricalPositionY(parseInt(e.target.value) / 100)}
+                                          className="w-full h-1 bg-gray-800 rounded-lg appearance-none cursor-pointer accent-purple-500"
+                                        />
+                                      </div>
+                                    </div>
+
+                                    <button
+                                      type="button"
+                                      disabled={preRenderingTemplate}
+                                      onClick={() => handlePreRenderTemplate(track.id)}
+                                      className="w-full bg-gradient-to-r from-amber-500 to-purple-600 hover:from-amber-600 hover:to-purple-700 text-white font-extrabold py-2.5 px-4 rounded-xl text-xs flex items-center justify-center gap-2 shadow-lg disabled:opacity-50"
+                                    >
+                                      {preRenderingTemplate ? (
+                                        <>
+                                          <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                                          Pre-rendering overlays...
+                                        </>
+                                      ) : (
+                                        <>
+                                          <Sparkles className="w-3.5 h-3.5" />
+                                          Pre-render styling overlays
+                                        </>
+                                      )}
+                                    </button>
+                                  </div>
+
+                                  {/* Pre-rendered templates grid and preview */}
+                                  <div className="space-y-3">
+                                    <h5 className="text-[10px] font-extrabold uppercase tracking-widest text-gray-400">Available Templates & Captions Preview</h5>
+                                    
+                                    {loadingTemplatesTrackId === track.id ? (
+                                      <div className="flex justify-center items-center py-6">
+                                        <RefreshCw className="w-5 h-5 text-purple-500 animate-spin" />
+                                      </div>
+                                    ) : lyricalTemplates.length === 0 ? (
+                                      <p className="text-[10px] text-gray-600 italic">No templates created for this track yet.</p>
+                                    ) : (
+                                      <div className="space-y-4">
+                                        {/* Templates Select Grid */}
+                                        <div className="grid grid-cols-2 gap-2 max-h-[160px] overflow-y-auto pr-1">
+                                          {lyricalTemplates.map((tpl) => (
+                                            <div 
+                                              key={tpl.id}
+                                              onClick={() => setSelectedPreviewTemplateId(tpl.id)}
+                                              className={`p-2.5 rounded-xl border text-left cursor-pointer transition-all ${
+                                                selectedPreviewTemplateId === tpl.id 
+                                                  ? "bg-purple-500/15 border-purple-500/40 text-white shadow-lg shadow-purple-500/5" 
+                                                  : "bg-black/30 border-white/5 text-gray-400 hover:border-white/10"
+                                              }`}
+                                            >
+                                              <p className="text-[11px] font-bold text-white truncate">{tpl.templateName}</p>
+                                              <p className="text-[9px] text-gray-500 truncate mt-0.5">{tpl.fontFamily} ({tpl.fontSize}px)</p>
+                                            </div>
+                                          ))}
+                                        </div>
+
+                                        {/* Premium Live Render Preview Box (9:16 aspect ratio representation) */}
+                                        {(() => {
+                                          const activeTpl = lyricalTemplates.find(t => t.id === selectedPreviewTemplateId);
+                                          if (!activeTpl) return null;
+                                          return (
+                                            <div className="space-y-2 bg-[#0c0c14] p-3 rounded-2xl border border-white/5">
+                                              <div className="flex justify-between items-center">
+                                                <span className="text-[9px] uppercase tracking-wider font-extrabold text-gray-500">Live Typography Frame Preview</span>
+                                                <span className="text-[9px] text-purple-400 bg-purple-500/10 px-2 py-0.5 rounded uppercase font-bold">{activeTpl.templateName}</span>
+                                              </div>
+                                              
+                                              <div className="relative aspect-[9/16] w-full max-w-[160px] mx-auto bg-black border border-white/10 rounded-2xl overflow-hidden shadow-2xl flex items-center justify-center group">
+                                                {/* Preview Image loaded dynamically from Backend */}
+                                                <img 
+                                                  src={resolveUrl(activeTpl.previewImageUrl)} 
+                                                  className="w-full h-full object-cover select-none" 
+                                                  alt="Lyrics typography render preview" 
+                                                />
+                                                {/* Glassmorphic border glow overlay */}
+                                                <div className="absolute inset-0 border border-white/5 rounded-2xl pointer-events-none" />
+                                              </div>
+                                              <p className="text-[9px] text-center text-gray-500 mt-1">First lyric segment preview with active neon highlighting</p>
+                                            </div>
+                                          );
+                                        })()}
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          )}
 
                         </div>
                       ))}
@@ -2846,24 +3272,42 @@ export default function GenresDashboard() {
               {/* Quote Genre (Active) */}
               <button
                 type="button"
-                className="flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-400 font-extrabold text-xs tracking-wider uppercase transition-all shadow-md shadow-amber-500/5 cursor-default"
+                onClick={() => {
+                  setWizardGenre("quote");
+                  setWizardStep(1);
+                }}
+                className={`flex items-center justify-center gap-2 px-4 py-3 rounded-xl font-extrabold text-xs tracking-wider uppercase transition-all shadow-md ${
+                  wizardGenre === "quote"
+                    ? "bg-amber-500/10 border border-amber-500/20 text-amber-400 shadow-amber-500/5 cursor-default"
+                    : "bg-white/[0.02] border border-white/5 text-gray-400 hover:text-white"
+                }`}
               >
                 <Sparkles className="w-4 h-4" />
                 Quotes Composer
               </button>
 
-              {/* Lyrical Genre (Locked Placeholder) */}
-              <div 
-                className="relative group flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-white/[0.02] border border-white/5 text-gray-500 font-bold text-xs tracking-wider uppercase select-none cursor-not-allowed transition-all hover:bg-white/[0.04]"
-                title="Lyrical composer is locked"
+              {/* Lyrical Genre (Unlocked!) */}
+              <button
+                type="button"
+                onClick={() => {
+                  setWizardGenre("lyrical");
+                  setWizardStep(1);
+                  // Default to first lyrical track
+                  const firstLyrical = tracks.find(t => t.isLyrical);
+                  if (firstLyrical) {
+                    setSelectedLyricalTrackId(firstLyrical.id);
+                    fetchLyricalTemplates(firstLyrical.id);
+                  }
+                }}
+                className={`flex items-center justify-center gap-2 px-4 py-3 rounded-xl font-extrabold text-xs tracking-wider uppercase transition-all shadow-md ${
+                  wizardGenre === "lyrical"
+                    ? "bg-purple-500/10 border border-purple-500/20 text-purple-400 shadow-purple-500/5 cursor-default"
+                    : "bg-white/[0.02] border border-white/5 text-gray-400 hover:text-white"
+                }`}
               >
-                <Lock className="w-3.5 h-3.5 text-gray-600 flex-shrink-0" />
-                <span>Lyrical</span>
-                {/* Custom premium glassmorphic tooltip */}
-                <div className="absolute bottom-full mb-2 left-1/2 -translate-x-1/2 hidden group-hover:block bg-[#0f0f18]/95 border border-white/10 px-3 py-1.5 rounded-xl shadow-xl backdrop-blur-md text-[10px] text-gray-300 font-bold uppercase tracking-wider text-center w-48 z-20 pointer-events-none">
-                  Lyrical Composer <span className="text-purple-400">Coming Soon</span>
-                </div>
-              </div>
+                <Music className="w-4 h-4" />
+                Lyrical Composer
+              </button>
 
               {/* K-Pop Genre (Locked Placeholder) */}
               <div 
@@ -2894,38 +3338,57 @@ export default function GenresDashboard() {
           </div>
           
           {/* Steps Indicator */}
-          <div className="flex flex-col md:flex-row justify-between items-center gap-4 bg-[#141423] p-4 rounded-3xl border border-white/5">
-            <div className="flex items-center gap-2">
-              <span className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-xs ${
-                wizardStep >= 1 ? "bg-amber-500 text-black shadow-lg shadow-amber-500/20" : "bg-gray-800 text-gray-500"
-              }`}>1</span>
-              <span className={`text-sm font-bold ${wizardStep >= 1 ? "text-white" : "text-gray-500"}`}>Quantities</span>
+          {wizardGenre === "lyrical" ? (
+            <div className="flex flex-col md:flex-row justify-between items-center gap-4 bg-[#141423] p-4 rounded-3xl border border-white/5">
+              <div className="flex items-center gap-2">
+                <span className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-xs ${
+                  wizardStep === 1 ? "bg-purple-500 text-white shadow-lg shadow-purple-500/20" : "bg-gray-800 text-gray-500"
+                }`}>1</span>
+                <span className={`text-sm font-bold ${wizardStep === 1 ? "text-white" : "text-gray-500"}`}>Batch Settings</span>
+              </div>
+              <ChevronRight className="w-4 h-4 text-gray-600 hidden md:block" />
+              
+              <div className="flex items-center gap-2">
+                <span className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-xs ${
+                  wizardStep === 4 ? "bg-purple-500 text-white shadow-lg shadow-purple-500/20" : "bg-gray-800 text-gray-500"
+                }`}>2</span>
+                <span className={`text-sm font-bold ${wizardStep === 4 ? "text-white" : "text-gray-500"}`}>Composition Render</span>
+              </div>
             </div>
-            <ChevronRight className="w-4 h-4 text-gray-600 hidden md:block" />
-            
-            <div className="flex items-center gap-2">
-              <span className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-xs ${
-                wizardStep >= 2 ? "bg-amber-500 text-black shadow-lg shadow-amber-500/20" : "bg-gray-800 text-gray-500"
-              }`}>2</span>
-              <span className={`text-sm font-bold ${wizardStep >= 2 ? "text-white" : "text-gray-500"}`}>Quotes Review</span>
-            </div>
-            <ChevronRight className="w-4 h-4 text-gray-600 hidden md:block" />
+          ) : (
+            <div className="flex flex-col md:flex-row justify-between items-center gap-4 bg-[#141423] p-4 rounded-3xl border border-white/5">
+              <div className="flex items-center gap-2">
+                <span className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-xs ${
+                  wizardStep >= 1 ? "bg-amber-500 text-black shadow-lg shadow-amber-500/20" : "bg-gray-800 text-gray-500"
+                }`}>1</span>
+                <span className={`text-sm font-bold ${wizardStep >= 1 ? "text-white" : "text-gray-500"}`}>Quantities</span>
+              </div>
+              <ChevronRight className="w-4 h-4 text-gray-600 hidden md:block" />
+              
+              <div className="flex items-center gap-2">
+                <span className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-xs ${
+                  wizardStep >= 2 ? "bg-amber-500 text-black shadow-lg shadow-amber-500/20" : "bg-gray-800 text-gray-500"
+                }`}>2</span>
+                <span className={`text-sm font-bold ${wizardStep >= 2 ? "text-white" : "text-gray-500"}`}>Quotes Review</span>
+              </div>
+              <ChevronRight className="w-4 h-4 text-gray-600 hidden md:block" />
 
-            <div className="flex items-center gap-2">
-              <span className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-xs ${
-                wizardStep >= 3 ? "bg-amber-500 text-black shadow-lg shadow-amber-500/20" : "bg-gray-800 text-gray-500"
-              }`}>3</span>
-              <span className={`text-sm font-bold ${wizardStep >= 3 ? "text-white" : "text-gray-500"}`}>Audio Pool</span>
-            </div>
-            <ChevronRight className="w-4 h-4 text-gray-600 hidden md:block" />
+              <div className="flex items-center gap-2">
+                <span className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-xs ${
+                  wizardStep >= 3 ? "bg-amber-500 text-black shadow-lg shadow-amber-500/20" : "bg-gray-800 text-gray-500"
+                }`}>3</span>
+                <span className={`text-sm font-bold ${wizardStep >= 3 ? "text-white" : "text-gray-500"}`}>Audio Pool</span>
+              </div>
+              <ChevronRight className="w-4 h-4 text-gray-600 hidden md:block" />
 
-            <div className="flex items-center gap-2">
-              <span className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-xs ${
-                wizardStep >= 4 ? "bg-amber-500 text-black shadow-lg shadow-amber-500/20" : "bg-gray-800 text-gray-500"
-              }`}>4</span>
-              <span className={`text-sm font-bold ${wizardStep >= 4 ? "text-white" : "text-gray-500"}`}>Composition Render</span>
+              <div className="flex items-center gap-2">
+                <span className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-xs ${
+                  wizardStep >= 4 ? "bg-amber-500 text-black shadow-lg shadow-amber-500/20" : "bg-gray-800 text-gray-500"
+                }`}>4</span>
+                <span className={`text-sm font-bold ${wizardStep >= 4 ? "text-white" : "text-gray-500"}`}>Composition Render</span>
+              </div>
             </div>
-          </div>
+          )}
 
           {/* ──────────────────────────────────────────────────
               STEP 1: BATCH QUANTITIES & ACCOUNTS SELECT
@@ -3289,124 +3752,262 @@ export default function GenresDashboard() {
                   })()}
                 </div>
 
-              {/* Quotes Input Source Selection */}
-              <div className="bg-[#0c0c14]/40 border border-white/5 p-6 rounded-3xl space-y-4">
-                <div>
-                  <h4 className="text-sm font-black text-white uppercase tracking-wider">Quote Content Input Source</h4>
-                  <p className="text-[10px] text-gray-500 font-semibold uppercase tracking-wider mt-0.5">Choose how you want to supply the quote texts for this batch</p>
-                </div>
+              {/* Lyrical Track & Template or Quote Content Input Source Selection */}
+              {wizardGenre === "lyrical" ? (
+                <div className="bg-[#0c0c14]/40 border border-white/5 p-6 rounded-3xl space-y-6 text-left">
+                  <div>
+                    <h4 className="text-sm font-black text-white uppercase tracking-wider flex items-center gap-1.5">
+                      <Music className="w-4 h-4 text-purple-400" />
+                      Lyrical Track & Template Select
+                    </h4>
+                    <p className="text-[10px] text-gray-500 font-semibold uppercase tracking-wider mt-0.5">Select a designated lyrical track and one of its pre-rendered overlays to overlay onto background loops</p>
+                  </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {/* Option 1: Gemini */}
-                  <button
-                    type="button"
-                    onClick={() => setQuotesSource("gemini")}
-                    className={`flex items-start gap-4 p-4 rounded-2xl border text-left transition-all ${
-                      quotesSource === "gemini"
-                        ? "bg-amber-500/10 border-amber-500/30 text-white"
-                        : "bg-[#141423]/40 border-white/5 text-gray-400 hover:border-white/10"
-                    }`}
-                  >
-                    <div className={`p-2 rounded-xl ${quotesSource === "gemini" ? "bg-amber-500 text-black animate-pulse" : "bg-[#141423] text-gray-400"}`}>
-                      <Sparkles className="w-5 h-5" />
-                    </div>
-                    <div>
-                      <h5 className="text-sm font-bold text-white">Generate with Gemini AI</h5>
-                      <p className="text-[11px] text-gray-500 mt-1 leading-relaxed">
-                        Gemini will dynamically bulk generate highly original quotes matching each account's theme or topic prompt.
-                      </p>
-                    </div>
-                  </button>
-
-                  {/* Option 2: CSV Import */}
-                  <button
-                    type="button"
-                    onClick={() => setQuotesSource("csv")}
-                    className={`flex items-start gap-4 p-4 rounded-2xl border text-left transition-all ${
-                      quotesSource === "csv"
-                        ? "bg-amber-500/10 border-amber-500/30 text-white"
-                        : "bg-[#141423]/40 border-white/5 text-gray-400 hover:border-white/10"
-                    }`}
-                  >
-                    <div className={`p-2 rounded-xl ${quotesSource === "csv" ? "bg-amber-500 text-black" : "bg-[#141423] text-gray-400"}`}>
-                      <Upload className="w-5 h-5" />
-                    </div>
-                    <div>
-                      <h5 className="text-sm font-bold text-white">Upload Quote CSV(s)</h5>
-                      <p className="text-[11px] text-gray-500 mt-1 leading-relaxed">
-                        Import one or multiple CSV files containing your own custom quotes. Quotes will be distributed sequentially across video accounts.
-                      </p>
-                    </div>
-                  </button>
-                </div>
-
-                {/* CSV File Upload Drop Zone */}
-                {quotesSource === "csv" && (
-                  <div className="bg-[#141423]/30 border border-white/5 p-4 rounded-2xl space-y-4">
-                    <div className="flex flex-col items-center justify-center border-2 border-dashed border-white/10 hover:border-amber-500/30 rounded-2xl p-6 transition-all text-center relative">
-                      <input
-                        type="file"
-                        accept=".csv"
-                        multiple
-                        onChange={handleCsvUpload}
-                        className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
-                      />
-                      <Upload className="w-8 h-8 text-gray-400 mb-2" />
-                      <p className="text-xs text-gray-300 font-bold">Select or drag one or multiple CSV files</p>
-                      <p className="text-[10px] text-gray-500 mt-1 uppercase font-semibold">Only .csv files containing quote lists</p>
-                    </div>
-
-                    {parsedCsvQuotes.length > 0 && (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    {/* Selectors Column */}
+                    <div className="space-y-4">
                       <div className="space-y-2">
-                        <div className="flex justify-between items-center">
-                          <span className="text-xs font-bold text-gray-400 uppercase tracking-wider">Loaded CSV Quotes ({parsedCsvQuotes.length})</span>
-                          <button
-                            type="button"
-                            onClick={() => setParsedCsvQuotes([])}
-                            className="text-xs text-red-400 hover:underline font-bold uppercase tracking-wider"
-                          >
-                            Clear All
-                          </button>
-                        </div>
-                        <div className="max-h-[150px] overflow-y-auto border border-white/5 rounded-2xl p-3 bg-black/40 space-y-2 text-left">
-                          {parsedCsvQuotes.map((q, idx) => (
-                            <div key={idx} className="text-xs text-gray-300 leading-snug border-b border-white/5 pb-1 last:border-b-0 last:pb-0">
-                              <span className="text-amber-500 font-bold mr-1">#{idx + 1}</span>
-                              "{q.text}" {q.author && <span className="text-gray-500">— {q.author}</span>}
-                            </div>
+                        <label className="block text-xs uppercase tracking-wider font-bold text-gray-400">1. Select Aligned Lyrical Track</label>
+                        <select
+                          value={selectedLyricalTrackId}
+                          onChange={(e) => {
+                            const trackId = e.target.value;
+                            setSelectedLyricalTrackId(trackId);
+                            setSelectedLyricalTemplateId("");
+                            if (trackId) {
+                              fetchLyricalTemplates(trackId);
+                            }
+                          }}
+                          className="w-full bg-[#141423] border border-white/5 rounded-2xl px-4 py-3.5 text-sm font-bold text-white focus:outline-none focus:border-purple-500/30"
+                        >
+                          <option value="">-- Choose Lyrical Music Track --</option>
+                          {tracks.filter(t => t.isLyrical).map(t => (
+                            <option key={t.id} value={t.id}>{t.title} — {t.artist}</option>
                           ))}
-                        </div>
+                        </select>
+                        {tracks.filter(t => t.isLyrical).length === 0 && (
+                          <p className="text-[10px] text-red-400 font-semibold uppercase tracking-wider mt-1">No lyrical tracks available. Designate one in the Tracks Library tab first.</p>
+                        )}
                       </div>
+
+                      {selectedLyricalTrackId && (
+                        <div className="space-y-2">
+                          <label className="block text-xs uppercase tracking-wider font-bold text-gray-400">2. Select Caption Styling Template</label>
+                          {loadingTemplatesTrackId === selectedLyricalTrackId ? (
+                            <div className="flex items-center gap-2 text-xs text-purple-400 py-2">
+                              <RefreshCw className="w-4 h-4 animate-spin" />
+                              Loading pre-rendered styling templates...
+                            </div>
+                          ) : lyricalTemplates.length === 0 ? (
+                            <p className="text-[10px] text-amber-400 font-semibold uppercase tracking-wider bg-amber-500/5 border border-amber-500/10 p-3 rounded-2xl">
+                              No styling templates pre-rendered for this track. Please go to Tracks Library, open this track, customize a style and click "Pre-render styling overlays" first!
+                            </p>
+                          ) : (
+                            <div className="grid grid-cols-1 gap-2.5 max-h-[220px] overflow-y-auto pr-1">
+                              {lyricalTemplates.map((tpl) => (
+                                <div
+                                  key={tpl.id}
+                                  onClick={() => setSelectedLyricalTemplateId(tpl.id)}
+                                  className={`p-3.5 rounded-2xl border text-left cursor-pointer transition-all flex items-center justify-between ${
+                                    selectedLyricalTemplateId === tpl.id
+                                      ? "bg-purple-500/15 border-purple-500/40 text-white shadow-lg shadow-purple-500/5"
+                                      : "bg-[#141423]/40 border-white/5 text-gray-400 hover:border-white/10"
+                                  }`}
+                                >
+                                  <div>
+                                    <p className="text-xs font-bold text-white leading-tight">{tpl.templateName}</p>
+                                    <p className="text-[10px] text-gray-500 font-semibold uppercase tracking-wider mt-1">Font: {tpl.fontFamily} | Size: {tpl.fontSize}px</p>
+                                  </div>
+                                  <div className={`w-4 h-4 rounded-full border flex items-center justify-center flex-shrink-0 ${
+                                    selectedLyricalTemplateId === tpl.id ? "bg-purple-500 border-purple-500 text-white" : "border-white/10"
+                                  }`}>
+                                    {selectedLyricalTemplateId === tpl.id && <Check className="w-2.5 h-2.5 stroke-[4]" />}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Preview Image Column */}
+                    <div>
+                      {(() => {
+                        const activeTpl = lyricalTemplates.find(t => t.id === selectedLyricalTemplateId);
+                        if (!activeTpl) {
+                          return (
+                            <div className="aspect-[9/16] w-full max-w-[150px] mx-auto bg-black/40 border border-dashed border-white/10 rounded-3xl flex flex-col items-center justify-center text-center p-4">
+                              <Eye className="w-8 h-8 text-gray-600 mb-2" />
+                              <span className="text-xs text-gray-500 font-bold uppercase tracking-wider">No Template Selected</span>
+                              <span className="text-[9px] text-gray-600 uppercase tracking-widest mt-1">Select a template to preview typography styling</span>
+                            </div>
+                          );
+                        }
+
+                        return (
+                          <div className="space-y-2 text-center bg-[#0c0c14] p-3 rounded-2xl border border-white/5">
+                            <span className="text-[10px] uppercase tracking-wider font-extrabold text-gray-500 block">Typography Preview: {activeTpl.templateName}</span>
+                            <div className="relative aspect-[9/16] w-full max-w-[150px] mx-auto bg-black border border-white/10 rounded-3xl overflow-hidden shadow-2xl flex items-center justify-center group">
+                              <img
+                                src={resolveUrl(activeTpl.previewImageUrl)}
+                                className="w-full h-full object-cover select-none"
+                                alt="Subtitles layout preview"
+                              />
+                              <div className="absolute inset-0 border border-white/5 rounded-3xl pointer-events-none" />
+                            </div>
+                          </div>
+                        );
+                      })()}
+                    </div>
+                  </div>
+
+                  {/* Trigger Lyrical Composition Button */}
+                  <div className="pt-6 border-t border-white/5">
+                    <button
+                      onClick={handleStartLyricalGeneration}
+                      disabled={generatingQuotes || selectedBatchAccountIds.length === 0 || !selectedLyricalTrackId || !selectedLyricalTemplateId}
+                      className="bg-purple-500 hover:bg-purple-600 text-white font-extrabold py-4 px-8 rounded-2xl shadow-lg transition-all duration-300 flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed text-base"
+                    >
+                      {generatingQuotes ? (
+                        <>
+                          <RefreshCw className="w-5 h-5 animate-spin" />
+                          Processing Lyrical Batch...
+                        </>
+                      ) : (
+                        <>
+                          <Sparkles className="w-5 h-5" />
+                          Generate Lyrical Videos
+                        </>
+                      )}
+                    </button>
+                    {selectedBatchAccountIds.length > 0 && selectedLyricalTrackId && selectedLyricalTemplateId && (
+                      <p className="text-[10px] text-purple-400 font-semibold uppercase tracking-wider mt-2.5">
+                        Will generate {selectedBatchAccountIds.length * postsPerAccount} lyrical videos at ultra-fast 1-second overlay merge per video!
+                      </p>
                     )}
                   </div>
-                )}
-              </div>
+                </div>
+              ) : (
+                /* Quotes Input Source Selection */
+                <div className="bg-[#0c0c14]/40 border border-white/5 p-6 rounded-3xl space-y-4">
+                  <div>
+                    <h4 className="text-sm font-black text-white uppercase tracking-wider">Quote Content Input Source</h4>
+                    <p className="text-[10px] text-gray-500 font-semibold uppercase tracking-wider mt-0.5">Choose how you want to supply the quote texts for this batch</p>
+                  </div>
 
-              {/* Trigger */}
-              <div className="pt-6 border-t border-white/5">
-                <button
-                  onClick={handleStartQuoteGeneration}
-                  disabled={generatingQuotes || selectedBatchAccountIds.length === 0}
-                  className="bg-amber-500 hover:bg-amber-600 text-black font-extrabold py-4 px-8 rounded-2xl shadow-lg transition-all duration-300 flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed text-base"
-                >
-                  {generatingQuotes ? (
-                    <>
-                      <RefreshCw className="w-5 h-5 animate-spin" />
-                      Processing Quotes...
-                    </>
-                  ) : quotesSource === "csv" ? (
-                    <>
-                      <Check className="w-5 h-5" />
-                      Proceed with CSV Quotes
-                    </>
-                  ) : (
-                    <>
-                      <Sparkles className="w-5 h-5" />
-                      Generate Quotes via Gemini API
-                    </>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {/* Option 1: Gemini */}
+                    <button
+                      type="button"
+                      onClick={() => setQuotesSource("gemini")}
+                      className={`flex items-start gap-4 p-4 rounded-2xl border text-left transition-all ${
+                        quotesSource === "gemini"
+                          ? "bg-amber-500/10 border-amber-500/30 text-white"
+                          : "bg-[#141423]/40 border-white/5 text-gray-400 hover:border-white/10"
+                      }`}
+                    >
+                      <div className={`p-2 rounded-xl ${quotesSource === "gemini" ? "bg-amber-500 text-black animate-pulse" : "bg-[#141423] text-gray-400"}`}>
+                        <Sparkles className="w-5 h-5" />
+                      </div>
+                      <div>
+                        <h5 className="text-sm font-bold text-white">Generate with Gemini AI</h5>
+                        <p className="text-[11px] text-gray-500 mt-1 leading-relaxed">
+                          Gemini will dynamically bulk generate highly original quotes matching each account's theme or topic prompt.
+                        </p>
+                      </div>
+                    </button>
+
+                    {/* Option 2: CSV Import */}
+                    <button
+                      type="button"
+                      onClick={() => setQuotesSource("csv")}
+                      className={`flex items-start gap-4 p-4 rounded-2xl border text-left transition-all ${
+                        quotesSource === "csv"
+                          ? "bg-amber-500/10 border-amber-500/30 text-white"
+                          : "bg-[#141423]/40 border-white/5 text-gray-400 hover:border-white/10"
+                      }`}
+                    >
+                      <div className={`p-2 rounded-xl ${quotesSource === "csv" ? "bg-amber-500 text-black" : "bg-[#141423] text-gray-400"}`}>
+                        <Upload className="w-5 h-5" />
+                      </div>
+                      <div>
+                        <h5 className="text-sm font-bold text-white">Upload Quote CSV(s)</h5>
+                        <p className="text-[11px] text-gray-500 mt-1 leading-relaxed">
+                          Import one or multiple CSV files containing your own custom quotes. Quotes will be distributed sequentially across video accounts.
+                        </p>
+                      </div>
+                    </button>
+                  </div>
+
+                  {/* CSV File Upload Drop Zone */}
+                  {quotesSource === "csv" && (
+                    <div className="bg-[#141423]/30 border border-white/5 p-4 rounded-2xl space-y-4">
+                      <div className="flex flex-col items-center justify-center border-2 border-dashed border-white/10 hover:border-amber-500/30 rounded-2xl p-6 transition-all text-center relative">
+                        <input
+                          type="file"
+                          accept=".csv"
+                          multiple
+                          onChange={handleCsvUpload}
+                          className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
+                        />
+                        <Upload className="w-8 h-8 text-gray-400 mb-2" />
+                        <p className="text-xs text-gray-300 font-bold">Select or drag one or multiple CSV files</p>
+                        <p className="text-[10px] text-gray-500 mt-1 uppercase font-semibold">Only .csv files containing quote lists</p>
+                      </div>
+
+                      {parsedCsvQuotes.length > 0 && (
+                        <div className="space-y-2">
+                          <div className="flex justify-between items-center">
+                            <span className="text-xs font-bold text-gray-400 uppercase tracking-wider">Loaded CSV Quotes ({parsedCsvQuotes.length})</span>
+                            <button
+                              type="button"
+                              onClick={() => setParsedCsvQuotes([])}
+                              className="text-xs text-red-400 hover:underline font-bold uppercase tracking-wider"
+                            >
+                              Clear All
+                            </button>
+                          </div>
+                          <div className="max-h-[150px] overflow-y-auto border border-white/5 rounded-2xl p-3 bg-black/40 space-y-2 text-left">
+                            {parsedCsvQuotes.map((q, idx) => (
+                              <div key={idx} className="text-xs text-gray-300 leading-snug border-b border-white/5 pb-1 last:border-b-0 last:pb-0">
+                                <span className="text-amber-500 font-bold mr-1">#{idx + 1}</span>
+                                "{q.text}" {q.author && <span className="text-gray-500">— {q.author}</span>}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
                   )}
-                </button>
-              </div>
+
+                  {/* Trigger */}
+                  <div className="pt-6 border-t border-white/5">
+                    <button
+                      onClick={handleStartQuoteGeneration}
+                      disabled={generatingQuotes || selectedBatchAccountIds.length === 0}
+                      className="bg-amber-500 hover:bg-amber-600 text-black font-extrabold py-4 px-8 rounded-2xl shadow-lg transition-all duration-300 flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed text-base"
+                    >
+                      {generatingQuotes ? (
+                        <>
+                          <RefreshCw className="w-5 h-5 animate-spin" />
+                          Processing Quotes...
+                        </>
+                      ) : quotesSource === "csv" ? (
+                        <>
+                          <Check className="w-5 h-5" />
+                          Proceed with CSV Quotes
+                        </>
+                      ) : (
+                        <>
+                          <Sparkles className="w-5 h-5" />
+                          Generate Quotes via Gemini API
+                        </>
+                      )}
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 

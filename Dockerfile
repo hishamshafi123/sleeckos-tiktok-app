@@ -21,24 +21,45 @@ ENV NEXT_TELEMETRY_DISABLED=1
 RUN npm run build
 
 # ── Stage 3: production runner ────────────────────────────────────────────────
-FROM node:22-alpine AS runner
+FROM node:22-bookworm-slim AS runner
 WORKDIR /app
 
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV NODE_PATH=/usr/local/lib/node_modules
 
-RUN apk add --no-cache ffmpeg ttf-dejavu curl librsvg && \
-    addgroup --system --gid 1001 nodejs && \
-    adduser --system --uid 1001 nextjs && \
+# Install system dependencies (ffmpeg, librsvg, python3, pip, venv)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg \
+    fonts-dejavu \
+    curl \
+    librsvg2-bin \
+    python3 \
+    python3-pip \
+    python3-venv \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# Add nextjs system user/group
+RUN groupadd --system --gid 1001 nodejs && \
+    useradd --system --uid 1001 nextjs && \
     npm install -g prisma@7
 
-# standalone output + static assets + public files
+# Copy standalone output + static assets + public files
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 COPY --from=builder --chown=nextjs:nodejs /app/public ./public
+COPY --from=builder --chown=nextjs:nodejs /app/scripts ./scripts
+
+# Ensure uploads, fonts, and scripts directories exist and have proper permissions
 RUN mkdir -p public/uploads public/fonts && \
-    chown -R nextjs:nodejs public
+    chown -R nextjs:nodejs public scripts
+
+# Create virtual environment and pre-install python dependencies inside container
+RUN python3 -m venv venv && \
+    ./venv/bin/pip install --no-cache-dir --upgrade pip && \
+    ./venv/bin/pip install --no-cache-dir stable-ts moviepy pillow numpy faster-whisper && \
+    chown -R nextjs:nodejs venv
 
 # Bake weight-700 (Bold) static fonts into the image AFTER copying public/
 # CRITICAL: These must be single-weight static TTFs from fonts.gstatic.com/s/.
