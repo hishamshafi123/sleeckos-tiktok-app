@@ -799,40 +799,45 @@ async function processBatchRendering(batchId: string) {
             fs.mkdirSync(path.dirname(overlayPath), { recursive: true });
             fs.mkdirSync(path.dirname(previewAbsPath), { recursive: true });
 
-            // Write transcription to a temp file to avoid shell escaping issues with huge JSON
-            const tmpJsonPath = `/tmp/tmp_transcription_${item.lyricalTemplate.id}.json`;
-            fs.writeFileSync(tmpJsonPath, item.track.lyricalTranscription, "utf-8");
-
             const tpl = item.lyricalTemplate;
-            const compileCmd = [
-              `./venv/bin/python3 "scripts/lyrical_composer.py"`,
-              `-i "${trackAudioPath}"`,
-              `-o "${overlayPath}"`,
-              `--only-overlay`,
-              `--preview-frame "${previewAbsPath}"`,
-              `--transcription-json "$(cat '${tmpJsonPath}')"`,
-              `--font "${tpl.fontFamily}"`,
-              `--font-size ${tpl.fontSize}`,
-              `--active-color "${tpl.activeColor}"`,
-              `--stroke-width ${tpl.strokeWidth}`,
-              `--stroke-color "${tpl.strokeColor}"`,
-              `--position-y ${tpl.positionY}`,
-              `--fps 60`,
-            ].join(" ");
 
-            console.log(`[Batch Worker Lyrical] Spawning auto-compile: ${compileCmd.substring(0, 200)}...`);
+            // Use spawnSync with argument array to avoid ALL shell escaping issues with JSON
+            const { spawnSync } = require("child_process");
+            const pyArgs = [
+              "scripts/lyrical_composer.py",
+              "-i", trackAudioPath,
+              "-o", overlayPath,
+              "--only-overlay",
+              "--preview-frame", previewAbsPath,
+              "--transcription-json", item.track.lyricalTranscription,
+              "--font", tpl.fontFamily,
+              "--font-size", String(tpl.fontSize),
+              "--active-color", tpl.activeColor,
+              "--stroke-width", String(tpl.strokeWidth),
+              "--stroke-color", tpl.strokeColor,
+              "--position-y", String(tpl.positionY),
+              "--fps", "60",
+            ];
 
-            const { execSync } = require("child_process");
-            try {
-              execSync(compileCmd, {
-                cwd: process.cwd(),
-                timeout: 300000, // 5 min max
-                maxBuffer: 1024 * 1024 * 50,
-                env: { ...process.env, HF_HOME: process.env.HF_HOME || "/home/nextjs/.cache/huggingface" },
-              });
-            } finally {
-              // Cleanup temp file
-              try { fs.unlinkSync(tmpJsonPath); } catch {}
+            console.log(`[Batch Worker Lyrical] Spawning auto-compile for template '${tpl.templateName}'...`);
+
+            const pyResult = spawnSync("./venv/bin/python3", pyArgs, {
+              cwd: process.cwd(),
+              timeout: 300000, // 5 min max
+              env: { ...process.env, HF_HOME: process.env.HF_HOME || "/home/nextjs/.cache/huggingface" },
+              stdio: ["pipe", "pipe", "pipe"],
+            });
+
+            const pyStdout = pyResult.stdout?.toString() || "";
+            const pyStderr = pyResult.stderr?.toString() || "";
+            if (pyStdout) console.log(`[Batch Worker Lyrical] Python stdout:\n${pyStdout}`);
+            if (pyStderr) console.warn(`[Batch Worker Lyrical] Python stderr:\n${pyStderr}`);
+
+            if (pyResult.error) {
+              throw new Error(`Python process failed to start: ${pyResult.error.message}`);
+            }
+            if (pyResult.status !== 0) {
+              throw new Error(`Python pre-renderer exited with code ${pyResult.status}: ${pyStderr.substring(0, 500)}`);
             }
 
             // Update DB record with the new overlay path
