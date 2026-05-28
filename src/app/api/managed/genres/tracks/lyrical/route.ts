@@ -57,7 +57,11 @@ export async function POST(req: Request) {
     console.log(`[Lyrical API] Spawning transcription process: ${cmd}`);
 
     return new Promise<NextResponse>((resolve) => {
-      exec(cmd, { maxBuffer: 1024 * 1024 * 50, timeout: 300000 }, async (error, stdout, stderr) => {
+      exec(cmd, { 
+        maxBuffer: 1024 * 1024 * 50, 
+        timeout: 300000,
+        env: { ...process.env, HF_HOME: process.env.HF_HOME || "/home/nextjs/.cache/huggingface" }
+      }, async (error, stdout, stderr) => {
         // Cleanup temp initial preview immediately
         if (fs.existsSync(tempPngPath)) {
           try { fs.unlinkSync(tempPngPath); } catch {}
@@ -169,7 +173,11 @@ export async function PATCH(req: Request) {
     console.log(`[Lyrical API] Pre-rendering caption assets for template '${templateName}': ${cmd}`);
 
     return new Promise<NextResponse>((resolve) => {
-      exec(cmd, { maxBuffer: 1024 * 1024 * 50, timeout: 300000 }, async (error, stdout, stderr) => {
+      exec(cmd, { 
+        maxBuffer: 1024 * 1024 * 50, 
+        timeout: 300000,
+        env: { ...process.env, HF_HOME: process.env.HF_HOME || "/home/nextjs/.cache/huggingface" }
+      }, async (error, stdout, stderr) => {
         if (error) {
           console.error("[Lyrical API] Pre-render failed:", stderr);
           return resolve(

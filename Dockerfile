@@ -27,6 +27,7 @@ WORKDIR /app
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV NODE_PATH=/usr/local/lib/node_modules
+ENV HF_HOME=/home/nextjs/.cache/huggingface
 
 # Install system dependencies (ffmpeg, librsvg, python3, pip, venv)
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -42,7 +43,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Add nextjs system user/group
 RUN groupadd --system --gid 1001 nodejs && \
-    useradd --system --uid 1001 nextjs && \
+    useradd --system --uid 1001 --create-home --home-dir /home/nextjs nextjs && \
+    chown -R nextjs:nodejs /home/nextjs && \
     npm install -g prisma@7
 
 # Copy standalone output + static assets + public files

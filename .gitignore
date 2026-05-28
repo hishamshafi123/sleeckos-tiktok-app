@@ -43,3 +43,12 @@ next-env.d.ts
 
 /src/generated/prisma
 dev.db
+
+# local Python / environment files
+/venv
+/public/fonts
+/scratch
+/public/uploads
+/scripts/__pycache__
+*.pyc
+
