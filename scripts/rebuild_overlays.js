@@ -101,7 +101,7 @@ async function main() {
 
       // Verify track audio file is present
       if (!fs.existsSync(trackAudioAbs)) {
-        console.error(`[!] ERROR: Audio source file is missing from VPS at: ${trackAudioAbs}`);
+        console.error(`[!] ERROR: Audio source file is missing VPS at: ${trackAudioAbs}`);
         console.error(`    Cannot pre-render overlays without the audio source file!`);
         failedCount++;
         continue;
