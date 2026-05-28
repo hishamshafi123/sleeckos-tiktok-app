@@ -527,6 +527,20 @@ def create_lyrical_video(input_path, background_path, output_path, **kwargs):
         
     print(f"[+] Loaded {len(words)} aligned words successfully.")
     
+    # Save the aligned word-level JSON metadata if requested
+    save_json_path = kwargs.get("save_json")
+    if save_json_path:
+        print(f"[*] Saving aligned words JSON to: {save_json_path}")
+        try:
+            if os.path.dirname(save_json_path):
+                os.makedirs(os.path.dirname(os.path.abspath(save_json_path)), exist_ok=True)
+            with open(save_json_path, "w", encoding="utf-8") as f:
+                json.dump(words, f, indent=4, ensure_ascii=False)
+            print(f"[+] Transcription JSON metadata saved successfully!")
+        except Exception as e:
+            print(f"[-] Warning: Failed to save aligned JSON metadata: {e}", file=sys.stderr)
+
+    
     # Assign color cycle (Neon Palette) to words for "multiple neon colors" support
     colors_arg = kwargs.get("active_color", "multi")
     if colors_arg.lower() == "multi":
