@@ -775,7 +775,7 @@ async function processBatchRendering(batchId: string) {
           }
           const overlayPath = path.join(process.cwd(), "public", overlayUrl);
           if (!fs.existsSync(overlayPath)) {
-            throw new Error(`Pre-rendered Lyrical overlay video not found at: ${overlayPath}`);
+            throw new Error(`Pre-rendered Lyrical overlay video not found at: ${overlayPath}. This happens if the template was created locally but the file wasn't generated on the VPS. To fix this instantly, please open the Tracks Library on your VPS Admin Panel, launch the Lyrical Setup Studio for this song, and click 'Pre-render styling overlays' to compile it on the VPS.`);
           }
 
           const duration = batch.videoLength || item.track.duration || 7.0;
