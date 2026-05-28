@@ -6,7 +6,32 @@ import {
   Upload, Film, CheckCircle2, AlertCircle, RefreshCw, ChevronRight, ChevronDown, Check, X, Lock, Tag, Folder, Eye, Filter,
   Loader2, ExternalLink, Download
 } from "lucide-react";
-import { toast } from "sonner";
+import { toast as originalToast } from "sonner";
+
+const toast = {
+  ...originalToast,
+  error: (message: any, options?: any) => {
+    const errorMsg = typeof message === "string" 
+      ? message 
+      : message?.message 
+        ? message.message 
+        : JSON.stringify(message) || "An unexpected error occurred";
+      
+    console.error("[Toast Error]", errorMsg);
+    
+    return originalToast.error(errorMsg, {
+      ...options,
+      duration: 15000, // 15 seconds
+      action: {
+        label: "Copy",
+        onClick: () => {
+          navigator.clipboard.writeText(errorMsg);
+          originalToast.success("Error copied to clipboard!");
+        }
+      }
+    });
+  }
+};
 
 // Inline Google Drive folder linker for the Bulk Genres page
 const InlineFolderLinker = ({ accountId, onLinked }: { accountId: string; onLinked: () => void }) => {
