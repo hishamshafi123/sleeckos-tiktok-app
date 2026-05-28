@@ -465,6 +465,10 @@ export default function GenresDashboard() {
   const [selectedLyricalTrackId, setSelectedLyricalTrackId] = useState<string>("");
   const [selectedLyricalTemplateId, setSelectedLyricalTemplateId] = useState<string>("");
   const [selectedPreviewTemplateId, setSelectedPreviewTemplateId] = useState<string | null>(null);
+  const [lyricalPlaybackTime, setLyricalPlaybackTime] = useState<number>(0);
+  const [setupLyricalBgVideoUrl, setSetupLyricalBgVideoUrl] = useState<string>("");
+  const previewVideoRef = useRef<HTMLVideoElement | null>(null);
+
 
   // Local video preview & manual upload states
   const [previewVideoUrl, setPreviewVideoUrl] = useState<string | null>(null);
@@ -501,6 +505,38 @@ export default function GenresDashboard() {
       document.head.appendChild(link);
     }
   }, []);
+
+  // Synchronize background preview video with audio playback
+  useEffect(() => {
+    const video = previewVideoRef.current;
+    if (!video) return;
+
+    const isPlayingThis = playingTrackId === setupLyricalTrackId && setupLyricalTrackId !== null;
+    if (isPlayingThis) {
+      video.play().catch(err => console.warn("Video play failed:", err));
+      
+      const audioTime = lyricalPlaybackTime;
+      const videoDuration = video.duration;
+      if (videoDuration && isFinite(videoDuration) && videoDuration > 0) {
+        const expectedVideoTime = audioTime % videoDuration;
+        if (Math.abs(video.currentTime - expectedVideoTime) > 0.5) {
+          video.currentTime = expectedVideoTime;
+        }
+      }
+    } else {
+      video.pause();
+    }
+  }, [playingTrackId, setupLyricalTrackId, lyricalPlaybackTime]);
+
+  // Automatically select the first background video as the default lyrical preview background
+  useEffect(() => {
+    if (!setupLyricalBgVideoUrl && accounts.length > 0) {
+      const firstBg = accounts.flatMap(a => a.backgroundVideos || [])[0];
+      if (firstBg) {
+        setSetupLyricalBgVideoUrl(firstBg.videoUrl);
+      }
+    }
+  }, [accounts, setupLyricalBgVideoUrl]);
 
   // Set default form values when account selection changes
   useEffect(() => {
@@ -1518,7 +1554,19 @@ export default function GenresDashboard() {
 
   return (
     <div className="space-y-8 text-gray-200 pb-16">
-      <audio ref={audioPlayerRef} className="hidden" onEnded={() => setPlayingTrackId(null)} />
+      {/* Import premium styling fonts dynamically */}
+      <link 
+        href="https://fonts.googleapis.com/css2?family=Anton&family=Caveat:wght@700&family=Inter:wght@700;900&family=Montserrat:wght@900&family=Outfit:wght@800;900&display=swap" 
+        rel="stylesheet" 
+      />
+      <audio 
+        ref={audioPlayerRef} 
+        className="hidden" 
+        onEnded={() => setPlayingTrackId(null)} 
+        onTimeUpdate={(e) => {
+          setLyricalPlaybackTime(e.currentTarget.currentTime);
+        }}
+      />
       
       {/* Header */}
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 border-b border-white/5 pb-6">
@@ -2117,6 +2165,48 @@ export default function GenresDashboard() {
                                       </div>
                                     </div>
 
+                                    <div className="grid grid-cols-2 gap-2">
+                                      <div className="space-y-1">
+                                        <label className="block text-[9px] uppercase tracking-wider font-extrabold text-gray-500">Stroke Outline Color</label>
+                                        <select
+                                          value={lyricalStrokeColor}
+                                          onChange={(e) => setLyricalStrokeColor(e.target.value)}
+                                          className="w-full bg-black/40 border border-white/5 rounded-xl px-2 py-1.5 text-xs text-gray-300 focus:outline-none"
+                                        >
+                                          <option value="#000000">Black (#000000)</option>
+                                          <option value="#ffffff">White (#ffffff)</option>
+                                          <option value="#1a1a1a">Charcoal (#1a1a1a)</option>
+                                          <option value="#333333">Grey (#333333)</option>
+                                          <option value="#4a0404">Dark Red (#4a0404)</option>
+                                          <option value="#052e16">Dark Green (#052e16)</option>
+                                        </select>
+                                      </div>
+                                      <div className="space-y-1">
+                                        <label className="block text-[9px] uppercase tracking-wider font-extrabold text-gray-500">Preview BG Loop</label>
+                                        {(() => {
+                                          const uniqueBgs = Array.from(
+                                            new Map(
+                                              accounts.flatMap(a => a.backgroundVideos || []).map(v => [v.videoUrl, v])
+                                            ).values()
+                                          );
+                                          return (
+                                            <select
+                                              value={setupLyricalBgVideoUrl}
+                                              onChange={(e) => setSetupLyricalBgVideoUrl(e.target.value)}
+                                              className="w-full bg-black/40 border border-white/5 rounded-xl px-2 py-1.5 text-xs text-gray-300 focus:outline-none"
+                                            >
+                                              <option value="">-- No Video (Gradient Only) --</option>
+                                              {uniqueBgs.map((bg, idx) => (
+                                                <option key={bg.id || idx} value={bg.videoUrl}>
+                                                  Loop {idx + 1} ({bg.videoUrl.split("/").pop()})
+                                                </option>
+                                              ))}
+                                            </select>
+                                          );
+                                        })()}
+                                      </div>
+                                    </div>
+
                                     <button
                                       type="button"
                                       disabled={preRenderingTemplate}
@@ -2137,6 +2227,219 @@ export default function GenresDashboard() {
                                     </button>
                                   </div>
 
+                                  {/* Live interactive player canvas */}
+                                  {(() => {
+                                    let wordsList: any[] = [];
+                                    if (track.lyricalTranscription) {
+                                      try {
+                                        wordsList = JSON.parse(track.lyricalTranscription);
+                                      } catch (e) {
+                                        console.error("Failed to parse transcription:", e);
+                                      }
+                                    }
+
+                                    // Group words into chunks client-side (max 3 words, gap 1.5s)
+                                    const chunks = (() => {
+                                      const res = [];
+                                      let currentChunk = [];
+                                      for (const w of wordsList) {
+                                        if (currentChunk.length === 0) {
+                                          currentChunk.push(w);
+                                        } else {
+                                          const gap = w.start - currentChunk[currentChunk.length - 1].end;
+                                          if (currentChunk.length >= 3 || gap > 1.5) {
+                                            res.push(currentChunk);
+                                            currentChunk = [w];
+                                          } else {
+                                            currentChunk.push(w);
+                                          }
+                                        }
+                                      }
+                                      if (currentChunk.length > 0) {
+                                        res.push(currentChunk);
+                                      }
+                                      return res;
+                                    })();
+
+                                    // Find which chunk is active at lyricalPlaybackTime
+                                    const activeChunk = chunks.find(chunk => {
+                                      if (chunk.length === 0) return false;
+                                      const start = chunk[0].start;
+                                      const end = chunk[chunk.length - 1].end;
+                                      return lyricalPlaybackTime >= start && lyricalPlaybackTime <= end;
+                                    });
+
+                                    // Fallback if no exact active chunk is found: show chunk that is closest/before or first chunk
+                                    const currentChunk = activeChunk || (() => {
+                                      let last = null;
+                                      for (const chunk of chunks) {
+                                        if (chunk.length === 0) continue;
+                                        if (lyricalPlaybackTime >= chunk[0].start) {
+                                          last = chunk;
+                                        }
+                                      }
+                                      return last;
+                                    })() || chunks[0] || [
+                                      { word: "Music", start: 0.0, end: 1.0 },
+                                      { word: "Lyrical", start: 1.0, end: 2.0 },
+                                      { word: "Preview", start: 2.0, end: 3.0 }
+                                    ];
+
+                                    // Map font-family string option to CSS family name
+                                    const cssFontFamily = (() => {
+                                      if (lyricalFontFamily === "Montserrat-Black") return "'Montserrat', sans-serif";
+                                      if (lyricalFontFamily === "Outfit-Bold") return "'Outfit', sans-serif";
+                                      if (lyricalFontFamily === "Anton") return "'Anton', sans-serif";
+                                      if (lyricalFontFamily === "Inter-Bold") return "'Inter', sans-serif";
+                                      if (lyricalFontFamily === "Caveat-Bold") return "'Caveat', cursive";
+                                      return "'Montserrat', sans-serif";
+                                    })();
+
+                                    // Map active neon colors
+                                    const hexList = ["#FFFF00", "#00FF00", "#00FFFF", "#FF00FF", "#FF5F00", "#FF007F"];
+                                    const getWordColor = (w: any, idx: number, isActive: boolean) => {
+                                      if (!isActive) return "#ffffff";
+                                      if (lyricalActiveColor === "multi") {
+                                        return hexList[idx % hexList.length];
+                                      }
+                                      return lyricalActiveColor;
+                                    };
+
+                                    const isPlayingThis = playingTrackId === track.id;
+                                    const playPercent = isPlayingThis && track.duration > 0
+                                      ? Math.min(100, Math.max(0, (lyricalPlaybackTime / track.duration) * 100))
+                                      : 0;
+
+                                    return (
+                                      <div className="space-y-3 bg-[#0c0c14]/50 p-4 rounded-3xl border border-white/5 shadow-inner">
+                                        <div className="flex justify-between items-center">
+                                          <span className="text-[10px] uppercase tracking-wider font-extrabold text-gray-500">Live Typography & Audio Preview</span>
+                                          <span className={`text-[9px] font-black uppercase tracking-widest px-2 py-0.5 rounded border ${isPlayingThis ? "bg-amber-500/10 text-amber-400 border-amber-500/20 animate-pulse" : "bg-white/5 text-gray-500 border-white/5"}`}>
+                                            {isPlayingThis ? "Playing Sound" : "Paused"}
+                                          </span>
+                                        </div>
+
+                                        <div 
+                                          onClick={() => togglePlayTrack(track)}
+                                          className="relative aspect-[9/16] w-full max-w-[170px] mx-auto bg-[#07070d] border border-white/10 rounded-3xl overflow-hidden shadow-2xl flex flex-col justify-between group cursor-pointer hover:border-purple-500/30 transition-all duration-300"
+                                        >
+                                          {/* Background video loop layer */}
+                                          {setupLyricalBgVideoUrl ? (
+                                            <>
+                                              <video
+                                                ref={previewVideoRef}
+                                                src={resolveUrl(setupLyricalBgVideoUrl)}
+                                                className="absolute inset-0 w-full h-full object-cover z-0"
+                                                muted
+                                                loop
+                                                playsInline
+                                              />
+                                              {/* Dark premium glassmorphic overlay over bright background videos */}
+                                              <div className="absolute inset-0 bg-black/45 backdrop-blur-[0.5px] z-0 select-none" />
+                                            </>
+                                          ) : (
+                                            <>
+                                              {/* Sleek abstract glowing mesh layout background */}
+                                              <div className="absolute inset-0 bg-gradient-to-b from-[#120521] via-[#050616] to-[#04101e] opacity-90 select-none z-0" />
+                                              <div className="absolute top-[20%] left-[20%] w-[100px] h-[100px] bg-purple-600/10 rounded-full blur-[40px] animate-pulse z-0" />
+                                              <div className="absolute bottom-[20%] right-[20%] w-[100px] h-[100px] bg-indigo-500/10 rounded-full blur-[40px] animate-pulse z-0" />
+                                            </>
+                                          )}
+
+                                          {/* Simulated TikTok UI Overlays */}
+                                          <div className="absolute right-2.5 bottom-12 flex flex-col items-center gap-3 z-10 text-white/40 pointer-events-none">
+                                            <div className="flex flex-col items-center gap-0.5">
+                                              <div className="w-5 h-5 rounded-full border border-white/20 bg-white/10 flex items-center justify-center text-[7px] font-bold">♫</div>
+                                            </div>
+                                            <div className="flex flex-col items-center gap-0.5">
+                                              <span className="text-[10px]">❤️</span>
+                                              <span className="text-[6px] font-bold">12.5K</span>
+                                            </div>
+                                            <div className="flex flex-col items-center gap-0.5">
+                                              <span className="text-[10px]">💬</span>
+                                              <span className="text-[6px] font-bold">342</span>
+                                            </div>
+                                          </div>
+
+                                          <div className="absolute left-3 bottom-3 flex items-center gap-1.5 z-10 text-white/50 pointer-events-none">
+                                            <div className="w-3.5 h-3.5 rounded-full bg-purple-500/30 border border-purple-500/40 flex items-center justify-center text-[6px] font-black uppercase text-purple-300 tracking-wider">L</div>
+                                            <div className="text-[7px] leading-tight max-w-[100px] truncate font-semibold">
+                                              <p className="text-white/80 font-bold">@sleeckos</p>
+                                              <p className="text-[6px] text-white/40">Lyrical Video Composer...</p>
+                                            </div>
+                                          </div>
+
+                                          {/* Center Play/Pause hover control */}
+                                          <div className="absolute inset-0 flex items-center justify-center bg-black/30 opacity-0 group-hover:opacity-100 transition-opacity duration-300 z-20">
+                                            <div className="w-12 h-12 rounded-full bg-black/60 border border-white/10 flex items-center justify-center text-white shadow-xl shadow-black/50 backdrop-blur-sm">
+                                              {isPlayingThis ? (
+                                                <svg className="w-5 h-5 fill-current text-purple-400" viewBox="0 0 24 24">
+                                                  <rect x="4" y="4" width="4" height="16" rx="1"></rect>
+                                                  <rect x="16" y="4" width="4" height="16" rx="1"></rect>
+                                                </svg>
+                                              ) : (
+                                                <svg className="w-5 h-5 fill-current text-amber-400 translate-x-0.5" viewBox="0 0 24 24">
+                                                  <path d="M8 5v14l11-7z"></path>
+                                                </svg>
+                                              )}
+                                            </div>
+                                          </div>
+
+                                          {/* Live Interactive Caption Block */}
+                                          <div 
+                                            className="absolute left-0 right-0 px-2.5 text-center transform -translate-y-1/2 transition-all duration-150 z-10 select-none pointer-events-none"
+                                            style={{ 
+                                              top: `${lyricalPositionY * 100}%`,
+                                              fontFamily: cssFontFamily,
+                                              fontSize: `${lyricalFontSize * 0.22}px`,
+                                              lineHeight: 1.25
+                                            }}
+                                          >
+                                            <div className="flex flex-wrap justify-center items-center gap-x-1 gap-y-0.5">
+                                              {currentChunk.map((w: any, idx: number) => {
+                                                const isActive = isPlayingThis 
+                                                  ? (lyricalPlaybackTime >= w.start && lyricalPlaybackTime <= w.end)
+                                                  : (idx === 0);
+                                                
+                                                const activeColor = getWordColor(w, idx, isActive);
+                                                
+                                                return (
+                                                  <span
+                                                    key={idx}
+                                                    style={{
+                                                      color: isActive ? activeColor : "#ffffff",
+                                                      WebkitTextStroke: `${lyricalStrokeWidth * 0.22}px ${lyricalStrokeColor}`,
+                                                      textShadow: isActive ? `0 0 8px ${activeColor}cc, 0 0 16px ${activeColor}80` : "none",
+                                                      transform: isActive ? "scale(1.1)" : "scale(1.0)",
+                                                      transition: "all 0.1s ease-out",
+                                                      display: "inline-block"
+                                                    }}
+                                                    className={`${isActive ? "font-black tracking-tight" : "font-extrabold"}`}
+                                                  >
+                                                    {w.word}
+                                                  </span>
+                                                );
+                                              })}
+                                            </div>
+                                          </div>
+
+                                          {/* Progress timeline bar at the bottom */}
+                                          <div className="absolute bottom-0 left-0 right-0 h-1 bg-white/10 z-20">
+                                            <div 
+                                              className="h-full bg-gradient-to-r from-amber-500 to-purple-600 transition-all duration-100 ease-linear"
+                                              style={{ width: `${playPercent}%` }}
+                                            />
+                                          </div>
+                                        </div>
+
+                                        <div className="flex justify-between items-center text-[9px] text-gray-500 px-1 font-medium">
+                                          <span>Playback: {lyricalPlaybackTime.toFixed(1)}s</span>
+                                          <span>Total: {track.duration.toFixed(1)}s</span>
+                                        </div>
+                                      </div>
+                                    );
+                                  })()}
+
                                   {/* Pre-rendered templates grid and preview */}
                                   <div className="space-y-3">
                                     <h5 className="text-[10px] font-extrabold uppercase tracking-widest text-gray-400">Available Templates & Captions Preview</h5>
@@ -2154,7 +2457,16 @@ export default function GenresDashboard() {
                                           {lyricalTemplates.map((tpl) => (
                                             <div 
                                               key={tpl.id}
-                                              onClick={() => setSelectedPreviewTemplateId(tpl.id)}
+                                              onClick={() => {
+                                                setSelectedPreviewTemplateId(tpl.id);
+                                                setLyricalTemplateName(tpl.templateName);
+                                                setLyricalFontFamily(tpl.fontFamily);
+                                                setLyricalFontSize(tpl.fontSize);
+                                                setLyricalActiveColor(tpl.activeColor);
+                                                setLyricalStrokeWidth(tpl.strokeWidth);
+                                                setLyricalStrokeColor(tpl.strokeColor);
+                                                setLyricalPositionY(tpl.positionY);
+                                              }}
                                               className={`p-2.5 rounded-xl border text-left cursor-pointer transition-all ${
                                                 selectedPreviewTemplateId === tpl.id 
                                                   ? "bg-purple-500/15 border-purple-500/40 text-white shadow-lg shadow-purple-500/5" 
@@ -2174,7 +2486,7 @@ export default function GenresDashboard() {
                                           return (
                                             <div className="space-y-2 bg-[#0c0c14] p-3 rounded-2xl border border-white/5">
                                               <div className="flex justify-between items-center">
-                                                <span className="text-[9px] uppercase tracking-wider font-extrabold text-gray-500">Live Typography Frame Preview</span>
+                                                <span className="text-[9px] uppercase tracking-wider font-extrabold text-gray-500">Baked Typography Frame Preview</span>
                                                 <span className="text-[9px] text-purple-400 bg-purple-500/10 px-2 py-0.5 rounded uppercase font-bold">{activeTpl.templateName}</span>
                                               </div>
                                               
@@ -2188,7 +2500,7 @@ export default function GenresDashboard() {
                                                 {/* Glassmorphic border glow overlay */}
                                                 <div className="absolute inset-0 border border-white/5 rounded-2xl pointer-events-none" />
                                               </div>
-                                              <p className="text-[9px] text-center text-gray-500 mt-1">First lyric segment preview with active neon highlighting</p>
+                                              <p className="text-[9px] text-center text-gray-500 mt-1">Pre-rendered static overlay frame saved on the server</p>
                                             </div>
                                           );
                                         })()}
