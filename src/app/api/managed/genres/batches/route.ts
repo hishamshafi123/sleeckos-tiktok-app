@@ -832,6 +832,9 @@ async function processBatchRendering(batchId: string) {
             if (pyResult.error) {
               throw new Error(`Python process failed to start: ${pyResult.error.message}`);
             }
+            if (pyResult.signal) {
+              throw new Error(`Python pre-renderer was killed by signal ${pyResult.signal} (likely OOM or timeout). Stderr: ${pyStderr.substring(0, 500)}`);
+            }
             if (pyResult.status !== 0) {
               throw new Error(`Python pre-renderer exited with code ${pyResult.status}: ${pyStderr.substring(0, 500)}`);
             }

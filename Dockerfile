@@ -60,7 +60,7 @@ RUN mkdir -p public/uploads public/fonts && \
 # Create virtual environment and pre-install python dependencies inside container
 RUN python3 -m venv venv && \
     ./venv/bin/pip install --no-cache-dir --upgrade pip && \
-    ./venv/bin/pip install --no-cache-dir stable-ts moviepy pillow numpy faster-whisper && \
+    ./venv/bin/pip install --no-cache-dir stable-ts "moviepy==1.0.3" pillow numpy faster-whisper && \
     chown -R nextjs:nodejs venv
 
 # Bake weight-700 (Bold) static fonts into the image AFTER copying public/
