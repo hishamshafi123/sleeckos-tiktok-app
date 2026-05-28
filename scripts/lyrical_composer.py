@@ -443,12 +443,18 @@ def build_lyrical_overlay_clips(chunks, width, height, font_path, font_size, act
             rgb_arr = img_np[:, :, :3]
             alpha_arr = img_np[:, :, 3] / 255.0  # Normalized to 0.0 - 1.0
             
-            # Create mask & main clip
-            mask_clip = ImageClip(alpha_arr, ismask=True).set_duration(duration)
-            clip = ImageClip(rgb_arr).set_duration(duration).set_mask(mask_clip)
+            # Create mask & main clip (MoviePy v1.x vs v2.x multi-version compatibility)
+            try:
+                # MoviePy v1.x
+                mask_clip = ImageClip(alpha_arr, ismask=True).set_duration(duration)
+                clip = ImageClip(rgb_arr).set_duration(duration).set_mask(mask_clip)
+                clip = clip.set_start(t0)
+            except TypeError:
+                # MoviePy v2.x — ismask removed, set_X() renamed to with_X()
+                mask_clip = ImageClip(alpha_arr, is_mask=True).with_duration(duration)
+                clip = ImageClip(rgb_arr).with_duration(duration).with_mask(mask_clip)
+                clip = clip.with_start(t0)
             
-            # Anchor clip starting time
-            clip = clip.set_start(t0)
             overlay_clips.append(clip)
             total_intervals += 1
             
@@ -646,7 +652,11 @@ def create_lyrical_video(input_path, background_path, output_path, **kwargs):
         
         # Composite transparent overlays together directly
         final_clip = CompositeVideoClip(caption_overlays, size=(bg_width, bg_height))
-        final_clip = final_clip.set_audio(audio_clip)
+        # MoviePy v1.x vs v2.x: set_audio → with_audio
+        try:
+            final_clip = final_clip.set_audio(audio_clip)
+        except AttributeError:
+            final_clip = final_clip.with_audio(audio_clip)
         
         print(f"[*] Pre-rendering transparent caption video overlay. Dimensions: {bg_width}x{bg_height} | FPS: {fps}")
         os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
@@ -684,7 +694,10 @@ def create_lyrical_video(input_path, background_path, output_path, **kwargs):
             is_bg_image = False
             
         if is_bg_image:
-            bg_clip = ImageClip(background_path).set_duration(audio_duration)
+            try:
+                bg_clip = ImageClip(background_path).set_duration(audio_duration)
+            except (TypeError, AttributeError):
+                bg_clip = ImageClip(background_path).with_duration(audio_duration)
             bg_clip = resize_video_clip(bg_clip, 720, 1280)
             bg_width, bg_height = 720, 1280
         else:
@@ -698,7 +711,10 @@ def create_lyrical_video(input_path, background_path, output_path, **kwargs):
             bg_width, bg_height = 720, 1280
         
         audio_clip = AudioFileClip(input_path)
-        bg_clip = bg_clip.set_audio(audio_clip)
+        try:
+            bg_clip = bg_clip.set_audio(audio_clip)
+        except AttributeError:
+            bg_clip = bg_clip.with_audio(audio_clip)
     else:
         bg_clip = VideoFileClip(background_path)
         bg_width, bg_height = bg_clip.size
