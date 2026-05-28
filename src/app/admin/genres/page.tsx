@@ -468,6 +468,11 @@ export default function GenresDashboard() {
   const [lyricalPlaybackTime, setLyricalPlaybackTime] = useState<number>(0);
   const [setupLyricalBgVideoUrl, setSetupLyricalBgVideoUrl] = useState<string>("");
   const previewVideoRef = useRef<HTMLVideoElement | null>(null);
+  const [setupLyricalColorFilter, setSetupLyricalColorFilter] = useState<string>("none");
+  const [setupLyricalVignette, setSetupLyricalVignette] = useState<string>("none");
+  const [setupLyricalParticleFx, setSetupLyricalParticleFx] = useState<string>("none");
+  const [mixupVisuals, setMixupVisuals] = useState<boolean>(true);
+
 
 
   // Local video preview & manual upload states
@@ -1209,6 +1214,7 @@ export default function GenresDashboard() {
           postsPerAccount: postsPerAccount,
           trackId: selectedLyricalTrackId,
           lyricalTemplateId: selectedLyricalTemplateId,
+          mixupVisuals: mixupVisuals,
         }),
       });
 
@@ -1554,6 +1560,17 @@ export default function GenresDashboard() {
 
   return (
     <div className="space-y-8 text-gray-200 pb-16">
+      <style>{`
+        @keyframes float-dust {
+          0% { transform: translateY(0) scale(0.8); opacity: 0; }
+          10% { opacity: 0.8; }
+          90% { opacity: 0.8; }
+          100% { transform: translateY(-160px) scale(1.1); opacity: 0; }
+        }
+        .animate-float-dust {
+          animation: float-dust infinite linear;
+        }
+      `}</style>
       {/* Import premium styling fonts dynamically */}
       <link 
         href="https://fonts.googleapis.com/css2?family=Anton&family=Caveat:wght@700&family=Inter:wght@700;900&family=Montserrat:wght@900&family=Outfit:wght@800;900&display=swap" 
@@ -2207,6 +2224,49 @@ export default function GenresDashboard() {
                                       </div>
                                     </div>
 
+                                    <div className="grid grid-cols-3 gap-2">
+                                      <div className="space-y-1">
+                                        <label className="block text-[9px] uppercase tracking-wider font-extrabold text-gray-500">Color Filter</label>
+                                        <select
+                                          value={setupLyricalColorFilter}
+                                          onChange={(e) => setSetupLyricalColorFilter(e.target.value)}
+                                          className="w-full bg-black/40 border border-white/5 rounded-xl px-1.5 py-1.5 text-[10px] text-gray-300 focus:outline-none"
+                                        >
+                                          <option value="none">Normal (Clear)</option>
+                                          <option value="cyberpunk">Cyberpunk (Neon)</option>
+                                          <option value="cinema">Cinema (Warm)</option>
+                                          <option value="vhs">VHS (Retro Grain)</option>
+                                          <option value="monochrome">Moody Mono</option>
+                                        </select>
+                                      </div>
+                                      <div className="space-y-1">
+                                        <label className="block text-[9px] uppercase tracking-wider font-extrabold text-gray-500">Dark Vignette</label>
+                                        <select
+                                          value={setupLyricalVignette}
+                                          onChange={(e) => setSetupLyricalVignette(e.target.value)}
+                                          className="w-full bg-black/40 border border-white/5 rounded-xl px-1.5 py-1.5 text-[10px] text-gray-300 focus:outline-none"
+                                        >
+                                          <option value="none">None (Clear)</option>
+                                          <option value="bottom_fade">Bottom Shadow</option>
+                                          <option value="radial_vignette">Cinema Vignette</option>
+                                        </select>
+                                      </div>
+                                      <div className="space-y-1">
+                                        <label className="block text-[9px] uppercase tracking-wider font-extrabold text-gray-500">Particle FX</label>
+                                        <select
+                                          value={setupLyricalParticleFx}
+                                          onChange={(e) => setSetupLyricalParticleFx(e.target.value)}
+                                          className="w-full bg-black/40 border border-white/5 rounded-xl px-1.5 py-1.5 text-[10px] text-gray-300 focus:outline-none"
+                                        >
+                                          <option value="none">None</option>
+                                          <option value="gold_dust.mp4">Gold Dust</option>
+                                          <option value="bokeh.mp4">Golden Bokeh</option>
+                                          <option value="fireflies.mp4">Fireflies</option>
+                                          <option value="snow.mp4">Falling Snow</option>
+                                        </select>
+                                      </div>
+                                    </div>
+
                                     <button
                                       type="button"
                                       disabled={preRenderingTemplate}
@@ -2286,6 +2346,22 @@ export default function GenresDashboard() {
                                     ];
 
                                     // Map font-family string option to CSS family name
+                                    const cssColorFilterStyle = (() => {
+                                      if (setupLyricalColorFilter === "cyberpunk") {
+                                        return "contrast(1.2) saturate(1.3) hue-rotate(320deg) brightness(0.95)";
+                                      }
+                                      if (setupLyricalColorFilter === "cinema") {
+                                        return "sepia(0.2) contrast(1.1) saturate(1.2) brightness(0.95)";
+                                      }
+                                      if (setupLyricalColorFilter === "monochrome") {
+                                        return "grayscale(1) contrast(1.3) brightness(0.9)";
+                                      }
+                                      if (setupLyricalColorFilter === "vhs") {
+                                        return "contrast(1.1) saturate(0.85) sepia(0.1) brightness(0.95)";
+                                      }
+                                      return "none";
+                                    })();
+
                                     const cssFontFamily = (() => {
                                       if (lyricalFontFamily === "Montserrat-Black") return "'Montserrat', sans-serif";
                                       if (lyricalFontFamily === "Outfit-Bold") return "'Outfit', sans-serif";
@@ -2330,6 +2406,7 @@ export default function GenresDashboard() {
                                                 ref={previewVideoRef}
                                                 src={resolveUrl(setupLyricalBgVideoUrl)}
                                                 className="absolute inset-0 w-full h-full object-cover z-0"
+                                                style={{ filter: cssColorFilterStyle }}
                                                 muted
                                                 loop
                                                 playsInline
@@ -2340,10 +2417,32 @@ export default function GenresDashboard() {
                                           ) : (
                                             <>
                                               {/* Sleek abstract glowing mesh layout background */}
-                                              <div className="absolute inset-0 bg-gradient-to-b from-[#120521] via-[#050616] to-[#04101e] opacity-90 select-none z-0" />
+                                              <div 
+                                                className="absolute inset-0 bg-gradient-to-b from-[#120521] via-[#050616] to-[#04101e] opacity-90 select-none z-0" 
+                                                style={{ filter: cssColorFilterStyle }}
+                                              />
                                               <div className="absolute top-[20%] left-[20%] w-[100px] h-[100px] bg-purple-600/10 rounded-full blur-[40px] animate-pulse z-0" />
                                               <div className="absolute bottom-[20%] right-[20%] w-[100px] h-[100px] bg-indigo-500/10 rounded-full blur-[40px] animate-pulse z-0" />
                                             </>
+                                          )}
+
+                                          {/* Dynamic Vignette Shadow overlay layer */}
+                                          {setupLyricalVignette === "bottom_fade" && (
+                                            <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/20 to-transparent z-[1] pointer-events-none select-none" />
+                                          )}
+                                          {setupLyricalVignette === "radial_vignette" && (
+                                            <div className="absolute inset-0 bg-[radial-gradient(circle,transparent_40%,rgba(0,0,0,0.65)_95%)] z-[1] pointer-events-none select-none" />
+                                          )}
+
+                                          {/* Animated Floating Particles Layer */}
+                                          {setupLyricalParticleFx !== "none" && (
+                                            <div className="absolute inset-0 z-[2] overflow-hidden pointer-events-none select-none">
+                                              <div className="absolute w-1.5 h-1.5 bg-amber-400/50 rounded-full blur-[0.5px] top-[90%] left-[15%] animate-float-dust" style={{ animationDelay: "0s", animationDuration: "6s" }} />
+                                              <div className="absolute w-2.5 h-2.5 bg-yellow-200/40 rounded-full blur-[1px] top-[80%] left-[45%] animate-float-dust" style={{ animationDelay: "1.5s", animationDuration: "5s" }} />
+                                              <div className="absolute w-1.5 h-1.5 bg-white/60 rounded-full top-[95%] left-[75%] animate-float-dust" style={{ animationDelay: "3s", animationDuration: "7s" }} />
+                                              <div className="absolute w-2 h-2 bg-amber-300/35 rounded-full blur-[1.5px] top-[75%] left-[60%] animate-float-dust" style={{ animationDelay: "0.5s", animationDuration: "8s" }} />
+                                              <div className="absolute w-1.5 h-1.5 bg-yellow-100/50 rounded-full blur-[0.5px] top-[85%] left-[30%] animate-float-dust" style={{ animationDelay: "2.2s", animationDuration: "6.5s" }} />
+                                            </div>
                                           )}
 
                                           {/* Simulated TikTok UI Overlays */}
@@ -4232,6 +4331,30 @@ export default function GenresDashboard() {
                       })()}
                     </div>
                   </div>
+
+                                          {/* Cinematic Visual Mutations Options */}
+                                          <div className="bg-[#141423]/50 p-4.5 rounded-2xl border border-white/5 space-y-3 mt-4">
+                                            <div className="flex items-center justify-between">
+                                              <div className="flex items-center gap-2">
+                                                <input
+                                                  type="checkbox"
+                                                  id="mixupVisualsToggle"
+                                                  checked={mixupVisuals}
+                                                  onChange={(e) => setMixupVisuals(e.target.checked)}
+                                                  className="w-4 h-4 rounded border-white/10 text-purple-600 focus:ring-purple-500/30 bg-[#141423]"
+                                                />
+                                                <label htmlFor="mixupVisualsToggle" className="text-xs uppercase tracking-wider font-extrabold text-white cursor-pointer select-none">
+                                                  Enable Cinematic Visuals Mutation Mix-Up
+                                                </label>
+                                              </div>
+                                              <span className="text-[9px] font-black uppercase tracking-widest px-2 py-0.5 rounded bg-purple-500/10 border border-purple-500/20 text-purple-400">
+                                                {mixupVisuals ? "Mutator Active" : "Text-Only Overlay"}
+                                              </span>
+                                            </div>
+                                            <p className="text-[10px] text-gray-500 leading-normal font-medium">
+                                              If active, the composition engine will dynamically mutate and distribute **Color Filters** (Cyberpunk, Cinema Gold, Monochrome), **Vignettes** (Bottom Legibility Fade), and **Particle Loop Overlays** (Floating Dust, Golden Bokeh, fireflies) across the {selectedBatchAccountIds.length * postsPerAccount} generated videos. Each output becomes completely unique!
+                                            </p>
+                                          </div>
 
                   {/* Trigger Lyrical Composition Button */}
                   <div className="pt-6 border-t border-white/5">

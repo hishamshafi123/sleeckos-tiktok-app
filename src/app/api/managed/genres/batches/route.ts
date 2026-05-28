@@ -82,7 +82,7 @@ export async function POST(req: Request) {
     // ACTION 0.5: CREATE_LYRICAL_BATCH
     // ─────────────────────────────────────────────────────────────────────────
     if (action === "CREATE_LYRICAL_BATCH") {
-      const { accountIds, postsPerAccount, trackId, lyricalTemplateId } = body;
+      const { accountIds, postsPerAccount, trackId, lyricalTemplateId, mixupVisuals } = body;
 
       if (!accountIds || !Array.isArray(accountIds) || accountIds.length === 0) {
         return NextResponse.json({ error: "Please select at least one TikTok account" }, { status: 400 });
@@ -119,6 +119,12 @@ export async function POST(req: Request) {
         },
       });
 
+      const filterOptions = ["none", "cyberpunk", "cinema", "vhs", "monochrome"];
+      const particleOptions = ["none", "gold_dust.mp4", "bokeh.mp4", "fireflies.mp4", "snow.mp4"];
+      const vignetteOptions = ["none", "bottom_fade", "radial_vignette"];
+
+      let mutationCounter = 0;
+
       // Populate batch items with pre-rendered template overlays
       for (const accountId of accountIds) {
         const account = await prisma.managedAccount.findUnique({
@@ -139,11 +145,29 @@ export async function POST(req: Request) {
         for (let i = 0; i < postsPerAccount; i++) {
           const randomBg = bgs[Math.floor(Math.random() * bgs.length)];
 
+          let colorFilter = "none";
+          let particleFx = "none";
+          let vignette = "none";
+
+          if (mixupVisuals === true) {
+            colorFilter = filterOptions[mutationCounter % filterOptions.length];
+            particleFx = particleOptions[mutationCounter % particleOptions.length];
+            vignette = vignetteOptions[mutationCounter % vignetteOptions.length];
+            mutationCounter++;
+          }
+
+          const serializedMetadata = JSON.stringify({
+            title: `Lyrical - ${track.title} (${template.templateName})`,
+            colorFilter,
+            particleFx,
+            vignette
+          });
+
           await prisma.genreBatchItem.create({
             data: {
               batchId: batch.id,
               accountId,
-              quoteText: `Lyrical - ${track.title} (${template.templateName})`,
+              quoteText: serializedMetadata,
               quoteAuthor: track.artist,
               trackId: track.id,
               trackStart: 0.0,
@@ -726,15 +750,91 @@ async function processBatchRendering(batchId: string) {
 
           const duration = batch.videoLength || item.track.duration || 7.0;
 
-          // Build FFmpeg overlay command:
-          // Stream-loop the background video to match track duration, overlay transparent subtitles at 0:0, and copy audio.
+          // Run Pillow generator dynamic self-healing asset check
+          try {
+            const { execSync } = require("child_process");
+            execSync(`./venv/bin/python3 scripts/effects_generator.py`, { timeout: 10000 });
+          } catch (e) {
+            console.warn("[Batch Worker Lyrical] Self-healing effects builder skipped:", e);
+          }
+
+          // Parse metadata for filters, particle overlays, and vignettes
+          let colorFilter = "none";
+          let particleFx = "none";
+          let vignette = "none";
+
+          if (item.quoteText && item.quoteText.startsWith("{")) {
+            try {
+              const meta = JSON.parse(item.quoteText);
+              colorFilter = meta.colorFilter || "none";
+              particleFx = meta.particleFx || "none";
+              vignette = meta.vignette || "none";
+            } catch (e) {
+              console.warn("[Batch Worker Lyrical] Failed to parse item quoteText metadata:", e);
+            }
+          }
+
+          const inputs: string[] = [];
+          inputs.push(`-stream_loop -1 -i "${bgPath}"`); // index 0 (Background)
+
+          let filterComplex = "";
+          let lastLabel = "0:v";
+          let currentInputIdx = 1;
+
+          // 1. Apply built-in FFmpeg Color Balance filters
+          if (colorFilter !== "none") {
+            let filterString = "";
+            if (colorFilter === "cyberpunk") {
+              filterString = "colorbalance=rs=0.15:gs=-0.05:bs=0.35:rm=0.1:gm=-0.05:bm=0.25";
+            } else if (colorFilter === "cinema") {
+              filterString = "colorbalance=rs=0.12:gs=0.04:bs=-0.12:rm=0.08:gm=0.02:bm=-0.08";
+            } else if (colorFilter === "monochrome") {
+              filterString = "colorchannelmixer=.3:.4:.3:0:.3:.4:.3:0:.3:.4:.3:0";
+            } else if (colorFilter === "vhs") {
+              filterString = "noise=alls=12:allf=t+u,hue=s=0.7";
+            }
+
+            if (filterString) {
+              filterComplex += `[0:v]${filterString}[color_bg];`;
+              lastLabel = "color_bg";
+            }
+          }
+
+          // 2. Apply Bottom Gradient / Circle Vignette overlay PNGs
+          let vignetteInputIdx = -1;
+          if (vignette !== "none") {
+            const vigPath = path.join(process.cwd(), "public", "uploads", "effects", `${vignette}.png`);
+            if (fs.existsSync(vigPath)) {
+              vignetteInputIdx = currentInputIdx++;
+              inputs.push(`-i "${vigPath}"`);
+              filterComplex += `[${lastLabel}][${vignetteInputIdx}:v]overlay=0:0[vignetted];`;
+              lastLabel = "vignetted";
+            }
+          }
+
+          // 3. Screen-blend high-efficiency black background MP4 particle loop overlays
+          let particleInputIdx = -1;
+          if (particleFx !== "none") {
+            const pPath = path.join(process.cwd(), "public", "uploads", "effects", particleFx);
+            if (fs.existsSync(pPath)) {
+              particleInputIdx = currentInputIdx++;
+              inputs.push(`-stream_loop -1 -i "${pPath}"`);
+              filterComplex += `[${lastLabel}][${particleInputIdx}:v]blend=all_mode='screen':all_opacity=0.6[layered];`;
+              lastLabel = "layered";
+            }
+          }
+
+          // 4. Overlay silent lossless MOV typography subtitles overlay
+          const captionInputIdx = currentInputIdx++;
+          inputs.push(`-i "${overlayPath}"`);
+          filterComplex += `[${lastLabel}][${captionInputIdx}:v]overlay=0:0[v]`;
+
           const cmd = [
             `ffmpeg -y`,
-            `-stream_loop -1 -i "${bgPath}"`,
-            `-i "${overlayPath}"`,
-            `-filter_complex "[0:v][1:v]overlay=0:0[v]"`,
+            ...inputs,
+            `-filter_complex "${filterComplex}"`,
             `-map "[v]"`,
-            `-map 1:a`,
+            `-map ${captionInputIdx}:a`, // extract synced audio track from subtitles MOV
             `-c:v libx264`,
             `-pix_fmt yuv420p`,
             `-preset superfast`,
