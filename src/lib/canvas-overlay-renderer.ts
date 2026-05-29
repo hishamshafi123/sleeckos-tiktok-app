@@ -282,22 +282,25 @@ function drawCaptions(
   const fontSize = config.fontSize;
   const yCenter = config.positionY * HEIGHT;
 
-  ctx.textAlign = "center";
+  // Use textAlign="left" so fillText(x) is the LEFT edge — no double-centering
+  ctx.textAlign = "left";
   ctx.textBaseline = "middle";
   ctx.font = `900 ${fontSize}px ${fontName}`;
 
-  // Measure total line width for centering
+  // Measure total line width for centering the block (matching CSS flex justify-center)
   const words = currentChunk.map(w => w.word.toUpperCase());
   const gap = fontSize * 0.25; // space between words
   const wordWidths = words.map(w => ctx.measureText(w).width);
   const totalWidth = wordWidths.reduce((a, b) => a + b, 0) + gap * (words.length - 1);
   
+  // Center the entire text block horizontally (matching CSS left-0 right-0 text-center)
   let x = (WIDTH - totalWidth) / 2;
 
   for (let i = 0; i < words.length; i++) {
     const isActive = i === activeWordIdx;
     const wordWidth = wordWidths[i];
-    const wordX = x + wordWidth / 2;
+    // Center point for this word (used for scale transform origin)
+    const wordCenterX = x + wordWidth / 2;
 
     ctx.save();
 
@@ -307,9 +310,9 @@ function drawCaptions(
         : config.activeColor;
       
       // Scale effect (matching CSS transform: scale(1.12))
-      ctx.translate(wordX, yCenter);
+      ctx.translate(wordCenterX, yCenter);
       ctx.scale(1.12, 1.12);
-      ctx.translate(-wordX, -yCenter);
+      ctx.translate(-wordCenterX, -yCenter);
 
       // Neon glow effect (matching CSS text-shadow: 0 0 8px color, 0 0 16px color)
       ctx.shadowBlur = 16;
@@ -322,15 +325,15 @@ function drawCaptions(
         ctx.strokeStyle = config.strokeColor;
         ctx.lineJoin = "round";
         ctx.miterLimit = 2;
-        ctx.strokeText(words[i], wordX, yCenter);
+        ctx.strokeText(words[i], x, yCenter);
       }
 
-      ctx.fillText(words[i], wordX, yCenter);
+      ctx.fillText(words[i], x, yCenter);
       
       // Second pass for stronger glow
       ctx.shadowBlur = 8;
       ctx.shadowColor = activeColor + "cc"; // 80% opacity inner glow
-      ctx.fillText(words[i], wordX, yCenter);
+      ctx.fillText(words[i], x, yCenter);
     } else {
       // Inactive word: white with outline
       ctx.shadowBlur = 0;
@@ -341,10 +344,10 @@ function drawCaptions(
         ctx.strokeStyle = config.strokeColor;
         ctx.lineJoin = "round";
         ctx.miterLimit = 2;
-        ctx.strokeText(words[i], wordX, yCenter);
+        ctx.strokeText(words[i], x, yCenter);
       }
 
-      ctx.fillText(words[i], wordX, yCenter);
+      ctx.fillText(words[i], x, yCenter);
     }
 
     ctx.restore();
@@ -360,7 +363,46 @@ function drawDarkOverlay(ctx: Ctx) {
   ctx.fillRect(0, 0, WIDTH, HEIGHT);
 }
 
-// ─── Main Renderer ──────────────────────────────────────────────────────────
+// ─── Static Preview Frame ───────────────────────────────────────────────────
+
+export function renderPreviewFrame(
+  words: Word[],
+  config: TemplateConfig,
+  outputPngPath: string,
+): void {
+  registerFonts();
+
+  const canvas = createCanvas(WIDTH, HEIGHT);
+  const ctx = canvas.getContext("2d");
+
+  // Dark background for the preview (since there's no video behind it)
+  ctx.fillStyle = "rgba(0, 0, 0, 0.85)";
+  ctx.fillRect(0, 0, WIDTH, HEIGHT);
+
+  // Vignette
+  if (config.vignette !== "none") {
+    drawVignette(ctx, config.vignette);
+  }
+
+  // Static particles (just draw them at their initial positions)
+  if (config.particleFx !== "none") {
+    const particles = initParticles(config.particleFx);
+    drawParticles(ctx, particles, config.particleFx);
+  }
+
+  // Captions — use first chunk, first word active
+  const chunks = chunkWords(words);
+  if (chunks.length > 0) {
+    drawCaptions(ctx, chunks[0], 0, config);
+  }
+
+  // Write PNG
+  const outDir = path.dirname(outputPngPath);
+  fs.mkdirSync(outDir, { recursive: true });
+  const pngBuffer = canvas.toBuffer("image/png");
+  fs.writeFileSync(outputPngPath, pngBuffer);
+  console.log(`[Canvas Renderer] Preview frame saved: ${outputPngPath} (${(pngBuffer.length / 1024).toFixed(0)}KB)`);
+}
 
 export async function renderCanvasOverlay(
   words: Word[],

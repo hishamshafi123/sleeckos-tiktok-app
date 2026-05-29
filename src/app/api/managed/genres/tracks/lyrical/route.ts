@@ -193,10 +193,24 @@ export async function PATCH(req: Request) {
     // ── Pre-render Canvas overlay in background ──
     // Don't block the response — render asynchronously
     const overlayAbsolutePath = path.join(process.cwd(), "public", ...overlayRelativePath.split("/").filter(Boolean));
+    const previewAbsolutePath = path.join(process.cwd(), "public", ...previewRelativePath.split("/").filter(Boolean));
     const words: { word: string; start: number; end: number }[] = JSON.parse(track.lyricalTranscription);
     const duration = track.duration || 10.0;
 
-    // Fire and forget — render overlay asynchronously
+    // Synchronously generate the static preview frame (fast — single Canvas frame → PNG)
+    try {
+      const { renderPreviewFrame } = await import("@/lib/canvas-overlay-renderer");
+      renderPreviewFrame(
+        words,
+        { fontFamily, fontSize, activeColor, strokeWidth, strokeColor, positionY, colorFilter, vignette, particleFx },
+        previewAbsolutePath,
+      );
+      console.log(`[Lyrical API] Preview frame generated: ${previewRelativePath}`);
+    } catch (previewErr) {
+      console.error(`[Lyrical API] Preview frame generation failed:`, previewErr);
+    }
+
+    // Fire and forget — render WebM overlay asynchronously (slow — hundreds of frames)
     (async () => {
       try {
         const { renderCanvasOverlay } = await import("@/lib/canvas-overlay-renderer");
