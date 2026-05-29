@@ -29,7 +29,7 @@ ENV NEXT_TELEMETRY_DISABLED=1
 ENV NODE_PATH=/usr/local/lib/node_modules
 ENV HF_HOME=/home/nextjs/.cache/huggingface
 
-# Install system dependencies (ffmpeg, librsvg, python3, pip, venv)
+# Install system dependencies (ffmpeg, chromium for Puppeteer overlay renderer, python3)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     libass9 \
@@ -41,7 +41,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-pip \
     python3-venv \
     build-essential \
+    chromium \
+    libnss3 \
+    libatk-bridge2.0-0 \
+    libdrm2 \
+    libxkbcommon0 \
+    libgbm1 \
+    libasound2 \
     && rm -rf /var/lib/apt/lists/*
+
+# Set Chromium path for puppeteer-core
+ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
 
 # Add nextjs system user/group
 RUN groupadd --system --gid 1001 nodejs && \
@@ -101,8 +111,14 @@ COPY --from=builder --chown=nextjs:nodejs /app/prisma ./prisma
 COPY --from=builder --chown=nextjs:nodejs /app/node_modules/.prisma ./node_modules/.prisma
 COPY --from=builder --chown=nextjs:nodejs /app/node_modules/@prisma ./node_modules/@prisma
 
-# Install @napi-rs/canvas directly in runner (needs glibc Debian binaries, not Alpine musl)
-RUN npm install @napi-rs/canvas --no-save 2>/dev/null || echo '[Docker Build] @napi-rs/canvas install warning (non-fatal)'
+# Copy puppeteer-core (pure JS, no native binaries — works cross-platform)
+COPY --from=builder --chown=nextjs:nodejs /app/node_modules/puppeteer-core ./node_modules/puppeteer-core
+COPY --from=builder --chown=nextjs:nodejs /app/node_modules/chromium-bidi ./node_modules/chromium-bidi
+COPY --from=builder --chown=nextjs:nodejs /app/node_modules/devtools-protocol ./node_modules/devtools-protocol
+COPY --from=builder --chown=nextjs:nodejs /app/node_modules/mitt ./node_modules/mitt
+COPY --from=builder --chown=nextjs:nodejs /app/node_modules/debug ./node_modules/debug
+COPY --from=builder --chown=nextjs:nodejs /app/node_modules/ms ./node_modules/ms
+COPY --from=builder --chown=nextjs:nodejs /app/node_modules/urlpattern-polyfill ./node_modules/urlpattern-polyfill
 
 # Entrypoint runs migrations then starts the app
 COPY --chown=nextjs:nodejs docker-entrypoint.sh ./

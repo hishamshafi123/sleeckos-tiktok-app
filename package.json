@@ -11,7 +11,6 @@
   },
   "dependencies": {
     "@base-ui/react": "^1.4.1",
-    "@napi-rs/canvas": "^1.0.0",
     "@prisma/adapter-pg": "^7.8.0",
     "@prisma/client": "^7.0.0",
     "@types/bcryptjs": "^2.4.6",
@@ -27,6 +26,7 @@
     "next-themes": "^0.4.6",
     "pg": "^8.16.0",
     "postgres-array": "^3.0.2",
+    "puppeteer-core": "^25.1.0",
     "react": "19.2.4",
     "react-dom": "19.2.4",
     "shadcn": "^4.5.0",

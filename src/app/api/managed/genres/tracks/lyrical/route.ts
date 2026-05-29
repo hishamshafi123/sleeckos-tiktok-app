@@ -197,10 +197,10 @@ export async function PATCH(req: Request) {
     const words: { word: string; start: number; end: number }[] = JSON.parse(track.lyricalTranscription);
     const duration = track.duration || 10.0;
 
-    // Synchronously generate the static preview frame (fast — single Canvas frame → PNG)
+    // Generate static preview frame (launches headless browser, takes ~2s)
     try {
       const { renderPreviewFrame } = await import("@/lib/canvas-overlay-renderer");
-      renderPreviewFrame(
+      await renderPreviewFrame(
         words,
         { fontFamily, fontSize, activeColor, strokeWidth, strokeColor, positionY, colorFilter, vignette, particleFx },
         previewAbsolutePath,
