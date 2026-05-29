@@ -6,6 +6,9 @@ import fs from "fs";
 import path from "path";
 import { generateQuotesForTheme, allocateTracks } from "@/lib/composer";
 
+// Version marker — check Docker logs to verify latest code is deployed
+const BUILD_VERSION = "v3-template-effects-only-20260529";
+
 // GET /api/managed/genres/batches — Get batch history or fetch progress details of a single batch
 export async function GET(req: Request) {
   const session = await getSession();
@@ -15,6 +18,12 @@ export async function GET(req: Request) {
 
   const { searchParams } = new URL(req.url);
   const batchId = searchParams.get("batchId");
+  const checkVersion = searchParams.get("version");
+
+  // Quick version check — hit ?version=1 to confirm deployed build
+  if (checkVersion) {
+    return NextResponse.json({ build: BUILD_VERSION, timestamp: new Date().toISOString() });
+  }
 
   try {
     if (batchId) {
@@ -701,6 +710,7 @@ export async function DELETE(req: Request) {
 // Sequential Background Video Composition and Google Drive Uploader Loop
 // ──────────────────────────────────────────────────────────────────────────────
 async function processBatchRendering(batchId: string) {
+  console.log(`[Batch Worker] ======== BUILD: ${BUILD_VERSION} ========`);
   console.log(`[Batch Worker] Starting sequential rendering queue for batch: ${batchId}`);
   
   try {
@@ -886,6 +896,15 @@ async function processBatchRendering(batchId: string) {
           const mirrorBg = item.lyricalTemplate?.mirrorBg === true;
           const bgSpeed = typeof item.lyricalTemplate?.bgSpeed === "number" ? item.lyricalTemplate.bgSpeed : 1.0;
 
+          console.log(`[Batch Worker DEBUG] BUILD=${BUILD_VERSION}`);
+          console.log(`[Batch Worker DEBUG] Template ID: ${item.lyricalTemplateId}`);
+          console.log(`[Batch Worker DEBUG] Template name: ${item.lyricalTemplate?.templateName}`);
+          console.log(`[Batch Worker DEBUG] Template raw colorFilter: '${item.lyricalTemplate?.colorFilter}'`);
+          console.log(`[Batch Worker DEBUG] Template raw vignette: '${item.lyricalTemplate?.vignette}'`);
+          console.log(`[Batch Worker DEBUG] Template raw particleFx: '${item.lyricalTemplate?.particleFx}'`);
+          console.log(`[Batch Worker DEBUG] Resolved effects → filter=${colorFilter}, vignette=${vignette}, particles=${particleFx}, mirror=${mirrorBg}, speed=${bgSpeed}`);
+          console.log(`[Batch Worker DEBUG] quoteText: ${item.quoteText?.substring(0, 200)}`);
+
           console.log(`[Batch Worker Lyrical] Effects from template: filter=${colorFilter}, vignette=${vignette}, particles=${particleFx}, mirror=${mirrorBg}, speed=${bgSpeed}`);
 
           const inputs: string[] = [];
@@ -1023,7 +1042,8 @@ async function processBatchRendering(batchId: string) {
             ].join(" ");
           }
 
-          console.log(`[Batch Worker Lyrical] FFmpeg cmd: ${cmd.substring(0, 300)}...`);
+          console.log(`[Batch Worker Lyrical] FFmpeg FULL filter_complex:\n${filterComplex}`);
+          console.log(`[Batch Worker Lyrical] FFmpeg cmd: ${cmd.substring(0, 500)}...`);
 
           await new Promise<void>((resolvePromise, rejectPromise) => {
             const { exec: execCmd } = require("child_process");
