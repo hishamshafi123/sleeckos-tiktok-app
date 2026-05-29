@@ -561,6 +561,11 @@ model TrackLyricalTemplate {
   strokeWidth     Int              @default(5)
   strokeColor     String           @default("#000000")
   positionY       Float            @default(0.75)
+  colorFilter     String           @default("none")
+  vignette        String           @default("none")
+  particleFx      String           @default("none")
+  mirrorBg        Boolean          @default(false)
+  bgSpeed         Float            @default(1.0)
   overlayVideoUrl String?          // Local transparent .mov video overlay file URL
   previewImageUrl String?          // Local transparent preview PNG image file URL
   createdAt       DateTime         @default(now())

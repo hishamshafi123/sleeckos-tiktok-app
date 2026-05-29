@@ -691,6 +691,11 @@ export default function GenresDashboard() {
           strokeWidth: lyricalStrokeWidth,
           strokeColor: lyricalStrokeColor,
           positionY: lyricalPositionY,
+          colorFilter: setupLyricalColorFilter,
+          vignette: setupLyricalVignette,
+          particleFx: setupLyricalParticleFx,
+          mirrorBg: setupLyricalMirrorBg,
+          bgSpeed: setupLyricalBgSpeed,
         }),
       });
       if (res.ok) {
@@ -2552,6 +2557,11 @@ export default function GenresDashboard() {
                                   setLyricalStrokeWidth(tpl.strokeWidth);
                                   setLyricalStrokeColor(tpl.strokeColor);
                                   setLyricalPositionY(tpl.positionY);
+                                  setSetupLyricalColorFilter(tpl.colorFilter || "none");
+                                  setSetupLyricalVignette(tpl.vignette || "none");
+                                  setSetupLyricalParticleFx(tpl.particleFx || "none");
+                                  setSetupLyricalMirrorBg(tpl.mirrorBg || false);
+                                  setSetupLyricalBgSpeed(tpl.bgSpeed || 1.0);
                                 }}
                                 className={`p-3 rounded-2xl border text-left cursor-pointer transition-all duration-300 flex items-center justify-between gap-3 group/card relative overflow-hidden ${
                                   isActive 

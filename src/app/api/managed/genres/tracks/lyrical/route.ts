@@ -131,6 +131,11 @@ export async function PATCH(req: Request) {
       strokeWidth = 5,
       strokeColor = "#000000",
       positionY = 0.75,
+      colorFilter = "none",
+      vignette = "none",
+      particleFx = "none",
+      mirrorBg = false,
+      bgSpeed = 1.0,
     } = body;
 
     if (!trackId || !templateName) {
@@ -154,7 +159,24 @@ export async function PATCH(req: Request) {
     const overlayAbsolutePath = path.join(process.cwd(), "public", ...overlayRelativePath.split("/"));
     const hasExistingOverlay = fs.existsSync(overlayAbsolutePath);
 
-    // Upsert Template record — save styling config without running Python
+    // All template data (caption styling + visual effects)
+    const templateData = {
+      fontFamily,
+      fontSize,
+      activeColor,
+      strokeWidth,
+      strokeColor,
+      positionY,
+      colorFilter,
+      vignette,
+      particleFx,
+      mirrorBg,
+      bgSpeed,
+      ...(hasExistingOverlay ? { overlayVideoUrl: overlayRelativePath } : {}),
+      previewImageUrl: previewRelativePath,
+    };
+
+    // Upsert Template record — save styling config + visual effects
     const template = await prisma.trackLyricalTemplate.upsert({
       where: {
         trackId_templateName: {
@@ -162,33 +184,15 @@ export async function PATCH(req: Request) {
           templateName,
         },
       },
-      update: {
-        fontFamily,
-        fontSize,
-        activeColor,
-        strokeWidth,
-        strokeColor,
-        positionY,
-        // Only set overlayVideoUrl if the file actually exists
-        ...(hasExistingOverlay ? { overlayVideoUrl: overlayRelativePath } : {}),
-        previewImageUrl: previewRelativePath,
-      },
+      update: templateData,
       create: {
         trackId,
         templateName,
-        fontFamily,
-        fontSize,
-        activeColor,
-        strokeWidth,
-        strokeColor,
-        positionY,
-        // Only set overlayVideoUrl if the file actually exists
-        ...(hasExistingOverlay ? { overlayVideoUrl: overlayRelativePath } : {}),
-        previewImageUrl: previewRelativePath,
+        ...templateData,
       },
     });
 
-    console.log(`[Lyrical API] Template '${templateName}' saved for track: ${trackId} (overlay MOV: ${hasExistingOverlay ? "exists" : "will use ASS fallback at render time"})`);
+    console.log(`[Lyrical API] Template '${templateName}' saved for track: ${trackId} (effects: filter=${colorFilter}, vignette=${vignette}, particles=${particleFx})`);
     return NextResponse.json(template);
 
   } catch (err: any) {

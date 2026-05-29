@@ -904,25 +904,28 @@ async function processBatchRendering(batchId: string) {
             console.warn("[Batch Worker Lyrical] Self-healing effects builder skipped:", e);
           }
 
-          // Parse metadata for filters, particle overlays, and vignettes
-          let colorFilter = "none";
-          let particleFx = "none";
-          let vignette = "none";
-          let mirrorBg = false;
-          let bgSpeed = 1.0;
+          // Read visual effects from the template (primary source), fall back to quoteText metadata (legacy)
+          let colorFilter = item.lyricalTemplate?.colorFilter || "none";
+          let particleFx = item.lyricalTemplate?.particleFx || "none";
+          let vignette = item.lyricalTemplate?.vignette || "none";
+          let mirrorBg = item.lyricalTemplate?.mirrorBg === true;
+          let bgSpeed = typeof item.lyricalTemplate?.bgSpeed === "number" ? item.lyricalTemplate.bgSpeed : 1.0;
 
-          if (item.quoteText && item.quoteText.startsWith("{")) {
+          // Legacy fallback: read from quoteText JSON metadata if template doesn't have effects
+          if (colorFilter === "none" && particleFx === "none" && vignette === "none" && item.quoteText && item.quoteText.startsWith("{")) {
             try {
               const meta = JSON.parse(item.quoteText);
-              colorFilter = meta.colorFilter || "none";
-              particleFx = meta.particleFx || "none";
-              vignette = meta.vignette || "none";
-              mirrorBg = meta.mirrorBg === true;
-              bgSpeed = typeof meta.bgSpeed === "number" ? meta.bgSpeed : 1.0;
+              if (meta.colorFilter && meta.colorFilter !== "none") colorFilter = meta.colorFilter;
+              if (meta.particleFx && meta.particleFx !== "none") particleFx = meta.particleFx;
+              if (meta.vignette && meta.vignette !== "none") vignette = meta.vignette;
+              if (meta.mirrorBg === true) mirrorBg = true;
+              if (typeof meta.bgSpeed === "number") bgSpeed = meta.bgSpeed;
             } catch (e) {
               console.warn("[Batch Worker Lyrical] Failed to parse item quoteText metadata:", e);
             }
           }
+
+          console.log(`[Batch Worker Lyrical] Effects: filter=${colorFilter}, vignette=${vignette}, particles=${particleFx}, mirror=${mirrorBg}, speed=${bgSpeed}`);
 
           const inputs: string[] = [];
           inputs.push(`-stream_loop -1 -i "${bgPath}"`);
