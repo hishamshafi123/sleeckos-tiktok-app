@@ -1564,10 +1564,9 @@ export default function GenresDashboard() {
     }
 
     setSmartDownloading(true);
-    setSmartDownloadProgress("Starting...");
+    setSmartDownloadProgress("Building archive...");
 
     try {
-      // 1. POST to trigger archive creation
       const res = await fetch("/api/managed/genres/batches/download", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1580,34 +1579,21 @@ export default function GenresDashboard() {
 
       if (!res.ok) {
         const err = await res.json();
-        throw new Error(err.error || "Failed to start smart download");
+        throw new Error(err.error || "Failed to create archive");
       }
 
-      const { archiveKey } = await res.json();
+      const data = await res.json();
 
-      // 2. Poll status
-      let done = false;
-      while (!done) {
-        await new Promise(r => setTimeout(r, 2000));
-        const statusRes = await fetch(`/api/managed/genres/batches/download?batchId=${archiveKey}`);
-        if (!statusRes.ok) continue;
-        const status = await statusRes.json();
-
-        if (status.status === "COMPLETED" && status.downloadUrl) {
-          setSmartDownloadProgress("Downloading...");
-          const link = document.createElement("a");
-          link.href = `/api${status.downloadUrl}`;
-          link.download = status.downloadUrl.split("/").pop() || "smart_download.tar.gz";
-          document.body.appendChild(link);
-          link.click();
-          document.body.removeChild(link);
-          toast.success(`Download started! ${smartAccounts} folders × ${smartVidsPerAccount} videos`);
-          done = true;
-        } else if (status.status === "FAILED") {
-          throw new Error(status.message || "Archive preparation failed");
-        } else {
-          setSmartDownloadProgress(status.message || `${status.progress}%`);
-        }
+      if (data.status === "COMPLETED" && data.downloadUrl) {
+        const link = document.createElement("a");
+        link.href = `/api${data.downloadUrl}`;
+        link.download = data.downloadUrl.split("/").pop() || "smart_download.tar.gz";
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        toast.success(`Download started! ${smartAccounts} folders × ${smartVidsPerAccount} videos`);
+      } else {
+        throw new Error("Archive creation failed — no download URL returned");
       }
     } catch (err: any) {
       toast.error(err.message || "Smart download failed");

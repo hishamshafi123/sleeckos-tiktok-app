@@ -120,7 +120,7 @@ export async function GET(req: Request) {
 
 async function prepareGenreArchiveInBackground(batchId: string, renderedCount: number) {
   console.log(`[Genres Download Worker] Starting background archive prep for batch: ${batchId}`);
-  
+
   const archivesDir = path.join(process.cwd(), "public", "uploads", "genres", "archives");
   const tempDir = path.join(process.cwd(), "public", "uploads", "genres", "temp");
   const publicDir = path.join(process.cwd(), "public");
@@ -194,7 +194,7 @@ async function prepareGenreArchiveInBackground(batchId: string, renderedCount: n
     for (let i = 0; i < batch.items.length; i++) {
       const item = batch.items[i];
       if (!item.renderedVideoUrl) continue;
-      
+
       const absPath = path.join(publicDir, item.renderedVideoUrl);
       if (fs.existsSync(absPath)) {
         const username = item.account?.tiktokUsername || "account";
@@ -244,7 +244,7 @@ async function prepareGenreArchiveInBackground(batchId: string, renderedCount: n
         { maxBuffer: 100 * 1024 * 1024 },
         (error, _stdout, stderr) => {
           // Clean up temporary files
-          try { fs.rmSync(linkDir, { recursive: true }); } catch {}
+          try { fs.rmSync(linkDir, { recursive: true }); } catch { }
           if (error) {
             console.error("[Genres Download Worker] tar command failed:", stderr);
             reject(error);
@@ -273,9 +273,9 @@ async function prepareGenreArchiveInBackground(batchId: string, renderedCount: n
   } catch (err: any) {
     console.error(`[Genres Download Worker] Failed to prepare archive for batch ${batchId}:`, err);
     // Cleanup temporary files
-    try { if (fs.existsSync(linkDir)) fs.rmSync(linkDir, { recursive: true }); } catch {}
+    try { if (fs.existsSync(linkDir)) fs.rmSync(linkDir, { recursive: true }); } catch { }
     // Cleanup failed archive
-    try { if (fs.existsSync(archivePath)) fs.unlinkSync(archivePath); } catch {}
+    try { if (fs.existsSync(archivePath)) fs.unlinkSync(archivePath); } catch { }
 
     await updateStatus({
       status: "FAILED",
@@ -415,7 +415,7 @@ async function prepareFolderizedArchive(
     try {
       const current = fs.existsSync(statusPath) ? JSON.parse(fs.readFileSync(statusPath, "utf-8")) : {};
       fs.writeFileSync(statusPath, JSON.stringify({ ...current, ...data, timestamp: Date.now() }, null, 2));
-    } catch {}
+    } catch { }
   };
 
   try {
@@ -457,7 +457,7 @@ async function prepareFolderizedArchive(
         `tar -czf "${archivePath}" -C "${tempDir}" .`,
         { maxBuffer: 200 * 1024 * 1024 },
         (error, _stdout, stderr) => {
-          try { fs.rmSync(tempDir, { recursive: true }); } catch {}
+          try { fs.rmSync(tempDir, { recursive: true }); } catch { }
           if (error) {
             console.error("[Smart Download] tar failed:", stderr);
             reject(error);
@@ -485,8 +485,8 @@ async function prepareFolderizedArchive(
     console.log(`[Smart Download] Archive completed: ${archiveName} (${(size / 1024 / 1024).toFixed(1)}MB)`);
   } catch (err: any) {
     console.error("[Smart Download] Archive failed:", err);
-    try { fs.rmSync(tempDir, { recursive: true }); } catch {}
-    try { if (fs.existsSync(archivePath)) fs.unlinkSync(archivePath); } catch {}
+    try { fs.rmSync(tempDir, { recursive: true }); } catch { }
+    try { if (fs.existsSync(archivePath)) fs.unlinkSync(archivePath); } catch { }
     updateStatus({
       status: "FAILED",
       progress: 100,
