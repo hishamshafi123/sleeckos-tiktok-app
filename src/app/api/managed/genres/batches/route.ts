@@ -840,6 +840,10 @@ async function processBatchRendering(batchId: string) {
               lastLabel = "transformed_bg";
             }
 
+            // 2b. Background darkening — matches CSS preview's bg-black/45 overlay
+            filterComplex += `[${lastLabel}]eq=brightness=-0.25[darkened_bg];`;
+            lastLabel = "darkened_bg";
+
             // 3. Color filter (applied to background only)
             if (colorFilter !== "none") {
               let filterString = "";

@@ -426,9 +426,9 @@ export async function renderCanvasOverlay(
     // Clear to fully transparent
     ctx.clearRect(0, 0, WIDTH, HEIGHT);
 
-    // 1. Dark overlay (bg-black/45)
-    drawDarkOverlay(ctx);
-
+    // NOTE: No dark overlay here — that's applied by FFmpeg as eq=brightness=-0.25
+    // on the background video. The Canvas overlay must be truly transparent except
+    // where captions, vignettes, and particles are drawn.
     // 2. Vignette
     if (config.vignette !== "none") {
       drawVignette(ctx, config.vignette);
