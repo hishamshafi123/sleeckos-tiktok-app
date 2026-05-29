@@ -134,10 +134,6 @@ export async function POST(req: Request) {
         },
       });
 
-      const filterOptions = ["cyberpunk", "cinema", "emerald", "polaroid", "midnight", "vhs", "monochrome", "none"];
-      const particleOptions = ["gold_dust.mp4", "bokeh.mp4", "fireflies.mp4", "snow.mp4", "none"];
-      const vignetteOptions = ["bottom_fade", "radial_vignette", "sunset_glow", "emerald_fade", "none"];
-
       let mutationCounter = 0;
 
       // Populate batch items with pre-rendered template overlays
@@ -160,23 +156,6 @@ export async function POST(req: Request) {
         for (let i = 0; i < postsPerAccount; i++) {
           const randomBg = bgs[i % bgs.length];
 
-          let colorFilter = "none";
-          let particleFx = "none";
-          let vignette = "none";
-          let mirrorBg = false;
-          let bgSpeed = 1.0;
-
-          if (mixupVisuals === true) {
-            colorFilter = filterOptions[mutationCounter % filterOptions.length];
-            particleFx = particleOptions[mutationCounter % particleOptions.length];
-            vignette = vignetteOptions[mutationCounter % vignetteOptions.length];
-            
-            // Transformation mutations
-            mirrorBg = mutationCounter % 2 === 1;
-            const speedOptions = [0.95, 1.0, 1.05];
-            bgSpeed = speedOptions[mutationCounter % speedOptions.length];
-          }
-
           // Cycle through templates sequentially from the pool or use the single selected template
           const currentTemplate = lyricalTemplateId === "mix_all"
             ? templatesPool[mutationCounter % templatesPool.length]
@@ -184,13 +163,9 @@ export async function POST(req: Request) {
 
           mutationCounter++;
 
+          // quoteText stores display metadata only — visual effects come from the template
           const serializedMetadata = JSON.stringify({
             title: `Lyrical - ${track.title} (${currentTemplate.templateName})`,
-            colorFilter,
-            particleFx,
-            vignette,
-            mirrorBg,
-            bgSpeed
           });
 
           await prisma.genreBatchItem.create({
