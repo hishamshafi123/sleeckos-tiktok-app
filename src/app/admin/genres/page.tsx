@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef } from "react";
 import { 
   Sparkles, Music, Sliders, Play, Pause, Trash2, Plus, 
-  Upload, Film, CheckCircle2, AlertCircle, RefreshCw, ChevronRight, ChevronDown, Check, X, Lock, Tag, Folder, Eye, Filter,
+  Upload, Film, CheckCircle2, AlertCircle, RefreshCw, ChevronRight, ChevronDown, Check, X, Lock, Tag, Folder, FolderOpen, Eye, Filter,
   Loader2, ExternalLink, Download
 } from "lucide-react";
 import { toast as originalToast } from "sonner";
@@ -492,6 +492,13 @@ export default function GenresDashboard() {
     loadedSize: string;
   }
   const [downloads, setDownloads] = useState<Record<string, DownloadState>>({});
+
+  // Smart download (folderized) state
+  const [showSmartDownload, setShowSmartDownload] = useState(false);
+  const [smartAccounts, setSmartAccounts] = useState(5);
+  const [smartVidsPerAccount, setSmartVidsPerAccount] = useState(3);
+  const [smartDownloading, setSmartDownloading] = useState(false);
+  const [smartDownloadProgress, setSmartDownloadProgress] = useState("");
 
   // Derived autocomplete lists
   const uniqueMusiciansList = Array.from(new Set(tracks.map(t => t.musician || t.artist).filter(Boolean))) as string[];
@@ -1544,6 +1551,70 @@ export default function GenresDashboard() {
       toast.error("An error occurred during bulk Google Drive upload");
     } finally {
       setUploadingBatch(false);
+    }
+  };
+
+  // ── Smart Download (Folderized) ────────────────────────────────────────────
+  const handleSmartDownload = async (batchId: string) => {
+    const totalNeeded = smartAccounts * smartVidsPerAccount;
+    const renderedCount = activeBatch?.items?.filter(i => i.status === "RENDERED" || i.status === "UPLOADED").length || 0;
+    if (totalNeeded > renderedCount) {
+      toast.error(`Not enough videos! Need ${totalNeeded} but only ${renderedCount} rendered.`);
+      return;
+    }
+
+    setSmartDownloading(true);
+    setSmartDownloadProgress("Starting...");
+
+    try {
+      // 1. POST to trigger archive creation
+      const res = await fetch("/api/managed/genres/batches/download", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          batchId,
+          accountCount: smartAccounts,
+          videosPerAccount: smartVidsPerAccount,
+        }),
+      });
+
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || "Failed to start smart download");
+      }
+
+      const { archiveKey } = await res.json();
+
+      // 2. Poll status
+      let done = false;
+      while (!done) {
+        await new Promise(r => setTimeout(r, 2000));
+        const statusRes = await fetch(`/api/managed/genres/batches/download?batchId=${archiveKey}`);
+        if (!statusRes.ok) continue;
+        const status = await statusRes.json();
+
+        if (status.status === "COMPLETED" && status.downloadUrl) {
+          setSmartDownloadProgress("Downloading...");
+          const link = document.createElement("a");
+          link.href = `/api${status.downloadUrl}`;
+          link.download = status.downloadUrl.split("/").pop() || "smart_download.tar.gz";
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+          toast.success(`Download started! ${smartAccounts} folders × ${smartVidsPerAccount} videos`);
+          done = true;
+        } else if (status.status === "FAILED") {
+          throw new Error(status.message || "Archive preparation failed");
+        } else {
+          setSmartDownloadProgress(status.message || `${status.progress}%`);
+        }
+      }
+    } catch (err: any) {
+      toast.error(err.message || "Smart download failed");
+    } finally {
+      setSmartDownloading(false);
+      setSmartDownloadProgress("");
+      setShowSmartDownload(false);
     }
   };
 
@@ -5510,6 +5581,79 @@ export default function GenresDashboard() {
                       </>
                     )}
                   </button>
+                )}
+
+                {/* Smart Download Button */}
+                {activeBatch.items?.some(i => i.status === "RENDERED" || i.status === "UPLOADED") && (
+                  <div className="relative">
+                    <button
+                      onClick={() => setShowSmartDownload(!showSmartDownload)}
+                      disabled={smartDownloading}
+                      className="bg-[#1d1b38] hover:bg-[#25224e] text-cyan-400 hover:text-cyan-300 font-extrabold py-3.5 px-6 rounded-2xl border border-cyan-500/20 hover:border-cyan-500/50 transition-all flex items-center gap-2 disabled:opacity-50 shadow-lg shadow-cyan-500/5"
+                    >
+                      {smartDownloading ? (
+                        <><Loader2 className="w-5 h-5 animate-spin" />{smartDownloadProgress || "Processing..."}</>
+                      ) : (
+                        <><FolderOpen className="w-5 h-5" />Smart Download</>
+                      )}
+                    </button>
+
+                    {/* Smart Download Modal */}
+                    {showSmartDownload && !smartDownloading && (
+                      <div className="absolute bottom-full mb-3 left-0 w-80 bg-[#12101f] border border-white/10 rounded-2xl p-5 shadow-2xl shadow-black/50 z-50">
+                        <div className="flex items-center justify-between mb-4">
+                          <h4 className="text-sm font-bold text-white flex items-center gap-2">
+                            <FolderOpen className="w-4 h-4 text-cyan-400" />
+                            Folderized Download
+                          </h4>
+                          <button onClick={() => setShowSmartDownload(false)} className="text-gray-500 hover:text-white">
+                            <X className="w-4 h-4" />
+                          </button>
+                        </div>
+
+                        <p className="text-[11px] text-gray-500 mb-4">
+                          Randomly distributes videos into account folders inside a single archive.
+                        </p>
+
+                        <div className="space-y-3">
+                          <div className="flex items-center justify-between">
+                            <label className="text-xs text-gray-400 font-semibold">Accounts (folders)</label>
+                            <input
+                              type="number" min={1} max={50}
+                              value={smartAccounts}
+                              onChange={e => setSmartAccounts(Math.max(1, parseInt(e.target.value) || 1))}
+                              className="w-16 bg-black/30 border border-white/10 rounded-lg px-2 py-1.5 text-white text-xs text-center focus:outline-none focus:border-cyan-500"
+                            />
+                          </div>
+                          <div className="flex items-center justify-between">
+                            <label className="text-xs text-gray-400 font-semibold">Videos per account</label>
+                            <input
+                              type="number" min={1} max={100}
+                              value={smartVidsPerAccount}
+                              onChange={e => setSmartVidsPerAccount(Math.max(1, parseInt(e.target.value) || 1))}
+                              className="w-16 bg-black/30 border border-white/10 rounded-lg px-2 py-1.5 text-white text-xs text-center focus:outline-none focus:border-cyan-500"
+                            />
+                          </div>
+                        </div>
+
+                        <div className="mt-3 bg-cyan-500/5 border border-cyan-500/10 rounded-lg px-3 py-2">
+                          <p className="text-[10px] text-cyan-300">
+                            Total: <span className="font-bold">{smartAccounts * smartVidsPerAccount}</span> videos needed
+                            {' '}• Available: <span className="font-bold">{activeBatch.items?.filter(i => i.status === "RENDERED" || i.status === "UPLOADED").length}</span>
+                          </p>
+                        </div>
+
+                        <button
+                          onClick={() => handleSmartDownload(activeBatch.id)}
+                          disabled={(smartAccounts * smartVidsPerAccount) > (activeBatch.items?.filter(i => i.status === "RENDERED" || i.status === "UPLOADED").length || 0)}
+                          className="mt-4 w-full bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 disabled:opacity-30 text-white font-bold py-2.5 rounded-xl transition-all flex items-center justify-center gap-2 text-sm"
+                        >
+                          <Download className="w-4 h-4" />
+                          Generate & Download Archive
+                        </button>
+                      </div>
+                    )}
+                  </div>
                 )}
 
                 {activeBatch.items?.some(i => i.status === "RENDERED") && (
