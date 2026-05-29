@@ -1693,6 +1693,63 @@ export default function GenresDashboard() {
           animation: fall-snow infinite linear;
         }
 
+        /* 5a. Rising Hearts */
+        @keyframes float-hearts {
+          0% { transform: translateY(0) scale(0.6) rotate(-15deg); opacity: 0; }
+          15% { opacity: 0.9; transform: translateY(-40px) scale(0.9) rotate(5deg); }
+          50% { transform: translateY(-160px) scale(1) rotate(-8deg); }
+          85% { opacity: 0.8; transform: translateY(-280px) scale(0.85) rotate(10deg); }
+          100% { transform: translateY(-340px) scale(0.5) rotate(-5deg); opacity: 0; }
+        }
+        .animate-float-hearts {
+          animation: float-hearts infinite ease-in-out;
+        }
+
+        /* 5b. Sparkle Twinkle */
+        @keyframes twinkle-sparkle {
+          0%, 100% { opacity: 0; transform: scale(0.5) rotate(0deg); }
+          25% { opacity: 1; transform: scale(1.2) rotate(90deg); }
+          50% { opacity: 0.3; transform: scale(0.7) rotate(180deg); }
+          75% { opacity: 1; transform: scale(1.1) rotate(270deg); }
+        }
+        .animate-twinkle-sparkle {
+          animation: twinkle-sparkle infinite ease-in-out;
+        }
+
+        /* 5c. Confetti */
+        @keyframes fall-confetti {
+          0% { transform: translateY(-20px) translateX(0) rotate(0deg); opacity: 0; }
+          10% { opacity: 1; }
+          50% { transform: translateY(160px) translateX(25px) rotate(200deg); }
+          100% { transform: translateY(340px) translateX(-10px) rotate(400deg); opacity: 0; }
+        }
+        .animate-fall-confetti {
+          animation: fall-confetti infinite linear;
+        }
+
+        /* 5d. Neon Rain */
+        @keyframes neon-rain {
+          0% { transform: translateY(-10px) scaleY(0.5); opacity: 0; }
+          10% { opacity: 0.8; transform: scaleY(1); }
+          90% { opacity: 0.6; }
+          100% { transform: translateY(340px) scaleY(1); opacity: 0; }
+        }
+        .animate-neon-rain {
+          animation: neon-rain infinite linear;
+        }
+
+        /* 5e. Floating Bubbles */
+        @keyframes float-bubbles {
+          0% { transform: translateY(0) scale(0.5); opacity: 0; }
+          15% { opacity: 0.6; transform: scale(0.8); }
+          50% { transform: translateY(-150px) translateX(15px) scale(1); }
+          85% { opacity: 0.5; }
+          100% { transform: translateY(-330px) translateX(-10px) scale(1.2); opacity: 0; }
+        }
+        .animate-float-bubbles {
+          animation: float-bubbles infinite ease-in-out;
+        }
+
         /* 5. Golden Wave Bounce (Equal heights and delays) */
         @keyframes wave-bounce-1 {
           0%, 100% { height: 4px; }
@@ -1887,6 +1944,24 @@ export default function GenresDashboard() {
             }
             if (setupLyricalColorFilter === "midnight") {
               return "contrast(1.1) saturate(1.15) hue-rotate(190deg) brightness(0.85)";
+            }
+            if (setupLyricalColorFilter === "golden_hour") {
+              return "contrast(1.05) saturate(1.3) sepia(0.25) brightness(1.05) hue-rotate(-10deg)";
+            }
+            if (setupLyricalColorFilter === "arctic") {
+              return "contrast(1.1) saturate(0.6) hue-rotate(180deg) brightness(1.05)";
+            }
+            if (setupLyricalColorFilter === "neon_noir") {
+              return "contrast(1.4) saturate(1.5) brightness(0.75) hue-rotate(280deg)";
+            }
+            if (setupLyricalColorFilter === "rose_tint") {
+              return "contrast(1.05) saturate(1.2) sepia(0.15) hue-rotate(330deg) brightness(1.0)";
+            }
+            if (setupLyricalColorFilter === "vintage_film") {
+              return "contrast(0.9) saturate(0.8) sepia(0.3) brightness(0.95)";
+            }
+            if (setupLyricalColorFilter === "tropical") {
+              return "contrast(1.1) saturate(1.5) hue-rotate(60deg) brightness(1.05)";
             }
             return "none";
           })();
@@ -2138,6 +2213,12 @@ export default function GenresDashboard() {
                             <option value="#00ffff">Neon Cyan</option>
                             <option value="#ff007f">Neon Pink</option>
                             <option value="#ff5500">Neon Orange</option>
+                            <option value="#bf00ff">Neon Purple</option>
+                            <option value="#ff0040">Neon Red</option>
+                            <option value="#00ff88">Neon Mint</option>
+                            <option value="#ff69b4">Hot Pink</option>
+                            <option value="#7b68ee">Medium Slate</option>
+                            <option value="#ffffff">Pure White</option>
                           </select>
                         </div>
                         <div className="space-y-1">
@@ -2226,6 +2307,12 @@ export default function GenresDashboard() {
                             <option value="emerald">Emerald</option>
                             <option value="polaroid">Polaroid</option>
                             <option value="midnight">Midnight</option>
+                            <option value="golden_hour">Golden Hour</option>
+                            <option value="arctic">Arctic Blue</option>
+                            <option value="neon_noir">Neon Noir</option>
+                            <option value="rose_tint">Rosé Tint</option>
+                            <option value="vintage_film">Vintage Film</option>
+                            <option value="tropical">Tropical</option>
                           </select>
                         </div>
                         <div className="space-y-1">
@@ -2240,6 +2327,11 @@ export default function GenresDashboard() {
                             <option value="radial_vignette">Cinematic Vig.</option>
                             <option value="sunset_glow">Sunset Glow</option>
                             <option value="emerald_fade">Emerald Vig.</option>
+                            <option value="top_fade">Top Shadow</option>
+                            <option value="dual_fade">Dual Edge Fade</option>
+                            <option value="purple_haze">Purple Haze</option>
+                            <option value="blue_hour">Blue Hour</option>
+                            <option value="fire_edge">Fire Edge</option>
                           </select>
                         </div>
                         <div className="space-y-1">
@@ -2254,6 +2346,11 @@ export default function GenresDashboard() {
                             <option value="bokeh.mp4">Golden Bokeh</option>
                             <option value="fireflies.mp4">Fireflies</option>
                             <option value="snow.mp4">Falling Snow</option>
+                            <option value="hearts.mp4">Rising Hearts</option>
+                            <option value="sparkles.mp4">Sparkle Twinkle</option>
+                            <option value="confetti.mp4">Confetti</option>
+                            <option value="neon_rain.mp4">Neon Rain</option>
+                            <option value="bubbles.mp4">Floating Bubbles</option>
                           </select>
                         </div>
                       </div>
@@ -2338,6 +2435,21 @@ export default function GenresDashboard() {
                       {setupLyricalVignette === "emerald_fade" && (
                         <div className="absolute inset-0 bg-[radial-gradient(circle,transparent_40%,rgba(5,28,15,0.65)_95%)] z-[1] pointer-events-none select-none" />
                       )}
+                      {setupLyricalVignette === "top_fade" && (
+                        <div className="absolute inset-0 bg-gradient-to-b from-black/85 via-black/20 to-transparent z-[1] pointer-events-none select-none" />
+                      )}
+                      {setupLyricalVignette === "dual_fade" && (
+                        <div className="absolute inset-0 bg-gradient-to-b from-black/70 via-transparent to-black/70 z-[1] pointer-events-none select-none" />
+                      )}
+                      {setupLyricalVignette === "purple_haze" && (
+                        <div className="absolute inset-0 bg-[radial-gradient(circle_at_bottom,rgba(147,51,234,0.45)_0%,transparent_70%)] z-[1] pointer-events-none select-none" />
+                      )}
+                      {setupLyricalVignette === "blue_hour" && (
+                        <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_bottom,rgba(30,58,138,0.55)_0%,transparent_65%)] z-[1] pointer-events-none select-none" />
+                      )}
+                      {setupLyricalVignette === "fire_edge" && (
+                        <div className="absolute inset-0 bg-[radial-gradient(circle,transparent_35%,rgba(180,40,0,0.50)_90%)] z-[1] pointer-events-none select-none" />
+                      )}
 
                       {/* Watermark badge overlay */}
                       <div className="absolute right-3 bottom-[75px] z-[5] pointer-events-none select-none scale-75 origin-bottom-right">
@@ -2405,6 +2517,62 @@ export default function GenresDashboard() {
                               <div className="absolute w-1.5 h-1.5 bg-white/75 rounded-full top-[-10px] left-[52%] animate-fall-snow" style={{ animationDelay: "1.5s", animationDuration: "4.9s" }} />
                               <div className="absolute w-2 h-2 bg-slate-100 rounded-full top-[-10px] left-[22%] animate-fall-snow" style={{ animationDelay: "3.6s", animationDuration: "5.1s" }} />
                               <div className="absolute w-1.5 h-1.5 bg-white rounded-full top-[-10px] left-[95%] animate-fall-snow" style={{ animationDelay: "0.3s", animationDuration: "4.3s" }} />
+                            </>
+                          )}
+                          {setupLyricalParticleFx === "hearts.mp4" && (
+                            <>
+                              <div className="absolute text-[10px] top-[95%] left-[15%] animate-float-hearts" style={{ animationDelay: "0s", animationDuration: "5.5s" }}>❤️</div>
+                              <div className="absolute text-[8px] top-[92%] left-[45%] animate-float-hearts" style={{ animationDelay: "1.3s", animationDuration: "6.2s" }}>💕</div>
+                              <div className="absolute text-[12px] top-[98%] left-[70%] animate-float-hearts" style={{ animationDelay: "2.8s", animationDuration: "5s" }}>💗</div>
+                              <div className="absolute text-[9px] top-[93%] left-[30%] animate-float-hearts" style={{ animationDelay: "0.7s", animationDuration: "6.8s" }}>❤️</div>
+                              <div className="absolute text-[11px] top-[96%] left-[85%] animate-float-hearts" style={{ animationDelay: "3.5s", animationDuration: "5.8s" }}>💖</div>
+                              <div className="absolute text-[8px] top-[90%] left-[55%] animate-float-hearts" style={{ animationDelay: "4.2s", animationDuration: "7s" }}>💗</div>
+                            </>
+                          )}
+                          {setupLyricalParticleFx === "sparkles.mp4" && (
+                            <>
+                              <div className="absolute w-1.5 h-1.5 bg-white rounded-sm rotate-45 top-[20%] left-[15%] animate-twinkle-sparkle" style={{ animationDelay: "0s", animationDuration: "2.5s" }} />
+                              <div className="absolute w-2 h-2 bg-yellow-200/90 rounded-sm rotate-45 top-[40%] left-[75%] animate-twinkle-sparkle" style={{ animationDelay: "0.8s", animationDuration: "3.2s" }} />
+                              <div className="absolute w-1 h-1 bg-white/80 rounded-sm rotate-45 top-[65%] left-[30%] animate-twinkle-sparkle" style={{ animationDelay: "1.5s", animationDuration: "2.8s" }} />
+                              <div className="absolute w-2 h-2 bg-cyan-200/70 rounded-sm rotate-45 top-[80%] left-[60%] animate-twinkle-sparkle" style={{ animationDelay: "2.2s", animationDuration: "3.5s" }} />
+                              <div className="absolute w-1.5 h-1.5 bg-white rounded-sm rotate-45 top-[30%] left-[50%] animate-twinkle-sparkle" style={{ animationDelay: "0.4s", animationDuration: "2.2s" }} />
+                              <div className="absolute w-1 h-1 bg-pink-200/80 rounded-sm rotate-45 top-[55%] left-[88%] animate-twinkle-sparkle" style={{ animationDelay: "3s", animationDuration: "3s" }} />
+                              <div className="absolute w-2 h-2 bg-white/90 rounded-sm rotate-45 top-[15%] left-[42%] animate-twinkle-sparkle" style={{ animationDelay: "1.8s", animationDuration: "2.6s" }} />
+                              <div className="absolute w-1.5 h-1.5 bg-amber-200/80 rounded-sm rotate-45 top-[75%] left-[10%] animate-twinkle-sparkle" style={{ animationDelay: "2.8s", animationDuration: "3.8s" }} />
+                            </>
+                          )}
+                          {setupLyricalParticleFx === "confetti.mp4" && (
+                            <>
+                              <div className="absolute w-2 h-3 bg-red-400/80 rounded-sm top-[-10px] left-[10%] animate-fall-confetti" style={{ animationDelay: "0s", animationDuration: "4s" }} />
+                              <div className="absolute w-1.5 h-2.5 bg-yellow-400/80 rounded-sm top-[-10px] left-[30%] animate-fall-confetti" style={{ animationDelay: "0.8s", animationDuration: "4.5s" }} />
+                              <div className="absolute w-2 h-2 bg-blue-400/80 rounded-sm top-[-10px] left-[55%] animate-fall-confetti" style={{ animationDelay: "1.5s", animationDuration: "3.8s" }} />
+                              <div className="absolute w-1.5 h-3 bg-green-400/80 rounded-sm top-[-10px] left-[75%] animate-fall-confetti" style={{ animationDelay: "2.2s", animationDuration: "5s" }} />
+                              <div className="absolute w-2 h-2.5 bg-pink-400/80 rounded-sm top-[-10px] left-[45%] animate-fall-confetti" style={{ animationDelay: "0.5s", animationDuration: "4.2s" }} />
+                              <div className="absolute w-1.5 h-2 bg-purple-400/80 rounded-sm top-[-10px] left-[88%] animate-fall-confetti" style={{ animationDelay: "3s", animationDuration: "3.5s" }} />
+                              <div className="absolute w-2 h-3 bg-orange-400/80 rounded-sm top-[-10px] left-[20%] animate-fall-confetti" style={{ animationDelay: "1.8s", animationDuration: "4.8s" }} />
+                              <div className="absolute w-1.5 h-2.5 bg-cyan-400/80 rounded-sm top-[-10px] left-[65%] animate-fall-confetti" style={{ animationDelay: "2.8s", animationDuration: "4.3s" }} />
+                            </>
+                          )}
+                          {setupLyricalParticleFx === "neon_rain.mp4" && (
+                            <>
+                              <div className="absolute w-[1px] h-4 bg-cyan-400/60 top-[-10px] left-[12%] animate-neon-rain shadow-[0_0_4px_#22d3ee]" style={{ animationDelay: "0s", animationDuration: "1.8s" }} />
+                              <div className="absolute w-[1px] h-5 bg-purple-400/60 top-[-10px] left-[28%] animate-neon-rain shadow-[0_0_4px_#a855f7]" style={{ animationDelay: "0.3s", animationDuration: "2.1s" }} />
+                              <div className="absolute w-[1px] h-3.5 bg-pink-400/60 top-[-10px] left-[45%] animate-neon-rain shadow-[0_0_4px_#f472b6]" style={{ animationDelay: "0.7s", animationDuration: "1.6s" }} />
+                              <div className="absolute w-[1px] h-4.5 bg-cyan-300/60 top-[-10px] left-[62%] animate-neon-rain shadow-[0_0_4px_#67e8f9]" style={{ animationDelay: "1.1s", animationDuration: "2.3s" }} />
+                              <div className="absolute w-[1px] h-3 bg-blue-400/60 top-[-10px] left-[78%] animate-neon-rain shadow-[0_0_4px_#60a5fa]" style={{ animationDelay: "0.5s", animationDuration: "1.9s" }} />
+                              <div className="absolute w-[1px] h-5 bg-violet-400/60 top-[-10px] left-[92%] animate-neon-rain shadow-[0_0_4px_#a78bfa]" style={{ animationDelay: "1.4s", animationDuration: "2s" }} />
+                              <div className="absolute w-[1px] h-4 bg-fuchsia-400/60 top-[-10px] left-[38%] animate-neon-rain shadow-[0_0_4px_#e879f9]" style={{ animationDelay: "0.9s", animationDuration: "1.7s" }} />
+                              <div className="absolute w-[1px] h-3.5 bg-cyan-400/60 top-[-10px] left-[55%] animate-neon-rain shadow-[0_0_4px_#22d3ee]" style={{ animationDelay: "1.6s", animationDuration: "2.2s" }} />
+                            </>
+                          )}
+                          {setupLyricalParticleFx === "bubbles.mp4" && (
+                            <>
+                              <div className="absolute w-4 h-4 border border-white/20 bg-white/5 rounded-full top-[95%] left-[15%] animate-float-bubbles" style={{ animationDelay: "0s", animationDuration: "6s" }} />
+                              <div className="absolute w-6 h-6 border border-white/15 bg-white/3 rounded-full top-[92%] left-[45%] animate-float-bubbles" style={{ animationDelay: "1.5s", animationDuration: "7.5s" }} />
+                              <div className="absolute w-3 h-3 border border-white/25 bg-white/5 rounded-full top-[98%] left-[70%] animate-float-bubbles" style={{ animationDelay: "3s", animationDuration: "5.5s" }} />
+                              <div className="absolute w-5 h-5 border border-white/15 bg-white/3 rounded-full top-[90%] left-[30%] animate-float-bubbles" style={{ animationDelay: "0.8s", animationDuration: "8s" }} />
+                              <div className="absolute w-3 h-3 border border-white/20 bg-white/5 rounded-full top-[96%] left-[85%] animate-float-bubbles" style={{ animationDelay: "2.2s", animationDuration: "6.5s" }} />
+                              <div className="absolute w-7 h-7 border border-white/10 bg-white/3 rounded-full top-[93%] left-[58%] animate-float-bubbles" style={{ animationDelay: "4s", animationDuration: "9s" }} />
                             </>
                           )}
                         </div>

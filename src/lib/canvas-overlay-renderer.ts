@@ -104,6 +104,16 @@ function generateOverlayHTML(
     vignetteCSS = `background: radial-gradient(circle at top left, rgba(255,140,0,0.65) 0%, rgba(255,69,0,0) 60%);`;
   } else if (config.vignette === "emerald_fade") {
     vignetteCSS = `background: radial-gradient(circle, transparent 40%, rgba(5,28,15,0.65) 95%);`;
+  } else if (config.vignette === "top_fade") {
+    vignetteCSS = `background: linear-gradient(to bottom, rgba(0,0,0,0.85) 0%, rgba(0,0,0,0.20) 50%, transparent 100%);`;
+  } else if (config.vignette === "dual_fade") {
+    vignetteCSS = `background: linear-gradient(to bottom, rgba(0,0,0,0.70) 0%, transparent 40%, transparent 60%, rgba(0,0,0,0.70) 100%);`;
+  } else if (config.vignette === "purple_haze") {
+    vignetteCSS = `background: radial-gradient(circle at bottom, rgba(147,51,234,0.45) 0%, transparent 70%);`;
+  } else if (config.vignette === "blue_hour") {
+    vignetteCSS = `background: radial-gradient(ellipse at bottom, rgba(30,58,138,0.55) 0%, transparent 65%);`;
+  } else if (config.vignette === "fire_edge") {
+    vignetteCSS = `background: radial-gradient(circle, transparent 35%, rgba(180,40,0,0.50) 90%);`;
   }
 
   // Generate particle HTML (CSS-animated, matching Live Studio Preview)
@@ -165,6 +175,72 @@ function generateOverlayHTML(
     ];
     particleHTML = snow.map(p =>
       `<div style="position:absolute;width:${p.w}px;height:${p.w}px;background:${p.bg};border-radius:50%;top:${p.top}px;left:${p.left}%;animation:fallSnow ${p.dur} linear infinite;animation-delay:${p.delay}"></div>`
+    ).join("\n");
+  } else if (config.particleFx === "hearts.mp4") {
+    const hearts = [
+      { emoji: "❤️", size: 14, top: 95, left: 15, delay: "0s", dur: "5.5s" },
+      { emoji: "💕", size: 11, top: 92, left: 45, delay: "1.3s", dur: "6.2s" },
+      { emoji: "💗", size: 16, top: 98, left: 70, delay: "2.8s", dur: "5s" },
+      { emoji: "❤️", size: 12, top: 93, left: 30, delay: "0.7s", dur: "6.8s" },
+      { emoji: "💖", size: 15, top: 96, left: 85, delay: "3.5s", dur: "5.8s" },
+      { emoji: "💗", size: 11, top: 90, left: 55, delay: "4.2s", dur: "7s" },
+    ];
+    particleHTML = hearts.map(p =>
+      `<div style="position:absolute;font-size:${p.size}px;top:${p.top}%;left:${p.left}%;animation:floatDust ${p.dur} ease-in-out infinite;animation-delay:${p.delay}">${p.emoji}</div>`
+    ).join("\n");
+  } else if (config.particleFx === "sparkles.mp4") {
+    const sparkles = [
+      { w: 6, bg: "rgba(255,255,255,1)", top: 20, left: 15, delay: "0s", dur: "2.5s" },
+      { w: 8, bg: "rgba(255,220,100,0.9)", top: 40, left: 75, delay: "0.8s", dur: "3.2s" },
+      { w: 4, bg: "rgba(255,255,255,0.8)", top: 65, left: 30, delay: "1.5s", dur: "2.8s" },
+      { w: 8, bg: "rgba(150,220,255,0.7)", top: 80, left: 60, delay: "2.2s", dur: "3.5s" },
+      { w: 6, bg: "rgba(255,255,255,1)", top: 30, left: 50, delay: "0.4s", dur: "2.2s" },
+      { w: 4, bg: "rgba(255,180,200,0.8)", top: 55, left: 88, delay: "3s", dur: "3s" },
+      { w: 8, bg: "rgba(255,255,255,0.9)", top: 15, left: 42, delay: "1.8s", dur: "2.6s" },
+      { w: 6, bg: "rgba(255,200,100,0.8)", top: 75, left: 10, delay: "2.8s", dur: "3.8s" },
+    ];
+    particleHTML = sparkles.map(p =>
+      `<div style="position:absolute;width:${p.w}px;height:${p.w}px;background:${p.bg};border-radius:2px;transform:rotate(45deg);top:${p.top}%;left:${p.left}%;animation:twinkleSparkle ${p.dur} ease-in-out infinite;animation-delay:${p.delay}"></div>`
+    ).join("\n");
+  } else if (config.particleFx === "confetti.mp4") {
+    const confetti = [
+      { w: 8, h: 12, bg: "rgba(248,113,113,0.8)", top: -10, left: 10, delay: "0s", dur: "4s" },
+      { w: 6, h: 10, bg: "rgba(250,204,21,0.8)", top: -10, left: 30, delay: "0.8s", dur: "4.5s" },
+      { w: 8, h: 8, bg: "rgba(96,165,250,0.8)", top: -10, left: 55, delay: "1.5s", dur: "3.8s" },
+      { w: 6, h: 12, bg: "rgba(74,222,128,0.8)", top: -10, left: 75, delay: "2.2s", dur: "5s" },
+      { w: 8, h: 10, bg: "rgba(244,114,182,0.8)", top: -10, left: 45, delay: "0.5s", dur: "4.2s" },
+      { w: 6, h: 8, bg: "rgba(192,132,252,0.8)", top: -10, left: 88, delay: "3s", dur: "3.5s" },
+      { w: 8, h: 12, bg: "rgba(251,146,60,0.8)", top: -10, left: 20, delay: "1.8s", dur: "4.8s" },
+      { w: 6, h: 10, bg: "rgba(34,211,238,0.8)", top: -10, left: 65, delay: "2.8s", dur: "4.3s" },
+    ];
+    particleHTML = confetti.map(p =>
+      `<div style="position:absolute;width:${p.w}px;height:${p.h}px;background:${p.bg};border-radius:2px;top:${p.top}px;left:${p.left}%;animation:fallSnow ${p.dur} linear infinite;animation-delay:${p.delay}"></div>`
+    ).join("\n");
+  } else if (config.particleFx === "neon_rain.mp4") {
+    const rain = [
+      { h: 16, bg: "rgba(34,211,238,0.6)", glow: "0 0 4px #22d3ee", left: 12, delay: "0s", dur: "1.8s" },
+      { h: 20, bg: "rgba(168,85,247,0.6)", glow: "0 0 4px #a855f7", left: 28, delay: "0.3s", dur: "2.1s" },
+      { h: 14, bg: "rgba(244,114,182,0.6)", glow: "0 0 4px #f472b6", left: 45, delay: "0.7s", dur: "1.6s" },
+      { h: 18, bg: "rgba(103,232,249,0.6)", glow: "0 0 4px #67e8f9", left: 62, delay: "1.1s", dur: "2.3s" },
+      { h: 12, bg: "rgba(96,165,250,0.6)", glow: "0 0 4px #60a5fa", left: 78, delay: "0.5s", dur: "1.9s" },
+      { h: 20, bg: "rgba(167,139,250,0.6)", glow: "0 0 4px #a78bfa", left: 92, delay: "1.4s", dur: "2s" },
+      { h: 16, bg: "rgba(232,121,249,0.6)", glow: "0 0 4px #e879f9", left: 38, delay: "0.9s", dur: "1.7s" },
+      { h: 14, bg: "rgba(34,211,238,0.6)", glow: "0 0 4px #22d3ee", left: 55, delay: "1.6s", dur: "2.2s" },
+    ];
+    particleHTML = rain.map(p =>
+      `<div style="position:absolute;width:1px;height:${p.h}px;background:${p.bg};box-shadow:${p.glow};top:-10px;left:${p.left}%;animation:fallSnow ${p.dur} linear infinite;animation-delay:${p.delay}"></div>`
+    ).join("\n");
+  } else if (config.particleFx === "bubbles.mp4") {
+    const bubbles = [
+      { w: 16, top: 95, left: 15, delay: "0s", dur: "6s" },
+      { w: 24, top: 92, left: 45, delay: "1.5s", dur: "7.5s" },
+      { w: 12, top: 98, left: 70, delay: "3s", dur: "5.5s" },
+      { w: 20, top: 90, left: 30, delay: "0.8s", dur: "8s" },
+      { w: 12, top: 96, left: 85, delay: "2.2s", dur: "6.5s" },
+      { w: 28, top: 93, left: 58, delay: "4s", dur: "9s" },
+    ];
+    particleHTML = bubbles.map(p =>
+      `<div style="position:absolute;width:${p.w}px;height:${p.w}px;border:1px solid rgba(255,255,255,0.2);background:rgba(255,255,255,0.05);border-radius:50%;top:${p.top}%;left:${p.left}%;animation:floatDust ${p.dur} ease-in-out infinite;animation-delay:${p.delay}"></div>`
     ).join("\n");
   }
 
@@ -282,6 +358,13 @@ function generateOverlayHTML(
   @keyframes fallSnow {
     0% { transform: translateY(0) translateX(0); opacity: 1; }
     100% { transform: translateY(${HEIGHT + 20}px) translateX(30px); opacity: 0.7; }
+  }
+
+  @keyframes twinkleSparkle {
+    0%, 100% { opacity: 0; transform: scale(0.5) rotate(0deg); }
+    25% { opacity: 1; transform: scale(1.2) rotate(90deg); }
+    50% { opacity: 0.3; transform: scale(0.7) rotate(180deg); }
+    75% { opacity: 1; transform: scale(1.1) rotate(270deg); }
   }
 </style>
 </head>
