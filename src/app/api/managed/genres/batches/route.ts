@@ -927,6 +927,11 @@ async function processBatchRendering(batchId: string) {
             lastLabel = "transformed_bg";
           }
 
+          // A2. Background darkening — matches CSS preview's bg-black/45 overlay
+          // The preview applies a semi-transparent black layer for text legibility
+          filterComplex += `[${lastLabel}]eq=brightness=-0.25[darkened_bg];`;
+          lastLabel = "darkened_bg";
+
           // B. Color filters — matched to CSS preview filters
           //    CSS: contrast() saturate() sepia/hue-rotate() brightness()
           //    FFmpeg: eq (contrast/brightness/saturation) + hue (rotation) + subtle colorbalance
