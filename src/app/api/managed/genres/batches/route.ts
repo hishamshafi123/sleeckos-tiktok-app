@@ -904,28 +904,14 @@ async function processBatchRendering(batchId: string) {
             console.warn("[Batch Worker Lyrical] Self-healing effects builder skipped:", e);
           }
 
-          // Read visual effects from the template (primary source), fall back to quoteText metadata (legacy)
-          let colorFilter = item.lyricalTemplate?.colorFilter || "none";
-          let particleFx = item.lyricalTemplate?.particleFx || "none";
-          let vignette = item.lyricalTemplate?.vignette || "none";
-          let mirrorBg = item.lyricalTemplate?.mirrorBg === true;
-          let bgSpeed = typeof item.lyricalTemplate?.bgSpeed === "number" ? item.lyricalTemplate.bgSpeed : 1.0;
+          // Read visual effects from the template — single source of truth
+          const colorFilter = item.lyricalTemplate?.colorFilter || "none";
+          const particleFx = item.lyricalTemplate?.particleFx || "none";
+          const vignette = item.lyricalTemplate?.vignette || "none";
+          const mirrorBg = item.lyricalTemplate?.mirrorBg === true;
+          const bgSpeed = typeof item.lyricalTemplate?.bgSpeed === "number" ? item.lyricalTemplate.bgSpeed : 1.0;
 
-          // Legacy fallback: read from quoteText JSON metadata if template doesn't have effects
-          if (colorFilter === "none" && particleFx === "none" && vignette === "none" && item.quoteText && item.quoteText.startsWith("{")) {
-            try {
-              const meta = JSON.parse(item.quoteText);
-              if (meta.colorFilter && meta.colorFilter !== "none") colorFilter = meta.colorFilter;
-              if (meta.particleFx && meta.particleFx !== "none") particleFx = meta.particleFx;
-              if (meta.vignette && meta.vignette !== "none") vignette = meta.vignette;
-              if (meta.mirrorBg === true) mirrorBg = true;
-              if (typeof meta.bgSpeed === "number") bgSpeed = meta.bgSpeed;
-            } catch (e) {
-              console.warn("[Batch Worker Lyrical] Failed to parse item quoteText metadata:", e);
-            }
-          }
-
-          console.log(`[Batch Worker Lyrical] Effects: filter=${colorFilter}, vignette=${vignette}, particles=${particleFx}, mirror=${mirrorBg}, speed=${bgSpeed}`);
+          console.log(`[Batch Worker Lyrical] Effects from template: filter=${colorFilter}, vignette=${vignette}, particles=${particleFx}, mirror=${mirrorBg}, speed=${bgSpeed}`);
 
           const inputs: string[] = [];
           inputs.push(`-stream_loop -1 -i "${bgPath}"`);
