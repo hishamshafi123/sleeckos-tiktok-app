@@ -285,16 +285,18 @@ async function prepareGenreArchiveInBackground(batchId: string, renderedCount: n
   }
 }
 
-// ─── POST: Folderized Smart Download ────────────────────────────────────────
+// ─── POST: Folderized Smart Download (Synchronous) ─────────────────────────
 // POST /api/managed/genres/batches/download
 // Body: { batchId, accountCount, videosPerAccount, accountNames?: string[] }
-// Creates folders per account with randomly distributed videos
+// Copies files → tars → returns download URL in a single response.
 
 export async function POST(req: Request) {
   const session = await getSession();
   if (!session || session.role !== "ADMIN") {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
+
+  let tempDir = "";
 
   try {
     const body = await req.json();
@@ -311,16 +313,15 @@ export async function POST(req: Request) {
     const vidsPerAccount = Math.max(1, Math.min(100, parseInt(videosPerAccount) || 1));
     const totalNeeded = numAccounts * vidsPerAccount;
 
+    console.log(`[Smart Download] Request: batch=${batchId}, ${numAccounts} accounts × ${vidsPerAccount} videos = ${totalNeeded} total`);
+
     // Fetch rendered items
     const batch = await prisma.genreBatch.findUnique({
       where: { id: batchId },
       include: {
         items: {
           where: {
-            OR: [
-              { status: "RENDERED" },
-              { status: "UPLOADED" },
-            ],
+            OR: [{ status: "RENDERED" }, { status: "UPLOADED" }],
           },
           include: { account: true },
           orderBy: { createdAt: "asc" },
@@ -344,10 +345,7 @@ export async function POST(req: Request) {
           .trim()
           .replace(/\s+/g, "_")
           .substring(0, 30);
-        available.push({
-          absPath,
-          name: `${quoteSlug || "video"}.mp4`,
-        });
+        available.push({ absPath, name: `${quoteSlug || "video"}.mp4` });
       }
     }
 
@@ -357,140 +355,76 @@ export async function POST(req: Request) {
 
     if (available.length < totalNeeded) {
       return NextResponse.json({
-        error: `Not enough videos. You need ${totalNeeded} (${numAccounts} accounts × ${vidsPerAccount} each) but only ${available.length} are available.`
+        error: `Not enough videos. Need ${totalNeeded} (${numAccounts}×${vidsPerAccount}) but only ${available.length} available.`
       }, { status: 400 });
     }
 
-    // Set up status tracking
+    // ── Build archive inline ────────────────────────────────────────────────
     const archivesDir = path.join(process.cwd(), "public", "uploads", "genres", "archives");
-    const archiveKey = `smart_${batchId}_${numAccounts}x${vidsPerAccount}`;
-    const statusPath = path.join(archivesDir, `status_${archiveKey}.json`);
-    const archiveName = `smart_${batchId.substring(0, 8)}_${numAccounts}accts_${vidsPerAccount}vids.tar.gz`;
+    const archiveName = `smart_${batchId.substring(0, 8)}_${numAccounts}x${vidsPerAccount}_${Date.now()}.tar.gz`;
     const archivePath = path.join(archivesDir, archiveName);
+    tempDir = path.join(archivesDir, `tmp_smart_${Date.now()}`);
 
     fs.mkdirSync(archivesDir, { recursive: true });
+    fs.mkdirSync(tempDir, { recursive: true });
 
-    const statusData = {
-      status: "PREPARING",
-      progress: 0,
-      message: "Starting folderized archive...",
-      downloadUrl: null,
-      size: 0,
-      archiveKey,
-      timestamp: Date.now(),
-    };
-    fs.writeFileSync(statusPath, JSON.stringify(statusData, null, 2));
+    // 1. Shuffle
+    const shuffled = [...available].sort(() => Math.random() - 0.5);
 
-    // Fire and forget background
-    prepareFolderizedArchive(
-      batchId, available, numAccounts, vidsPerAccount,
-      accountNames || null, archivesDir, statusPath, archiveName, archivePath
-    ).catch((err) => {
-      console.error(`[Smart Download] Background error:`, err);
+    // 2. Distribute into folders
+    let idx = 0;
+    for (let a = 0; a < numAccounts; a++) {
+      const folderName = (accountNames && accountNames[a])
+        ? accountNames[a].replace(/[^a-zA-Z0-9_\-. ]/g, "").trim() || `Account_${a + 1}`
+        : `Account_${a + 1}`;
+
+      const dir = path.join(tempDir, folderName);
+      fs.mkdirSync(dir, { recursive: true });
+
+      for (let v = 0; v < vidsPerAccount; v++) {
+        if (idx >= shuffled.length) break;
+        fs.copyFileSync(shuffled[idx].absPath, path.join(dir, `${String(v + 1).padStart(2, "0")}_${shuffled[idx].name}`));
+        idx++;
+      }
+    }
+
+    console.log(`[Smart Download] Copied ${idx} files into ${numAccounts} folders. Compressing...`);
+
+    // 3. tar
+    await new Promise<void>((resolve, reject) => {
+      exec(`tar -czf "${archivePath}" -C "${tempDir}" .`, { maxBuffer: 200 * 1024 * 1024 }, (err, _, stderr) => {
+        if (err) {
+          console.error("[Smart Download] tar error:", stderr);
+          reject(new Error(`tar failed: ${stderr}`));
+        } else {
+          resolve();
+        }
+      });
     });
 
-    return NextResponse.json({ ...statusData, archiveKey });
+    // Cleanup temp
+    try { fs.rmSync(tempDir, { recursive: true }); } catch {}
+    tempDir = "";
+
+    if (!fs.existsSync(archivePath)) {
+      throw new Error("tar completed but archive file not found on disk");
+    }
+
+    const size = fs.statSync(archivePath).size;
+    const downloadUrl = `/uploads/genres/archives/${archiveName}`;
+
+    console.log(`[Smart Download] ✅ Done: ${archiveName} (${(size / 1024 / 1024).toFixed(1)}MB)`);
+
+    return NextResponse.json({
+      status: "COMPLETED",
+      downloadUrl,
+      size,
+      message: `${numAccounts} folders × ${vidsPerAccount} videos`,
+    });
   } catch (err: any) {
-    console.error("[Smart Download] Error:", err);
+    console.error("[Smart Download] ❌ Error:", err);
+    if (tempDir) { try { fs.rmSync(tempDir, { recursive: true }); } catch {} }
     return NextResponse.json({ error: err.message || "Internal error" }, { status: 500 });
   }
 }
 
-// ─── Folderized Archive Background Worker ───────────────────────────────────
-
-async function prepareFolderizedArchive(
-  batchId: string,
-  available: { absPath: string; name: string }[],
-  numAccounts: number,
-  vidsPerAccount: number,
-  accountNames: string[] | null,
-  archivesDir: string,
-  statusPath: string,
-  archiveName: string,
-  archivePath: string,
-) {
-  const tempDir = path.join(archivesDir, `temp_smart_${batchId}_${Date.now()}`);
-
-  const updateStatus = (data: Record<string, unknown>) => {
-    try {
-      const current = fs.existsSync(statusPath) ? JSON.parse(fs.readFileSync(statusPath, "utf-8")) : {};
-      fs.writeFileSync(statusPath, JSON.stringify({ ...current, ...data, timestamp: Date.now() }, null, 2));
-    } catch { }
-  };
-
-  try {
-    // 1. Shuffle all available videos randomly
-    const shuffled = [...available].sort(() => Math.random() - 0.5);
-
-    updateStatus({ progress: 10, message: "Distributing videos to account folders..." });
-
-    // 2. Create temp directory structure
-    fs.mkdirSync(tempDir, { recursive: true });
-
-    let videoIndex = 0;
-    for (let i = 0; i < numAccounts; i++) {
-      // Determine folder name
-      const folderName = accountNames && accountNames[i]
-        ? accountNames[i].replace(/[^a-zA-Z0-9_\-. ]/g, "").trim() || `Account_${i + 1}`
-        : `Account_${i + 1}`;
-
-      const accountDir = path.join(tempDir, folderName);
-      fs.mkdirSync(accountDir, { recursive: true });
-
-      for (let v = 0; v < vidsPerAccount; v++) {
-        if (videoIndex >= shuffled.length) break;
-        const video = shuffled[videoIndex];
-        const destName = `${String(v + 1).padStart(2, "0")}_${video.name}`;
-        fs.copyFileSync(video.absPath, path.join(accountDir, destName));
-        videoIndex++;
-      }
-
-      const progress = Math.round(10 + ((i + 1) / numAccounts) * 50);
-      updateStatus({ progress, message: `Prepared folder ${i + 1}/${numAccounts}: ${folderName}` });
-    }
-
-    // 3. Compress into tar.gz
-    updateStatus({ progress: 65, message: "Compressing archive..." });
-
-    await new Promise<void>((resolve, reject) => {
-      exec(
-        `tar -czf "${archivePath}" -C "${tempDir}" .`,
-        { maxBuffer: 200 * 1024 * 1024 },
-        (error, _stdout, stderr) => {
-          try { fs.rmSync(tempDir, { recursive: true }); } catch { }
-          if (error) {
-            console.error("[Smart Download] tar failed:", stderr);
-            reject(error);
-          } else {
-            resolve();
-          }
-        }
-      );
-    });
-
-    if (!fs.existsSync(archivePath)) {
-      throw new Error("Archive was not created on disk");
-    }
-
-    const size = fs.statSync(archivePath).size;
-
-    updateStatus({
-      status: "COMPLETED",
-      progress: 100,
-      message: `Archive ready! ${numAccounts} folders × ${vidsPerAccount} videos`,
-      downloadUrl: `/uploads/genres/archives/${archiveName}`,
-      size,
-    });
-
-    console.log(`[Smart Download] Archive completed: ${archiveName} (${(size / 1024 / 1024).toFixed(1)}MB)`);
-  } catch (err: any) {
-    console.error("[Smart Download] Archive failed:", err);
-    try { fs.rmSync(tempDir, { recursive: true }); } catch { }
-    try { if (fs.existsSync(archivePath)) fs.unlinkSync(archivePath); } catch { }
-    updateStatus({
-      status: "FAILED",
-      progress: 100,
-      message: err.message || String(err),
-    });
-  }
-}
