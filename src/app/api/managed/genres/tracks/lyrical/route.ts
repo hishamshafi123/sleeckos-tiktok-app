@@ -111,7 +111,9 @@ export async function POST(req: Request) {
   }
 }
 
-// 2. PATCH /api/managed/genres/tracks/lyrical — Save/Update a Lyrical Caption Template and Pre-render transparent overlays
+// 2. PATCH /api/managed/genres/tracks/lyrical — Save/Update a Lyrical Caption Template
+// NOTE: No longer pre-renders overlay MOV via Python (caused OOM on VPS).
+// The batch renderer uses FFmpeg ASS subtitle fallback when overlay MOV is missing.
 export async function PATCH(req: Request) {
   const session = await getSession();
   if (!session || session.role !== "ADMIN") {
@@ -143,124 +145,54 @@ export async function PATCH(req: Request) {
       return NextResponse.json({ error: "Track is not designated as a lyrical aligned track. Run POST alignment first." }, { status: 400 });
     }
 
-    // Prepare paths
+    // Build expected paths (overlay MOV is optional — batch renderer uses ASS fallback if missing)
     const sanitizedTemplate = templateName.replace(/[^a-zA-Z0-9]/g, "_").toLowerCase();
     const overlayRelativePath = `/uploads/lyrical/overlays/track_${trackId}_${sanitizedTemplate}.mov`;
     const previewRelativePath = `/uploads/lyrical/previews/track_${trackId}_${sanitizedTemplate}.png`;
 
+    // Check if overlay MOV already exists (may have been pre-rendered locally on a Mac)
     const overlayAbsolutePath = path.join(process.cwd(), "public", ...overlayRelativePath.split("/"));
-    const previewAbsolutePath = path.join(process.cwd(), "public", ...previewRelativePath.split("/"));
+    const hasExistingOverlay = fs.existsSync(overlayAbsolutePath);
 
-    const trackFilePath = path.join(process.cwd(), "public", track.fileUrl);
-
-    // The Python script has mutually exclusive modes:
-    //   --preview-frame → Mode A (renders PNG, returns immediately)
-    //   --only-overlay  → Mode B (renders overlay MOV)
-    // Passing BOTH causes Mode A to short-circuit before Mode B runs.
-    // Solution: two sequential calls.
-
-    const escapedTranscription = track.lyricalTranscription.replace(/'/g, "'\\''");
-    const sharedArgs = [
-      `--transcription-json '${escapedTranscription}'`,
-      `--font "${fontFamily}"`,
-      `--font-size ${fontSize}`,
-      `--active-color "${activeColor}"`,
-      `--stroke-width ${strokeWidth}`,
-      `--stroke-color "${strokeColor}"`,
-      `--position-y ${positionY}`,
-      `--fps 60`,
-    ].join(" ");
-
-    // Step 1: Compile the overlay MOV (Mode B)
-    const overlayCmd = [
-      `./venv/bin/python3 "scripts/lyrical_composer.py"`,
-      `-i "${trackFilePath}"`,
-      `-o "${overlayAbsolutePath}"`,
-      `--only-overlay`,
-      sharedArgs,
-    ].join(" ");
-
-    // Step 2: Generate the preview PNG (Mode A)
-    const previewCmd = [
-      `./venv/bin/python3 "scripts/lyrical_composer.py"`,
-      `-i "${trackFilePath}"`,
-      `-o "/dev/null"`,
-      `--preview-frame "${previewAbsolutePath}"`,
-      sharedArgs,
-    ].join(" ");
-
-    console.log(`[Lyrical API] Step 1: Pre-rendering overlay MOV for template '${templateName}'`);
-
-    return new Promise<NextResponse>((resolve) => {
-      exec(overlayCmd, { 
-        maxBuffer: 1024 * 1024 * 50, 
-        timeout: 300000,
-        env: { ...process.env, HF_HOME: process.env.HF_HOME || "/home/nextjs/.cache/huggingface" }
-      }, async (error, stdout, stderr) => {
-        if (error) {
-          console.error("[Lyrical API] Overlay MOV pre-render failed:", stderr);
-          return resolve(
-            NextResponse.json({ error: `Pre-rendering overlay failed: ${error.message}. Stderr: ${stderr}` }, { status: 500 })
-          );
-        }
-
-        console.log(`[Lyrical API] Step 2: Generating preview PNG for template '${templateName}'`);
-
-        // Generate preview PNG (fast, just one frame)
-        exec(previewCmd, {
-          maxBuffer: 1024 * 1024 * 50,
-          timeout: 60000,
-          env: { ...process.env, HF_HOME: process.env.HF_HOME || "/home/nextjs/.cache/huggingface" }
-        }, async (previewErr) => {
-          if (previewErr) {
-            console.warn("[Lyrical API] Preview PNG generation failed (non-critical):", previewErr.message);
-          }
-
-          try {
-            // Upsert Template record
-            const template = await prisma.trackLyricalTemplate.upsert({
-              where: {
-                trackId_templateName: {
-                  trackId,
-                  templateName,
-                },
-              },
-              update: {
-                fontFamily,
-                fontSize,
-                activeColor,
-                strokeWidth,
-                strokeColor,
-                positionY,
-                overlayVideoUrl: overlayRelativePath,
-                previewImageUrl: previewRelativePath,
-              },
-              create: {
-                trackId,
-                templateName,
-                fontFamily,
-                fontSize,
-                activeColor,
-                strokeWidth,
-                strokeColor,
-                positionY,
-                overlayVideoUrl: overlayRelativePath,
-                previewImageUrl: previewRelativePath,
-              },
-            });
-
-            console.log(`[Lyrical API] Successfully rendered template '${templateName}' for track: ${trackId}`);
-            return resolve(NextResponse.json(template));
-          } catch (dbErr: any) {
-            console.error("[Lyrical API] Error upserting template:", dbErr);
-            return resolve(NextResponse.json({ error: `Failed to save template record: ${dbErr.message}` }, { status: 500 }));
-          }
-        });
-      });
+    // Upsert Template record — save styling config without running Python
+    const template = await prisma.trackLyricalTemplate.upsert({
+      where: {
+        trackId_templateName: {
+          trackId,
+          templateName,
+        },
+      },
+      update: {
+        fontFamily,
+        fontSize,
+        activeColor,
+        strokeWidth,
+        strokeColor,
+        positionY,
+        // Only set overlayVideoUrl if the file actually exists
+        ...(hasExistingOverlay ? { overlayVideoUrl: overlayRelativePath } : {}),
+        previewImageUrl: previewRelativePath,
+      },
+      create: {
+        trackId,
+        templateName,
+        fontFamily,
+        fontSize,
+        activeColor,
+        strokeWidth,
+        strokeColor,
+        positionY,
+        // Only set overlayVideoUrl if the file actually exists
+        ...(hasExistingOverlay ? { overlayVideoUrl: overlayRelativePath } : {}),
+        previewImageUrl: previewRelativePath,
+      },
     });
 
+    console.log(`[Lyrical API] Template '${templateName}' saved for track: ${trackId} (overlay MOV: ${hasExistingOverlay ? "exists" : "will use ASS fallback at render time"})`);
+    return NextResponse.json(template);
+
   } catch (err: any) {
-    console.error("[Lyrical API] Error pre-rendering template:", err);
+    console.error("[Lyrical API] Error saving template:", err);
     return NextResponse.json({ error: err.message || "Internal Server Error" }, { status: 500 });
   }
 }

@@ -677,7 +677,7 @@ export default function GenresDashboard() {
 
   const handlePreRenderTemplate = async (trackId: string) => {
     setPreRenderingTemplate(true);
-    toast.info("Generating caption PNG preview frame and pre-rendering MOV transparent overlay clip... this may take up to 1-2 minutes.");
+    toast.info("Saving caption styling template...");
     try {
       const res = await fetch("/api/managed/genres/tracks/lyrical", {
         method: "PATCH",
@@ -694,7 +694,7 @@ export default function GenresDashboard() {
         }),
       });
       if (res.ok) {
-        toast.success(`Successfully rendered template '${lyricalTemplateName}'`);
+        toast.success(`Template '${lyricalTemplateName}' saved! Captions will be rendered via FFmpeg at batch time.`);
         const data = await res.json();
         await fetchLyricalTemplates(trackId);
         setSelectedPreviewTemplateId(data.id);
@@ -2253,7 +2253,7 @@ export default function GenresDashboard() {
                         </div>
                       </div>
 
-                      {/* Save/Pre-render Button */}
+                      {/* Save Template Button */}
                       <button
                         type="button"
                         disabled={preRenderingTemplate}
@@ -2263,12 +2263,12 @@ export default function GenresDashboard() {
                         {preRenderingTemplate ? (
                           <>
                             <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                            Pre-rendering overlays...
+                            Saving template...
                           </>
                         ) : (
                           <>
                             <Sparkles className="w-3.5 h-3.5" />
-                            Pre-render styling overlays
+                            Save styling template
                           </>
                         )}
                       </button>
@@ -4642,7 +4642,7 @@ export default function GenresDashboard() {
                             </div>
                           ) : lyricalTemplates.length === 0 ? (
                             <p className="text-[10px] text-amber-400 font-semibold uppercase tracking-wider bg-amber-500/5 border border-amber-500/10 p-3 rounded-2xl">
-                              No styling templates pre-rendered for this track. Please go to Tracks Library, open this track, customize a style and click "Pre-render styling overlays" first!
+                              No styling templates saved for this track. Please go to Tracks Library, open this track, customize a style and click "Save styling template" first!
                             </p>
                           ) : (
                                         <div className="grid grid-cols-1 gap-2.5 max-h-[220px] overflow-y-auto pr-1">
