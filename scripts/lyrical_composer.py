@@ -667,7 +667,8 @@ def create_lyrical_video(input_path, background_path, output_path, **kwargs):
             fps=fps,
             codec="png", # QuickTime lossless alpha transparency codec
             preset="medium",
-            threads=4
+            threads=4,
+            temp_audiofile=f"/tmp/temp_overlay_audio_{os.getpid()}.mp3"
         )
         
         final_clip.close()
@@ -736,7 +737,8 @@ def create_lyrical_video(input_path, background_path, output_path, **kwargs):
         audio_codec="aac",
         preset="medium",
         bitrate="5000k",
-        threads=4
+        threads=4,
+        temp_audiofile=f"/tmp/temp_render_audio_{os.getpid()}.mp3"
     )
     
     final_clip.close()
