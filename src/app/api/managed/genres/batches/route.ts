@@ -134,9 +134,9 @@ export async function POST(req: Request) {
         },
       });
 
-      const filterOptions = ["none", "cyberpunk", "cinema", "vhs", "monochrome", "emerald", "polaroid", "midnight"];
-      const particleOptions = ["none", "gold_dust.mp4", "bokeh.mp4", "fireflies.mp4", "snow.mp4"];
-      const vignetteOptions = ["none", "bottom_fade", "radial_vignette", "sunset_glow", "emerald_fade"];
+      const filterOptions = ["cyberpunk", "cinema", "emerald", "polaroid", "midnight", "vhs", "monochrome", "none"];
+      const particleOptions = ["gold_dust.mp4", "bokeh.mp4", "fireflies.mp4", "snow.mp4", "none"];
+      const vignetteOptions = ["bottom_fade", "radial_vignette", "sunset_glow", "emerald_fade", "none"];
 
       let mutationCounter = 0;
 
@@ -822,7 +822,7 @@ async function processBatchRendering(batchId: string) {
             const activeColorBGR = hexToAssBGR(tpl.activeColor || "#FFFF00");
             const strokeColorBGR = hexToAssBGR(tpl.strokeColor || "#000000");
             const fontSize = tpl.fontSize || 48;
-            const strokeWidth = tpl.strokeWidth || 3;
+            const strokeWidth = tpl.strokeWidth ?? 3; // respect 0 if user set it
             const fontName = tpl.fontFamily || "Outfit";
             const yPos = Math.round(tpl.positionY * 1280);
 
@@ -849,6 +849,12 @@ async function processBatchRendering(batchId: string) {
               return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}.${String(cs).padStart(2, "0")}`;
             };
 
+            // Neon glow: use shadow + blur for glow effect matching the browser preview
+            const glowShadow = strokeWidth === 0 ? 3 : 1; // stronger glow when no outline
+            const glowBlur = strokeWidth === 0 ? 4 : 2;
+            // BackColour for glow uses the active color with partial transparency
+            const glowColorBGR = activeColorBGR.replace("&H00", "&H40"); // 25% transparent glow
+
             // Build ASS subtitle file
             const assLines: string[] = [];
             assLines.push("[Script Info]");
@@ -860,7 +866,7 @@ async function processBatchRendering(batchId: string) {
             assLines.push("");
             assLines.push("[V4+ Styles]");
             assLines.push("Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding");
-            assLines.push(`Style: Default,${fontName},${fontSize},&H00FFFFFF&,&H00FFFFFF&,${strokeColorBGR},&H00000000&,1,0,0,0,100,100,0,0,1,${strokeWidth},0,2,20,20,${1280 - yPos},0`);
+            assLines.push(`Style: Default,${fontName},${fontSize},&H00FFFFFF&,&H00FFFFFF&,${strokeColorBGR},${glowColorBGR},1,0,0,0,100,100,0,0,1,${strokeWidth},${glowShadow},2,20,20,${1280 - yPos},0`);
             assLines.push("");
             assLines.push("[Events]");
             assLines.push("Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text");
@@ -872,13 +878,14 @@ async function processBatchRendering(batchId: string) {
                 let text = "";
                 for (let j = 0; j < chunk.length; j++) {
                   if (j === ai) {
-                    text += `{\\c${activeColorBGR}}${chunk[j].word}{\\c&H00FFFFFF&}`;
+                    // Active word: colored + blur glow for neon effect
+                    text += `{\\c${activeColorBGR}\\blur${glowBlur + 1}\\bord${Math.max(strokeWidth, 2)}}${chunk[j].word.toUpperCase()}{\\c&H00FFFFFF&\\blur${glowBlur}\\bord${strokeWidth}}`;
                   } else {
-                    text += chunk[j].word;
+                    text += chunk[j].word.toUpperCase();
                   }
                   if (j < chunk.length - 1) text += " ";
                 }
-                assLines.push(`Dialogue: 0,${fmtTime(segStart)},${fmtTime(segEnd)},Default,,0,0,0,,${text}`);
+                assLines.push(`Dialogue: 0,${fmtTime(segStart)},${fmtTime(segEnd)},Default,,0,0,0,,{\\blur${glowBlur}}${text}`);
               }
             }
 
