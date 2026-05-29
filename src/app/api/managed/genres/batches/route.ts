@@ -1012,13 +1012,17 @@ async function processBatchRendering(batchId: string) {
           // E. Account watermark badge — DISABLED (user preference)
           // To re-enable, uncomment the block below.
 
-          // F. Particle effects — subtle overlay (screen blend, low opacity to match CSS preview)
+          // F. Particle effects — colorkey the black background to transparent, then overlay
+          // IMPORTANT: Cannot use blend=screen on YUV data! In YUV, black = Y:16 U:128 V:128.
+          // Screen blend treats U/V=128 as non-zero, shifting chroma on ALL pixels → pink tint.
+          // Instead: colorkey removes the black bg, then overlay composites only visible particles.
           if (particleFx !== "none") {
             const pPath = path.join(process.cwd(), "public", "uploads", "effects", particleFx);
             if (fs.existsSync(pPath)) {
               const pIdx = currentInputIdx++;
               inputs.push(`-stream_loop -1 -i "${pPath}"`);
-              filterComplex += `[${lastLabel}][${pIdx}:v]blend=all_mode='screen':all_opacity=0.25[layered];`;
+              filterComplex += `[${pIdx}:v]colorkey=color=0x000000:similarity=0.15:blend=0.1[particles_keyed];`;
+              filterComplex += `[${lastLabel}][particles_keyed]overlay=0:0:format=auto[layered];`;
               lastLabel = "layered";
             }
           }
