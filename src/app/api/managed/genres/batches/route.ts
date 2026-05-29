@@ -791,91 +791,100 @@ async function processBatchRendering(batchId: string) {
         }
         const localOutFile = path.join(rendersDir, `render_${item.id}.mp4`);
 
+
         if (item.lyricalTemplateId && item.lyricalTemplate) {
-          // Bypassing quote drawing entirely!
-          // We will run an ultra-fast FFmpeg command that overlays the pre-rendered transparent overlay MOV onto the account's background video.
+          // Use pre-rendered overlay MOV if available, or generate ASS subtitles on-the-fly (zero RAM).
           let overlayUrl = item.lyricalTemplate.overlayVideoUrl;
           if (!overlayUrl) {
-            // Auto-generate the expected URL path from template name
             const sanitizedName = item.lyricalTemplate.templateName.replace(/[^a-zA-Z0-9]/g, "_").toLowerCase();
             overlayUrl = `/uploads/lyrical/overlays/track_${item.lyricalTemplate.trackId}_${sanitizedName}.mov`;
           }
-          let overlayPath = path.join(process.cwd(), "public", overlayUrl);
+          const overlayPath = path.join(process.cwd(), "public", overlayUrl);
+          const hasPreRenderedOverlay = fs.existsSync(overlayPath);
 
-          // ── SELF-HEALING: Auto-compile missing overlay on-the-fly ──
-          if (!fs.existsSync(overlayPath)) {
-            console.log(`[Batch Worker Lyrical] Overlay missing at ${overlayPath}. Auto-compiling on-the-fly...`);
-
-            // Verify we have the raw ingredients
-            const trackAudioPath = path.join(process.cwd(), "public", item.track.fileUrl);
-            if (!fs.existsSync(trackAudioPath)) {
-              throw new Error(`Cannot auto-compile overlay: audio source file missing at ${trackAudioPath}`);
-            }
+          // ── ASS SUBTITLE FALLBACK when overlay MOV is missing ──
+          let assSubtitlePath: string | null = null;
+          if (!hasPreRenderedOverlay) {
+            console.log(`[Batch Worker Lyrical] Overlay missing. Using ASS subtitle fallback (zero RAM).`);
             if (!item.track.lyricalTranscription) {
-              throw new Error(`Cannot auto-compile overlay: track ${item.track.title} has no Whisper transcription data. Run alignment first.`);
+              throw new Error(`Cannot render: track ${item.track.title} has no Whisper transcription data.`);
             }
-
-            // Ensure overlay directory exists
-            fs.mkdirSync(path.dirname(overlayPath), { recursive: true });
 
             const tpl = item.lyricalTemplate;
+            const words: { word: string; start: number; end: number }[] = JSON.parse(item.track.lyricalTranscription);
 
-            // Use spawnSync with argument array to avoid ALL shell escaping issues with JSON
-            // IMPORTANT: Do NOT pass --preview-frame here! The Python script treats it as
-            // Mode A (instant PNG preview) which returns BEFORE Mode B (overlay MOV) runs.
-            // We only need the overlay MOV for batch rendering.
-            const { spawnSync } = require("child_process");
-            const pyArgs = [
-              "scripts/lyrical_composer.py",
-              "-i", trackAudioPath,
-              "-o", overlayPath,
-              "--only-overlay",
-              "--transcription-json", item.track.lyricalTranscription,
-              "--font", tpl.fontFamily,
-              "--font-size", String(tpl.fontSize),
-              "--active-color", tpl.activeColor,
-              "--stroke-width", String(tpl.strokeWidth),
-              "--stroke-color", tpl.strokeColor,
-              "--position-y", String(tpl.positionY),
-              "--fps", "60",
-            ];
+            // Convert hex (#RRGGBB) to ASS BGR (&H00BBGGRR&)
+            const hexToAssBGR = (hex: string): string => {
+              const c = hex.replace("#", "");
+              return `&H00${c.substring(4, 6)}${c.substring(2, 4)}${c.substring(0, 2)}&`.toUpperCase();
+            };
 
-            console.log(`[Batch Worker Lyrical] Spawning auto-compile for template '${tpl.templateName}'...`);
+            const activeColorBGR = hexToAssBGR(tpl.activeColor || "#FFFF00");
+            const strokeColorBGR = hexToAssBGR(tpl.strokeColor || "#000000");
+            const fontSize = tpl.fontSize || 48;
+            const strokeWidth = tpl.strokeWidth || 3;
+            const fontName = tpl.fontFamily || "Outfit";
+            const yPos = Math.round((tpl.positionY / 100) * 1280);
 
-            const pyResult = spawnSync("./venv/bin/python3", pyArgs, {
-              cwd: process.cwd(),
-              timeout: 300000, // 5 min max
-              env: { ...process.env, HF_HOME: process.env.HF_HOME || "/home/nextjs/.cache/huggingface" },
-              stdio: ["pipe", "pipe", "pipe"],
-            });
-
-            const pyStdout = pyResult.stdout?.toString() || "";
-            const pyStderr = pyResult.stderr?.toString() || "";
-            if (pyStdout) console.log(`[Batch Worker Lyrical] Python stdout:\n${pyStdout}`);
-            if (pyStderr) console.warn(`[Batch Worker Lyrical] Python stderr:\n${pyStderr}`);
-
-            if (pyResult.error) {
-              throw new Error(`Python process failed to start: ${pyResult.error.message}`);
+            // Group words into display chunks of ~4 words
+            const chunks: typeof words[] = [];
+            let curChunk: typeof words = [];
+            let lastE = 0;
+            for (const w of words) {
+              if (curChunk.length >= 4 || (curChunk.length > 0 && w.start - lastE > 1.5)) {
+                chunks.push(curChunk);
+                curChunk = [];
+              }
+              curChunk.push(w);
+              lastE = w.end;
             }
-            if (pyResult.signal) {
-              throw new Error(`Python pre-renderer was killed by signal ${pyResult.signal} (likely OOM or timeout). Stderr: ${pyStderr.substring(0, 500)}`);
-            }
-            if (pyResult.status !== 0) {
-              throw new Error(`Python pre-renderer exited with code ${pyResult.status}: ${pyStderr.substring(0, 500)}`);
+            if (curChunk.length > 0) chunks.push(curChunk);
+
+            // Format time as H:MM:SS.CC for ASS
+            const fmtTime = (t: number): string => {
+              const h = Math.floor(t / 3600);
+              const m = Math.floor((t % 3600) / 60);
+              const s = Math.floor(t % 60);
+              const cs = Math.round((t % 1) * 100);
+              return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}.${String(cs).padStart(2, "0")}`;
+            };
+
+            // Build ASS subtitle file
+            const assLines: string[] = [];
+            assLines.push("[Script Info]");
+            assLines.push("Title: Lyrical Captions");
+            assLines.push("ScriptType: v4.00+");
+            assLines.push("PlayResX: 720");
+            assLines.push("PlayResY: 1280");
+            assLines.push("WrapStyle: 0");
+            assLines.push("");
+            assLines.push("[V4+ Styles]");
+            assLines.push("Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding");
+            assLines.push(`Style: Default,${fontName},${fontSize},&H00FFFFFF&,&H00FFFFFF&,${strokeColorBGR},&H00000000&,1,0,0,0,100,100,0,0,1,${strokeWidth},0,2,20,20,${1280 - yPos},0`);
+            assLines.push("");
+            assLines.push("[Events]");
+            assLines.push("Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text");
+
+            for (const chunk of chunks) {
+              for (let ai = 0; ai < chunk.length; ai++) {
+                const segStart = chunk[ai].start;
+                const segEnd = ai < chunk.length - 1 ? chunk[ai + 1].start : chunk[ai].end;
+                let text = "";
+                for (let j = 0; j < chunk.length; j++) {
+                  if (j === ai) {
+                    text += `{\\c${activeColorBGR}}${chunk[j].word}{\\c&H00FFFFFF&}`;
+                  } else {
+                    text += chunk[j].word;
+                  }
+                  if (j < chunk.length - 1) text += " ";
+                }
+                assLines.push(`Dialogue: 0,${fmtTime(segStart)},${fmtTime(segEnd)},Default,,0,0,0,,${text}`);
+              }
             }
 
-            // Update DB record with the new overlay path
-            if (fs.existsSync(overlayPath)) {
-              console.log(`[Batch Worker Lyrical] ✅ Auto-compiled overlay successfully at: ${overlayPath}`);
-              await prisma.trackLyricalTemplate.update({
-                where: { id: tpl.id },
-                data: {
-                  overlayVideoUrl: overlayUrl,
-                },
-              });
-            } else {
-              throw new Error(`Auto-compilation completed but overlay file was not created at: ${overlayPath}`);
-            }
+            assSubtitlePath = `/tmp/lyrical_${item.id}.ass`;
+            fs.writeFileSync(assSubtitlePath, assLines.join("\n"), "utf-8");
+            console.log(`[Batch Worker Lyrical] Generated ASS subtitle (${chunks.length} chunks, ${words.length} words)`);
           }
 
           const duration = batch.videoLength || item.track.duration || 7.0;
@@ -909,66 +918,50 @@ async function processBatchRendering(batchId: string) {
           }
 
           const inputs: string[] = [];
-          inputs.push(`-stream_loop -1 -i "${bgPath}"`); // index 0 (Background)
+          inputs.push(`-stream_loop -1 -i "${bgPath}"`);
 
           let filterComplex = "";
           let lastLabel = "0:v";
           let currentInputIdx = 1;
 
-          // A. Apply Background Transformations (Horizontal Mirroring & Speed Shifting)
+          // A. Background transforms
           const transformFilters: string[] = [];
-          if (mirrorBg) {
-            transformFilters.push("hflip");
-          }
-          if (bgSpeed !== 1.0) {
-            transformFilters.push(`setpts=${(1.0 / bgSpeed).toFixed(3)}*PTS`);
-          }
+          if (mirrorBg) transformFilters.push("hflip");
+          if (bgSpeed !== 1.0) transformFilters.push(`setpts=${(1.0 / bgSpeed).toFixed(3)}*PTS`);
           if (transformFilters.length > 0) {
             filterComplex += `[0:v]${transformFilters.join(",")}[transformed_bg];`;
             lastLabel = "transformed_bg";
           }
 
-          // B. Apply built-in FFmpeg Color Balance and Eq filters
+          // B. Color filters
           if (colorFilter !== "none") {
             let filterString = "";
-            if (colorFilter === "cyberpunk") {
-              filterString = "colorbalance=rs=0.15:gs=-0.05:bs=0.35:rm=0.1:gm=-0.05:bm=0.25";
-            } else if (colorFilter === "cinema") {
-              filterString = "colorbalance=rs=0.12:gs=0.04:bs=-0.12:rm=0.08:gm=0.02:bm=-0.08";
-            } else if (colorFilter === "monochrome") {
-              filterString = "colorchannelmixer=.3:.4:.3:0:.3:.4:.3:0:.3:.4:.3:0";
-            } else if (colorFilter === "vhs") {
-              filterString = "noise=alls=12:allf=t+u,hue=s=0.7";
-            } else if (colorFilter === "emerald") {
-              filterString = "colorbalance=rs=-0.1:gs=0.12:bs=-0.1:rm=-0.08:gm=0.1:bm=-0.08";
-            } else if (colorFilter === "polaroid") {
-              filterString = "eq=contrast=0.95:brightness=0.02:saturation=1.1,colorbalance=rs=0.08:gs=0.04:bs=-0.08:rm=0.04:gm=0.02:bm=-0.04";
-            } else if (colorFilter === "midnight") {
-              filterString = "colorbalance=rs=-0.12:gs=-0.05:bs=0.2:rm=-0.08:gm=-0.02:bm=0.15";
-            }
-
+            if (colorFilter === "cyberpunk") filterString = "colorbalance=rs=0.15:gs=-0.05:bs=0.35:rm=0.1:gm=-0.05:bm=0.25";
+            else if (colorFilter === "cinema") filterString = "colorbalance=rs=0.12:gs=0.04:bs=-0.12:rm=0.08:gm=0.02:bm=-0.08";
+            else if (colorFilter === "monochrome") filterString = "colorchannelmixer=.3:.4:.3:0:.3:.4:.3:0:.3:.4:.3:0";
+            else if (colorFilter === "vhs") filterString = "noise=alls=12:allf=t+u,hue=s=0.7";
+            else if (colorFilter === "emerald") filterString = "colorbalance=rs=-0.1:gs=0.12:bs=-0.1:rm=-0.08:gm=0.1:bm=-0.08";
+            else if (colorFilter === "polaroid") filterString = "eq=contrast=0.95:brightness=0.02:saturation=1.1,colorbalance=rs=0.08:gs=0.04:bs=-0.08:rm=0.04:gm=0.02:bm=-0.04";
+            else if (colorFilter === "midnight") filterString = "colorbalance=rs=-0.12:gs=-0.05:bs=0.2:rm=-0.08:gm=-0.02:bm=0.15";
             if (filterString) {
               filterComplex += `[${lastLabel}]${filterString}[color_bg];`;
               lastLabel = "color_bg";
             }
           }
 
-          // C. Parse transcription for line start timestamps to construct beat-responsive brightness flashes
+          // C. Beat-responsive brightness flashes
           let lineStartTimes: number[] = [];
           if (item.track.lyricalTranscription) {
             try {
               const wordsList = JSON.parse(item.track.lyricalTranscription);
               if (Array.isArray(wordsList) && wordsList.length > 0) {
-                let currentChunkStart = wordsList[0].start;
-                lineStartTimes.push(currentChunkStart);
+                lineStartTimes.push(wordsList[0].start);
                 let wordCount = 1;
                 let lastEnd = wordsList[0].end;
                 for (let idx = 1; idx < wordsList.length; idx++) {
                   const w = wordsList[idx];
-                  const gap = w.start - lastEnd;
-                  if (wordCount >= 3 || gap > 1.5) {
+                  if (wordCount >= 3 || w.start - lastEnd > 1.5) {
                     lineStartTimes.push(w.start);
-                    currentChunkStart = w.start;
                     wordCount = 1;
                   } else {
                     wordCount++;
@@ -980,35 +973,27 @@ async function processBatchRendering(batchId: string) {
               console.warn("[Batch Worker Lyrical] Failed to parse transcription for flash transitions:", e);
             }
           }
-
-          let flashFilterString = "";
           if (lineStartTimes.length > 0) {
             let expr = "0";
             for (const t of lineStartTimes) {
-              expr = `if(between(t\\,${t.toFixed(2)}\\,${(t + 0.25).toFixed(2)})\\,0.15\\,${expr})`;
+              expr = `if(between(t\\\\,${t.toFixed(2)}\\\\,${(t + 0.25).toFixed(2)})\\\\,0.15\\\\,${expr})`;
             }
-            flashFilterString = `eq=brightness='${expr}'`;
-          }
-
-          if (flashFilterString) {
-            filterComplex += `[${lastLabel}]${flashFilterString}[flashed_bg];`;
+            filterComplex += `[${lastLabel}]eq=brightness='${expr}'[flashed_bg];`;
             lastLabel = "flashed_bg";
           }
 
-          // D. Apply Bottom Gradient / Circle Vignette overlay PNGs
-          let vignetteInputIdx = -1;
+          // D. Vignette overlay
           if (vignette !== "none") {
             const vigPath = path.join(process.cwd(), "public", "uploads", "effects", `${vignette}.png`);
             if (fs.existsSync(vigPath)) {
-              vignetteInputIdx = currentInputIdx++;
+              const vigIdx = currentInputIdx++;
               inputs.push(`-i "${vigPath}"`);
-              filterComplex += `[${lastLabel}][${vignetteInputIdx}:v]overlay=0:0[vignetted];`;
+              filterComplex += `[${lastLabel}][${vigIdx}:v]overlay=0:0[vignetted];`;
               lastLabel = "vignetted";
             }
           }
 
-          // E. Dynamically generate and overlay glassmorphic account watermark badge
-          let watermarkInputIdx = -1;
+          // E. Account watermark badge
           const accountHandle = item.account.tiktokUsername || "sleeckos";
           const watermarkPath = path.join(process.cwd(), "public", "uploads", "effects", `watermark_${item.accountId}.png`);
           try {
@@ -1017,52 +1002,73 @@ async function processBatchRendering(batchId: string) {
           } catch (e) {
             console.warn("[Batch Worker Lyrical] Watermark generation failed:", e);
           }
-
           if (fs.existsSync(watermarkPath)) {
-            watermarkInputIdx = currentInputIdx++;
+            const wmIdx = currentInputIdx++;
             inputs.push(`-i "${watermarkPath}"`);
-            filterComplex += `[${lastLabel}][${watermarkInputIdx}:v]overlay=W-w-30:H-h-120[watermarked];`;
+            filterComplex += `[${lastLabel}][${wmIdx}:v]overlay=W-w-30:H-h-120[watermarked];`;
             lastLabel = "watermarked";
           }
 
-          // F. Screen-blend high-efficiency black background MP4 particle loop overlays
-          let particleInputIdx = -1;
+          // F. Particle effects
           if (particleFx !== "none") {
             const pPath = path.join(process.cwd(), "public", "uploads", "effects", particleFx);
             if (fs.existsSync(pPath)) {
-              particleInputIdx = currentInputIdx++;
+              const pIdx = currentInputIdx++;
               inputs.push(`-stream_loop -1 -i "${pPath}"`);
-              filterComplex += `[${lastLabel}][${particleInputIdx}:v]blend=all_mode='screen':all_opacity=0.6[layered];`;
+              filterComplex += `[${lastLabel}][${pIdx}:v]blend=all_mode='screen':all_opacity=0.6[layered];`;
               lastLabel = "layered";
             }
           }
 
-          // G. Overlay silent lossless MOV typography subtitles overlay
-          const captionInputIdx = currentInputIdx++;
-          inputs.push(`-i "${overlayPath}"`);
-          filterComplex += `[${lastLabel}][${captionInputIdx}:v]overlay=0:0[v]`;
+          // G. Captions — overlay MOV or ASS subtitle filter
+          let cmd: string;
+          if (hasPreRenderedOverlay) {
+            // G1: Overlay pre-rendered transparent MOV
+            const captionIdx = currentInputIdx++;
+            inputs.push(`-i "${overlayPath}"`);
+            filterComplex += `[${lastLabel}][${captionIdx}:v]overlay=0:0[v]`;
+            cmd = [
+              `ffmpeg -y`,
+              ...inputs,
+              `-filter_complex "${filterComplex}"`,
+              `-map "[v]"`,
+              `-map ${captionIdx}:a`,
+              `-c:v libx264`,
+              `-pix_fmt yuv420p`,
+              `-preset superfast`,
+              `-c:a copy`,
+              `-t ${duration}`,
+              `"${localOutFile}"`,
+            ].join(" ");
+          } else {
+            // G2: Burn ASS subtitles directly via FFmpeg (zero extra RAM)
+            const audioIdx = currentInputIdx++;
+            inputs.push(`-i "${audioPath}"`);
+            const escapedAss = assSubtitlePath!.replace(/\\/g, "/").replace(/:/g, "\\\\:");
+            filterComplex += `[${lastLabel}]ass='${escapedAss}'[v]`;
+            cmd = [
+              `ffmpeg -y`,
+              ...inputs,
+              `-filter_complex "${filterComplex}"`,
+              `-map "[v]"`,
+              `-map ${audioIdx}:a`,
+              `-c:v libx264`,
+              `-pix_fmt yuv420p`,
+              `-preset superfast`,
+              `-c:a aac -b:a 192k`,
+              `-t ${duration}`,
+              `"${localOutFile}"`,
+            ].join(" ");
+          }
 
-          const cmd = [
-            `ffmpeg -y`,
-            ...inputs,
-            `-filter_complex "${filterComplex}"`,
-            `-map "[v]"`,
-            `-map ${captionInputIdx}:a`, // extract synced audio track from subtitles MOV
-            `-c:v libx264`,
-            `-pix_fmt yuv420p`,
-            `-preset superfast`,
-            `-c:a copy`,
-            `-t ${duration}`,
-            `"${localOutFile}"`,
-          ].join(" ");
-
-          console.log(`[Batch Worker Lyrical] Spawning FFmpeg overlay merge: ${cmd}`);
+          console.log(`[Batch Worker Lyrical] FFmpeg cmd: ${cmd.substring(0, 300)}...`);
 
           await new Promise<void>((resolvePromise, rejectPromise) => {
             const { exec: execCmd } = require("child_process");
-            execCmd(cmd, { timeout: 120000 }, (error: any, stdout: any, stderr: any) => {
+            execCmd(cmd, { timeout: 180000, maxBuffer: 1024 * 1024 * 10 }, (error: any, _stdout: any, stderr: any) => {
+              if (assSubtitlePath) try { fs.unlinkSync(assSubtitlePath); } catch {}
               if (error) {
-                console.error("[Batch Worker Lyrical] FFmpeg execution error:", stderr);
+                console.error("[Batch Worker Lyrical] FFmpeg error:", stderr?.substring(0, 500));
                 rejectPromise(new Error(`FFmpeg composition failed: ${error.message}`));
               } else {
                 resolvePromise();

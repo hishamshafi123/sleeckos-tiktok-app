@@ -1428,6 +1428,31 @@ export default function GenresDashboard() {
     }
   };
 
+  const handleDeleteBatch = async (batchId: string) => {
+    if (!confirm("Delete this entire batch and all its rendered videos permanently?")) return;
+    setDeletingItemIds(prev => ({ ...prev, [batchId]: true }));
+    try {
+      const res = await fetch(`/api/managed/genres/batches?batchId=${batchId}`, {
+        method: "DELETE",
+      });
+      if (res.ok) {
+        toast.success("Batch deleted successfully");
+        fetchBatches();
+        if (activeBatch?.id === batchId) {
+          setActiveBatch(null);
+          setWizardStep(1);
+        }
+      } else {
+        const errData = await res.json();
+        toast.error(errData.error || "Failed to delete batch");
+      }
+    } catch {
+      toast.error("Error deleting batch");
+    } finally {
+      setDeletingItemIds(prev => ({ ...prev, [batchId]: false }));
+    }
+  };
+
   const handleRetrySingleItem = async (batchId: string, itemId: string) => {
     setRetryingItemIds(prev => ({ ...prev, [itemId]: true }));
     try {
@@ -5454,7 +5479,7 @@ export default function GenresDashboard() {
                         </p>
                       </div>
 
-                      <div className="flex items-center gap-3">
+                      <div className="flex items-center gap-2">
                         {(b.status === "RENDERING" || b.status === "QUOTES_GENERATING") && (
                           <button
                             onClick={() => handleCancelBatch(b.id)}
@@ -5465,6 +5490,18 @@ export default function GenresDashboard() {
                             Cancel
                           </button>
                         )}
+                        <button
+                          onClick={() => handleDeleteBatch(b.id)}
+                          disabled={!!deletingItemIds[b.id]}
+                          className="bg-red-500/10 hover:bg-red-500/80 text-red-400 hover:text-white px-2.5 py-2 rounded-xl text-xs font-bold transition-all border border-red-500/15 hover:border-red-500 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1"
+                          title="Delete this batch permanently"
+                        >
+                          {deletingItemIds[b.id] ? (
+                            <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                          ) : (
+                            <Trash2 className="w-3.5 h-3.5" />
+                          )}
+                        </button>
                         <button
                           onClick={async () => {
                             setLoadingBatches(true);

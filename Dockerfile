@@ -32,6 +32,8 @@ ENV HF_HOME=/home/nextjs/.cache/huggingface
 # Install system dependencies (ffmpeg, librsvg, python3, pip, venv)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
+    libass9 \
+    fontconfig \
     fonts-dejavu \
     curl \
     librsvg2-bin \
@@ -87,6 +89,11 @@ RUN curl -fsSL -o public/fonts/Outfit-Bold.ttf    "https://fonts.gstatic.com/s/o
     curl -fsSL -o public/fonts/Lora.ttf           "https://fonts.gstatic.com/s/lora/v37/0QI6MX1D_JOuGQbT0gvTJPa787z5vBJBkqg.ttf" && \
     chown -R nextjs:nodejs public/fonts && \
     echo "[Docker Build] Baked $(ls public/fonts/*.ttf | wc -l) Google Font files into image"
+
+# Register custom fonts with fontconfig so FFmpeg ASS filter can find them by name
+RUN mkdir -p /usr/local/share/fonts && \
+    cp public/fonts/*.ttf /usr/local/share/fonts/ && \
+    fc-cache -f -v
 
 # Prisma: config + schema + migrations + generated client
 COPY --from=builder --chown=nextjs:nodejs /app/prisma.config.ts ./
