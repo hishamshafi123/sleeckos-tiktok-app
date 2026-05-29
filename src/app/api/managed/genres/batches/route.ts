@@ -824,7 +824,7 @@ async function processBatchRendering(batchId: string) {
             const fontSize = tpl.fontSize || 48;
             const strokeWidth = tpl.strokeWidth || 3;
             const fontName = tpl.fontFamily || "Outfit";
-            const yPos = Math.round((tpl.positionY / 100) * 1280);
+            const yPos = Math.round(tpl.positionY * 1280);
 
             // Group words into display chunks of ~4 words
             const chunks: typeof words[] = [];
@@ -997,21 +997,8 @@ async function processBatchRendering(batchId: string) {
             }
           }
 
-          // E. Account watermark badge
-          const accountHandle = item.account.tiktokUsername || "sleeckos";
-          const watermarkPath = path.join(process.cwd(), "public", "uploads", "effects", `watermark_${item.accountId}.png`);
-          try {
-            const { execSync } = require("child_process");
-            execSync(`./venv/bin/python3 scripts/watermark_generator.py --handle "@${accountHandle.replace("@", "")}" --output "${watermarkPath}"`, { timeout: 10000 });
-          } catch (e) {
-            console.warn("[Batch Worker Lyrical] Watermark generation failed:", e);
-          }
-          if (fs.existsSync(watermarkPath)) {
-            const wmIdx = currentInputIdx++;
-            inputs.push(`-i "${watermarkPath}"`);
-            filterComplex += `[${lastLabel}][${wmIdx}:v]overlay=W-w-30:H-h-120[watermarked];`;
-            lastLabel = "watermarked";
-          }
+          // E. Account watermark badge — DISABLED (user preference)
+          // To re-enable, uncomment the block below.
 
           // F. Particle effects
           if (particleFx !== "none") {
