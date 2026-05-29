@@ -924,12 +924,16 @@ async function processBatchRendering(batchId: string) {
           let lastLabel = "0:v";
           let currentInputIdx = 1;
 
+          // 0. Normalize background to 720x1280 (TikTok standard) so all overlays/effects match
+          filterComplex += `[0:v]scale=720:1280:force_original_aspect_ratio=disable,setsar=1[scaled_bg];`;
+          lastLabel = "scaled_bg";
+
           // A. Background transforms
           const transformFilters: string[] = [];
           if (mirrorBg) transformFilters.push("hflip");
           if (bgSpeed !== 1.0) transformFilters.push(`setpts=${(1.0 / bgSpeed).toFixed(3)}*PTS`);
           if (transformFilters.length > 0) {
-            filterComplex += `[0:v]${transformFilters.join(",")}[transformed_bg];`;
+            filterComplex += `[${lastLabel}]${transformFilters.join(",")}[transformed_bg];`;
             lastLabel = "transformed_bg";
           }
 
