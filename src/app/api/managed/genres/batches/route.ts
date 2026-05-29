@@ -7,7 +7,7 @@ import path from "path";
 import { generateQuotesForTheme, allocateTracks } from "@/lib/composer";
 
 // Version marker — check Docker logs to verify latest code is deployed
-const BUILD_VERSION = "v3-template-effects-only-20260529";
+const BUILD_VERSION = "v4-canvas-overlay-20260529";
 
 // GET /api/managed/genres/batches — Get batch history or fetch progress details of a single batch
 export async function GET(req: Request) {
@@ -778,19 +778,101 @@ async function processBatchRendering(batchId: string) {
 
 
         if (item.lyricalTemplateId && item.lyricalTemplate) {
-          // Use pre-rendered overlay MOV if available, or generate ASS subtitles on-the-fly (zero RAM).
+          // Check for Canvas pre-rendered overlay (WebM VP8 with alpha)
           let overlayUrl = item.lyricalTemplate.overlayVideoUrl;
           if (!overlayUrl) {
             const sanitizedName = item.lyricalTemplate.templateName.replace(/[^a-zA-Z0-9]/g, "_").toLowerCase();
-            overlayUrl = `/uploads/lyrical/overlays/track_${item.lyricalTemplate.trackId}_${sanitizedName}.mov`;
+            overlayUrl = `/uploads/lyrical/overlays/track_${item.lyricalTemplate.trackId}_${sanitizedName}.webm`;
           }
           const overlayPath = path.join(process.cwd(), "public", overlayUrl);
           const hasPreRenderedOverlay = fs.existsSync(overlayPath);
 
-          // ── ASS SUBTITLE FALLBACK when overlay MOV is missing ──
-          let assSubtitlePath: string | null = null;
-          if (!hasPreRenderedOverlay) {
-            console.log(`[Batch Worker Lyrical] Overlay missing. Using ASS subtitle fallback (zero RAM).`);
+          const duration = batch.videoLength || item.track.duration || 7.0;
+          const audioPath = path.join(process.cwd(), "public", item.track.fileUrl);
+
+          // Read background transforms from template
+          const colorFilter = item.lyricalTemplate?.colorFilter || "none";
+          const mirrorBg = item.lyricalTemplate?.mirrorBg === true;
+          const bgSpeed = typeof item.lyricalTemplate?.bgSpeed === "number" ? item.lyricalTemplate.bgSpeed : 1.0;
+
+          console.log(`[Batch Worker DEBUG] BUILD=${BUILD_VERSION}`);
+          console.log(`[Batch Worker DEBUG] Template: '${item.lyricalTemplate?.templateName}' (ID: ${item.lyricalTemplateId})`);
+          console.log(`[Batch Worker DEBUG] Has Canvas overlay: ${hasPreRenderedOverlay} (path: ${overlayUrl})`);
+          console.log(`[Batch Worker DEBUG] Template effects: filter=${colorFilter}, mirror=${mirrorBg}, speed=${bgSpeed}`);
+
+          let cmd: string;
+
+          if (hasPreRenderedOverlay) {
+            // ═══════════════════════════════════════════════════════════════
+            // G1: CANVAS OVERLAY PATH (WYSIWYG)
+            // The WebM overlay contains: captions + vignette + particles + dark overlay
+            // FFmpeg only handles: bg scale → mirror/speed → color_filter → overlay → audio
+            // ═══════════════════════════════════════════════════════════════
+            console.log(`[Batch Worker Lyrical] Using Canvas overlay (WYSIWYG path)`);
+
+            const inputs: string[] = [];
+            inputs.push(`-stream_loop -1 -i "${bgPath}"`);
+            inputs.push(`-i "${overlayPath}"`);
+            inputs.push(`-i "${audioPath}"`);
+
+            let filterComplex = "";
+
+            // 1. Scale background
+            filterComplex += `[0:v]scale=720:1280:force_original_aspect_ratio=disable,setsar=1[scaled_bg];`;
+            let lastLabel = "scaled_bg";
+
+            // 2. Background transforms (mirror, speed)
+            const transformFilters: string[] = [];
+            if (mirrorBg) transformFilters.push("hflip");
+            if (bgSpeed !== 1.0) transformFilters.push(`setpts=${(1.0 / bgSpeed).toFixed(3)}*PTS`);
+            if (transformFilters.length > 0) {
+              filterComplex += `[${lastLabel}]${transformFilters.join(",")}[transformed_bg];`;
+              lastLabel = "transformed_bg";
+            }
+
+            // 3. Color filter (applied to background only)
+            if (colorFilter !== "none") {
+              let filterString = "";
+              if (colorFilter === "cyberpunk") filterString = "eq=contrast=1.2:brightness=-0.05:saturation=1.3,hue=h=320";
+              else if (colorFilter === "cinema") filterString = "eq=contrast=1.1:brightness=-0.05:saturation=1.2,colorbalance=rs=0.04:gs=0.02:bs=-0.03:rm=0.03:gm=0.01:bm=-0.02";
+              else if (colorFilter === "monochrome") filterString = "eq=contrast=1.3:brightness=-0.1:saturation=0";
+              else if (colorFilter === "vhs") filterString = "eq=contrast=1.1:brightness=-0.05:saturation=0.85,noise=alls=8:allf=t+u";
+              else if (colorFilter === "emerald") filterString = "eq=contrast=1.15:brightness=-0.1:saturation=0.7,hue=h=80";
+              else if (colorFilter === "polaroid") filterString = "eq=contrast=0.95:brightness=0.02:saturation=1.1,colorbalance=rs=0.03:gs=0.02:bs=-0.02";
+              else if (colorFilter === "midnight") filterString = "eq=contrast=1.1:brightness=-0.15:saturation=1.15,hue=h=190";
+              if (filterString) {
+                filterComplex += `[${lastLabel}]${filterString}[color_bg];`;
+                lastLabel = "color_bg";
+              }
+            }
+
+            // 4. Overlay the Canvas WebM (contains all visual effects + captions)
+            filterComplex += `[${lastLabel}][1:v]overlay=0:0:format=auto[v]`;
+
+            cmd = [
+              `ffmpeg -y`,
+              ...inputs,
+              `-filter_complex "${filterComplex}"`,
+              `-map "[v]"`,
+              `-map 2:a`,
+              `-c:v libx264`,
+              `-pix_fmt yuv420p`,
+              `-preset superfast`,
+              `-c:a aac -b:a 192k`,
+              `-t ${duration}`,
+              `"${localOutFile}"`,
+            ].join(" ");
+
+            console.log(`[Batch Worker Lyrical] FFmpeg FULL filter_complex:\n${filterComplex}`);
+            console.log(`[Batch Worker Lyrical] FFmpeg cmd: ${cmd.substring(0, 500)}...`);
+
+          } else {
+            // ═══════════════════════════════════════════════════════════════
+            // G2: ASS SUBTITLE FALLBACK (when Canvas overlay hasn't been generated yet)
+            // This path uses FFmpeg for ALL effects — less accurate than preview
+            // ═══════════════════════════════════════════════════════════════
+            console.log(`[Batch Worker Lyrical] Canvas overlay missing. Using ASS subtitle fallback.`);
+
             if (!item.track.lyricalTranscription) {
               throw new Error(`Cannot render: track ${item.track.title} has no Whisper transcription data.`);
             }
@@ -807,7 +889,7 @@ async function processBatchRendering(batchId: string) {
             const activeColorBGR = hexToAssBGR(tpl.activeColor || "#FFFF00");
             const strokeColorBGR = hexToAssBGR(tpl.strokeColor || "#000000");
             const fontSize = tpl.fontSize || 48;
-            const strokeWidth = tpl.strokeWidth ?? 3; // respect 0 if user set it
+            const strokeWidth = tpl.strokeWidth ?? 3;
             const fontName = tpl.fontFamily || "Outfit";
             const yPos = Math.round(tpl.positionY * 1280);
 
@@ -825,7 +907,6 @@ async function processBatchRendering(batchId: string) {
             }
             if (curChunk.length > 0) chunks.push(curChunk);
 
-            // Format time as H:MM:SS.CC for ASS
             const fmtTime = (t: number): string => {
               const h = Math.floor(t / 3600);
               const m = Math.floor((t % 3600) / 60);
@@ -834,13 +915,10 @@ async function processBatchRendering(batchId: string) {
               return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}.${String(cs).padStart(2, "0")}`;
             };
 
-            // Neon glow: use shadow + blur for glow effect matching the browser preview
-            const glowShadow = strokeWidth === 0 ? 3 : 1; // stronger glow when no outline
+            const glowShadow = strokeWidth === 0 ? 3 : 1;
             const glowBlur = strokeWidth === 0 ? 4 : 2;
-            // BackColour for glow uses the active color with partial transparency
-            const glowColorBGR = activeColorBGR.replace("&H00", "&H40"); // 25% transparent glow
+            const glowColorBGR = activeColorBGR.replace("&H00", "&H40");
 
-            // Build ASS subtitle file
             const assLines: string[] = [];
             assLines.push("[Script Info]");
             assLines.push("Title: Lyrical Captions");
@@ -863,7 +941,6 @@ async function processBatchRendering(batchId: string) {
                 let text = "";
                 for (let j = 0; j < chunk.length; j++) {
                   if (j === ai) {
-                    // Active word: colored + blur glow for neon effect
                     text += `{\\c${activeColorBGR}\\blur${glowBlur + 1}\\bord${Math.max(strokeWidth, 2)}}${chunk[j].word.toUpperCase()}{\\c&H00FFFFFF&\\blur${glowBlur}\\bord${strokeWidth}}`;
                   } else {
                     text += chunk[j].word.toUpperCase();
@@ -874,185 +951,89 @@ async function processBatchRendering(batchId: string) {
               }
             }
 
-            assSubtitlePath = `/tmp/lyrical_${item.id}.ass`;
+            const assSubtitlePath = `/tmp/lyrical_${item.id}.ass`;
             fs.writeFileSync(assSubtitlePath, assLines.join("\n"), "utf-8");
             console.log(`[Batch Worker Lyrical] Generated ASS subtitle (${chunks.length} chunks, ${words.length} words)`);
-          }
 
-          const duration = batch.videoLength || item.track.duration || 7.0;
+            // Build FFmpeg with ALL effects (fallback path)
+            const vignette = item.lyricalTemplate?.vignette || "none";
+            const particleFx = item.lyricalTemplate?.particleFx || "none";
 
-          // Run Pillow generator dynamic self-healing asset check
-          try {
-            const { execSync } = require("child_process");
-            execSync(`./venv/bin/python3 scripts/effects_generator.py`, { timeout: 10000 });
-          } catch (e) {
-            console.warn("[Batch Worker Lyrical] Self-healing effects builder skipped:", e);
-          }
-
-          // Read visual effects from the template — single source of truth
-          const colorFilter = item.lyricalTemplate?.colorFilter || "none";
-          const particleFx = item.lyricalTemplate?.particleFx || "none";
-          const vignette = item.lyricalTemplate?.vignette || "none";
-          const mirrorBg = item.lyricalTemplate?.mirrorBg === true;
-          const bgSpeed = typeof item.lyricalTemplate?.bgSpeed === "number" ? item.lyricalTemplate.bgSpeed : 1.0;
-
-          console.log(`[Batch Worker DEBUG] BUILD=${BUILD_VERSION}`);
-          console.log(`[Batch Worker DEBUG] Template ID: ${item.lyricalTemplateId}`);
-          console.log(`[Batch Worker DEBUG] Template name: ${item.lyricalTemplate?.templateName}`);
-          console.log(`[Batch Worker DEBUG] Template raw colorFilter: '${item.lyricalTemplate?.colorFilter}'`);
-          console.log(`[Batch Worker DEBUG] Template raw vignette: '${item.lyricalTemplate?.vignette}'`);
-          console.log(`[Batch Worker DEBUG] Template raw particleFx: '${item.lyricalTemplate?.particleFx}'`);
-          console.log(`[Batch Worker DEBUG] Resolved effects → filter=${colorFilter}, vignette=${vignette}, particles=${particleFx}, mirror=${mirrorBg}, speed=${bgSpeed}`);
-          console.log(`[Batch Worker DEBUG] quoteText: ${item.quoteText?.substring(0, 200)}`);
-
-          console.log(`[Batch Worker Lyrical] Effects from template: filter=${colorFilter}, vignette=${vignette}, particles=${particleFx}, mirror=${mirrorBg}, speed=${bgSpeed}`);
-
-          const inputs: string[] = [];
-          inputs.push(`-stream_loop -1 -i "${bgPath}"`);
-
-          let filterComplex = "";
-          let lastLabel = "0:v";
-          let currentInputIdx = 1;
-
-          // 0. Normalize background to 720x1280 (TikTok standard) so all overlays/effects match
-          filterComplex += `[0:v]scale=720:1280:force_original_aspect_ratio=disable,setsar=1[scaled_bg];`;
-          lastLabel = "scaled_bg";
-
-          // A. Background transforms
-          const transformFilters: string[] = [];
-          if (mirrorBg) transformFilters.push("hflip");
-          if (bgSpeed !== 1.0) transformFilters.push(`setpts=${(1.0 / bgSpeed).toFixed(3)}*PTS`);
-          if (transformFilters.length > 0) {
-            filterComplex += `[${lastLabel}]${transformFilters.join(",")}[transformed_bg];`;
-            lastLabel = "transformed_bg";
-          }
-
-          // A2. Background darkening — matches CSS preview's bg-black/45 overlay
-          // The preview applies a semi-transparent black layer for text legibility
-          filterComplex += `[${lastLabel}]eq=brightness=-0.25[darkened_bg];`;
-          lastLabel = "darkened_bg";
-
-          // B. Color filters — matched to CSS preview filters
-          //    CSS: contrast() saturate() sepia/hue-rotate() brightness()
-          //    FFmpeg: eq (contrast/brightness/saturation) + hue (rotation) + subtle colorbalance
-          if (colorFilter !== "none") {
-            let filterString = "";
-            if (colorFilter === "cyberpunk") {
-              // CSS: contrast(1.2) saturate(1.3) hue-rotate(320deg) brightness(0.95)
-              filterString = "eq=contrast=1.2:brightness=-0.05:saturation=1.3,hue=h=320";
-            } else if (colorFilter === "cinema") {
-              // CSS: sepia(0.2) contrast(1.1) saturate(1.2) brightness(0.95)
-              filterString = "eq=contrast=1.1:brightness=-0.05:saturation=1.2,colorbalance=rs=0.04:gs=0.02:bs=-0.03:rm=0.03:gm=0.01:bm=-0.02";
-            } else if (colorFilter === "monochrome") {
-              // CSS: grayscale(1) contrast(1.3) brightness(0.9)
-              filterString = "eq=contrast=1.3:brightness=-0.1:saturation=0";
-            } else if (colorFilter === "vhs") {
-              // CSS: contrast(1.1) saturate(0.85) sepia(0.1) brightness(0.95)
-              filterString = "eq=contrast=1.1:brightness=-0.05:saturation=0.85,noise=alls=8:allf=t+u";
-            } else if (colorFilter === "emerald") {
-              // CSS: contrast(1.15) saturate(0.7) sepia(0.1) hue-rotate(80deg) brightness(0.9)
-              filterString = "eq=contrast=1.15:brightness=-0.1:saturation=0.7,hue=h=80";
-            } else if (colorFilter === "polaroid") {
-              // CSS: contrast(0.95) saturate(1.1) sepia(0.15) brightness(1.02)
-              filterString = "eq=contrast=0.95:brightness=0.02:saturation=1.1,colorbalance=rs=0.03:gs=0.02:bs=-0.02";
-            } else if (colorFilter === "midnight") {
-              // CSS: contrast(1.1) saturate(1.15) hue-rotate(190deg) brightness(0.85)
-              filterString = "eq=contrast=1.1:brightness=-0.15:saturation=1.15,hue=h=190";
-            }
-            if (filterString) {
-              filterComplex += `[${lastLabel}]${filterString}[color_bg];`;
-              lastLabel = "color_bg";
-            }
-          }
-
-          // C. Beat-responsive brightness flashes
-          let lineStartTimes: number[] = [];
-          if (item.track.lyricalTranscription) {
+            // Run effects asset generator
             try {
-              const wordsList = JSON.parse(item.track.lyricalTranscription);
-              if (Array.isArray(wordsList) && wordsList.length > 0) {
-                lineStartTimes.push(wordsList[0].start);
-                let wordCount = 1;
-                let lastEnd = wordsList[0].end;
-                for (let idx = 1; idx < wordsList.length; idx++) {
-                  const w = wordsList[idx];
-                  if (wordCount >= 3 || w.start - lastEnd > 1.5) {
-                    lineStartTimes.push(w.start);
-                    wordCount = 1;
-                  } else {
-                    wordCount++;
-                  }
-                  lastEnd = w.end;
-                }
-              }
+              const { execSync: execSyncFn } = require("child_process");
+              execSyncFn(`./venv/bin/python3 scripts/effects_generator.py`, { timeout: 10000 });
             } catch (e) {
-              console.warn("[Batch Worker Lyrical] Failed to parse transcription for flash transitions:", e);
+              console.warn("[Batch Worker Lyrical] Self-healing effects builder skipped:", e);
             }
-          }
-          if (lineStartTimes.length > 0) {
-            let expr = "0";
-            for (const t of lineStartTimes) {
-              expr = `if(between(t\\\\,${t.toFixed(2)}\\\\,${(t + 0.25).toFixed(2)})\\\\,0.15\\\\,${expr})`;
+
+            const inputs: string[] = [];
+            inputs.push(`-stream_loop -1 -i "${bgPath}"`);
+            let filterComplex = "";
+            let lastLabel = "0:v";
+            let currentInputIdx = 1;
+
+            filterComplex += `[0:v]scale=720:1280:force_original_aspect_ratio=disable,setsar=1[scaled_bg];`;
+            lastLabel = "scaled_bg";
+
+            // Transforms
+            const transformFilters: string[] = [];
+            if (mirrorBg) transformFilters.push("hflip");
+            if (bgSpeed !== 1.0) transformFilters.push(`setpts=${(1.0 / bgSpeed).toFixed(3)}*PTS`);
+            if (transformFilters.length > 0) {
+              filterComplex += `[${lastLabel}]${transformFilters.join(",")}[transformed_bg];`;
+              lastLabel = "transformed_bg";
             }
-            filterComplex += `[${lastLabel}]eq=brightness='${expr}'[flashed_bg];`;
-            lastLabel = "flashed_bg";
-          }
 
-          // D. Vignette overlay
-          if (vignette !== "none") {
-            const vigPath = path.join(process.cwd(), "public", "uploads", "effects", `${vignette}.png`);
-            if (fs.existsSync(vigPath)) {
-              const vigIdx = currentInputIdx++;
-              inputs.push(`-i "${vigPath}"`);
-              filterComplex += `[${lastLabel}][${vigIdx}:v]overlay=0:0[vignetted];`;
-              lastLabel = "vignetted";
+            // Darkening
+            filterComplex += `[${lastLabel}]eq=brightness=-0.25[darkened_bg];`;
+            lastLabel = "darkened_bg";
+
+            // Color filter
+            if (colorFilter !== "none") {
+              let filterString = "";
+              if (colorFilter === "cyberpunk") filterString = "eq=contrast=1.2:brightness=-0.05:saturation=1.3,hue=h=320";
+              else if (colorFilter === "cinema") filterString = "eq=contrast=1.1:brightness=-0.05:saturation=1.2,colorbalance=rs=0.04:gs=0.02:bs=-0.03:rm=0.03:gm=0.01:bm=-0.02";
+              else if (colorFilter === "monochrome") filterString = "eq=contrast=1.3:brightness=-0.1:saturation=0";
+              else if (colorFilter === "vhs") filterString = "eq=contrast=1.1:brightness=-0.05:saturation=0.85,noise=alls=8:allf=t+u";
+              else if (colorFilter === "emerald") filterString = "eq=contrast=1.15:brightness=-0.1:saturation=0.7,hue=h=80";
+              else if (colorFilter === "polaroid") filterString = "eq=contrast=0.95:brightness=0.02:saturation=1.1,colorbalance=rs=0.03:gs=0.02:bs=-0.02";
+              else if (colorFilter === "midnight") filterString = "eq=contrast=1.1:brightness=-0.15:saturation=1.15,hue=h=190";
+              if (filterString) {
+                filterComplex += `[${lastLabel}]${filterString}[color_bg];`;
+                lastLabel = "color_bg";
+              }
             }
-          }
 
-          // E. Account watermark badge — DISABLED (user preference)
-          // To re-enable, uncomment the block below.
-
-          // F. Particle effects — colorkey the black background to transparent, then overlay
-          // IMPORTANT: Cannot use blend=screen on YUV data! In YUV, black = Y:16 U:128 V:128.
-          // Screen blend treats U/V=128 as non-zero, shifting chroma on ALL pixels → pink tint.
-          // Instead: colorkey removes the black bg, then overlay composites only visible particles.
-          if (particleFx !== "none") {
-            const pPath = path.join(process.cwd(), "public", "uploads", "effects", particleFx);
-            if (fs.existsSync(pPath)) {
-              const pIdx = currentInputIdx++;
-              inputs.push(`-stream_loop -1 -i "${pPath}"`);
-              filterComplex += `[${pIdx}:v]colorkey=color=0x000000:similarity=0.15:blend=0.1[particles_keyed];`;
-              filterComplex += `[${lastLabel}][particles_keyed]overlay=0:0:format=auto[layered];`;
-              lastLabel = "layered";
+            // Vignette
+            if (vignette !== "none") {
+              const vigPath = path.join(process.cwd(), "public", "uploads", "effects", `${vignette}.png`);
+              if (fs.existsSync(vigPath)) {
+                const vigIdx = currentInputIdx++;
+                inputs.push(`-i "${vigPath}"`);
+                filterComplex += `[${lastLabel}][${vigIdx}:v]overlay=0:0[vignetted];`;
+                lastLabel = "vignetted";
+              }
             }
-          }
 
-          // G. Captions — overlay MOV or ASS subtitle filter
-          let cmd: string;
-          if (hasPreRenderedOverlay) {
-            // G1: Overlay pre-rendered transparent MOV
-            const captionIdx = currentInputIdx++;
-            inputs.push(`-i "${overlayPath}"`);
-            filterComplex += `[${lastLabel}][${captionIdx}:v]overlay=0:0[v]`;
-            cmd = [
-              `ffmpeg -y`,
-              ...inputs,
-              `-filter_complex "${filterComplex}"`,
-              `-map "[v]"`,
-              `-map ${captionIdx}:a`,
-              `-c:v libx264`,
-              `-pix_fmt yuv420p`,
-              `-preset superfast`,
-              `-c:a copy`,
-              `-t ${duration}`,
-              `"${localOutFile}"`,
-            ].join(" ");
-          } else {
-            // G2: Burn ASS subtitles directly via FFmpeg (zero extra RAM)
+            // Particles
+            if (particleFx !== "none") {
+              const pPath = path.join(process.cwd(), "public", "uploads", "effects", particleFx);
+              if (fs.existsSync(pPath)) {
+                const pIdx = currentInputIdx++;
+                inputs.push(`-stream_loop -1 -i "${pPath}"`);
+                filterComplex += `[${pIdx}:v]colorkey=color=0x000000:similarity=0.15:blend=0.1[particles_keyed];`;
+                filterComplex += `[${lastLabel}][particles_keyed]overlay=0:0:format=auto[layered];`;
+                lastLabel = "layered";
+              }
+            }
+
+            // ASS subtitles
             const audioIdx = currentInputIdx++;
             inputs.push(`-i "${audioPath}"`);
-            const escapedAss = assSubtitlePath!.replace(/\\/g, "/").replace(/:/g, "\\\\:");
+            const escapedAss = assSubtitlePath.replace(/\\/g, "/").replace(/:/g, "\\\\:");
             filterComplex += `[${lastLabel}]ass='${escapedAss}'[v]`;
+
             cmd = [
               `ffmpeg -y`,
               ...inputs,
@@ -1066,15 +1047,16 @@ async function processBatchRendering(batchId: string) {
               `-t ${duration}`,
               `"${localOutFile}"`,
             ].join(" ");
-          }
 
-          console.log(`[Batch Worker Lyrical] FFmpeg FULL filter_complex:\n${filterComplex}`);
-          console.log(`[Batch Worker Lyrical] FFmpeg cmd: ${cmd.substring(0, 500)}...`);
+            console.log(`[Batch Worker Lyrical] FFmpeg FULL filter_complex:\n${filterComplex}`);
+            console.log(`[Batch Worker Lyrical] FFmpeg cmd: ${cmd.substring(0, 500)}...`);
+          }
 
           await new Promise<void>((resolvePromise, rejectPromise) => {
             const { exec: execCmd } = require("child_process");
             execCmd(cmd, { timeout: 180000, maxBuffer: 1024 * 1024 * 10 }, (error: any, _stdout: any, stderr: any) => {
-              if (assSubtitlePath) try { fs.unlinkSync(assSubtitlePath); } catch {}
+              // Cleanup temp ASS file if it was created (G2 fallback path only)
+              try { fs.unlinkSync(`/tmp/lyrical_${item.id}.ass`); } catch {}
               if (error) {
                 console.error("[Batch Worker Lyrical] FFmpeg error:", stderr?.substring(0, 500));
                 rejectPromise(new Error(`FFmpeg composition failed: ${error.message}`));

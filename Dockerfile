@@ -101,6 +101,9 @@ COPY --from=builder --chown=nextjs:nodejs /app/prisma ./prisma
 COPY --from=builder --chown=nextjs:nodejs /app/node_modules/.prisma ./node_modules/.prisma
 COPY --from=builder --chown=nextjs:nodejs /app/node_modules/@prisma ./node_modules/@prisma
 
+# Install @napi-rs/canvas directly in runner (needs glibc Debian binaries, not Alpine musl)
+RUN npm install @napi-rs/canvas --no-save 2>/dev/null || echo '[Docker Build] @napi-rs/canvas install warning (non-fatal)'
+
 # Entrypoint runs migrations then starts the app
 COPY --chown=nextjs:nodejs docker-entrypoint.sh ./
 RUN chmod +x docker-entrypoint.sh

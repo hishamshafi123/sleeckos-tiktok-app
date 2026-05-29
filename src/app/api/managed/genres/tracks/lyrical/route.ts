@@ -112,8 +112,8 @@ export async function POST(req: Request) {
 }
 
 // 2. PATCH /api/managed/genres/tracks/lyrical — Save/Update a Lyrical Caption Template
-// NOTE: No longer pre-renders overlay MOV via Python (caused OOM on VPS).
-// The batch renderer uses FFmpeg ASS subtitle fallback when overlay MOV is missing.
+// Saves template config AND pre-renders a transparent Canvas overlay (WebM VP8 with alpha)
+// that matches the Live Studio Preview exactly. The batch renderer composites this overlay.
 export async function PATCH(req: Request) {
   const session = await getSession();
   if (!session || session.role !== "ADMIN") {
@@ -150,14 +150,10 @@ export async function PATCH(req: Request) {
       return NextResponse.json({ error: "Track is not designated as a lyrical aligned track. Run POST alignment first." }, { status: 400 });
     }
 
-    // Build expected paths (overlay MOV is optional — batch renderer uses ASS fallback if missing)
+    // Build paths
     const sanitizedTemplate = templateName.replace(/[^a-zA-Z0-9]/g, "_").toLowerCase();
-    const overlayRelativePath = `/uploads/lyrical/overlays/track_${trackId}_${sanitizedTemplate}.mov`;
+    const overlayRelativePath = `/uploads/lyrical/overlays/track_${trackId}_${sanitizedTemplate}.webm`;
     const previewRelativePath = `/uploads/lyrical/previews/track_${trackId}_${sanitizedTemplate}.png`;
-
-    // Check if overlay MOV already exists (may have been pre-rendered locally on a Mac)
-    const overlayAbsolutePath = path.join(process.cwd(), "public", ...overlayRelativePath.split("/"));
-    const hasExistingOverlay = fs.existsSync(overlayAbsolutePath);
 
     // All template data (caption styling + visual effects)
     const templateData = {
@@ -172,7 +168,7 @@ export async function PATCH(req: Request) {
       particleFx,
       mirrorBg,
       bgSpeed,
-      ...(hasExistingOverlay ? { overlayVideoUrl: overlayRelativePath } : {}),
+      overlayVideoUrl: overlayRelativePath,
       previewImageUrl: previewRelativePath,
     };
 
@@ -193,6 +189,30 @@ export async function PATCH(req: Request) {
     });
 
     console.log(`[Lyrical API] Template '${templateName}' saved for track: ${trackId} (effects: filter=${colorFilter}, vignette=${vignette}, particles=${particleFx})`);
+
+    // ── Pre-render Canvas overlay in background ──
+    // Don't block the response — render asynchronously
+    const overlayAbsolutePath = path.join(process.cwd(), "public", ...overlayRelativePath.split("/").filter(Boolean));
+    const words: { word: string; start: number; end: number }[] = JSON.parse(track.lyricalTranscription);
+    const duration = track.duration || 10.0;
+
+    // Fire and forget — render overlay asynchronously
+    (async () => {
+      try {
+        const { renderCanvasOverlay } = await import("@/lib/canvas-overlay-renderer");
+        console.log(`[Lyrical API] Starting Canvas overlay pre-render for '${templateName}'...`);
+        await renderCanvasOverlay(
+          words,
+          { fontFamily, fontSize, activeColor, strokeWidth, strokeColor, positionY, colorFilter, vignette, particleFx },
+          duration,
+          overlayAbsolutePath,
+        );
+        console.log(`[Lyrical API] Canvas overlay pre-render complete: ${overlayRelativePath}`);
+      } catch (err) {
+        console.error(`[Lyrical API] Canvas overlay pre-render failed for '${templateName}':`, err);
+      }
+    })();
+
     return NextResponse.json(template);
 
   } catch (err: any) {
