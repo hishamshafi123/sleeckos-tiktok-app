@@ -785,7 +785,17 @@ async function processBatchRendering(batchId: string) {
             overlayUrl = `/uploads/lyrical/overlays/track_${item.lyricalTemplate.trackId}_${sanitizedName}.webm`;
           }
           const overlayPath = path.join(process.cwd(), "public", overlayUrl);
-          const hasPreRenderedOverlay = fs.existsSync(overlayPath);
+          // Validate overlay: must exist + .ready sentinel + minimum 10KB
+          const overlayReady = fs.existsSync(overlayPath + ".ready");
+          const overlayExists = fs.existsSync(overlayPath);
+          let overlaySize = 0;
+          if (overlayExists) {
+            try { overlaySize = fs.statSync(overlayPath).size; } catch {}
+          }
+          const hasPreRenderedOverlay = overlayExists && overlayReady && overlaySize > 10240;
+          if (overlayExists && !hasPreRenderedOverlay) {
+            console.warn(`[Batch Worker] Overlay exists but invalid: ready=${overlayReady}, size=${overlaySize}. Falling back to ASS.`);
+          }
 
           const duration = batch.videoLength || item.track.duration || 7.0;
           const audioPath = path.join(process.cwd(), "public", item.track.fileUrl);

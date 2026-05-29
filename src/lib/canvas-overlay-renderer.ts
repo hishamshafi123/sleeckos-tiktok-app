@@ -383,6 +383,12 @@ export async function renderCanvasOverlay(
   const outDir = path.dirname(outputPath);
   fs.mkdirSync(outDir, { recursive: true });
 
+  // Write to temp file first, then atomic rename on success
+  const tmpPath = outputPath + ".tmp";
+  try { fs.unlinkSync(outputPath + ".ready"); } catch {}
+  try { fs.unlinkSync(tmpPath); } catch {}
+  try { fs.unlinkSync(outputPath); } catch {}
+
   // Spawn FFmpeg to receive raw RGBA frames and encode to WebM VP8 with alpha
   const ffmpegArgs = [
     "-y",
@@ -399,7 +405,7 @@ export async function renderCanvasOverlay(
     "-speed", "8",
     "-b:v", "2M",
     "-t", String(duration),
-    outputPath,
+    tmpPath,
   ];
 
   const ffmpeg = spawn("ffmpeg", ffmpegArgs, {
@@ -482,18 +488,30 @@ export async function renderCanvasOverlay(
 
   return new Promise<void>((resolve, reject) => {
     ffmpeg.on("close", (code) => {
-      if (code === 0) {
-        const stat = fs.statSync(outputPath);
+      if (code === 0 && fs.existsSync(tmpPath)) {
+        const stat = fs.statSync(tmpPath);
+        if (stat.size < 1024) {
+          console.error(`[Canvas Renderer] Output file too small (${stat.size} bytes), discarding`);
+          try { fs.unlinkSync(tmpPath); } catch {}
+          reject(new Error("Canvas overlay output too small — likely corrupt"));
+          return;
+        }
+        // Atomic rename: tmp → final path (prevents race conditions)
+        fs.renameSync(tmpPath, outputPath);
+        // Write .ready sentinel so batch renderer knows the file is fully written
+        fs.writeFileSync(outputPath + ".ready", new Date().toISOString(), "utf-8");
         console.log(`[Canvas Renderer] Complete! Output: ${outputPath} (${(stat.size / 1024).toFixed(0)}KB)`);
         resolve();
       } else {
-        console.error(`[Canvas Renderer] FFmpeg failed with code ${code}:`, ffmpegStderr.slice(-500));
+        console.error(`[Canvas Renderer] FFmpeg failed with code ${code}:`, ffmpegStderr.slice(-1000));
+        try { fs.unlinkSync(tmpPath); } catch {}
         reject(new Error(`FFmpeg encoding failed with code ${code}`));
       }
     });
 
     ffmpeg.on("error", (err) => {
       console.error("[Canvas Renderer] FFmpeg spawn error:", err);
+      try { fs.unlinkSync(tmpPath); } catch {}
       reject(err);
     });
   });
