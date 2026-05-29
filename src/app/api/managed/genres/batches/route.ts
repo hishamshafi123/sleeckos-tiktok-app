@@ -927,16 +927,33 @@ async function processBatchRendering(batchId: string) {
             lastLabel = "transformed_bg";
           }
 
-          // B. Color filters
+          // B. Color filters — matched to CSS preview filters
+          //    CSS: contrast() saturate() sepia/hue-rotate() brightness()
+          //    FFmpeg: eq (contrast/brightness/saturation) + hue (rotation) + subtle colorbalance
           if (colorFilter !== "none") {
             let filterString = "";
-            if (colorFilter === "cyberpunk") filterString = "colorbalance=rs=0.15:gs=-0.05:bs=0.35:rm=0.1:gm=-0.05:bm=0.25";
-            else if (colorFilter === "cinema") filterString = "colorbalance=rs=0.12:gs=0.04:bs=-0.12:rm=0.08:gm=0.02:bm=-0.08";
-            else if (colorFilter === "monochrome") filterString = "colorchannelmixer=.3:.4:.3:0:.3:.4:.3:0:.3:.4:.3:0";
-            else if (colorFilter === "vhs") filterString = "noise=alls=12:allf=t+u,hue=s=0.7";
-            else if (colorFilter === "emerald") filterString = "colorbalance=rs=-0.1:gs=0.12:bs=-0.1:rm=-0.08:gm=0.1:bm=-0.08";
-            else if (colorFilter === "polaroid") filterString = "eq=contrast=0.95:brightness=0.02:saturation=1.1,colorbalance=rs=0.08:gs=0.04:bs=-0.08:rm=0.04:gm=0.02:bm=-0.04";
-            else if (colorFilter === "midnight") filterString = "colorbalance=rs=-0.12:gs=-0.05:bs=0.2:rm=-0.08:gm=-0.02:bm=0.15";
+            if (colorFilter === "cyberpunk") {
+              // CSS: contrast(1.2) saturate(1.3) hue-rotate(320deg) brightness(0.95)
+              filterString = "eq=contrast=1.2:brightness=-0.05:saturation=1.3,hue=h=320";
+            } else if (colorFilter === "cinema") {
+              // CSS: sepia(0.2) contrast(1.1) saturate(1.2) brightness(0.95)
+              filterString = "eq=contrast=1.1:brightness=-0.05:saturation=1.2,colorbalance=rs=0.04:gs=0.02:bs=-0.03:rm=0.03:gm=0.01:bm=-0.02";
+            } else if (colorFilter === "monochrome") {
+              // CSS: grayscale(1) contrast(1.3) brightness(0.9)
+              filterString = "eq=contrast=1.3:brightness=-0.1:saturation=0";
+            } else if (colorFilter === "vhs") {
+              // CSS: contrast(1.1) saturate(0.85) sepia(0.1) brightness(0.95)
+              filterString = "eq=contrast=1.1:brightness=-0.05:saturation=0.85,noise=alls=8:allf=t+u";
+            } else if (colorFilter === "emerald") {
+              // CSS: contrast(1.15) saturate(0.7) sepia(0.1) hue-rotate(80deg) brightness(0.9)
+              filterString = "eq=contrast=1.15:brightness=-0.1:saturation=0.7,hue=h=80";
+            } else if (colorFilter === "polaroid") {
+              // CSS: contrast(0.95) saturate(1.1) sepia(0.15) brightness(1.02)
+              filterString = "eq=contrast=0.95:brightness=0.02:saturation=1.1,colorbalance=rs=0.03:gs=0.02:bs=-0.02";
+            } else if (colorFilter === "midnight") {
+              // CSS: contrast(1.1) saturate(1.15) hue-rotate(190deg) brightness(0.85)
+              filterString = "eq=contrast=1.1:brightness=-0.15:saturation=1.15,hue=h=190";
+            }
             if (filterString) {
               filterComplex += `[${lastLabel}]${filterString}[color_bg];`;
               lastLabel = "color_bg";
@@ -990,13 +1007,13 @@ async function processBatchRendering(batchId: string) {
           // E. Account watermark badge — DISABLED (user preference)
           // To re-enable, uncomment the block below.
 
-          // F. Particle effects
+          // F. Particle effects — subtle overlay (screen blend, low opacity to match CSS preview)
           if (particleFx !== "none") {
             const pPath = path.join(process.cwd(), "public", "uploads", "effects", particleFx);
             if (fs.existsSync(pPath)) {
               const pIdx = currentInputIdx++;
               inputs.push(`-stream_loop -1 -i "${pPath}"`);
-              filterComplex += `[${lastLabel}][${pIdx}:v]blend=all_mode='screen':all_opacity=0.6[layered];`;
+              filterComplex += `[${lastLabel}][${pIdx}:v]blend=all_mode='screen':all_opacity=0.25[layered];`;
               lastLabel = "layered";
             }
           }
