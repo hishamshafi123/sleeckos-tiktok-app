@@ -20,7 +20,10 @@ export async function POST(
   }
 
   const { id } = await params;
-  const account = await prisma.managedAccount.findUnique({ where: { id } });
+  const account = await prisma.managedAccount.findUnique({
+    where: { id },
+    include: { group: { include: { section: true } } },
+  });
 
   if (!account) {
     return NextResponse.json({ error: "Account not found" }, { status: 404 });
@@ -71,12 +74,15 @@ export async function POST(
     );
   }
 
-  // ── Caption ────────────────────────────────────────────────────────────────
+  // ── Caption (cascade: account > group > section) ──────────────────────────
   let caption = "";
   if (account.captionSource === "FILENAME") {
     caption = nextFile.name!.replace(/\.[^.]+$/, "");
   } else if (account.captionSource === "DEFAULT") {
-    caption = account.defaultCaption || "";
+    caption = account.defaultCaption
+      || account.group.defaultDescription
+      || account.group.section.defaultDescription
+      || "";
   }
 
   // ── Create post record ─────────────────────────────────────────────────────

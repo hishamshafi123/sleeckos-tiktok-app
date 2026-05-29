@@ -27,6 +27,8 @@ export async function PATCH(
   if (body.color !== undefined) data.color = body.color;
   if (body.icon !== undefined) data.icon = body.icon;
   if (body.sortOrder !== undefined) data.sortOrder = body.sortOrder;
+  if (body.defaultDescription !== undefined) data.defaultDescription = body.defaultDescription || null;
+  if (body.isActive !== undefined) data.isActive = body.isActive;
 
   const section = await prisma.accountSection.update({
     where: { id },

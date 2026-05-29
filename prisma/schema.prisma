@@ -260,28 +260,32 @@ model AuditLog {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 model AccountSection {
-  id        String         @id @default(uuid())
-  name      String         @unique
-  slug      String         @unique
-  color     String         @default("#8b5cf6")
-  icon      String?
-  sortOrder Int            @default(0)
-  createdAt DateTime       @default(now())
-  updatedAt DateTime       @updatedAt
-  groups    AccountGroup[]
+  id                 String         @id @default(uuid())
+  name               String         @unique
+  slug               String         @unique
+  color              String         @default("#8b5cf6")
+  icon               String?
+  defaultDescription String?        // Global video description for all accounts in this section
+  isActive           Boolean        @default(true) // Master toggle — disables all accounts in section
+  sortOrder          Int            @default(0)
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime       @updatedAt
+  groups             AccountGroup[]
 }
 
 model AccountGroup {
-  id          String         @id @default(uuid())
-  sectionId   String
-  section     AccountSection @relation(fields: [sectionId], references: [id], onDelete: Cascade)
-  name        String
-  slug        String
-  description String?
-  sortOrder   Int            @default(0)
-  createdAt   DateTime       @default(now())
-  updatedAt   DateTime       @updatedAt
-  accounts    ManagedAccount[]
+  id                 String         @id @default(uuid())
+  sectionId          String
+  section            AccountSection @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+  name               String
+  slug               String
+  description        String?
+  defaultDescription String?        // Group-level video description (overrides section)
+  isActive           Boolean        @default(true) // Group toggle — disables all accounts in group
+  sortOrder          Int            @default(0)
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime       @updatedAt
+  accounts           ManagedAccount[]
 
   @@unique([sectionId, slug])
 }

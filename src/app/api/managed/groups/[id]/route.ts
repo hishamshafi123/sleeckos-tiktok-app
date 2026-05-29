@@ -56,6 +56,8 @@ export async function PATCH(
       .replace(/(^-|-$)/g, "");
   }
   if (body.description !== undefined) data.description = body.description;
+  if (body.defaultDescription !== undefined) data.defaultDescription = body.defaultDescription || null;
+  if (body.isActive !== undefined) data.isActive = body.isActive;
   if (body.sortOrder !== undefined) data.sortOrder = body.sortOrder;
 
   const group = await prisma.accountGroup.update({

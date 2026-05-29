@@ -11,6 +11,7 @@ import {
   Trash2,
   Pencil,
   X,
+  Power,
 } from "lucide-react";
 
 type Section = {
@@ -19,6 +20,8 @@ type Section = {
   slug: string;
   color: string;
   icon: string | null;
+  isActive: boolean;
+  defaultDescription: string | null;
   sortOrder: number;
   totalGroups: number;
   totalAccounts: number;
@@ -207,12 +210,11 @@ export default function AccountsPage() {
               key={section.id}
               className="glass border border-white/5 rounded-2xl overflow-hidden hover:border-white/10 transition-all group"
             >
-              {/* Color accent bar */}
               <div
                 className="h-1"
-                style={{ backgroundColor: section.color }}
+                style={{ backgroundColor: section.color, opacity: section.isActive ? 1 : 0.4 }}
               />
-              <div className="p-6">
+              <div className={`p-6 ${!section.isActive ? 'opacity-50' : ''}`}>
                 <div className="flex items-start justify-between mb-4">
                   <div>
                     <Link
@@ -221,6 +223,12 @@ export default function AccountsPage() {
                     >
                       {section.name}
                     </Link>
+                    {!section.isActive && (
+                      <span className="inline-flex items-center gap-1 ml-2 px-2 py-0.5 rounded-full text-xs font-medium bg-red-500/10 text-red-400">
+                        <Power className="w-3 h-3" />
+                        Disabled
+                      </span>
+                    )}
                   </div>
                   <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                     <button

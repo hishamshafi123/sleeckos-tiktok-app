@@ -65,6 +65,13 @@ export async function GET(req: NextRequest) {
 
   const accounts = await prisma.managedAccount.findMany({
     where: { isActive: true, driveConnected: true },
+    include: {
+      group: {
+        include: {
+          section: true,
+        },
+      },
+    },
   });
 
   if (accounts.length === 0) {
@@ -81,6 +88,16 @@ export async function GET(req: NextRequest) {
       // Check PostPeer account ID
       if (!account.postpeerAccountId) {
         results[accountKey] = "skipped_no_postpeer_id";
+        continue;
+      }
+
+      // Check section and group active status (hierarchical toggle)
+      if (!account.group.section.isActive) {
+        results[accountKey] = "skipped_section_disabled";
+        continue;
+      }
+      if (!account.group.isActive) {
+        results[accountKey] = "skipped_group_disabled";
         continue;
       }
 
@@ -190,12 +207,16 @@ export async function GET(req: NextRequest) {
         continue;
       }
 
-      // ── Caption ──────────────────────────────────────────────────────────
+      // ── Caption (cascade: account > group > section > filename) ────────
       let caption = "";
       if (account.captionSource === "FILENAME") {
         caption = nextFile.name!.replace(/\.[^.]+$/, "");
       } else if (account.captionSource === "DEFAULT") {
-        caption = account.defaultCaption || "";
+        // Resolve with fallback: account → group → section
+        caption = account.defaultCaption
+          || account.group.defaultDescription
+          || account.group.section.defaultDescription
+          || "";
       }
 
       // ── Create post record ───────────────────────────────────────────────
