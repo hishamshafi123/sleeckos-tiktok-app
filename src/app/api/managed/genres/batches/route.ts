@@ -867,7 +867,8 @@ async function processBatchRendering(batchId: string) {
             }
 
             // 4. Overlay the Canvas WebM (contains all visual effects + captions)
-            filterComplex += `[${lastLabel}][1:v]overlay=0:0:format=auto[v]`;
+            // shortest=1 ensures the overlay doesn't extend past the background
+            filterComplex += `[${lastLabel}][1:v]overlay=0:0:shortest=1[v]`;
 
             cmd = [
               `ffmpeg -y`,

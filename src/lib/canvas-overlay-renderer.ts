@@ -95,25 +95,27 @@ function generateOverlayHTML(
   const montserratPath = path.join(fontsDir, "Montserrat-Bold.ttf");
 
   // Generate vignette CSS
+  // NOTE: Opacity values are boosted ~15-20% compared to Live Studio Preview
+  // to compensate for VP8 alpha channel quantization during WebM encoding.
   let vignetteCSS = "";
   if (config.vignette === "bottom_fade") {
-    vignetteCSS = `background: linear-gradient(to top, rgba(0,0,0,0.85) 0%, rgba(0,0,0,0.20) 50%, transparent 100%);`;
+    vignetteCSS = `background: linear-gradient(to top, rgba(0,0,0,0.95) 0%, rgba(0,0,0,0.30) 50%, transparent 100%);`;
   } else if (config.vignette === "radial_vignette") {
-    vignetteCSS = `background: radial-gradient(circle, transparent 40%, rgba(0,0,0,0.65) 95%);`;
+    vignetteCSS = `background: radial-gradient(circle, transparent 35%, rgba(0,0,0,0.80) 95%);`;
   } else if (config.vignette === "sunset_glow") {
-    vignetteCSS = `background: radial-gradient(circle at top left, rgba(255,140,0,0.65) 0%, rgba(255,69,0,0) 60%);`;
+    vignetteCSS = `background: radial-gradient(circle at top left, rgba(255,140,0,0.80) 0%, rgba(255,69,0,0) 60%);`;
   } else if (config.vignette === "emerald_fade") {
-    vignetteCSS = `background: radial-gradient(circle, transparent 40%, rgba(5,28,15,0.65) 95%);`;
+    vignetteCSS = `background: radial-gradient(circle, transparent 35%, rgba(5,28,15,0.80) 95%);`;
   } else if (config.vignette === "top_fade") {
-    vignetteCSS = `background: linear-gradient(to bottom, rgba(0,0,0,0.85) 0%, rgba(0,0,0,0.20) 50%, transparent 100%);`;
+    vignetteCSS = `background: linear-gradient(to bottom, rgba(0,0,0,0.95) 0%, rgba(0,0,0,0.30) 50%, transparent 100%);`;
   } else if (config.vignette === "dual_fade") {
-    vignetteCSS = `background: linear-gradient(to bottom, rgba(0,0,0,0.70) 0%, transparent 40%, transparent 60%, rgba(0,0,0,0.70) 100%);`;
+    vignetteCSS = `background: linear-gradient(to bottom, rgba(0,0,0,0.85) 0%, transparent 40%, transparent 60%, rgba(0,0,0,0.85) 100%);`;
   } else if (config.vignette === "purple_haze") {
-    vignetteCSS = `background: radial-gradient(circle at bottom, rgba(147,51,234,0.45) 0%, transparent 70%);`;
+    vignetteCSS = `background: radial-gradient(circle at bottom, rgba(147,51,234,0.60) 0%, transparent 70%);`;
   } else if (config.vignette === "blue_hour") {
-    vignetteCSS = `background: radial-gradient(ellipse at bottom, rgba(30,58,138,0.55) 0%, transparent 65%);`;
+    vignetteCSS = `background: radial-gradient(ellipse at bottom, rgba(30,58,138,0.70) 0%, transparent 65%);`;
   } else if (config.vignette === "fire_edge") {
-    vignetteCSS = `background: radial-gradient(circle, transparent 35%, rgba(180,40,0,0.50) 90%);`;
+    vignetteCSS = `background: radial-gradient(circle, transparent 30%, rgba(180,40,0,0.65) 90%);`;
   }
 
   // Generate particle HTML (CSS-animated, matching Live Studio Preview)
@@ -525,6 +527,9 @@ export async function renderCanvasOverlay(
     console.log(`[Browser Renderer] Page loaded, fonts ready. Starting frame capture...`);
 
     // Spawn FFmpeg to receive PNG frames and encode to WebM VP8 with alpha
+    // NOTE: Higher quality settings are critical for preserving semi-transparent
+    // vignette gradients in the alpha channel. Using 'good' quality + CRF
+    // instead of 'realtime' which destroys subtle alpha gradients.
     const ffmpegArgs = [
       "-y",
       "-f", "image2pipe",
@@ -533,9 +538,10 @@ export async function renderCanvasOverlay(
       "-c:v", "libvpx",
       "-pix_fmt", "yuva420p",
       "-auto-alt-ref", "0",
-      "-quality", "realtime",
-      "-speed", "6",
-      "-b:v", "2M",
+      "-quality", "good",
+      "-speed", "3",
+      "-crf", "18",
+      "-b:v", "4M",
       "-t", String(duration),
       tmpPath,
     ];
