@@ -111,14 +111,17 @@ COPY --from=builder --chown=nextjs:nodejs /app/prisma ./prisma
 COPY --from=builder --chown=nextjs:nodejs /app/node_modules/.prisma ./node_modules/.prisma
 COPY --from=builder --chown=nextjs:nodejs /app/node_modules/@prisma ./node_modules/@prisma
 
-# Copy puppeteer-core (pure JS, no native binaries — works cross-platform)
+# Copy puppeteer-core and its runtime dependencies
 COPY --from=builder --chown=nextjs:nodejs /app/node_modules/puppeteer-core ./node_modules/puppeteer-core
 COPY --from=builder --chown=nextjs:nodejs /app/node_modules/chromium-bidi ./node_modules/chromium-bidi
 COPY --from=builder --chown=nextjs:nodejs /app/node_modules/devtools-protocol ./node_modules/devtools-protocol
+COPY --from=builder --chown=nextjs:nodejs /app/node_modules/@puppeteer ./node_modules/@puppeteer
+COPY --from=builder --chown=nextjs:nodejs /app/node_modules/typed-query-selector ./node_modules/typed-query-selector
+COPY --from=builder --chown=nextjs:nodejs /app/node_modules/webdriver-bidi-protocol ./node_modules/webdriver-bidi-protocol
+COPY --from=builder --chown=nextjs:nodejs /app/node_modules/ws ./node_modules/ws
 COPY --from=builder --chown=nextjs:nodejs /app/node_modules/mitt ./node_modules/mitt
 COPY --from=builder --chown=nextjs:nodejs /app/node_modules/debug ./node_modules/debug
 COPY --from=builder --chown=nextjs:nodejs /app/node_modules/ms ./node_modules/ms
-COPY --from=builder --chown=nextjs:nodejs /app/node_modules/urlpattern-polyfill ./node_modules/urlpattern-polyfill
 
 # Entrypoint runs migrations then starts the app
 COPY --chown=nextjs:nodejs docker-entrypoint.sh ./
