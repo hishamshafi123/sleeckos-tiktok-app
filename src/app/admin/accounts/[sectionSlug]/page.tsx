@@ -47,6 +47,10 @@ type Section = {
   slug: string;
   color: string;
   defaultDescription: string | null;
+  descFixedText: string | null;
+  descFixedTextEnabled: boolean;
+  descTags: string | null;
+  descTagCount: number;
   isActive: boolean;
   groups: Group[];
 };
@@ -64,10 +68,17 @@ export default function SectionPage({
   const [groupDesc, setGroupDesc] = useState("");
   const [creating, setCreating] = useState(false);
 
-  // Section-level description editing
+  // Section-level structured description editing
   const [sectionDesc, setSectionDesc] = useState("");
   const [sectionDescDirty, setSectionDescDirty] = useState(false);
   const [savingSection, setSavingSection] = useState(false);
+
+  // Structured description fields
+  const [fixedText, setFixedText] = useState("");
+  const [fixedTextEnabled, setFixedTextEnabled] = useState(true);
+  const [descTags, setDescTags] = useState("");
+  const [descTagCount, setDescTagCount] = useState(3);
+  const [descDirty, setDescDirty] = useState(false);
 
   // Group-level description editing
   const [editingGroupDesc, setEditingGroupDesc] = useState<string | null>(null);
@@ -81,6 +92,11 @@ export default function SectionPage({
         setSection(data);
         setSectionDesc(data.defaultDescription || "");
         setSectionDescDirty(false);
+        setFixedText(data.descFixedText || "");
+        setFixedTextEnabled(data.descFixedTextEnabled ?? true);
+        setDescTags(data.descTags || "");
+        setDescTagCount(data.descTagCount ?? 3);
+        setDescDirty(false);
       } else {
         setSection(null);
       }
@@ -161,14 +177,25 @@ export default function SectionPage({
       const res = await fetch(`/api/managed/sections/${section.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ defaultDescription: sectionDesc.trim() }),
+        body: JSON.stringify({
+          descFixedText: fixedText.trim(),
+          descFixedTextEnabled: fixedTextEnabled,
+          descTags: descTags.trim(),
+          descTagCount: descTagCount,
+        }),
       });
       if (!res.ok) throw new Error("Failed");
-      setSection({ ...section, defaultDescription: sectionDesc.trim() || null });
-      setSectionDescDirty(false);
-      toast.success("Section description saved");
+      setSection({
+        ...section,
+        descFixedText: fixedText.trim() || null,
+        descFixedTextEnabled: fixedTextEnabled,
+        descTags: descTags.trim() || null,
+        descTagCount,
+      });
+      setDescDirty(false);
+      toast.success("Description settings saved");
     } catch {
-      toast.error("Failed to save description");
+      toast.error("Failed to save description settings");
     } finally {
       setSavingSection(false);
     }
@@ -290,26 +317,104 @@ export default function SectionPage({
         </button>
       </div>
 
-      {/* Section-level Global Description */}
-      <div className="glass border border-white/5 rounded-2xl p-5 space-y-3">
+      {/* Section-level Structured Description */}
+      <div className="glass border border-white/5 rounded-2xl p-5 space-y-4">
         <div className="flex items-center gap-2 text-sm font-semibold text-gray-300">
           <FileText className="w-4 h-4 text-purple-400" />
-          Global Video Description
+          Video Description Builder
           <span className="text-xs font-normal text-gray-600 ml-1">
             Applied to all accounts in this section (unless overridden at group or account level)
           </span>
         </div>
-        <textarea
-          value={sectionDesc}
-          onChange={(e) => {
-            setSectionDesc(e.target.value);
-            setSectionDescDirty(true);
-          }}
-          placeholder="Enter a default TikTok video description for all accounts in this section... (e.g. hashtags, call-to-action)"
-          rows={3}
-          className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white text-sm placeholder-gray-600 focus:outline-none focus:border-purple-500 transition-colors resize-none"
-        />
-        {sectionDescDirty && (
+
+        {/* Fixed Text Block */}
+        <div className="bg-white/3 border border-white/5 rounded-xl p-4 space-y-3">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-bold text-gray-400 uppercase tracking-wide">Fixed Text</span>
+            <button
+              onClick={() => {
+                setFixedTextEnabled(!fixedTextEnabled);
+                setDescDirty(true);
+              }}
+              className="flex items-center gap-1.5 text-xs font-semibold transition-colors"
+            >
+              {fixedTextEnabled ? (
+                <><ToggleRight className="w-5 h-5 text-green-400" /><span className="text-green-400">ON</span></>
+              ) : (
+                <><ToggleLeft className="w-5 h-5 text-gray-600" /><span className="text-gray-600">OFF</span></>
+              )}
+            </button>
+          </div>
+          <textarea
+            value={fixedText}
+            onChange={(e) => {
+              setFixedText(e.target.value);
+              setDescDirty(true);
+            }}
+            placeholder="Enter fixed text that always appears at the top of the description (e.g. Follow for more! 🎵)"
+            rows={2}
+            disabled={!fixedTextEnabled}
+            className={`w-full bg-black/20 border border-white/10 rounded-lg px-3 py-2.5 text-white text-sm placeholder-gray-600 focus:outline-none focus:border-purple-500 transition-colors resize-none ${!fixedTextEnabled ? 'opacity-40' : ''}`}
+          />
+        </div>
+
+        {/* Tags Pool Block */}
+        <div className="bg-white/3 border border-white/5 rounded-xl p-4 space-y-3">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-bold text-gray-400 uppercase tracking-wide">Hashtag Pool</span>
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] text-gray-500 font-medium">Tags per video:</span>
+              <input
+                type="number"
+                min={0}
+                max={20}
+                value={descTagCount}
+                onChange={(e) => {
+                  setDescTagCount(Math.max(0, Math.min(20, parseInt(e.target.value) || 0)));
+                  setDescDirty(true);
+                }}
+                className="w-14 bg-black/30 border border-white/10 rounded-lg px-2 py-1 text-white text-xs text-center focus:outline-none focus:border-purple-500"
+              />
+            </div>
+          </div>
+          <textarea
+            value={descTags}
+            onChange={(e) => {
+              setDescTags(e.target.value);
+              setDescDirty(true);
+            }}
+            placeholder="Enter hashtags separated by commas (e.g. #music, #viral, #fyp, #trending, #foryou, #tiktok)"
+            rows={3}
+            className="w-full bg-black/20 border border-white/10 rounded-lg px-3 py-2.5 text-white text-sm placeholder-gray-600 focus:outline-none focus:border-purple-500 transition-colors resize-none"
+          />
+          {descTags && (
+            <div className="flex flex-wrap gap-1.5">
+              {descTags.split(",").map((tag, i) => tag.trim()).filter(Boolean).map((tag, i) => (
+                <span key={i} className="bg-purple-500/15 text-purple-300 text-[10px] font-semibold px-2 py-0.5 rounded-full border border-purple-500/20">
+                  {tag}
+                </span>
+              ))}
+            </div>
+          )}
+          <p className="text-[10px] text-gray-600">
+            {descTags ? `${descTags.split(",").filter(t => t.trim()).length} tags in pool → ${descTagCount} random tags will be selected for each video` : 'No tags added yet'}
+          </p>
+        </div>
+
+        {/* Preview */}
+        {(fixedText || descTags) && (
+          <div className="bg-black/30 border border-white/5 rounded-xl p-3 space-y-1">
+            <span className="text-[10px] font-bold text-gray-500 uppercase tracking-wide">Preview (example)</span>
+            <div className="text-xs text-gray-300 whitespace-pre-wrap">
+              {fixedTextEnabled && fixedText ? fixedText.trim() : ''}
+              {fixedTextEnabled && fixedText && descTags ? '\n\n' : ''}
+              {descTags ? descTags.split(",").filter(t => t.trim()).slice(0, descTagCount).map(t => t.trim()).join(" ") : ''}
+            </div>
+          </div>
+        )}
+
+        {/* Save button */}
+        {descDirty && (
           <button
             onClick={saveSectionDesc}
             disabled={savingSection}
@@ -320,7 +425,7 @@ export default function SectionPage({
             ) : (
               <Save className="w-3 h-3" />
             )}
-            Save Description
+            Save Description Settings
           </button>
         )}
       </div>

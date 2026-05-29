@@ -854,6 +854,12 @@ async function processBatchRendering(batchId: string) {
               else if (colorFilter === "emerald") filterString = "eq=contrast=1.15:brightness=-0.1:saturation=0.7,hue=h=80";
               else if (colorFilter === "polaroid") filterString = "eq=contrast=0.95:brightness=0.02:saturation=1.1,colorbalance=rs=0.03:gs=0.02:bs=-0.02";
               else if (colorFilter === "midnight") filterString = "eq=contrast=1.1:brightness=-0.15:saturation=1.15,hue=h=190";
+              else if (colorFilter === "golden_hour") filterString = "eq=contrast=1.05:brightness=0.05:saturation=1.3,colorbalance=rs=0.05:gs=0.03:bs=-0.04,hue=h=-10";
+              else if (colorFilter === "arctic") filterString = "eq=contrast=1.1:brightness=0.05:saturation=0.6,hue=h=180";
+              else if (colorFilter === "neon_noir") filterString = "eq=contrast=1.4:brightness=-0.25:saturation=1.5,hue=h=280";
+              else if (colorFilter === "rose_tint") filterString = "eq=contrast=1.05:brightness=0.0:saturation=1.2,hue=h=330,colorbalance=rs=0.04:gs=-0.02:bs=-0.01";
+              else if (colorFilter === "vintage_film") filterString = "eq=contrast=0.9:brightness=-0.05:saturation=0.8,colorbalance=rs=0.06:gs=0.04:bs=-0.05";
+              else if (colorFilter === "tropical") filterString = "eq=contrast=1.1:brightness=0.05:saturation=1.5,hue=h=60";
               if (filterString) {
                 filterComplex += `[${lastLabel}]${filterString}[color_bg];`;
                 lastLabel = "color_bg";
@@ -1013,6 +1019,12 @@ async function processBatchRendering(batchId: string) {
               else if (colorFilter === "emerald") filterString = "eq=contrast=1.15:brightness=-0.1:saturation=0.7,hue=h=80";
               else if (colorFilter === "polaroid") filterString = "eq=contrast=0.95:brightness=0.02:saturation=1.1,colorbalance=rs=0.03:gs=0.02:bs=-0.02";
               else if (colorFilter === "midnight") filterString = "eq=contrast=1.1:brightness=-0.15:saturation=1.15,hue=h=190";
+              else if (colorFilter === "golden_hour") filterString = "eq=contrast=1.05:brightness=0.05:saturation=1.3,colorbalance=rs=0.05:gs=0.03:bs=-0.04,hue=h=-10";
+              else if (colorFilter === "arctic") filterString = "eq=contrast=1.1:brightness=0.05:saturation=0.6,hue=h=180";
+              else if (colorFilter === "neon_noir") filterString = "eq=contrast=1.4:brightness=-0.25:saturation=1.5,hue=h=280";
+              else if (colorFilter === "rose_tint") filterString = "eq=contrast=1.05:brightness=0.0:saturation=1.2,hue=h=330,colorbalance=rs=0.04:gs=-0.02:bs=-0.01";
+              else if (colorFilter === "vintage_film") filterString = "eq=contrast=0.9:brightness=-0.05:saturation=0.8,colorbalance=rs=0.06:gs=0.04:bs=-0.05";
+              else if (colorFilter === "tropical") filterString = "eq=contrast=1.1:brightness=0.05:saturation=1.5,hue=h=60";
               if (filterString) {
                 filterComplex += `[${lastLabel}]${filterString}[color_bg];`;
                 lastLabel = "color_bg";

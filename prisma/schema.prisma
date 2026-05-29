@@ -260,17 +260,21 @@ model AuditLog {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 model AccountSection {
-  id                 String         @id @default(uuid())
-  name               String         @unique
-  slug               String         @unique
-  color              String         @default("#8b5cf6")
-  icon               String?
-  defaultDescription String?        // Global video description for all accounts in this section
-  isActive           Boolean        @default(true) // Master toggle — disables all accounts in section
-  sortOrder          Int            @default(0)
-  createdAt          DateTime       @default(now())
-  updatedAt          DateTime       @updatedAt
-  groups             AccountGroup[]
+  id                   String         @id @default(uuid())
+  name                 String         @unique
+  slug                 String         @unique
+  color                String         @default("#8b5cf6")
+  icon                 String?
+  defaultDescription   String?        // Legacy — kept for backward compat
+  descFixedText        String?        // Fixed text portion of description
+  descFixedTextEnabled Boolean        @default(true)  // Toggle for fixed text
+  descTags             String?        // Comma-separated tag pool (e.g. "#music,#viral,#fyp")
+  descTagCount         Int            @default(3)     // How many tags to randomly select per video
+  isActive             Boolean        @default(true)  // Master toggle
+  sortOrder            Int            @default(0)
+  createdAt            DateTime       @default(now())
+  updatedAt            DateTime       @updatedAt
+  groups               AccountGroup[]
 }
 
 model AccountGroup {

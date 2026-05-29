@@ -65,6 +65,14 @@ export async function PATCH(
     data,
   });
 
+  // Cascade isActive to all accounts in this group
+  if (body.isActive !== undefined) {
+    await prisma.managedAccount.updateMany({
+      where: { groupId: id },
+      data: { isActive: body.isActive },
+    });
+  }
+
   return NextResponse.json(group);
 }
 

@@ -28,6 +28,10 @@ export async function PATCH(
   if (body.icon !== undefined) data.icon = body.icon;
   if (body.sortOrder !== undefined) data.sortOrder = body.sortOrder;
   if (body.defaultDescription !== undefined) data.defaultDescription = body.defaultDescription || null;
+  if (body.descFixedText !== undefined) data.descFixedText = body.descFixedText || null;
+  if (body.descFixedTextEnabled !== undefined) data.descFixedTextEnabled = body.descFixedTextEnabled;
+  if (body.descTags !== undefined) data.descTags = body.descTags || null;
+  if (body.descTagCount !== undefined) data.descTagCount = Math.max(0, Math.min(20, parseInt(body.descTagCount) || 3));
   if (body.isActive !== undefined) data.isActive = body.isActive;
 
   const section = await prisma.accountSection.update({

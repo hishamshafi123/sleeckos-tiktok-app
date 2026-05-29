@@ -207,16 +207,42 @@ export async function GET(req: NextRequest) {
         continue;
       }
 
-      // ── Caption (cascade: account > group > section > filename) ────────
+      // ── Caption (cascade: account > group > section structured desc) ──
       let caption = "";
       if (account.captionSource === "FILENAME") {
         caption = nextFile.name!.replace(/\.[^.]+$/, "");
       } else if (account.captionSource === "DEFAULT") {
-        // Resolve with fallback: account → group → section
-        caption = account.defaultCaption
-          || account.group.defaultDescription
-          || account.group.section.defaultDescription
-          || "";
+        // Priority: account → group → section (structured)
+        if (account.defaultCaption) {
+          caption = account.defaultCaption;
+        } else if (account.group.defaultDescription) {
+          caption = account.group.defaultDescription;
+        } else {
+          // Build from section's structured description fields
+          const sec = account.group.section;
+          const parts: string[] = [];
+
+          // Fixed text (if enabled and exists)
+          if (sec.descFixedTextEnabled && sec.descFixedText) {
+            parts.push(sec.descFixedText.trim());
+          }
+
+          // Random tags from pool
+          if (sec.descTags && sec.descTagCount > 0) {
+            const allTags = sec.descTags
+              .split(",")
+              .map((t: string) => t.trim())
+              .filter((t: string) => t.length > 0);
+            if (allTags.length > 0) {
+              // Shuffle and pick descTagCount tags
+              const shuffled = [...allTags].sort(() => Math.random() - 0.5);
+              const picked = shuffled.slice(0, Math.min(sec.descTagCount, allTags.length));
+              parts.push(picked.join(" "));
+            }
+          }
+
+          caption = parts.join("\n\n");
+        }
       }
 
       // ── Create post record ───────────────────────────────────────────────
