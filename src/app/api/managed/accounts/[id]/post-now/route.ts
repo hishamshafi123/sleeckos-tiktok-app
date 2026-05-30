@@ -74,30 +74,26 @@ export async function POST(
     );
   }
 
-  // ── Caption (cascade: account > group > section structured desc) ──────────
-  // Section tags are ALWAYS appended regardless of caption source.
+  // ── Caption (section is STRONGEST, then group, then account) ──────────
+  // Section-level description overrides everything.
   let caption = "";
   const sec = account.group.section;
 
-  if (account.captionSource === "FILENAME") {
+  // 1. Base text — section fixed text wins if set
+  if (sec.descFixedTextEnabled && sec.descFixedText) {
+    caption = sec.descFixedText.trim();
+  } else if (account.captionSource === "FILENAME") {
     caption = nextFile.name!.replace(/\.[^.]+$/, "");
   } else if (account.captionSource === "DEFAULT") {
-    // Base text priority: account → group → section fixed text
-    if (account.defaultCaption) {
-      caption = account.defaultCaption;
-    } else if (account.group.defaultDescription) {
+    // Fallback: group → account
+    if (account.group.defaultDescription) {
       caption = account.group.defaultDescription;
-    } else if (sec.descFixedTextEnabled && sec.descFixedText) {
-      caption = sec.descFixedText.trim();
+    } else if (account.defaultCaption) {
+      caption = account.defaultCaption;
     }
   }
 
-  // Always append section fixed text (if not already used as base)
-  if (account.captionSource !== "DEFAULT" && sec.descFixedTextEnabled && sec.descFixedText) {
-    caption = caption ? `${caption}\n\n${sec.descFixedText.trim()}` : sec.descFixedText.trim();
-  }
-
-  // Always append section random tags
+  // 2. Always append section random tags
   if (sec.descTags && sec.descTagCount > 0) {
     const allTags = sec.descTags
       .split(",")
