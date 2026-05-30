@@ -75,15 +75,14 @@ export async function POST(
   }
 
   // ── Caption (cascade: account > group > section structured desc) ──────────
-  // Base text: account.defaultCaption → group.defaultDescription → section.descFixedText
-  // Section tags are ALWAYS appended regardless of where base text comes from.
+  // Section tags are ALWAYS appended regardless of caption source.
   let caption = "";
   const sec = account.group.section;
 
   if (account.captionSource === "FILENAME") {
     caption = nextFile.name!.replace(/\.[^.]+$/, "");
   } else if (account.captionSource === "DEFAULT") {
-    // 1. Get base text (priority cascade)
+    // Base text priority: account → group → section fixed text
     if (account.defaultCaption) {
       caption = account.defaultCaption;
     } else if (account.group.defaultDescription) {
@@ -91,19 +90,24 @@ export async function POST(
     } else if (sec.descFixedTextEnabled && sec.descFixedText) {
       caption = sec.descFixedText.trim();
     }
+  }
 
-    // 2. Always append section random tags (regardless of base text source)
-    if (sec.descTags && sec.descTagCount > 0) {
-      const allTags = sec.descTags
-        .split(",")
-        .map((t: string) => t.trim())
-        .filter((t: string) => t.length > 0);
-      if (allTags.length > 0) {
-        const shuffled = [...allTags].sort(() => Math.random() - 0.5);
-        const picked = shuffled.slice(0, Math.min(sec.descTagCount, allTags.length));
-        const tagLine = picked.join(" ");
-        caption = caption ? `${caption}\n\n${tagLine}` : tagLine;
-      }
+  // Always append section fixed text (if not already used as base)
+  if (account.captionSource !== "DEFAULT" && sec.descFixedTextEnabled && sec.descFixedText) {
+    caption = caption ? `${caption}\n\n${sec.descFixedText.trim()}` : sec.descFixedText.trim();
+  }
+
+  // Always append section random tags
+  if (sec.descTags && sec.descTagCount > 0) {
+    const allTags = sec.descTags
+      .split(",")
+      .map((t: string) => t.trim())
+      .filter((t: string) => t.length > 0);
+    if (allTags.length > 0) {
+      const shuffled = [...allTags].sort(() => Math.random() - 0.5);
+      const picked = shuffled.slice(0, Math.min(sec.descTagCount, allTags.length));
+      const tagLine = picked.join(" ");
+      caption = caption ? `${caption}\n\n${tagLine}` : tagLine;
     }
   }
 
