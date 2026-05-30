@@ -195,10 +195,18 @@ function sanitizeQuoteText(text: string): string {
  * and removes any remaining chars that could crash FFmpeg drawtext.
  */
 function sanitizeMultiplierHookText(text: string): string {
-  return sanitizeQuoteText(text)
+  let cleaned = sanitizeQuoteText(text)
     .replace(/\n/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+  // Strip surrounding quotes (common CSV artifact)
+  if (cleaned.startsWith('"') && cleaned.endsWith('"')) {
+    cleaned = cleaned.slice(1, -1).trim();
+  }
+  if (cleaned.startsWith("'") && cleaned.endsWith("'")) {
+    cleaned = cleaned.slice(1, -1).trim();
+  }
+  return cleaned;
 }
 
 /**
@@ -926,7 +934,8 @@ export async function composeMultiplierVideo(options: MultiplierComposeOptions):
   const padX = rawPaddingX ?? Math.max(stripPaddingY, 16);
   const padY = stripPaddingY;
   const effectiveTextWidth = OUTPUT_W - marginX * 2 - padX * 2;
-  const charsPerLine = Math.max(10, Math.floor(effectiveTextWidth / (fontSize * 0.62)));
+  // Bold/wide fonts need a larger per-char estimate; use 0.56 for safer wrapping
+  const charsPerLine = Math.max(10, Math.floor(effectiveTextWidth / (fontSize * 0.56)));
   const wrappedText = wrapText(casedText, charsPerLine);
   const lines = wrappedText.split("\n").map((line) => line.trim().replace(/\r/g, ""));
 
@@ -1165,7 +1174,9 @@ export async function composeMultiplierVideo(options: MultiplierComposeOptions):
     return String(staticY);
   }
 
-  // ── Neon Glow (multi-pass shadow drawtext underneath main text) ────────
+  // ── Neon Glow (shadow-only passes underneath main text) ────────────────
+  // Match CSS text-shadow behavior: only the SHADOW carries the glow color.
+  // The text body itself is transparent so it doesn't tint the main text.
   if (glowEnabled && glowIntensity > 0) {
     const glowCol = formatFfmpegColor(glowColor);
     const passes = Math.min(glowIntensity, 3);
@@ -1176,8 +1187,10 @@ export async function composeMultiplierVideo(options: MultiplierComposeOptions):
         const yExpr = getAnimatedY(lineY);
         const escapedLineText = escapeFfmpegDrawtext(lines[i]);
         const outLabel = getNextLabel(false);
+        // Use the main text color at 0% opacity for the text body so only
+        // the shadow (glow) is visible — prevents glow color tinting the text
         filterParts.push(
-          `${currentLabel}drawtext=fontfile='${escapedFontPath}':text="${escapedLineText}":fontcolor=${glowCol}@0.3:fontsize=${fontSize}:x=${alignX}:y=${yExpr}:shadowx=${offset}:shadowy=${offset}:shadowcolor=${glowCol}@0.5:expansion=none${alphaExpr}${outLabel}`
+          `${currentLabel}drawtext=fontfile='${escapedFontPath}':text="${escapedLineText}":fontcolor=${drawFontColor}@0.0:fontsize=${fontSize}:x=${alignX}:y=${yExpr}:shadowx=${offset}:shadowy=${offset}:shadowcolor=${glowCol}@0.6:expansion=none${alphaExpr}${outLabel}`
         );
         currentLabel = outLabel;
       }
@@ -1240,6 +1253,10 @@ export async function composeMultiplierVideo(options: MultiplierComposeOptions):
     `"${outputPath}"`,
   ].join(" ");
 
+  console.log("[Multiplier Composer] fontColor:", fontColor, "→ drawFontColor:", drawFontColor);
+  console.log("[Multiplier Composer] charsPerLine:", charsPerLine, "fontSize:", fontSize, "effectiveTextWidth:", effectiveTextWidth);
+  console.log("[Multiplier Composer] lines:", lines);
+  console.log("[Multiplier Composer] Filter script:\n", filterComplex.substring(0, 2000));
   console.log("[Multiplier Composer] Running drawtext chain:", cmd.substring(0, 400) + "...");
 
   return new Promise<string>((resolve, reject) => {
