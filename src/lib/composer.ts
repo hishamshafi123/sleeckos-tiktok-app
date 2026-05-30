@@ -991,7 +991,8 @@ export async function composeMultiplierVideo(options: MultiplierComposeOptions):
   const getNextLabel = (isFinal: boolean) => isFinal ? "[v]" : `[s${nextLabelIdx++}]`;
 
   // Determine if strip should be drawn at all
-  const drawStrip = stripShape !== "NONE" && bgAlpha > 0;
+  const drawStrip = stripShape !== "NONE";
+  const drawStripBg = drawStrip && bgAlpha > 0;
 
   // For PILL shape, shrink strip width to fit text content + padding
   let effectiveStripW = stripW;
@@ -1003,6 +1004,11 @@ export async function composeMultiplierVideo(options: MultiplierComposeOptions):
     effectiveStripW = Math.min(stripW, estTextW + padX * 2 + 16);
     effectiveStripX = Math.round((OUTPUT_W - effectiveStripW) / 2);
   }
+
+  // Compute effective corner radius
+  const effectiveR = drawStrip
+    ? (stripShape === "PILL" ? Math.max(R, Math.floor(stripHeight / 2)) : R)
+    : 0;
 
   // ── Backdrop Blur (blurred region behind strip) ───────────────────────
   if (backdropBlurEnabled && backdropBlurRadius > 0 && drawStrip) {
@@ -1022,38 +1028,66 @@ export async function composeMultiplierVideo(options: MultiplierComposeOptions):
     currentLabel = outLabel;
   }
 
-  // ── Strip Shadow (behind the main strip) ──────────────────────────────
+  // ── Strip Shadow (geq rounded rect, semi-transparent) ─────────────────
   if (drawStrip && stripShadowEnabled && stripShadowOffset > 0) {
-    const shCol = stripShadowColor.startsWith("#") ? "0x" + stripShadowColor.slice(1) : stripShadowColor;
+    const shHex = (stripShadowColor || "#000000").startsWith("#") ? (stripShadowColor || "#000000").slice(1) : (stripShadowColor || "#000000");
+    const shR = parseInt(shHex.substring(0, 2), 16) || 0;
+    const shG = parseInt(shHex.substring(2, 4), 16) || 0;
+    const shB = parseInt(shHex.substring(4, 6), 16) || 0;
+    const shAlpha = Math.round(255 * 0.4); // 40% opacity for shadow
     const shX = effectiveStripX + stripShadowOffset;
     const shY = stripY + stripShadowOffset;
-    const outLabel = getNextLabel(false);
-    filterParts.push(
-      `${currentLabel}drawbox=x=${shX}:y=${shY}:w=${effectiveStripW}:h=${stripHeight}:color=${shCol}@0.4:t=fill${outLabel}`
-    );
-    currentLabel = outLabel;
+
+    if (effectiveR > 0) {
+      const shLabel = getNextLabel(false);
+      filterParts.push(
+        `color=c=0x${shHex.padEnd(6, "0")}:s=${effectiveStripW}x${stripHeight}:d=1,format=yuva420p,geq=r='${shR}':g='${shG}':b='${shB}':a='if(gt(hypot(max(0,${effectiveR}-min(X,W-1-X)),max(0,${effectiveR}-min(Y,H-1-Y))),${effectiveR}),0,${shAlpha})'${shLabel}`
+      );
+      const shOverLabel = getNextLabel(false);
+      filterParts.push(
+        `${currentLabel}${shLabel}overlay=x=${shX}:y=${shY}:eof_action=repeat${shOverLabel}`
+      );
+      currentLabel = shOverLabel;
+    } else {
+      const outLabel = getNextLabel(false);
+      filterParts.push(
+        `${currentLabel}drawbox=x=${shX}:y=${shY}:w=${effectiveStripW}:h=${stripHeight}:color=0x${shHex.padEnd(6, "0")}@0.4:t=fill${outLabel}`
+      );
+      currentLabel = outLabel;
+    }
   }
 
-  // ── Strip Border (slightly larger box behind the strip) ────────────────
+  // ── Strip Border (geq rounded ring overlay) ───────────────────────────
   if (drawStrip && stripBorderEnabled && stripBorderWidth > 0) {
-    const brdCol = stripBorderColor.startsWith("#") ? "0x" + stripBorderColor.slice(1) : stripBorderColor;
-    const brdX = effectiveStripX - stripBorderWidth;
-    const brdY = stripY - stripBorderWidth;
-    const brdW = effectiveStripW + stripBorderWidth * 2;
-    const brdH = stripHeight + stripBorderWidth * 2;
-    const outLabel = getNextLabel(false);
+    const brdHex = (stripBorderColor || "#FFFFFF").startsWith("#") ? (stripBorderColor || "#FFFFFF").slice(1) : (stripBorderColor || "#FFFFFF");
+    const brdR = parseInt(brdHex.substring(0, 2), 16) || 255;
+    const brdG = parseInt(brdHex.substring(2, 4), 16) || 255;
+    const brdB = parseInt(brdHex.substring(4, 6), 16) || 255;
+    const bw = Math.max(1, stripBorderWidth);
+    const brdTotalW = effectiveStripW + bw * 2;
+    const brdTotalH = stripHeight + bw * 2;
+    const outerR = effectiveR + bw;
+    const innerR = effectiveR;
+
+    // Draw a ring: opaque where inside outer rounded rect AND outside inner rounded rect
+    const brdLabel = getNextLabel(false);
+    // Outer distance from corner: pixels outside outer rounded rect → transparent
+    // Inner distance from corner: pixels inside inner rounded rect → transparent (the "hole")
+    // The border ring: between outer and inner → opaque
+    const outerDist = `hypot(max(0,${outerR}-min(X,W-1-X)),max(0,${outerR}-min(Y,H-1-Y)))`;
+    const innerDist = `hypot(max(0,${innerR}-min(X-${bw},W-1-X-${bw})),max(0,${innerR}-min(Y-${bw},H-1-Y-${bw})))`;
     filterParts.push(
-      `${currentLabel}drawbox=x=${brdX}:y=${brdY}:w=${brdW}:h=${brdH}:color=${brdCol}@1.0:t=fill${outLabel}`
+      `color=c=0x${brdHex.padEnd(6, "0")}:s=${brdTotalW}x${brdTotalH}:d=1,format=yuva420p,geq=r='${brdR}':g='${brdG}':b='${brdB}':a='if(gt(${outerDist},${outerR}),0,if(lt(${innerDist},${innerR}),0,255))'${brdLabel}`
     );
-    currentLabel = outLabel;
+    const brdOverLabel = getNextLabel(false);
+    filterParts.push(
+      `${currentLabel}${brdLabel}overlay=x=${effectiveStripX - bw}:y=${stripY - bw}:eof_action=repeat${brdOverLabel}`
+    );
+    currentLabel = brdOverLabel;
   }
 
   // ── Background Strip ──────────────────────────────────────────────────
-  if (drawStrip) {
-    const effectiveR = stripShape === "PILL"
-      ? Math.max(R, Math.floor(stripHeight / 2)) // Force maximum rounding for pill
-      : R;
-
+  if (drawStripBg) {
     if (stripGradientEnabled) {
       // Gradient strip: interpolate between two colors using geq
       const hex2 = (stripGradientColor2 || "#333333").startsWith("#") ? (stripGradientColor2 || "#333333").slice(1) : (stripGradientColor2 || "#333333");
