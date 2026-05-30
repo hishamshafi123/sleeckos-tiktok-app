@@ -214,13 +214,19 @@ export async function GET(req: NextRequest) {
 
       console.log(`[PostScheduler] Caption build for ${accountKey}: captionSource=${account.captionSource}, section.descTags=${sec.descTags ? `"${sec.descTags}"` : "null"}, section.descTagCount=${sec.descTagCount}, section.descFixedText=${sec.descFixedText ? `"${sec.descFixedText}"` : "null"}, section.descFixedTextEnabled=${sec.descFixedTextEnabled}`);
 
-      // 1. Base text — section fixed text wins if set
-      if (sec.descFixedTextEnabled && sec.descFixedText) {
-        caption = sec.descFixedText.trim();
+      // 1. Base text — section config takes full control when present
+      const sectionHasConfig = (sec.descFixedTextEnabled && sec.descFixedText?.trim()) || (sec.descTags && sec.descTagCount > 0);
+
+      if (sectionHasConfig) {
+        // Section owns the description — use fixed text if set, otherwise just tags (added below)
+        if (sec.descFixedTextEnabled && sec.descFixedText?.trim()) {
+          caption = sec.descFixedText.trim();
+        }
+        // No fallback to account/group — tags will be appended in step 2
       } else if (account.captionSource === "FILENAME") {
         caption = nextFile.name!.replace(/\.[^.]+$/, "");
       } else if (account.captionSource === "DEFAULT") {
-        // Fallback: group → account
+        // Fallback only when section has NO config at all
         if (account.group.defaultDescription) {
           caption = account.group.defaultDescription;
         } else if (account.defaultCaption) {
