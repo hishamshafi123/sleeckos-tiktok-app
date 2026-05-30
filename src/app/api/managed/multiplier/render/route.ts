@@ -99,22 +99,50 @@ async function processMultiplierBatch(batchId: string) {
 
         const outputPath = path.join(rendersDir, `multi_${item.id}.mp4`);
 
+        // Look up design template if assigned
+        let tmpl: any = null;
+        if (item.templateId) {
+          tmpl = await prisma.multiplierTemplate.findUnique({ where: { id: item.templateId } });
+        }
+
         const { composeMultiplierVideo } = await import("@/lib/composer");
         const composeOpts = {
           inputVideoPath: sourceVideoPath,
           hookText: item.hookText,
-          fontFamily: batch.fontFamily,
-          fontSize: batch.fontSize,
-          fontColor: batch.fontColor,
-          textCase: batch.textCase,
-          bgStripColor: batch.bgStripColor,
-          bgStripOpacity: batch.bgStripOpacity,
+          // Use template styling if available, fallback to batch defaults
+          fontFamily: tmpl?.fontFamily || batch.fontFamily,
+          fontSize: tmpl?.fontSize ?? batch.fontSize,
+          fontColor: tmpl?.fontColor || batch.fontColor,
+          textCase: tmpl?.textCase || batch.textCase,
+          bgStripColor: tmpl?.bgStripColor || batch.bgStripColor,
+          bgStripOpacity: tmpl?.bgStripOpacity ?? batch.bgStripOpacity,
           textPosition: batch.textPosition as "TOP" | "BOTTOM",
-          stripPaddingY: batch.stripPaddingY,
-          positionYPercent: batch.positionYPercent,
-          marginX: batch.marginX,
-          borderRadius: batch.borderRadius,
+          stripPaddingY: tmpl?.paddingY ?? batch.stripPaddingY,
+          positionYPercent: tmpl?.positionYPercent ?? batch.positionYPercent,
+          marginX: tmpl?.marginX ?? batch.marginX,
+          borderRadius: tmpl?.borderRadius ?? batch.borderRadius,
           outputPath,
+          // New design template fields
+          paddingX: tmpl?.paddingX,
+          textAlign: tmpl?.textAlign,
+          lineHeight: tmpl?.lineHeight,
+          letterSpacing: tmpl?.letterSpacing,
+          strokeEnabled: tmpl?.strokeEnabled ?? false,
+          strokeColor: tmpl?.strokeColor,
+          strokeWidth: tmpl?.strokeWidth,
+          shadowEnabled: tmpl?.shadowEnabled ?? false,
+          shadowColor: tmpl?.shadowColor,
+          shadowX: tmpl?.shadowX,
+          shadowY: tmpl?.shadowY,
+          glowEnabled: tmpl?.glowEnabled ?? false,
+          glowColor: tmpl?.glowColor,
+          glowIntensity: tmpl?.glowIntensity,
+          stripBorderEnabled: tmpl?.stripBorderEnabled ?? false,
+          stripBorderColor: tmpl?.stripBorderColor,
+          stripBorderWidth: tmpl?.stripBorderWidth,
+          stripShadowEnabled: tmpl?.stripShadowEnabled ?? false,
+          stripShadowColor: tmpl?.stripShadowColor,
+          stripShadowOffset: tmpl?.stripShadowOffset,
         };
 
         try {

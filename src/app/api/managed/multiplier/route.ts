@@ -95,34 +95,24 @@ export async function POST(req: Request) {
       hooks = parseCSVHooks(csvText);
     }
 
-    // 3. Merge with template hooks if templateIds provided
+    if (hooks.length === 0) {
+      // Clean up uploaded video
+      try { fs.unlinkSync(videoLocalPath); } catch {}
+      return NextResponse.json({ error: "No text hooks found in CSV." }, { status: 400 });
+    }
+
+    // 3. Parse design template IDs for random assignment to items
+    let designTemplateIds: string[] = [];
     const templateIdsRaw = formData.get("templateIds") as string;
     if (templateIdsRaw) {
       try {
-        const templateIds = JSON.parse(templateIdsRaw) as string[];
-        if (templateIds.length > 0) {
-          const templates = await prisma.multiplierTemplate.findMany({
-            where: { id: { in: templateIds } },
-          });
-          for (const tmpl of templates) {
-            const tmplHooks = JSON.parse(tmpl.hooks) as string[];
-            hooks = [...hooks, ...tmplHooks];
-          }
-          // Shuffle the combined hooks
-          hooks = hooks.sort(() => Math.random() - 0.5);
-        }
+        designTemplateIds = JSON.parse(templateIdsRaw) as string[];
       } catch (e) {
         console.warn("[Multiplier API] Failed to parse templateIds:", e);
       }
     }
 
-    if (hooks.length === 0) {
-      // Clean up uploaded video
-      try { fs.unlinkSync(videoLocalPath); } catch {}
-      return NextResponse.json({ error: "No text hooks found. Upload a CSV or select templates." }, { status: 400 });
-    }
-
-    // 4. Create batch + items
+    // 4. Create batch + items (with random template assignment)
     const batch = await prisma.multiplierBatch.create({
       data: {
         name: batchName,
@@ -144,6 +134,10 @@ export async function POST(req: Request) {
           create: hooks.map((hook) => ({
             hookText: hook,
             status: "PENDING",
+            // Randomly assign a design template from the selected pool (if any)
+            templateId: designTemplateIds.length > 0
+              ? designTemplateIds[Math.floor(Math.random() * designTemplateIds.length)]
+              : null,
           })),
         },
       },
@@ -154,7 +148,7 @@ export async function POST(req: Request) {
       },
     });
 
-    console.log(`[Multiplier API] Created batch ${batch.id} with ${hooks.length} items`);
+    console.log(`[Multiplier API] Created batch ${batch.id} with ${hooks.length} items, ${designTemplateIds.length} design templates`);
     return NextResponse.json(batch);
   } catch (err) {
     console.error("[Multiplier API] Error creating batch:", err);

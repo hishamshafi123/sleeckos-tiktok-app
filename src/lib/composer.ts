@@ -819,10 +819,7 @@ export function allocateTracks(
   return allocation;
 }
 
-// ══════════════════════════════════════════════════════════════════════════════
-// Video Multiplier Composer — Overlay text hook on a colored strip
-// ══════════════════════════════════════════════════════════════════════════════
-
+// Multiplier Compose Options
 export interface MultiplierComposeOptions {
   inputVideoPath: string;
   hookText: string;
@@ -838,6 +835,34 @@ export interface MultiplierComposeOptions {
   marginX: number;
   borderRadius: number;
   outputPath: string;
+
+  // New design template fields
+  paddingX?: number;
+  textAlign?: "LEFT" | "CENTER" | "RIGHT";
+  lineHeight?: number;
+  letterSpacing?: number;
+  stripWidthMode?: "FULL" | "FIT";
+  stripWidthPercent?: number;
+
+  // Text effects
+  strokeEnabled?: boolean;
+  strokeColor?: string;
+  strokeWidth?: number;
+  shadowEnabled?: boolean;
+  shadowColor?: string;
+  shadowX?: number;
+  shadowY?: number;
+  glowEnabled?: boolean;
+  glowColor?: string;
+  glowIntensity?: number;
+
+  // Strip effects
+  stripBorderEnabled?: boolean;
+  stripBorderColor?: string;
+  stripBorderWidth?: number;
+  stripShadowEnabled?: boolean;
+  stripShadowColor?: string;
+  stripShadowOffset?: number;
 }
 
 export async function composeMultiplierVideo(options: MultiplierComposeOptions): Promise<string> {
@@ -845,6 +870,12 @@ export async function composeMultiplierVideo(options: MultiplierComposeOptions):
     inputVideoPath, hookText, fontFamily, fontSize, fontColor, textCase,
     bgStripColor, bgStripOpacity, stripPaddingY, positionYPercent,
     marginX, borderRadius, outputPath,
+    paddingX: rawPaddingX, textAlign = "CENTER", lineHeight: rawLineHeight,
+    strokeEnabled = false, strokeColor = "#000000", strokeWidth = 2,
+    shadowEnabled = false, shadowColor = "#000000", shadowX = 2, shadowY = 2,
+    glowEnabled = false, glowColor = "#FF00FF", glowIntensity = 2,
+    stripBorderEnabled = false, stripBorderColor = "#FFFFFF", stripBorderWidth = 1,
+    stripShadowEnabled = false, stripShadowColor = "#000000", stripShadowOffset = 4,
   } = options;
 
   const OUTPUT_W = 720;
@@ -859,85 +890,152 @@ export async function composeMultiplierVideo(options: MultiplierComposeOptions):
   const tempDir = path.join(os.tmpdir(), "temp_multiplier");
   if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
 
-  // Use stripPaddingY as uniform inner padding (horizontal + vertical)
-  const paddingX = Math.max(stripPaddingY, 16); // Ensure at least 16px inner horizontal padding
-  const effectiveTextWidth = OUTPUT_W - marginX * 2 - paddingX * 2;
+  const padX = rawPaddingX ?? Math.max(stripPaddingY, 16);
+  const padY = stripPaddingY;
+  const effectiveTextWidth = OUTPUT_W - marginX * 2 - padX * 2;
   const charsPerLine = Math.max(10, Math.floor(effectiveTextWidth / (fontSize * 0.62)));
   const wrappedText = wrapText(casedText, charsPerLine);
   const lines = wrappedText.split("\n").map((line) => line.trim().replace(/\r/g, ""));
 
   const drawFontColor = formatFfmpegColor(fontColor);
-
+  const lh = rawLineHeight ?? 1.4;
+  const lineHeightPx = fontSize * lh;
   const lineCount = lines.length;
-  const lineHeight = fontSize * 1.4;
-  const stripHeight = Math.round(lineCount * lineHeight + stripPaddingY * 2 + 10);
+  const stripHeight = Math.round(lineCount * lineHeightPx + padY * 2 + 10);
   const yPercent = Math.max(0, Math.min(100, positionYPercent));
   const maxY = OUTPUT_H - stripHeight;
   const stripY = Math.round((maxY * yPercent) / 100);
-  const textY = stripY + stripPaddingY;
+  const textYBase = stripY + padY;
   const stripX = marginX;
   const stripW = OUTPUT_W - marginX * 2;
   const bgAlpha = Math.max(0, Math.min(1, bgStripOpacity));
   const R = Math.max(0, Math.min(borderRadius, Math.floor(stripHeight / 2)));
 
-  // Write filter_complex to a temp file to avoid shell escaping issues
-  const filterFile = path.join(tempDir, "filter_" + Math.random().toString(36).substring(2, 9) + ".txt");
-
-  let filterComplex: string;
-
-  if (R > 0) {
-    const bgHex = bgStripColor.startsWith("#") ? bgStripColor.slice(1) : bgStripColor;
-    const cR = parseInt(bgHex.substring(0, 2), 16) || 0;
-    const cG = parseInt(bgHex.substring(2, 4), 16) || 0;
-    const cB = parseInt(bgHex.substring(4, 6), 16) || 0;
-    const alphaVal = Math.round(255 * bgAlpha);
-
-    // Build the drawtext filters chain (no textfile used, completely bypassing EOL/BOM bugs)
-    let lastLabel = "[bg]";
-    const drawtextFilters: string[] = [];
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-      const lineY = Math.round(textY + i * lineHeight);
-      const nextLabel = i === lines.length - 1 ? "[v]" : `[t${i}]`;
-      const escapedLineText = escapeFfmpegDrawtext(line);
-
-      drawtextFilters.push(
-        `${lastLabel}drawtext=fontfile='${escapedFontPath}':text="${escapedLineText}":fontcolor=${drawFontColor}:fontsize=${fontSize}:x='max(${stripX + paddingX}\\,${stripX}+(${stripW}-text_w)/2)':y=${lineY}:expansion=none${nextLabel}`
-      );
-      lastLabel = nextLabel;
-    }
-
-    filterComplex = [
-      `[0:v]scale='if(gte(iw/ih,${OUTPUT_W}/${OUTPUT_H}),-1,${OUTPUT_W})':'if(gte(iw/ih,${OUTPUT_W}/${OUTPUT_H}),${OUTPUT_H},-1)',crop=${OUTPUT_W}:${OUTPUT_H}[scaled]`,
-      // Set duration to 1s (:d=1) so geq math evaluates ONLY once for a static frame instead of every single frame (300x speedup!)
-      `color=c=0x${bgHex.padEnd(6, "0")}:s=${stripW}x${stripHeight}:d=1,format=yuva420p,geq=r='${cR}':g='${cG}':b='${cB}':a='if(gt(hypot(max(0,${R}-min(X,W-1-X)),max(0,${R}-min(Y,H-1-Y))),${R}),0,${alphaVal})'[rrect]`,
-      // overlay repeats last frame indefinitely (eof_action=repeat) which is extremely cheap and fast
-      `[scaled][rrect]overlay=x=${stripX}:y=${stripY}:eof_action=repeat[bg]`,
-      ...drawtextFilters
-    ].join(";\n");
-  } else {
-    const bgColorFfmpeg = bgStripColor.startsWith("#") ? "0x" + bgStripColor.slice(1) : bgStripColor;
-
-    let lastLabel = "[bg]";
-    const drawtextFilters: string[] = [];
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-      const lineY = Math.round(textY + i * lineHeight);
-      const nextLabel = i === lines.length - 1 ? "[v]" : `[t${i}]`;
-      const escapedLineText = escapeFfmpegDrawtext(line);
-
-      drawtextFilters.push(
-        `${lastLabel}drawtext=fontfile='${escapedFontPath}':text="${escapedLineText}":fontcolor=${drawFontColor}:fontsize=${fontSize}:x='max(${stripX + paddingX}\\,${stripX}+(${stripW}-text_w)/2)':y=${lineY}:expansion=none${nextLabel}`
-      );
-      lastLabel = nextLabel;
-    }
-
-    filterComplex = [
-      `[0:v]scale='if(gte(iw/ih,${OUTPUT_W}/${OUTPUT_H}),-1,${OUTPUT_W})':'if(gte(iw/ih,${OUTPUT_W}/${OUTPUT_H}),${OUTPUT_H},-1)',crop=${OUTPUT_W}:${OUTPUT_H},drawbox=x=${stripX}:y=${stripY}:w=${stripW}:h=${stripHeight}:color=${bgColorFfmpeg}@${bgAlpha}:t=fill[bg]`,
-      ...drawtextFilters
-    ].join(";\n");
+  // Build alignment X expression
+  function buildAlignX(): string {
+    const leftX = stripX + padX;
+    const centerExpr = `max(${leftX}\\\\,${stripX}+(${stripW}-text_w)/2)`;
+    const rightExpr = `${stripX + stripW - padX}-text_w`;
+    if (textAlign === "LEFT") return String(leftX);
+    if (textAlign === "RIGHT") return `'${rightExpr}'`;
+    return `'${centerExpr}'`;
   }
 
+  const alignX = buildAlignX();
+
+  // Build drawtext params for a single line
+  function buildDrawtextParams(escapedText: string, lineY: number): string {
+    let params = `fontfile='${escapedFontPath}':text="${escapedText}":fontcolor=${drawFontColor}:fontsize=${fontSize}:x=${alignX}:y=${lineY}:expansion=none`;
+
+    if (strokeEnabled && strokeWidth > 0) {
+      const strokeCol = formatFfmpegColor(strokeColor);
+      params += `:borderw=${strokeWidth}:bordercolor=${strokeCol}`;
+    }
+
+    if (shadowEnabled) {
+      const shadowCol = formatFfmpegColor(shadowColor);
+      params += `:shadowx=${shadowX}:shadowy=${shadowY}:shadowcolor=${shadowCol}`;
+    }
+
+    return params;
+  }
+
+  // Write filter_complex to a temp file
+  const filterFile = path.join(tempDir, "filter_" + Math.random().toString(36).substring(2, 9) + ".txt");
+
+  const bgHex = bgStripColor.startsWith("#") ? bgStripColor.slice(1) : bgStripColor;
+  const cR = parseInt(bgHex.substring(0, 2), 16) || 0;
+  const cG = parseInt(bgHex.substring(2, 4), 16) || 0;
+  const cB = parseInt(bgHex.substring(4, 6), 16) || 0;
+  const alphaVal = Math.round(255 * bgAlpha);
+
+  // Scale + crop input
+  const scaleFilter = `[0:v]scale='if(gte(iw/ih,${OUTPUT_W}/${OUTPUT_H}),-1,${OUTPUT_W})':'if(gte(iw/ih,${OUTPUT_W}/${OUTPUT_H}),${OUTPUT_H},-1)',crop=${OUTPUT_W}:${OUTPUT_H}[scaled]`;
+
+  const filterParts: string[] = [scaleFilter];
+  let currentLabel = "[scaled]";
+  let nextLabelIdx = 0;
+  const getNextLabel = (isFinal: boolean) => isFinal ? "[v]" : `[s${nextLabelIdx++}]`;
+
+  // ── Strip Shadow (behind the main strip) ──────────────────────────────
+  if (stripShadowEnabled && stripShadowOffset > 0) {
+    const shCol = stripShadowColor.startsWith("#") ? "0x" + stripShadowColor.slice(1) : stripShadowColor;
+    const shX = stripX + stripShadowOffset;
+    const shY = stripY + stripShadowOffset;
+    const outLabel = getNextLabel(false);
+    filterParts.push(
+      `${currentLabel}drawbox=x=${shX}:y=${shY}:w=${stripW}:h=${stripHeight}:color=${shCol}@0.4:t=fill${outLabel}`
+    );
+    currentLabel = outLabel;
+  }
+
+  // ── Strip Border (slightly larger box behind the strip) ────────────────
+  if (stripBorderEnabled && stripBorderWidth > 0) {
+    const brdCol = stripBorderColor.startsWith("#") ? "0x" + stripBorderColor.slice(1) : stripBorderColor;
+    const brdX = stripX - stripBorderWidth;
+    const brdY = stripY - stripBorderWidth;
+    const brdW = stripW + stripBorderWidth * 2;
+    const brdH = stripHeight + stripBorderWidth * 2;
+    const outLabel = getNextLabel(false);
+    filterParts.push(
+      `${currentLabel}drawbox=x=${brdX}:y=${brdY}:w=${brdW}:h=${brdH}:color=${brdCol}@1.0:t=fill${outLabel}`
+    );
+    currentLabel = outLabel;
+  }
+
+  // ── Background Strip ──────────────────────────────────────────────────
+  if (R > 0) {
+    // Rounded rect via geq overlay
+    const rrectLabel = getNextLabel(false);
+    filterParts.push(
+      `color=c=0x${bgHex.padEnd(6, "0")}:s=${stripW}x${stripHeight}:d=1,format=yuva420p,geq=r='${cR}':g='${cG}':b='${cB}':a='if(gt(hypot(max(0,${R}-min(X,W-1-X)),max(0,${R}-min(Y,H-1-Y))),${R}),0,${alphaVal})'[rrect]`
+    );
+    const bgLabel = getNextLabel(false);
+    filterParts.push(
+      `${currentLabel}[rrect]overlay=x=${stripX}:y=${stripY}:eof_action=repeat${bgLabel}`
+    );
+    currentLabel = bgLabel;
+  } else {
+    // Simple drawbox
+    const bgColorFfmpeg = bgStripColor.startsWith("#") ? "0x" + bgStripColor.slice(1) : bgStripColor;
+    const bgLabel = getNextLabel(false);
+    filterParts.push(
+      `${currentLabel}drawbox=x=${stripX}:y=${stripY}:w=${stripW}:h=${stripHeight}:color=${bgColorFfmpeg}@${bgAlpha}:t=fill${bgLabel}`
+    );
+    currentLabel = bgLabel;
+  }
+
+  // ── Neon Glow (multi-pass shadow drawtext underneath main text) ────────
+  if (glowEnabled && glowIntensity > 0) {
+    const glowCol = formatFfmpegColor(glowColor);
+    const passes = Math.min(glowIntensity, 3);
+    for (let pass = passes; pass >= 1; pass--) {
+      const offset = pass * 2;
+      for (let i = 0; i < lines.length; i++) {
+        const lineY = Math.round(textYBase + i * lineHeightPx);
+        const escapedLineText = escapeFfmpegDrawtext(lines[i]);
+        const outLabel = getNextLabel(false);
+        filterParts.push(
+          `${currentLabel}drawtext=fontfile='${escapedFontPath}':text="${escapedLineText}":fontcolor=${glowCol}@0.3:fontsize=${fontSize}:x=${alignX}:y=${lineY}:shadowx=${offset}:shadowy=${offset}:shadowcolor=${glowCol}@0.5:expansion=none${outLabel}`
+        );
+        currentLabel = outLabel;
+      }
+    }
+  }
+
+  // ── Main Text Drawtext Chain ──────────────────────────────────────────
+  for (let i = 0; i < lines.length; i++) {
+    const lineY = Math.round(textYBase + i * lineHeightPx);
+    const escapedLineText = escapeFfmpegDrawtext(lines[i]);
+    const isFinal = i === lines.length - 1;
+    const outLabel = getNextLabel(isFinal);
+    filterParts.push(
+      `${currentLabel}drawtext=${buildDrawtextParams(escapedLineText, lineY)}${outLabel}`
+    );
+    currentLabel = outLabel;
+  }
+
+  const filterComplex = filterParts.join(";\n");
   fs.writeFileSync(filterFile, filterComplex);
 
   const cmd = [
@@ -959,7 +1057,7 @@ export async function composeMultiplierVideo(options: MultiplierComposeOptions):
       try { if (fs.existsSync(filterFile)) fs.unlinkSync(filterFile); } catch {}
 
       if (error) {
-        console.error("[Multiplier Composer] FFmpeg failed:", stderr?.substring(0, 500));
+        console.error("[Multiplier Composer] FFmpeg failed:", stderr?.substring(0, 1000));
         reject(new Error("FFmpeg composition failed: " + error.message));
         return;
       }
@@ -967,9 +1065,8 @@ export async function composeMultiplierVideo(options: MultiplierComposeOptions):
         reject(new Error("FFmpeg did not produce output file"));
         return;
       }
-      console.log("[Multiplier Composer] Successfully rendered drawtext chain:", outputPath);
+      console.log("[Multiplier Composer] Successfully rendered:", outputPath);
       resolve(outputPath);
     });
   });
 }
-

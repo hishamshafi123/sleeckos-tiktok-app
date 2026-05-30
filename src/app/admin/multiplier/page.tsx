@@ -4,7 +4,7 @@ import { toast } from "sonner";
 import {
   Upload, FileText, Play, Download, Trash2, Loader2,
   Check, X, Layers, RefreshCw, Palette, Move, Pause,
-  Plus, FolderOpen, Cloud, CloudOff, Search, BookTemplate, LogIn,
+  Plus, FolderOpen, Cloud, CloudOff, Search, LogIn,
 } from "lucide-react";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -15,6 +15,7 @@ interface MultiplierItem {
   status: string;
   renderedVideoUrl: string | null;
   errorMessage: string | null;
+  templateId: string | null;
 }
 
 interface MultiplierBatch {
@@ -42,11 +43,45 @@ interface MultiplierBatch {
   driveExportStatus: string | null;
 }
 
-interface MultiplierTemplate {
+interface DesignTemplate {
   id: string;
   name: string;
-  hooks: string; // JSON array
-  hookCount: number;
+  // Typography
+  fontFamily: string;
+  fontSize: number;
+  fontColor: string;
+  textCase: string;
+  letterSpacing: number;
+  lineHeight: number;
+  // Text Effects
+  strokeEnabled: boolean;
+  strokeColor: string;
+  strokeWidth: number;
+  shadowEnabled: boolean;
+  shadowColor: string;
+  shadowX: number;
+  shadowY: number;
+  glowEnabled: boolean;
+  glowColor: string;
+  glowIntensity: number;
+  // Strip
+  bgStripColor: string;
+  bgStripOpacity: number;
+  stripWidthMode: string;
+  stripWidthPercent: number;
+  borderRadius: number;
+  stripBorderEnabled: boolean;
+  stripBorderColor: string;
+  stripBorderWidth: number;
+  stripShadowEnabled: boolean;
+  stripShadowColor: string;
+  stripShadowOffset: number;
+  // Layout
+  positionYPercent: number;
+  marginX: number;
+  paddingY: number;
+  paddingX: number;
+  textAlign: string;
   createdAt: string;
 }
 
@@ -151,13 +186,27 @@ export default function MultiplierPage() {
   const [isDragging, setIsDragging] = useState(false);
   const dragStartRef = useRef<{ startY: number; startPercent: number } | null>(null);
 
-  // ─── Templates ──────────────────────────────────────────────────────────────
-  const [templates, setTemplates] = useState<MultiplierTemplate[]>([]);
+  // ─── Design Templates ────────────────────────────────────────────────────────
+  const [templates, setTemplates] = useState<DesignTemplate[]>([]);
   const [selectedTemplateIds, setSelectedTemplateIds] = useState<string[]>([]);
-  const [showCreateTemplate, setShowCreateTemplate] = useState(false);
-  const [newTemplateName, setNewTemplateName] = useState("");
-  const [newTemplateHooksText, setNewTemplateHooksText] = useState("");
-  const [creatingTemplate, setCreatingTemplate] = useState(false);
+  const [showTemplateEditor, setShowTemplateEditor] = useState(false);
+  const [editingTemplate, setEditingTemplate] = useState<Partial<DesignTemplate> | null>(null);
+  const [savingTemplate, setSavingTemplate] = useState(false);
+
+  const defaultTemplateValues = (): Partial<DesignTemplate> => ({
+    name: "",
+    fontFamily: "Outfit-Bold", fontSize: 42, fontColor: "#FFFFFF",
+    textCase: "UPPERCASE", letterSpacing: 1.0, lineHeight: 1.4,
+    strokeEnabled: false, strokeColor: "#000000", strokeWidth: 2,
+    shadowEnabled: false, shadowColor: "#000000", shadowX: 2, shadowY: 2,
+    glowEnabled: false, glowColor: "#FF00FF", glowIntensity: 2,
+    bgStripColor: "#000000", bgStripOpacity: 1.0,
+    stripWidthMode: "FULL", stripWidthPercent: 100, borderRadius: 12,
+    stripBorderEnabled: false, stripBorderColor: "#FFFFFF", stripBorderWidth: 1,
+    stripShadowEnabled: false, stripShadowColor: "#000000", stripShadowOffset: 4,
+    positionYPercent: 5, marginX: 0, paddingY: 20, paddingX: 20,
+    textAlign: "CENTER",
+  });
 
   // ─── Google Drive ───────────────────────────────────────────────────────────
   const [driveConnected, setDriveConnected] = useState(false);
@@ -299,7 +348,7 @@ export default function MultiplierPage() {
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
   }, [renderingBatchId, fetchBatches]);
 
-  // ─── Templates Data ──────────────────────────────────────────────────────
+  // ─── Design Templates Data ────────────────────────────────────────────────
 
   const fetchTemplates = useCallback(async () => {
     try {
@@ -310,37 +359,45 @@ export default function MultiplierPage() {
 
   useEffect(() => { fetchTemplates(); }, [fetchTemplates]);
 
-  const handleCreateTemplate = async () => {
-    if (!newTemplateName.trim() || !newTemplateHooksText.trim()) {
-      toast.error("Name and hooks are required");
+  const openTemplateEditor = (tmpl?: DesignTemplate) => {
+    if (tmpl) {
+      setEditingTemplate({ ...tmpl });
+    } else {
+      setEditingTemplate(defaultTemplateValues());
+    }
+    setShowTemplateEditor(true);
+  };
+
+  const updateEditingField = (key: string, value: any) => {
+    setEditingTemplate((prev) => prev ? { ...prev, [key]: value } : prev);
+  };
+
+  const handleSaveTemplate = async () => {
+    if (!editingTemplate?.name?.trim()) {
+      toast.error("Template name is required");
       return;
     }
-    setCreatingTemplate(true);
+    setSavingTemplate(true);
     try {
-      const hooks = newTemplateHooksText
-        .split(/\r?\n/)
-        .map((l) => l.trim())
-        .filter(Boolean);
       const res = await fetch("/api/managed/multiplier/templates", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: newTemplateName.trim(), hooks }),
+        body: JSON.stringify(editingTemplate),
       });
       if (!res.ok) throw new Error((await res.json()).error);
-      toast.success("Template created!");
-      setNewTemplateName("");
-      setNewTemplateHooksText("");
-      setShowCreateTemplate(false);
+      toast.success("Template saved!");
+      setShowTemplateEditor(false);
+      setEditingTemplate(null);
       fetchTemplates();
     } catch (err: any) {
-      toast.error(err.message || "Failed to create template");
+      toast.error(err.message || "Failed to save template");
     } finally {
-      setCreatingTemplate(false);
+      setSavingTemplate(false);
     }
   };
 
   const handleDeleteTemplate = async (id: string) => {
-    if (!confirm("Delete this template?")) return;
+    if (!confirm("Delete this design template?")) return;
     try {
       await fetch(`/api/managed/multiplier/templates?id=${id}`, { method: "DELETE" });
       toast.success("Template deleted");
@@ -478,13 +535,13 @@ export default function MultiplierPage() {
 
   const handleCreateBatch = async () => {
     if (!videoFile) { toast.error("Please upload a video file"); return; }
-    if (!csvFile && selectedTemplateIds.length === 0) { toast.error("Please upload a CSV or select templates"); return; }
+    if (!csvFile || parsedHooks.length === 0) { toast.error("Please upload a CSV with text hooks"); return; }
 
     setUploading(true);
     try {
       const formData = new FormData();
       formData.append("video", videoFile);
-      if (csvFile) formData.append("csv", csvFile);
+      formData.append("csv", csvFile!);
       formData.append("name", batchName);
       formData.append("fontFamily", fontFamily);
       formData.append("fontSize", String(fontSize));
@@ -717,92 +774,110 @@ export default function MultiplierPage() {
         )}
       </div>
 
-      {/* ─── Templates Manager ────────────────────────────────────────────── */}
+      {/* ─── Design Templates ─────────────────────────────────────────────── */}
       <div className="rounded-2xl border border-white/5 bg-[#111118] p-5 space-y-4">
         <div className="flex items-center justify-between">
           <h2 className="text-sm font-semibold text-white flex items-center gap-2">
-            <BookTemplate className="w-4 h-4 text-violet-400" />
-            Text Hook Templates
+            <Palette className="w-4 h-4 text-violet-400" />
+            Design Templates
           </h2>
           <button
-            onClick={() => setShowCreateTemplate(!showCreateTemplate)}
+            onClick={() => openTemplateEditor()}
             className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-violet-500/15 text-violet-300 border border-violet-500/20 text-xs font-medium hover:bg-violet-500/25 transition-all"
           >
-            <Plus className="w-3 h-3" /> New Template
+            <Plus className="w-3 h-3" /> New Design
           </button>
         </div>
 
-        {/* Create Template Form */}
-        {showCreateTemplate && (
-          <div className="rounded-xl border border-white/5 bg-[#0c0c12] p-4 space-y-3">
-            <input
-              type="text"
-              placeholder="Template name (e.g. Motivational Hooks)"
-              value={newTemplateName}
-              onChange={(e) => setNewTemplateName(e.target.value)}
-              className="w-full px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white text-sm focus:outline-none focus:border-violet-500/50"
-            />
-            <textarea
-              placeholder="Paste hooks here (one per line)..."
-              value={newTemplateHooksText}
-              onChange={(e) => setNewTemplateHooksText(e.target.value)}
-              rows={6}
-              className="w-full px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white text-sm focus:outline-none focus:border-violet-500/50 resize-none font-mono"
-            />
-            <div className="flex items-center justify-between">
-              <p className="text-xs text-gray-600">
-                {newTemplateHooksText.split(/\r?\n/).filter(l => l.trim()).length} hooks
-              </p>
-              <div className="flex gap-2">
-                <button onClick={() => setShowCreateTemplate(false)} className="px-3 py-1.5 rounded-lg text-gray-500 text-xs hover:text-white transition-all">
-                  Cancel
-                </button>
-                <button
-                  onClick={handleCreateTemplate}
-                  disabled={creatingTemplate}
-                  className="px-4 py-1.5 rounded-lg bg-violet-500 text-white text-xs font-medium hover:bg-violet-400 transition-all disabled:opacity-50"
-                >
-                  {creatingTemplate ? <Loader2 className="w-3 h-3 animate-spin" /> : "Save Template"}
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Template List — selectable for batch creation */}
         {templates.length === 0 ? (
-          <p className="text-xs text-gray-600 text-center py-3">No templates yet. Create one to reuse hooks across batches.</p>
+          <p className="text-xs text-gray-600 text-center py-4">No design templates yet. Create one to apply different visual styles to your batches.</p>
         ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
             {templates.map((tmpl) => {
               const isSelected = selectedTemplateIds.includes(tmpl.id);
+              // Build CSS preview style
+              const previewStyle: React.CSSProperties = {
+                fontFamily: tmpl.fontFamily.includes("Outfit") ? "Outfit, sans-serif"
+                  : tmpl.fontFamily.includes("Inter") ? "Inter, sans-serif"
+                  : tmpl.fontFamily.includes("Anton") ? "Anton, sans-serif"
+                  : tmpl.fontFamily.includes("Montserrat") ? "Montserrat, sans-serif"
+                  : "sans-serif",
+                fontSize: Math.min(tmpl.fontSize * 0.35, 18),
+                color: tmpl.fontColor,
+                textTransform: tmpl.textCase === "UPPERCASE" ? "uppercase"
+                  : tmpl.textCase === "LOWERCASE" ? "lowercase"
+                  : tmpl.textCase === "CAPITALIZE" ? "capitalize" : "none",
+                letterSpacing: `${(tmpl.letterSpacing - 1) * 4}px`,
+                textAlign: (tmpl.textAlign || "CENTER").toLowerCase() as any,
+                ...(tmpl.strokeEnabled ? {
+                  WebkitTextStroke: `${tmpl.strokeWidth}px ${tmpl.strokeColor}`,
+                } : {}),
+                ...(tmpl.shadowEnabled ? {
+                  textShadow: `${tmpl.shadowX}px ${tmpl.shadowY}px 2px ${tmpl.shadowColor}`,
+                } : {}),
+                ...(tmpl.glowEnabled ? {
+                  textShadow: `0 0 ${tmpl.glowIntensity * 4}px ${tmpl.glowColor}, 0 0 ${tmpl.glowIntensity * 8}px ${tmpl.glowColor}`,
+                } : {}),
+              };
+              const stripStyle: React.CSSProperties = {
+                backgroundColor: `${tmpl.bgStripColor}${Math.round(tmpl.bgStripOpacity * 255).toString(16).padStart(2, "0")}`,
+                borderRadius: `${tmpl.borderRadius}px`,
+                padding: `${Math.min(tmpl.paddingY, 10) * 0.5}px ${Math.min(tmpl.paddingX, 10) * 0.5}px`,
+                ...(tmpl.stripBorderEnabled ? {
+                  border: `${tmpl.stripBorderWidth}px solid ${tmpl.stripBorderColor}`,
+                } : {}),
+                ...(tmpl.stripShadowEnabled ? {
+                  boxShadow: `${tmpl.stripShadowOffset}px ${tmpl.stripShadowOffset}px 8px ${tmpl.stripShadowColor}`,
+                } : {}),
+              };
+
               return (
                 <div
                   key={tmpl.id}
-                  onClick={() => toggleTemplateSelection(tmpl.id)}
-                  className={`flex items-center justify-between p-3 rounded-xl border cursor-pointer transition-all ${
+                  className={`rounded-xl border overflow-hidden transition-all cursor-pointer ${
                     isSelected
-                      ? "bg-violet-500/15 border-violet-500/40 shadow-lg shadow-violet-500/10"
-                      : "bg-white/[0.02] border-white/5 hover:border-white/10"
+                      ? "border-violet-500/50 shadow-lg shadow-violet-500/10 ring-1 ring-violet-500/30"
+                      : "border-white/5 hover:border-white/15"
                   }`}
                 >
-                  <div className="flex items-center gap-2.5 min-w-0">
-                    <div className={`w-4 h-4 rounded border-2 flex items-center justify-center flex-shrink-0 transition-all ${
-                      isSelected ? "bg-violet-500 border-violet-500" : "border-gray-600"
-                    }`}>
-                      {isSelected && <Check className="w-2.5 h-2.5 text-white" />}
-                    </div>
-                    <div className="min-w-0">
-                      <p className="text-sm text-white font-medium truncate">{tmpl.name}</p>
-                      <p className="text-[10px] text-gray-500">{tmpl.hookCount} hooks</p>
+                  {/* Visual Preview Area */}
+                  <div
+                    className="h-20 flex items-center justify-center relative"
+                    style={{ background: "linear-gradient(135deg, #1a1a2e 0%, #0d0d15 100%)" }}
+                    onClick={() => toggleTemplateSelection(tmpl.id)}
+                  >
+                    <div style={stripStyle}>
+                      <span style={previewStyle}>Sample Text</span>
                     </div>
                   </div>
-                  <button
-                    onClick={(e) => { e.stopPropagation(); handleDeleteTemplate(tmpl.id); }}
-                    className="p-1 rounded text-gray-700 hover:text-red-400 transition-all flex-shrink-0"
-                  >
-                    <Trash2 className="w-3 h-3" />
-                  </button>
+
+                  {/* Template Info */}
+                  <div className="p-2.5 bg-[#0c0c12] flex items-center justify-between">
+                    <div className="flex items-center gap-2 min-w-0" onClick={() => toggleTemplateSelection(tmpl.id)}>
+                      <div className={`w-3.5 h-3.5 rounded border-2 flex items-center justify-center flex-shrink-0 transition-all ${
+                        isSelected ? "bg-violet-500 border-violet-500" : "border-gray-600"
+                      }`}>
+                        {isSelected && <Check className="w-2 h-2 text-white" />}
+                      </div>
+                      <p className="text-xs text-white font-medium truncate">{tmpl.name}</p>
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <button
+                        onClick={(e) => { e.stopPropagation(); openTemplateEditor(tmpl); }}
+                        className="p-1 rounded text-gray-600 hover:text-cyan-400 transition-all"
+                        title="Edit"
+                      >
+                        <Palette className="w-3 h-3" />
+                      </button>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); handleDeleteTemplate(tmpl.id); }}
+                        className="p-1 rounded text-gray-600 hover:text-red-400 transition-all"
+                        title="Delete"
+                      >
+                        <Trash2 className="w-3 h-3" />
+                      </button>
+                    </div>
+                  </div>
                 </div>
               );
             })}
@@ -810,7 +885,7 @@ export default function MultiplierPage() {
         )}
         {selectedTemplateIds.length > 0 && (
           <p className="text-xs text-violet-300 font-medium">
-            ✓ {selectedTemplateIds.length} template{selectedTemplateIds.length > 1 ? "s" : ""} selected — hooks will be merged into the next batch
+            ✓ {selectedTemplateIds.length} design{selectedTemplateIds.length > 1 ? "s" : ""} selected — each video will be randomly styled with one of these
           </p>
         )}
       </div>
@@ -1102,13 +1177,13 @@ export default function MultiplierPage() {
       {/* Create Button */}
       <button
         onClick={handleCreateBatch}
-        disabled={uploading || !videoFile || (!csvFile && selectedTemplateIds.length === 0)}
+        disabled={uploading || !videoFile || !csvFile || parsedHooks.length === 0}
         className="w-full py-3.5 rounded-xl font-semibold text-sm transition-all disabled:opacity-40 disabled:cursor-not-allowed bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white shadow-lg shadow-cyan-500/20 flex items-center justify-center gap-2"
       >
         {uploading ? (
           <><Loader2 className="w-4 h-4 animate-spin" /> Uploading...</>
         ) : (
-          <><Layers className="w-4 h-4" /> Create Batch {(parsedHooks.length > 0 || selectedTemplateIds.length > 0) && `(${parsedHooks.length} CSV + ${selectedTemplateIds.length} templates)`}</>
+          <><Layers className="w-4 h-4" /> Create Batch {parsedHooks.length > 0 && `(${parsedHooks.length} videos`}{selectedTemplateIds.length > 0 ? `, ${selectedTemplateIds.length} design${selectedTemplateIds.length > 1 ? "s" : ""})` : parsedHooks.length > 0 ? ")" : ""}</>
         )}
       </button>
 
@@ -1301,6 +1376,297 @@ export default function MultiplierPage() {
               <button onClick={() => setPreviewUrl(null)} className="text-gray-500 hover:text-white"><X className="w-5 h-5" /></button>
             </div>
             <video src={`/api${previewUrl}`} controls autoPlay className="w-full rounded-xl" style={{ maxHeight: "70vh" }} />
+          </div>
+        </div>
+      )}
+
+      {/* ─── Design Template Editor Modal ──────────────────────────────────── */}
+      {showTemplateEditor && editingTemplate && (
+        <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/80 backdrop-blur-sm overflow-y-auto py-8" onClick={() => setShowTemplateEditor(false)}>
+          <div className="bg-[#16161f] rounded-2xl border border-white/10 p-6 max-w-3xl w-full mx-4 shadow-2xl space-y-5" onClick={(e) => e.stopPropagation()}>
+            {/* Header */}
+            <div className="flex items-center justify-between">
+              <h3 className="text-white text-base font-semibold flex items-center gap-2">
+                <Palette className="w-5 h-5 text-violet-400" />
+                {editingTemplate.id ? "Edit Design Template" : "Create Design Template"}
+              </h3>
+              <button onClick={() => setShowTemplateEditor(false)} className="text-gray-500 hover:text-white"><X className="w-5 h-5" /></button>
+            </div>
+
+            {/* Template Name */}
+            <input
+              type="text"
+              placeholder="Template name (e.g. Neon Pink, Clean White, Bold Shadow)"
+              value={editingTemplate.name || ""}
+              onChange={(e) => updateEditingField("name", e.target.value)}
+              className="w-full px-4 py-2.5 rounded-xl bg-white/5 border border-white/10 text-white text-sm focus:outline-none focus:border-violet-500/50"
+            />
+
+            {/* Live Preview */}
+            <div className="rounded-xl overflow-hidden" style={{ background: "linear-gradient(135deg, #1a1a2e 0%, #0d0d15 100%)" }}>
+              <div className="flex items-center justify-center py-8 px-4">
+                <div style={{
+                  backgroundColor: `${editingTemplate.bgStripColor || "#000"}${Math.round((editingTemplate.bgStripOpacity ?? 1) * 255).toString(16).padStart(2, "0")}`,
+                  borderRadius: `${editingTemplate.borderRadius ?? 12}px`,
+                  padding: `${editingTemplate.paddingY ?? 20}px ${editingTemplate.paddingX ?? 20}px`,
+                  ...(editingTemplate.stripBorderEnabled ? { border: `${editingTemplate.stripBorderWidth}px solid ${editingTemplate.stripBorderColor}` } : {}),
+                  ...(editingTemplate.stripShadowEnabled ? { boxShadow: `${editingTemplate.stripShadowOffset}px ${editingTemplate.stripShadowOffset}px 12px ${editingTemplate.stripShadowColor}` } : {}),
+                }}>
+                  <span style={{
+                    fontFamily: (editingTemplate.fontFamily || "Outfit-Bold").includes("Outfit") ? "Outfit, sans-serif" : "sans-serif",
+                    fontSize: `${Math.min(editingTemplate.fontSize ?? 42, 60)}px`,
+                    color: editingTemplate.fontColor || "#FFFFFF",
+                    textTransform: editingTemplate.textCase === "UPPERCASE" ? "uppercase" : editingTemplate.textCase === "LOWERCASE" ? "lowercase" : "none",
+                    letterSpacing: `${((editingTemplate.letterSpacing ?? 1) - 1) * 6}px`,
+                    lineHeight: editingTemplate.lineHeight ?? 1.4,
+                    ...(editingTemplate.strokeEnabled ? { WebkitTextStroke: `${editingTemplate.strokeWidth}px ${editingTemplate.strokeColor}` } : {}),
+                    ...(editingTemplate.glowEnabled ? { textShadow: `0 0 ${(editingTemplate.glowIntensity ?? 2) * 6}px ${editingTemplate.glowColor}, 0 0 ${(editingTemplate.glowIntensity ?? 2) * 12}px ${editingTemplate.glowColor}` } : editingTemplate.shadowEnabled ? { textShadow: `${editingTemplate.shadowX}px ${editingTemplate.shadowY}px 3px ${editingTemplate.shadowColor}` } : {}),
+                  }}>
+                    Sample Hook Text
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+              {/* ── Typography ─────────────────── */}
+              <div className="space-y-3">
+                <h4 className="text-xs font-bold text-gray-400 uppercase tracking-wider">Typography</h4>
+                <div>
+                  <label className="block text-[10px] text-gray-500 mb-1">Font</label>
+                  <select value={editingTemplate.fontFamily || "Outfit-Bold"} onChange={(e) => updateEditingField("fontFamily", e.target.value)} className="w-full px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-white text-xs">
+                    {FONT_OPTIONS.map((f) => <option key={f} value={f} className="bg-[#111]">{f}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-[10px] text-gray-500 mb-1">Size: {editingTemplate.fontSize}px</label>
+                  <input type="range" min={16} max={120} value={editingTemplate.fontSize ?? 42} onChange={(e) => updateEditingField("fontSize", Number(e.target.value))} className="w-full accent-violet-500" />
+                </div>
+                <div className="flex gap-2">
+                  <div className="flex-1">
+                    <label className="block text-[10px] text-gray-500 mb-1">Color</label>
+                    <div className="flex gap-1.5">
+                      <input type="color" value={editingTemplate.fontColor || "#FFFFFF"} onChange={(e) => updateEditingField("fontColor", e.target.value)} className="w-8 h-8 rounded cursor-pointer bg-transparent" />
+                      <input type="text" value={editingTemplate.fontColor || "#FFFFFF"} onChange={(e) => updateEditingField("fontColor", e.target.value)} className="flex-1 px-2 py-1 rounded-lg bg-white/5 border border-white/10 text-white text-xs font-mono" />
+                    </div>
+                  </div>
+                  <div className="flex-1">
+                    <label className="block text-[10px] text-gray-500 mb-1">Case</label>
+                    <select value={editingTemplate.textCase || "UPPERCASE"} onChange={(e) => updateEditingField("textCase", e.target.value)} className="w-full px-2 py-1.5 rounded-lg bg-white/5 border border-white/10 text-white text-xs">
+                      {["UPPERCASE", "LOWERCASE", "CAPITALIZE", "NONE"].map((c) => <option key={c} value={c} className="bg-[#111]">{c}</option>)}
+                    </select>
+                  </div>
+                </div>
+                <div className="flex gap-2">
+                  <div className="flex-1">
+                    <label className="block text-[10px] text-gray-500 mb-1">Letter Spacing: {editingTemplate.letterSpacing?.toFixed(1)}×</label>
+                    <input type="range" min={0.5} max={2} step={0.1} value={editingTemplate.letterSpacing ?? 1} onChange={(e) => updateEditingField("letterSpacing", Number(e.target.value))} className="w-full accent-violet-500" />
+                  </div>
+                  <div className="flex-1">
+                    <label className="block text-[10px] text-gray-500 mb-1">Line Height: {editingTemplate.lineHeight?.toFixed(1)}×</label>
+                    <input type="range" min={1.0} max={2.5} step={0.1} value={editingTemplate.lineHeight ?? 1.4} onChange={(e) => updateEditingField("lineHeight", Number(e.target.value))} className="w-full accent-violet-500" />
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-[10px] text-gray-500 mb-1">Alignment</label>
+                  <div className="flex gap-1">
+                    {["LEFT", "CENTER", "RIGHT"].map((a) => (
+                      <button key={a} onClick={() => updateEditingField("textAlign", a)} className={`flex-1 py-1.5 rounded-lg text-xs font-medium transition-all ${editingTemplate.textAlign === a ? "bg-violet-500/20 text-violet-300 border border-violet-500/30" : "bg-white/5 text-gray-500 border border-white/5 hover:text-white"}`}>
+                        {a}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              {/* ── Text Effects ───────────────── */}
+              <div className="space-y-3">
+                <h4 className="text-xs font-bold text-gray-400 uppercase tracking-wider">Text Effects</h4>
+
+                {/* Stroke */}
+                <div className="rounded-xl border border-white/5 p-3 space-y-2">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input type="checkbox" checked={editingTemplate.strokeEnabled ?? false} onChange={(e) => updateEditingField("strokeEnabled", e.target.checked)} className="accent-violet-500" />
+                    <span className="text-xs text-white font-medium">Text Stroke / Outline</span>
+                  </label>
+                  {editingTemplate.strokeEnabled && (
+                    <div className="flex gap-2">
+                      <div className="flex-1">
+                        <label className="block text-[10px] text-gray-500 mb-1">Color</label>
+                        <div className="flex gap-1">
+                          <input type="color" value={editingTemplate.strokeColor || "#000000"} onChange={(e) => updateEditingField("strokeColor", e.target.value)} className="w-7 h-7 rounded cursor-pointer bg-transparent" />
+                          <input type="text" value={editingTemplate.strokeColor || "#000000"} onChange={(e) => updateEditingField("strokeColor", e.target.value)} className="flex-1 px-2 py-1 rounded-lg bg-white/5 border border-white/10 text-white text-xs font-mono" />
+                        </div>
+                      </div>
+                      <div className="w-20">
+                        <label className="block text-[10px] text-gray-500 mb-1">Width: {editingTemplate.strokeWidth}px</label>
+                        <input type="range" min={1} max={8} value={editingTemplate.strokeWidth ?? 2} onChange={(e) => updateEditingField("strokeWidth", Number(e.target.value))} className="w-full accent-violet-500" />
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Shadow */}
+                <div className="rounded-xl border border-white/5 p-3 space-y-2">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input type="checkbox" checked={editingTemplate.shadowEnabled ?? false} onChange={(e) => updateEditingField("shadowEnabled", e.target.checked)} className="accent-violet-500" />
+                    <span className="text-xs text-white font-medium">Drop Shadow</span>
+                  </label>
+                  {editingTemplate.shadowEnabled && (
+                    <div className="space-y-2">
+                      <div>
+                        <label className="block text-[10px] text-gray-500 mb-1">Color</label>
+                        <div className="flex gap-1">
+                          <input type="color" value={editingTemplate.shadowColor || "#000000"} onChange={(e) => updateEditingField("shadowColor", e.target.value)} className="w-7 h-7 rounded cursor-pointer bg-transparent" />
+                          <input type="text" value={editingTemplate.shadowColor || "#000000"} onChange={(e) => updateEditingField("shadowColor", e.target.value)} className="flex-1 px-2 py-1 rounded-lg bg-white/5 border border-white/10 text-white text-xs font-mono" />
+                        </div>
+                      </div>
+                      <div className="flex gap-2">
+                        <div className="flex-1">
+                          <label className="block text-[10px] text-gray-500 mb-1">X: {editingTemplate.shadowX}px</label>
+                          <input type="range" min={0} max={10} value={editingTemplate.shadowX ?? 2} onChange={(e) => updateEditingField("shadowX", Number(e.target.value))} className="w-full accent-violet-500" />
+                        </div>
+                        <div className="flex-1">
+                          <label className="block text-[10px] text-gray-500 mb-1">Y: {editingTemplate.shadowY}px</label>
+                          <input type="range" min={0} max={10} value={editingTemplate.shadowY ?? 2} onChange={(e) => updateEditingField("shadowY", Number(e.target.value))} className="w-full accent-violet-500" />
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Neon Glow */}
+                <div className="rounded-xl border border-white/5 p-3 space-y-2">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input type="checkbox" checked={editingTemplate.glowEnabled ?? false} onChange={(e) => updateEditingField("glowEnabled", e.target.checked)} className="accent-violet-500" />
+                    <span className="text-xs text-white font-medium">Neon Glow</span>
+                  </label>
+                  {editingTemplate.glowEnabled && (
+                    <div className="flex gap-2">
+                      <div className="flex-1">
+                        <label className="block text-[10px] text-gray-500 mb-1">Color</label>
+                        <div className="flex gap-1">
+                          <input type="color" value={editingTemplate.glowColor || "#FF00FF"} onChange={(e) => updateEditingField("glowColor", e.target.value)} className="w-7 h-7 rounded cursor-pointer bg-transparent" />
+                          <input type="text" value={editingTemplate.glowColor || "#FF00FF"} onChange={(e) => updateEditingField("glowColor", e.target.value)} className="flex-1 px-2 py-1 rounded-lg bg-white/5 border border-white/10 text-white text-xs font-mono" />
+                        </div>
+                      </div>
+                      <div className="w-24">
+                        <label className="block text-[10px] text-gray-500 mb-1">Intensity: {editingTemplate.glowIntensity}</label>
+                        <input type="range" min={1} max={5} value={editingTemplate.glowIntensity ?? 2} onChange={(e) => updateEditingField("glowIntensity", Number(e.target.value))} className="w-full accent-violet-500" />
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+              {/* ── Background Strip ───────────── */}
+              <div className="space-y-3">
+                <h4 className="text-xs font-bold text-gray-400 uppercase tracking-wider">Background Strip</h4>
+                <div className="flex gap-2">
+                  <div className="flex-1">
+                    <label className="block text-[10px] text-gray-500 mb-1">Color</label>
+                    <div className="flex gap-1">
+                      <input type="color" value={editingTemplate.bgStripColor || "#000000"} onChange={(e) => updateEditingField("bgStripColor", e.target.value)} className="w-7 h-7 rounded cursor-pointer bg-transparent" />
+                      <input type="text" value={editingTemplate.bgStripColor || "#000000"} onChange={(e) => updateEditingField("bgStripColor", e.target.value)} className="flex-1 px-2 py-1 rounded-lg bg-white/5 border border-white/10 text-white text-xs font-mono" />
+                    </div>
+                  </div>
+                  <div className="w-28">
+                    <label className="block text-[10px] text-gray-500 mb-1">Opacity: {Math.round((editingTemplate.bgStripOpacity ?? 1) * 100)}%</label>
+                    <input type="range" min={0} max={100} value={Math.round((editingTemplate.bgStripOpacity ?? 1) * 100)} onChange={(e) => updateEditingField("bgStripOpacity", Number(e.target.value) / 100)} className="w-full accent-violet-500" />
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-[10px] text-gray-500 mb-1">Corner Radius: {editingTemplate.borderRadius}px</label>
+                  <input type="range" min={0} max={40} value={editingTemplate.borderRadius ?? 12} onChange={(e) => updateEditingField("borderRadius", Number(e.target.value))} className="w-full accent-violet-500" />
+                </div>
+
+                {/* Strip Border */}
+                <div className="rounded-xl border border-white/5 p-3 space-y-2">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input type="checkbox" checked={editingTemplate.stripBorderEnabled ?? false} onChange={(e) => updateEditingField("stripBorderEnabled", e.target.checked)} className="accent-violet-500" />
+                    <span className="text-xs text-white font-medium">Strip Border</span>
+                  </label>
+                  {editingTemplate.stripBorderEnabled && (
+                    <div className="flex gap-2">
+                      <div className="flex-1">
+                        <label className="block text-[10px] text-gray-500 mb-1">Color</label>
+                        <div className="flex gap-1">
+                          <input type="color" value={editingTemplate.stripBorderColor || "#FFFFFF"} onChange={(e) => updateEditingField("stripBorderColor", e.target.value)} className="w-7 h-7 rounded cursor-pointer bg-transparent" />
+                          <input type="text" value={editingTemplate.stripBorderColor || "#FFFFFF"} onChange={(e) => updateEditingField("stripBorderColor", e.target.value)} className="flex-1 px-2 py-1 rounded-lg bg-white/5 border border-white/10 text-white text-xs font-mono" />
+                        </div>
+                      </div>
+                      <div className="w-20">
+                        <label className="block text-[10px] text-gray-500 mb-1">Width: {editingTemplate.stripBorderWidth}px</label>
+                        <input type="range" min={1} max={5} value={editingTemplate.stripBorderWidth ?? 1} onChange={(e) => updateEditingField("stripBorderWidth", Number(e.target.value))} className="w-full accent-violet-500" />
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Strip Shadow */}
+                <div className="rounded-xl border border-white/5 p-3 space-y-2">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input type="checkbox" checked={editingTemplate.stripShadowEnabled ?? false} onChange={(e) => updateEditingField("stripShadowEnabled", e.target.checked)} className="accent-violet-500" />
+                    <span className="text-xs text-white font-medium">Strip Shadow</span>
+                  </label>
+                  {editingTemplate.stripShadowEnabled && (
+                    <div className="flex gap-2">
+                      <div className="flex-1">
+                        <label className="block text-[10px] text-gray-500 mb-1">Color</label>
+                        <div className="flex gap-1">
+                          <input type="color" value={editingTemplate.stripShadowColor || "#000000"} onChange={(e) => updateEditingField("stripShadowColor", e.target.value)} className="w-7 h-7 rounded cursor-pointer bg-transparent" />
+                          <input type="text" value={editingTemplate.stripShadowColor || "#000000"} onChange={(e) => updateEditingField("stripShadowColor", e.target.value)} className="flex-1 px-2 py-1 rounded-lg bg-white/5 border border-white/10 text-white text-xs font-mono" />
+                        </div>
+                      </div>
+                      <div className="w-20">
+                        <label className="block text-[10px] text-gray-500 mb-1">Offset: {editingTemplate.stripShadowOffset}px</label>
+                        <input type="range" min={1} max={12} value={editingTemplate.stripShadowOffset ?? 4} onChange={(e) => updateEditingField("stripShadowOffset", Number(e.target.value))} className="w-full accent-violet-500" />
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* ── Layout ─────────────────────── */}
+              <div className="space-y-3">
+                <h4 className="text-xs font-bold text-gray-400 uppercase tracking-wider">Layout</h4>
+                <div>
+                  <label className="block text-[10px] text-gray-500 mb-1">Y Position: {editingTemplate.positionYPercent}%</label>
+                  <input type="range" min={0} max={100} value={editingTemplate.positionYPercent ?? 5} onChange={(e) => updateEditingField("positionYPercent", Number(e.target.value))} className="w-full accent-violet-500" />
+                </div>
+                <div>
+                  <label className="block text-[10px] text-gray-500 mb-1">Horizontal Margin: {editingTemplate.marginX}px</label>
+                  <input type="range" min={0} max={200} value={editingTemplate.marginX ?? 0} onChange={(e) => updateEditingField("marginX", Number(e.target.value))} className="w-full accent-violet-500" />
+                </div>
+                <div className="flex gap-2">
+                  <div className="flex-1">
+                    <label className="block text-[10px] text-gray-500 mb-1">Padding Y: {editingTemplate.paddingY}px</label>
+                    <input type="range" min={0} max={60} value={editingTemplate.paddingY ?? 20} onChange={(e) => updateEditingField("paddingY", Number(e.target.value))} className="w-full accent-violet-500" />
+                  </div>
+                  <div className="flex-1">
+                    <label className="block text-[10px] text-gray-500 mb-1">Padding X: {editingTemplate.paddingX}px</label>
+                    <input type="range" min={0} max={60} value={editingTemplate.paddingX ?? 20} onChange={(e) => updateEditingField("paddingX", Number(e.target.value))} className="w-full accent-violet-500" />
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Save Button */}
+            <div className="flex justify-end gap-3 pt-2">
+              <button onClick={() => setShowTemplateEditor(false)} className="px-4 py-2 rounded-lg text-gray-500 text-sm hover:text-white transition-all">
+                Cancel
+              </button>
+              <button
+                onClick={handleSaveTemplate}
+                disabled={savingTemplate}
+                className="px-6 py-2 rounded-lg bg-gradient-to-r from-violet-500 to-purple-600 text-white text-sm font-medium hover:from-violet-400 hover:to-purple-500 transition-all disabled:opacity-50 flex items-center gap-2"
+              >
+                {savingTemplate ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
+                Save Template
+              </button>
+            </div>
           </div>
         </div>
       )}

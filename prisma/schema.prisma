@@ -710,19 +710,65 @@ model MultiplierItem {
   renderedVideoUrl String?
   status           MultiplierItemStatus @default(PENDING)
   errorMessage     String?
+  templateId       String?              // which design template was used
   createdAt        DateTime             @default(now())
   updatedAt        DateTime             @updatedAt
 }
 
-// ─── Multiplier Text Hook Templates ──────────────────────────────────────────
+// ─── Multiplier Design Templates ─────────────────────────────────────────────
 
 model MultiplierTemplate {
-  id        String   @id @default(uuid())
-  name      String
-  hooks     String   @db.Text    // JSON array of hook strings
-  hookCount Int      @default(0)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id               String   @id @default(uuid())
+  name             String
+
+  // Typography
+  fontFamily       String   @default("Outfit-Bold")
+  fontSize         Int      @default(42)
+  fontColor        String   @default("#FFFFFF")
+  textCase         String   @default("UPPERCASE")
+  letterSpacing    Float    @default(1.0)
+  lineHeight       Float    @default(1.4)
+
+  // Text Effects — Stroke
+  strokeEnabled    Boolean  @default(false)
+  strokeColor      String   @default("#000000")
+  strokeWidth      Int      @default(2)
+
+  // Text Effects — Shadow
+  shadowEnabled    Boolean  @default(false)
+  shadowColor      String   @default("#000000")
+  shadowX          Int      @default(2)
+  shadowY          Int      @default(2)
+
+  // Text Effects — Neon Glow
+  glowEnabled      Boolean  @default(false)
+  glowColor        String   @default("#FF00FF")
+  glowIntensity    Int      @default(2)
+
+  // Background Strip
+  bgStripColor     String   @default("#000000")
+  bgStripOpacity   Float    @default(1.0)
+  stripWidthMode   String   @default("FULL")
+  stripWidthPercent Int     @default(100)
+  borderRadius     Int      @default(12)
+
+  stripBorderEnabled Boolean @default(false)
+  stripBorderColor   String  @default("#FFFFFF")
+  stripBorderWidth   Int     @default(1)
+
+  stripShadowEnabled Boolean @default(false)
+  stripShadowColor   String  @default("#000000")
+  stripShadowOffset  Int     @default(4)
+
+  // Layout
+  positionYPercent Int      @default(5)
+  marginX          Int      @default(0)
+  paddingY         Int      @default(20)
+  paddingX         Int      @default(20)
+  textAlign        String   @default("CENTER")
+
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
 }
 
 // ─── Global Google Drive Connection ──────────────────────────────────────────
