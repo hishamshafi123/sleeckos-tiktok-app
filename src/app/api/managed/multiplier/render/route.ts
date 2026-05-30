@@ -122,7 +122,7 @@ async function processMultiplierBatch(batchId: string) {
           marginX: tmpl?.marginX ?? batch.marginX,
           borderRadius: tmpl?.borderRadius ?? batch.borderRadius,
           outputPath,
-          // New design template fields
+          // Design template fields
           paddingX: tmpl?.paddingX,
           textAlign: tmpl?.textAlign,
           lineHeight: tmpl?.lineHeight,
@@ -143,6 +143,22 @@ async function processMultiplierBatch(batchId: string) {
           stripShadowEnabled: tmpl?.stripShadowEnabled ?? false,
           stripShadowColor: tmpl?.stripShadowColor,
           stripShadowOffset: tmpl?.stripShadowOffset,
+          // Advanced template fields
+          stripGradientEnabled: tmpl?.stripGradientEnabled ?? false,
+          stripGradientColor2: tmpl?.stripGradientColor2,
+          stripGradientAngle: tmpl?.stripGradientAngle,
+          stripShape: tmpl?.stripShape || "FULL",
+          animationType: tmpl?.animationType || "NONE",
+          animationDuration: tmpl?.animationDuration ?? 0.5,
+          backdropBlurEnabled: tmpl?.backdropBlurEnabled ?? false,
+          backdropBlurRadius: tmpl?.backdropBlurRadius,
+          textGradientEnabled: tmpl?.textGradientEnabled ?? false,
+          textGradientColor1: tmpl?.textGradientColor1,
+          textGradientColor2: tmpl?.textGradientColor2,
+          textGradientAngle: tmpl?.textGradientAngle,
+          doubleTextEnabled: tmpl?.doubleTextEnabled ?? false,
+          doubleTextOutlineColor: tmpl?.doubleTextOutlineColor,
+          doubleTextOutlineWidth: tmpl?.doubleTextOutlineWidth,
         };
 
         try {

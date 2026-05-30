@@ -1,0 +1,18 @@
+-- AlterTable
+ALTER TABLE "MultiplierTemplate" ADD COLUMN     "animationDuration" DOUBLE PRECISION NOT NULL DEFAULT 0.5,
+ADD COLUMN     "animationType" TEXT NOT NULL DEFAULT 'NONE',
+ADD COLUMN     "backdropBlurEnabled" BOOLEAN NOT NULL DEFAULT false,
+ADD COLUMN     "backdropBlurRadius" INTEGER NOT NULL DEFAULT 10,
+ADD COLUMN     "doubleTextEnabled" BOOLEAN NOT NULL DEFAULT false,
+ADD COLUMN     "doubleTextOutlineColor" TEXT NOT NULL DEFAULT '#000000',
+ADD COLUMN     "doubleTextOutlineWidth" INTEGER NOT NULL DEFAULT 4,
+ADD COLUMN     "isPreset" BOOLEAN NOT NULL DEFAULT false,
+ADD COLUMN     "presetCategory" TEXT,
+ADD COLUMN     "stripGradientAngle" INTEGER NOT NULL DEFAULT 90,
+ADD COLUMN     "stripGradientColor2" TEXT NOT NULL DEFAULT '#333333',
+ADD COLUMN     "stripGradientEnabled" BOOLEAN NOT NULL DEFAULT false,
+ADD COLUMN     "stripShape" TEXT NOT NULL DEFAULT 'FULL',
+ADD COLUMN     "textGradientAngle" INTEGER NOT NULL DEFAULT 180,
+ADD COLUMN     "textGradientColor1" TEXT NOT NULL DEFAULT '#FFFFFF',
+ADD COLUMN     "textGradientColor2" TEXT NOT NULL DEFAULT '#00FFFF',
+ADD COLUMN     "textGradientEnabled" BOOLEAN NOT NULL DEFAULT false;

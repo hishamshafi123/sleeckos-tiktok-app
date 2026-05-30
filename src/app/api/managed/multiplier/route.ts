@@ -112,12 +112,26 @@ export async function POST(req: Request) {
       }
     }
 
-    // 4. Create batch + items (with random template assignment)
+    // 4. Create batch items: cross-product (every hook × every template)
+    //    If no templates selected, create one item per hook using inline styling.
+    const itemsToCreate: { hookText: string; status: "PENDING"; templateId: string | null }[] = [];
+    if (designTemplateIds.length > 0) {
+      for (const hook of hooks) {
+        for (const tmplId of designTemplateIds) {
+          itemsToCreate.push({ hookText: hook, status: "PENDING", templateId: tmplId });
+        }
+      }
+    } else {
+      for (const hook of hooks) {
+        itemsToCreate.push({ hookText: hook, status: "PENDING", templateId: null });
+      }
+    }
+
     const batch = await prisma.multiplierBatch.create({
       data: {
         name: batchName,
         sourceVideoUrl: videoUrl,
-        totalItems: hooks.length,
+        totalItems: itemsToCreate.length,
         status: "READY",
         fontFamily,
         fontSize,
@@ -131,14 +145,7 @@ export async function POST(req: Request) {
         marginX,
         borderRadius,
         items: {
-          create: hooks.map((hook) => ({
-            hookText: hook,
-            status: "PENDING",
-            // Randomly assign a design template from the selected pool (if any)
-            templateId: designTemplateIds.length > 0
-              ? designTemplateIds[Math.floor(Math.random() * designTemplateIds.length)]
-              : null,
-          })),
+          create: itemsToCreate,
         },
       },
       include: {
@@ -148,7 +155,7 @@ export async function POST(req: Request) {
       },
     });
 
-    console.log(`[Multiplier API] Created batch ${batch.id} with ${hooks.length} items, ${designTemplateIds.length} design templates`);
+    console.log(`[Multiplier API] Created batch ${batch.id} with ${itemsToCreate.length} items (${hooks.length} hooks × ${designTemplateIds.length || 1} templates)`);
     return NextResponse.json(batch);
   } catch (err) {
     console.error("[Multiplier API] Error creating batch:", err);

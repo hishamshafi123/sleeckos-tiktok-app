@@ -5,6 +5,7 @@ import {
   Upload, FileText, Play, Download, Trash2, Loader2,
   Check, X, Layers, RefreshCw, Palette, Move, Pause,
   Plus, FolderOpen, Cloud, CloudOff, Search, LogIn,
+  Copy, Sparkles, Wand2,
 } from "lucide-react";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -82,6 +83,24 @@ interface DesignTemplate {
   paddingY: number;
   paddingX: number;
   textAlign: string;
+  // Advanced
+  stripGradientEnabled: boolean;
+  stripGradientColor2: string;
+  stripGradientAngle: number;
+  stripShape: string;
+  animationType: string;
+  animationDuration: number;
+  backdropBlurEnabled: boolean;
+  backdropBlurRadius: number;
+  textGradientEnabled: boolean;
+  textGradientColor1: string;
+  textGradientColor2: string;
+  textGradientAngle: number;
+  doubleTextEnabled: boolean;
+  doubleTextOutlineColor: string;
+  doubleTextOutlineWidth: number;
+  isPreset: boolean;
+  presetCategory: string | null;
   createdAt: string;
 }
 
@@ -168,6 +187,9 @@ export default function MultiplierPage() {
   const [marginX, setMarginX] = useState(0);
   const [borderRadius, setBorderRadius] = useState(12);
 
+  // Design studio tab
+  const [designTab, setDesignTab] = useState<"typography" | "effects" | "strip" | "animation">("typography");
+
   // Rendering
   const [renderingBatchId, setRenderingBatchId] = useState<string | null>(null);
   const [pausingBatchId, setPausingBatchId] = useState<string | null>(null);
@@ -206,6 +228,14 @@ export default function MultiplierPage() {
     stripShadowEnabled: false, stripShadowColor: "#000000", stripShadowOffset: 4,
     positionYPercent: 5, marginX: 0, paddingY: 20, paddingX: 20,
     textAlign: "CENTER",
+    // Advanced
+    stripGradientEnabled: false, stripGradientColor2: "#333333", stripGradientAngle: 90,
+    stripShape: "FULL",
+    animationType: "NONE", animationDuration: 0.5,
+    backdropBlurEnabled: false, backdropBlurRadius: 10,
+    textGradientEnabled: false, textGradientColor1: "#FFFFFF", textGradientColor2: "#00FFFF", textGradientAngle: 180,
+    doubleTextEnabled: false, doubleTextOutlineColor: "#000000", doubleTextOutlineWidth: 4,
+    isPreset: false, presetCategory: null,
   });
 
   // ─── Google Drive ───────────────────────────────────────────────────────────
@@ -379,13 +409,14 @@ export default function MultiplierPage() {
     }
     setSavingTemplate(true);
     try {
+      const isUpdate = !!editingTemplate.id;
       const res = await fetch("/api/managed/multiplier/templates", {
-        method: "POST",
+        method: isUpdate ? "PUT" : "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(editingTemplate),
       });
       if (!res.ok) throw new Error((await res.json()).error);
-      toast.success("Template saved!");
+      toast.success(isUpdate ? "Template updated!" : "Template saved!");
       setShowTemplateEditor(false);
       setEditingTemplate(null);
       fetchTemplates();
@@ -407,6 +438,38 @@ export default function MultiplierPage() {
       toast.error("Failed to delete");
     }
   };
+
+  const handleDuplicateTemplate = async (id: string) => {
+    try {
+      const res = await fetch(`/api/managed/multiplier/templates?action=duplicate&id=${id}`, { method: "POST" });
+      if (!res.ok) throw new Error((await res.json()).error);
+      toast.success("Template duplicated!");
+      fetchTemplates();
+    } catch (err: any) {
+      toast.error(err.message || "Failed to duplicate");
+    }
+  };
+
+  const seedPresets = async () => {
+    try {
+      const res = await fetch("/api/managed/multiplier/templates?action=seed-presets", { method: "POST" });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.count > 0) {
+          toast.success(`${data.count} preset designs loaded!`);
+          fetchTemplates();
+        }
+      }
+    } catch {}
+  };
+
+  // Auto-seed presets on first load if no templates exist
+  useEffect(() => {
+    if (templates.length === 0 && !loading) {
+      seedPresets();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [templates.length, loading]);
 
   const toggleTemplateSelection = (id: string) => {
     setSelectedTemplateIds((prev) =>
@@ -846,9 +909,31 @@ export default function MultiplierPage() {
                     style={{ background: "linear-gradient(135deg, #1a1a2e 0%, #0d0d15 100%)" }}
                     onClick={() => toggleTemplateSelection(tmpl.id)}
                   >
-                    <div style={stripStyle}>
+                    {tmpl.stripShape !== "NONE" && (
+                      <div style={{
+                        ...stripStyle,
+                        ...(tmpl.stripGradientEnabled ? {
+                          background: `linear-gradient(${tmpl.stripGradientAngle}deg, ${tmpl.bgStripColor}, ${tmpl.stripGradientColor2})`,
+                        } : {}),
+                        ...(tmpl.stripShape === "PILL" ? {
+                          borderRadius: "999px",
+                          padding: `${Math.min(tmpl.paddingY, 10) * 0.3}px ${Math.min(tmpl.paddingX, 10) * 0.8}px`,
+                        } : {}),
+                        ...(tmpl.backdropBlurEnabled ? {
+                          backdropFilter: `blur(${tmpl.backdropBlurRadius}px)`,
+                        } : {}),
+                      }}>
+                        <span style={previewStyle}>Sample Text</span>
+                      </div>
+                    )}
+                    {tmpl.stripShape === "NONE" && (
                       <span style={previewStyle}>Sample Text</span>
-                    </div>
+                    )}
+                    {tmpl.isPreset && (
+                      <span className="absolute top-1 right-1 text-[8px] bg-violet-500/20 text-violet-300 px-1.5 py-0.5 rounded-full">
+                        Preset
+                      </span>
+                    )}
                   </div>
 
                   {/* Template Info */}
@@ -861,7 +946,14 @@ export default function MultiplierPage() {
                       </div>
                       <p className="text-xs text-white font-medium truncate">{tmpl.name}</p>
                     </div>
-                    <div className="flex items-center gap-1">
+                    <div className="flex items-center gap-0.5">
+                      <button
+                        onClick={(e) => { e.stopPropagation(); handleDuplicateTemplate(tmpl.id); }}
+                        className="p-1 rounded text-gray-600 hover:text-green-400 transition-all"
+                        title="Duplicate"
+                      >
+                        <Copy className="w-3 h-3" />
+                      </button>
                       <button
                         onClick={(e) => { e.stopPropagation(); openTemplateEditor(tmpl); }}
                         className="p-1 rounded text-gray-600 hover:text-cyan-400 transition-all"
@@ -885,7 +977,7 @@ export default function MultiplierPage() {
         )}
         {selectedTemplateIds.length > 0 && (
           <p className="text-xs text-violet-300 font-medium">
-            ✓ {selectedTemplateIds.length} design{selectedTemplateIds.length > 1 ? "s" : ""} selected — each video will be randomly styled with one of these
+            ✓ {selectedTemplateIds.length} design{selectedTemplateIds.length > 1 ? "s" : ""} selected — each hook will be rendered with each design ({parsedHooks.length > 0 ? `${parsedHooks.length} × ${selectedTemplateIds.length} = ${parsedHooks.length * selectedTemplateIds.length} videos` : "upload hooks to see total"})
           </p>
         )}
       </div>
@@ -966,213 +1058,767 @@ export default function MultiplierPage() {
       </div>
 
       {/* ─── Preview + Controls ──────────────────────────────────────────── */}
-      <div className="grid grid-cols-1 lg:grid-cols-[340px_1fr] gap-6">
-        {/* Left: Live Preview (9:16 phone frame) */}
-        <div className="space-y-3">
-          <h2 className="text-sm font-semibold text-white flex items-center gap-2">
-            <Move className="w-4 h-4 text-cyan-400" />
-            Live Preview
-            <span className="text-gray-600 text-[10px] font-normal ml-1">Drag strip to position</span>
-          </h2>
-          <div
-            ref={previewContainerRef}
-            className="relative rounded-2xl overflow-hidden border-2 border-white/10 bg-black mx-auto select-none"
-            style={{
-              width: 300,
-              height: 300 * (OUTPUT_H / OUTPUT_W), // 9:16 aspect
-            }}
-          >
-            {/* Video Background */}
-            {videoObjectUrl ? (
-              <video
-                src={videoObjectUrl}
-                muted
-                loop
-                autoPlay
-                playsInline
-                className="absolute inset-0 w-full h-full object-cover"
-              />
-            ) : (
-              <div className="absolute inset-0 bg-gradient-to-b from-gray-800 to-gray-900 flex items-center justify-center">
-                <span className="text-gray-700 text-xs">Upload video to preview</span>
-              </div>
-            )}
-
-            {/* Text Strip Overlay — Draggable */}
-            <div
-              onMouseDown={handlePreviewMouseDown}
-              className="absolute left-0 right-0 flex items-center justify-center"
-              style={{
-                top: `${(stripGeometry.stripY / OUTPUT_H) * 100}%`,
-                height: `${(stripGeometry.stripHeight / OUTPUT_H) * 100}%`,
-                left: `${(stripGeometry.stripX / OUTPUT_W) * 100}%`,
-                right: `${(stripGeometry.stripX / OUTPUT_W) * 100}%`,
-                width: `${(stripGeometry.stripW / OUTPUT_W) * 100}%`,
-                backgroundColor: bgStripColor,
-                opacity: bgStripOpacity,
-                cursor: isDragging ? "grabbing" : "grab",
-                padding: `${Math.max(2, stripPaddingY * (300 / OUTPUT_W))}px ${Math.max(6, Math.max(stripPaddingY, 16) * (300 / OUTPUT_W))}px`,
-                borderRadius: `${Math.max(0, borderRadius * (300 / OUTPUT_W))}px`,
-                transition: isDragging ? "none" : "top 0.15s ease-out",
-              }}
+      {showTemplateEditor && editingTemplate ? (
+        /* ═══ FULL INLINE DESIGN STUDIO ═══ */
+        <div className="space-y-4">
+          {/* Template Name + Actions Bar */}
+          <div className="flex items-center gap-3 bg-[#111118] rounded-xl border border-violet-500/20 p-3">
+            <Palette className="w-5 h-5 text-violet-400 flex-shrink-0" />
+            <input
+              type="text"
+              placeholder="Template name (e.g. Neon Pink, Bold Shadow)"
+              value={editingTemplate.name || ""}
+              onChange={(e) => updateEditingField("name", e.target.value)}
+              className="flex-1 px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white text-sm focus:outline-none focus:border-violet-500/50"
+            />
+            <button
+              onClick={() => { setShowTemplateEditor(false); setEditingTemplate(null); }}
+              className="px-3 py-2 rounded-lg text-gray-500 text-xs hover:text-white hover:bg-white/5 transition-all"
             >
-              <span
-                className="text-center leading-tight"
-                style={{
-                  color: fontColor,
-                  fontSize: Math.max(8, fontSize * (300 / OUTPUT_W)),
-                  fontWeight: "bold",
-                  letterSpacing: "0.3px",
-                  wordBreak: "break-word",
-                }}
-              >
-                {previewText}
-              </span>
-            </div>
-
-            {/* Drag indicator lines */}
-            {isDragging && (
-              <>
-                <div className="absolute left-2 right-2 border-t border-cyan-500/50 border-dashed" style={{ top: `${(stripGeometry.stripY / OUTPUT_H) * 100}%` }} />
-                <div className="absolute left-2 right-2 border-t border-cyan-500/50 border-dashed" style={{ top: `${((stripGeometry.stripY + stripGeometry.stripHeight) / OUTPUT_H) * 100}%` }} />
-              </>
-            )}
-
-            {/* Position indicator */}
-            <div className="absolute bottom-2 right-2 bg-black/70 text-gray-300 text-[9px] px-1.5 py-0.5 rounded font-mono">
-              Y: {positionYPercent}%
-            </div>
+              Cancel
+            </button>
+            <button
+              onClick={handleSaveTemplate}
+              disabled={savingTemplate}
+              className="px-5 py-2 rounded-lg bg-gradient-to-r from-violet-500 to-purple-600 text-white text-xs font-semibold hover:from-violet-400 hover:to-purple-500 transition-all disabled:opacity-50 flex items-center gap-1.5"
+            >
+              {savingTemplate ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
+              {editingTemplate.id ? "Update" : "Save"} Template
+            </button>
           </div>
 
-          {/* Quick position buttons */}
-          <div className="flex gap-1.5">
-            {[
-              { label: "Top", value: 0 },
-              { label: "25%", value: 25 },
-              { label: "Center", value: 50 },
-              { label: "75%", value: 75 },
-              { label: "Bottom", value: 100 },
-            ].map((p) => (
-              <button
-                key={p.value}
-                onClick={() => setPositionYPercent(p.value)}
-                className={`flex-1 py-1.5 rounded-lg text-[10px] font-medium transition-all border ${
-                  positionYPercent === p.value
-                    ? "bg-cyan-500/15 text-cyan-300 border-cyan-500/30"
-                    : "bg-white/5 text-gray-600 border-white/5 hover:border-white/10 hover:text-gray-400"
-                }`}
+          <div className="grid grid-cols-1 lg:grid-cols-[340px_1fr] gap-6">
+            {/* Left: Enhanced 9:16 Preview */}
+            <div className="space-y-3">
+              <h2 className="text-sm font-semibold text-white flex items-center gap-2">
+                <Sparkles className="w-4 h-4 text-violet-400" />
+                Design Preview
+                <span className="text-gray-600 text-[10px] font-normal ml-1">Drag to position</span>
+              </h2>
+              <div
+                ref={previewContainerRef}
+                className="relative rounded-2xl overflow-hidden border-2 border-violet-500/20 bg-black mx-auto select-none"
+                style={{ width: 300, height: 300 * (OUTPUT_H / OUTPUT_W) }}
               >
-                {p.label}
-              </button>
-            ))}
-          </div>
-        </div>
+                {/* Video Background */}
+                {videoObjectUrl ? (
+                  <video src={videoObjectUrl} muted loop autoPlay playsInline className="absolute inset-0 w-full h-full object-cover" />
+                ) : (
+                  <div className="absolute inset-0 bg-gradient-to-b from-gray-800 to-gray-900 flex items-center justify-center">
+                    <span className="text-gray-700 text-xs">Upload video to preview</span>
+                  </div>
+                )}
 
-        {/* Right: Controls */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-          {/* Text Controls */}
-          <div className="rounded-2xl border border-white/5 bg-[#111118] p-5 space-y-4">
-            <h2 className="text-sm font-semibold text-white flex items-center gap-2">
-              <Palette className="w-4 h-4 text-cyan-400" />
-              Text
-            </h2>
+                {/* Text Strip Overlay — uses editingTemplate values */}
+                {(editingTemplate.stripShape || "FULL") !== "NONE" && (
+                  <div
+                    onMouseDown={handlePreviewMouseDown}
+                    className="absolute left-0 right-0 flex items-center justify-center"
+                    style={{
+                      top: `${editingTemplate.positionYPercent ?? 5}%`,
+                      padding: `${Math.max(2, (editingTemplate.paddingY ?? 20) * (300 / OUTPUT_W))}px ${Math.max(6, (editingTemplate.paddingX ?? 20) * (300 / OUTPUT_W))}px`,
+                      marginLeft: `${(editingTemplate.marginX ?? 0) * (300 / OUTPUT_W)}px`,
+                      marginRight: `${(editingTemplate.marginX ?? 0) * (300 / OUTPUT_W)}px`,
+                      backgroundColor: editingTemplate.stripGradientEnabled
+                        ? undefined
+                        : `${editingTemplate.bgStripColor || "#000"}${Math.round((editingTemplate.bgStripOpacity ?? 1) * 255).toString(16).padStart(2, "0")}`,
+                      background: editingTemplate.stripGradientEnabled
+                        ? `linear-gradient(${editingTemplate.stripGradientAngle ?? 90}deg, ${editingTemplate.bgStripColor || "#000"}${Math.round((editingTemplate.bgStripOpacity ?? 1) * 255).toString(16).padStart(2, "0")}, ${editingTemplate.stripGradientColor2 || "#333"}${Math.round((editingTemplate.bgStripOpacity ?? 1) * 255).toString(16).padStart(2, "0")})`
+                        : undefined,
+                      borderRadius: (editingTemplate.stripShape || "FULL") === "PILL" ? "999px" : `${Math.max(0, (editingTemplate.borderRadius ?? 12) * (300 / OUTPUT_W))}px`,
+                      cursor: isDragging ? "grabbing" : "grab",
+                      transition: isDragging ? "none" : "top 0.15s ease-out",
+                      ...(editingTemplate.stripBorderEnabled ? { border: `${editingTemplate.stripBorderWidth}px solid ${editingTemplate.stripBorderColor}` } : {}),
+                      ...(editingTemplate.stripShadowEnabled ? { boxShadow: `${editingTemplate.stripShadowOffset}px ${editingTemplate.stripShadowOffset}px 8px ${editingTemplate.stripShadowColor}` } : {}),
+                      ...(editingTemplate.backdropBlurEnabled ? { backdropFilter: `blur(${editingTemplate.backdropBlurRadius ?? 10}px)` } : {}),
+                    }}
+                  >
+                    <span
+                      className="text-center leading-tight"
+                      style={{
+                        color: editingTemplate.fontColor || "#FFF",
+                        fontSize: Math.max(8, (editingTemplate.fontSize ?? 42) * (300 / OUTPUT_W)),
+                        fontFamily: (editingTemplate.fontFamily || "Outfit-Bold").includes("Outfit") ? "Outfit, sans-serif" : "sans-serif",
+                        fontWeight: "bold",
+                        textTransform: editingTemplate.textCase === "UPPERCASE" ? "uppercase" : editingTemplate.textCase === "LOWERCASE" ? "lowercase" : "none",
+                        letterSpacing: `${((editingTemplate.letterSpacing ?? 1) - 1) * 4}px`,
+                        wordBreak: "break-word",
+                        ...(editingTemplate.doubleTextEnabled ? {
+                          WebkitTextStroke: `${editingTemplate.doubleTextOutlineWidth ?? 4}px ${editingTemplate.doubleTextOutlineColor || "#000"}`,
+                          paintOrder: "stroke fill",
+                        } : editingTemplate.strokeEnabled ? {
+                          WebkitTextStroke: `${editingTemplate.strokeWidth}px ${editingTemplate.strokeColor}`,
+                        } : {}),
+                        ...(editingTemplate.glowEnabled ? {
+                          textShadow: `0 0 ${(editingTemplate.glowIntensity ?? 2) * 4}px ${editingTemplate.glowColor}, 0 0 ${(editingTemplate.glowIntensity ?? 2) * 8}px ${editingTemplate.glowColor}`,
+                        } : editingTemplate.shadowEnabled ? {
+                          textShadow: `${editingTemplate.shadowX}px ${editingTemplate.shadowY}px 2px ${editingTemplate.shadowColor}`,
+                        } : {}),
+                        ...(editingTemplate.textGradientEnabled ? {
+                          background: `linear-gradient(${editingTemplate.textGradientAngle ?? 180}deg, ${editingTemplate.textGradientColor1 || "#FFF"}, ${editingTemplate.textGradientColor2 || "#0FF"})`,
+                          WebkitBackgroundClip: "text",
+                          WebkitTextFillColor: "transparent",
+                          backgroundClip: "text",
+                        } : {}),
+                      }}
+                    >
+                      {previewText}
+                    </span>
+                  </div>
+                )}
+                {(editingTemplate.stripShape || "FULL") === "NONE" && (
+                  <div
+                    onMouseDown={handlePreviewMouseDown}
+                    className="absolute left-0 right-0 flex items-center justify-center"
+                    style={{
+                      top: `${editingTemplate.positionYPercent ?? 5}%`,
+                      padding: `8px ${Math.max(6, (editingTemplate.paddingX ?? 20) * (300 / OUTPUT_W))}px`,
+                      cursor: isDragging ? "grabbing" : "grab",
+                      transition: isDragging ? "none" : "top 0.15s ease-out",
+                    }}
+                  >
+                    <span
+                      className="text-center leading-tight"
+                      style={{
+                        color: editingTemplate.fontColor || "#FFF",
+                        fontSize: Math.max(8, (editingTemplate.fontSize ?? 42) * (300 / OUTPUT_W)),
+                        fontFamily: (editingTemplate.fontFamily || "Outfit-Bold").includes("Outfit") ? "Outfit, sans-serif" : "sans-serif",
+                        fontWeight: "bold",
+                        textTransform: editingTemplate.textCase === "UPPERCASE" ? "uppercase" : editingTemplate.textCase === "LOWERCASE" ? "lowercase" : "none",
+                        wordBreak: "break-word",
+                        ...(editingTemplate.strokeEnabled ? { WebkitTextStroke: `${editingTemplate.strokeWidth}px ${editingTemplate.strokeColor}` } : {}),
+                        ...(editingTemplate.glowEnabled ? { textShadow: `0 0 ${(editingTemplate.glowIntensity ?? 2) * 4}px ${editingTemplate.glowColor}` } : {}),
+                        ...(editingTemplate.textGradientEnabled ? {
+                          background: `linear-gradient(${editingTemplate.textGradientAngle ?? 180}deg, ${editingTemplate.textGradientColor1 || "#FFF"}, ${editingTemplate.textGradientColor2 || "#0FF"})`,
+                          WebkitBackgroundClip: "text",
+                          WebkitTextFillColor: "transparent",
+                          backgroundClip: "text",
+                        } : {}),
+                      }}
+                    >
+                      {previewText}
+                    </span>
+                  </div>
+                )}
 
-            {/* Font Family */}
-            <div>
-              <label className="block text-[10px] text-gray-500 mb-1 uppercase tracking-wider">Font</label>
-              <select
-                value={fontFamily}
-                onChange={(e) => setFontFamily(e.target.value)}
-                className="w-full px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white text-sm focus:outline-none focus:border-cyan-500/50"
-              >
-                {FONT_OPTIONS.map((f) => (<option key={f} value={f}>{f}</option>))}
-              </select>
-            </div>
-
-            {/* Font Size */}
-            <div>
-              <label className="block text-[10px] text-gray-500 mb-1 uppercase tracking-wider">Size: {fontSize}px</label>
-              <input type="range" min={18} max={72} value={fontSize} onChange={(e) => setFontSize(Number(e.target.value))} className="w-full accent-cyan-500" />
-            </div>
-
-            {/* Font Color */}
-            <div>
-              <label className="block text-[10px] text-gray-500 mb-1 uppercase tracking-wider">Color</label>
-              <div className="flex items-center gap-2">
-                <input type="color" value={fontColor} onChange={(e) => setFontColor(e.target.value)} className="w-8 h-7 rounded border border-white/10 cursor-pointer bg-transparent" />
-                <input type="text" value={fontColor} onChange={(e) => setFontColor(e.target.value)} className="flex-1 px-2.5 py-1.5 rounded-lg bg-white/5 border border-white/10 text-white text-xs font-mono" />
+                {/* Position indicator */}
+                <div className="absolute bottom-2 right-2 bg-black/70 text-gray-300 text-[9px] px-1.5 py-0.5 rounded font-mono">
+                  Y: {editingTemplate.positionYPercent ?? 5}%
+                </div>
               </div>
-            </div>
 
-            {/* Text Case */}
-            <div>
-              <label className="block text-[10px] text-gray-500 mb-1 uppercase tracking-wider">Case</label>
-              <div className="grid grid-cols-4 gap-1.5">
-                {TEXT_CASE_OPTIONS.map((opt) => (
+              {/* Quick position buttons */}
+              <div className="flex gap-1.5">
+                {[
+                  { label: "Top", value: 0 },
+                  { label: "25%", value: 25 },
+                  { label: "Center", value: 50 },
+                  { label: "75%", value: 75 },
+                  { label: "Bottom", value: 100 },
+                ].map((p) => (
                   <button
-                    key={opt.value}
-                    onClick={() => setTextCase(opt.value)}
-                    className={`px-2 py-1.5 rounded-lg text-[10px] font-medium transition-all border ${
-                      textCase === opt.value
-                        ? "bg-cyan-500/15 text-cyan-300 border-cyan-500/30"
-                        : "bg-white/5 text-gray-500 border-white/5 hover:border-white/10"
+                    key={p.value}
+                    onClick={() => updateEditingField("positionYPercent", p.value)}
+                    className={`flex-1 py-1.5 rounded-lg text-[10px] font-medium transition-all border ${
+                      (editingTemplate.positionYPercent ?? 5) === p.value
+                        ? "bg-violet-500/15 text-violet-300 border-violet-500/30"
+                        : "bg-white/5 text-gray-600 border-white/5 hover:border-white/10 hover:text-gray-400"
                     }`}
                   >
-                    {opt.label}
+                    {p.label}
                   </button>
                 ))}
               </div>
             </div>
-          </div>
 
-          {/* Strip & Position Controls */}
-          <div className="rounded-2xl border border-white/5 bg-[#111118] p-5 space-y-4">
-            <h2 className="text-sm font-semibold text-white flex items-center gap-2">
-              <Move className="w-4 h-4 text-cyan-400" />
-              Strip & Position
-            </h2>
-
-            {/* Background Color */}
-            <div>
-              <label className="block text-[10px] text-gray-500 mb-1 uppercase tracking-wider">Background</label>
-              <div className="flex items-center gap-2">
-                <input type="color" value={bgStripColor} onChange={(e) => setBgStripColor(e.target.value)} className="w-8 h-7 rounded border border-white/10 cursor-pointer bg-transparent" />
-                <input type="text" value={bgStripColor} onChange={(e) => setBgStripColor(e.target.value)} className="flex-1 px-2.5 py-1.5 rounded-lg bg-white/5 border border-white/10 text-white text-xs font-mono" />
+            {/* Right: Tabbed Controls */}
+            <div className="space-y-3">
+              {/* Tab Bar */}
+              <div className="flex gap-1 bg-[#0c0c12] rounded-xl p-1 border border-white/5">
+                {([
+                  { key: "typography" as const, label: "Typography", icon: "Aa" },
+                  { key: "effects" as const, label: "Effects", icon: "✦" },
+                  { key: "strip" as const, label: "Strip & Layout", icon: "▬" },
+                  { key: "animation" as const, label: "Animation", icon: "⚡" },
+                ]).map((tab) => (
+                  <button
+                    key={tab.key}
+                    onClick={() => setDesignTab(tab.key)}
+                    className={`flex-1 py-2 px-3 rounded-lg text-xs font-medium transition-all ${
+                      designTab === tab.key
+                        ? "bg-violet-500/15 text-violet-300 border border-violet-500/30"
+                        : "text-gray-500 hover:text-white border border-transparent"
+                    }`}
+                  >
+                    <span className="mr-1.5">{tab.icon}</span>
+                    {tab.label}
+                  </button>
+                ))}
               </div>
-            </div>
 
-            {/* Opacity */}
-            <div>
-              <label className="block text-[10px] text-gray-500 mb-1 uppercase tracking-wider">Opacity: {Math.round(bgStripOpacity * 100)}%</label>
-              <input type="range" min={0} max={100} value={Math.round(bgStripOpacity * 100)} onChange={(e) => setBgStripOpacity(Number(e.target.value) / 100)} className="w-full accent-cyan-500" />
-            </div>
+              {/* Tab Content */}
+              <div className="rounded-2xl border border-white/5 bg-[#111118] p-5">
 
-            {/* Vertical Position */}
-            <div>
-              <label className="block text-[10px] text-gray-500 mb-1 uppercase tracking-wider">Y Position: {positionYPercent}%</label>
-              <input type="range" min={0} max={100} value={positionYPercent} onChange={(e) => setPositionYPercent(Number(e.target.value))} className="w-full accent-cyan-500" />
-            </div>
+                {/* ═══ TYPOGRAPHY TAB ═══ */}
+                {designTab === "typography" && (
+                  <div className="space-y-4">
+                    <div>
+                      <label className="block text-[10px] text-gray-500 mb-1 uppercase tracking-wider">Font</label>
+                      <select value={editingTemplate.fontFamily || "Outfit-Bold"} onChange={(e) => updateEditingField("fontFamily", e.target.value)} className="w-full px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white text-sm focus:outline-none focus:border-violet-500/50">
+                        {FONT_OPTIONS.map((f) => <option key={f} value={f} className="bg-[#111]">{f}</option>)}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-[10px] text-gray-500 mb-1 uppercase tracking-wider">Size: {editingTemplate.fontSize}px</label>
+                      <input type="range" min={16} max={120} value={editingTemplate.fontSize ?? 42} onChange={(e) => updateEditingField("fontSize", Number(e.target.value))} className="w-full accent-violet-500" />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] text-gray-500 mb-1 uppercase tracking-wider">Color</label>
+                      <div className="flex items-center gap-2">
+                        <input type="color" value={editingTemplate.fontColor || "#FFFFFF"} onChange={(e) => updateEditingField("fontColor", e.target.value)} className="w-8 h-7 rounded cursor-pointer bg-transparent border border-white/10" />
+                        <input type="text" value={editingTemplate.fontColor || "#FFFFFF"} onChange={(e) => updateEditingField("fontColor", e.target.value)} className="flex-1 px-2.5 py-1.5 rounded-lg bg-white/5 border border-white/10 text-white text-xs font-mono" />
+                      </div>
+                    </div>
+                    <div>
+                      <label className="block text-[10px] text-gray-500 mb-1 uppercase tracking-wider">Case</label>
+                      <div className="grid grid-cols-4 gap-1.5">
+                        {["UPPERCASE", "LOWERCASE", "CAPITALIZE", "NONE"].map((c) => (
+                          <button key={c} onClick={() => updateEditingField("textCase", c)} className={`py-1.5 rounded-lg text-[10px] font-medium transition-all border ${editingTemplate.textCase === c ? "bg-violet-500/15 text-violet-300 border-violet-500/30" : "bg-white/5 text-gray-500 border-white/5 hover:text-white"}`}>
+                            {c === "NONE" ? "As is" : c === "CAPITALIZE" ? "Abc" : c === "LOWERCASE" ? "abc" : "ABC"}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-[10px] text-gray-500 mb-1 uppercase tracking-wider">Letter Spacing: {editingTemplate.letterSpacing?.toFixed(1)}×</label>
+                        <input type="range" min={0.5} max={2} step={0.1} value={editingTemplate.letterSpacing ?? 1} onChange={(e) => updateEditingField("letterSpacing", Number(e.target.value))} className="w-full accent-violet-500" />
+                      </div>
+                      <div>
+                        <label className="block text-[10px] text-gray-500 mb-1 uppercase tracking-wider">Line Height: {editingTemplate.lineHeight?.toFixed(1)}×</label>
+                        <input type="range" min={1.0} max={2.5} step={0.1} value={editingTemplate.lineHeight ?? 1.4} onChange={(e) => updateEditingField("lineHeight", Number(e.target.value))} className="w-full accent-violet-500" />
+                      </div>
+                    </div>
+                    <div>
+                      <label className="block text-[10px] text-gray-500 mb-1 uppercase tracking-wider">Alignment</label>
+                      <div className="flex gap-1">
+                        {["LEFT", "CENTER", "RIGHT"].map((a) => (
+                          <button key={a} onClick={() => updateEditingField("textAlign", a)} className={`flex-1 py-1.5 rounded-lg text-xs font-medium transition-all ${editingTemplate.textAlign === a ? "bg-violet-500/20 text-violet-300 border border-violet-500/30" : "bg-white/5 text-gray-500 border border-white/5 hover:text-white"}`}>
+                            {a}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                )}
 
-            {/* Horizontal Margin */}
-            <div>
-              <label className="block text-[10px] text-gray-500 mb-1 uppercase tracking-wider">Horizontal Margin: {marginX}px</label>
-              <input type="range" min={0} max={200} value={marginX} onChange={(e) => setMarginX(Number(e.target.value))} className="w-full accent-cyan-500" />
-            </div>
+                {/* ═══ EFFECTS TAB ═══ */}
+                {designTab === "effects" && (
+                  <div className="space-y-4">
+                    {/* Stroke */}
+                    <div className="rounded-xl border border-white/5 p-3 space-y-2">
+                      <label className="flex items-center gap-2 cursor-pointer">
+                        <input type="checkbox" checked={editingTemplate.strokeEnabled ?? false} onChange={(e) => updateEditingField("strokeEnabled", e.target.checked)} className="accent-violet-500" />
+                        <span className="text-xs text-white font-medium">Text Stroke / Outline</span>
+                      </label>
+                      {editingTemplate.strokeEnabled && (
+                        <div className="flex gap-2">
+                          <div className="flex-1">
+                            <label className="block text-[10px] text-gray-500 mb-1">Color</label>
+                            <div className="flex gap-1">
+                              <input type="color" value={editingTemplate.strokeColor || "#000000"} onChange={(e) => updateEditingField("strokeColor", e.target.value)} className="w-7 h-7 rounded cursor-pointer bg-transparent" />
+                              <input type="text" value={editingTemplate.strokeColor || "#000000"} onChange={(e) => updateEditingField("strokeColor", e.target.value)} className="flex-1 px-2 py-1 rounded-lg bg-white/5 border border-white/10 text-white text-xs font-mono" />
+                            </div>
+                          </div>
+                          <div className="w-24">
+                            <label className="block text-[10px] text-gray-500 mb-1">Width: {editingTemplate.strokeWidth}px</label>
+                            <input type="range" min={1} max={8} value={editingTemplate.strokeWidth ?? 2} onChange={(e) => updateEditingField("strokeWidth", Number(e.target.value))} className="w-full accent-violet-500" />
+                          </div>
+                        </div>
+                      )}
+                    </div>
 
-            {/* Inner Padding */}
-            <div>
-              <label className="block text-[10px] text-gray-500 mb-1 uppercase tracking-wider">Inner Padding: {stripPaddingY}px</label>
-              <input type="range" min={0} max={60} value={stripPaddingY} onChange={(e) => setStripPaddingY(Number(e.target.value))} className="w-full accent-cyan-500" />
-            </div>
+                    {/* Shadow */}
+                    <div className="rounded-xl border border-white/5 p-3 space-y-2">
+                      <label className="flex items-center gap-2 cursor-pointer">
+                        <input type="checkbox" checked={editingTemplate.shadowEnabled ?? false} onChange={(e) => updateEditingField("shadowEnabled", e.target.checked)} className="accent-violet-500" />
+                        <span className="text-xs text-white font-medium">Drop Shadow</span>
+                      </label>
+                      {editingTemplate.shadowEnabled && (
+                        <div className="space-y-2">
+                          <div>
+                            <label className="block text-[10px] text-gray-500 mb-1">Color</label>
+                            <div className="flex gap-1">
+                              <input type="color" value={editingTemplate.shadowColor || "#000000"} onChange={(e) => updateEditingField("shadowColor", e.target.value)} className="w-7 h-7 rounded cursor-pointer bg-transparent" />
+                              <input type="text" value={editingTemplate.shadowColor || "#000000"} onChange={(e) => updateEditingField("shadowColor", e.target.value)} className="flex-1 px-2 py-1 rounded-lg bg-white/5 border border-white/10 text-white text-xs font-mono" />
+                            </div>
+                          </div>
+                          <div className="flex gap-2">
+                            <div className="flex-1">
+                              <label className="block text-[10px] text-gray-500 mb-1">X: {editingTemplate.shadowX}px</label>
+                              <input type="range" min={0} max={10} value={editingTemplate.shadowX ?? 2} onChange={(e) => updateEditingField("shadowX", Number(e.target.value))} className="w-full accent-violet-500" />
+                            </div>
+                            <div className="flex-1">
+                              <label className="block text-[10px] text-gray-500 mb-1">Y: {editingTemplate.shadowY}px</label>
+                              <input type="range" min={0} max={10} value={editingTemplate.shadowY ?? 2} onChange={(e) => updateEditingField("shadowY", Number(e.target.value))} className="w-full accent-violet-500" />
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
 
-            {/* Border Radius */}
-            <div>
-              <label className="block text-[10px] text-gray-500 mb-1 uppercase tracking-wider">Corner Radius: {borderRadius}px</label>
-              <input type="range" min={0} max={40} value={borderRadius} onChange={(e) => setBorderRadius(Number(e.target.value))} className="w-full accent-cyan-500" />
+                    {/* Neon Glow */}
+                    <div className="rounded-xl border border-white/5 p-3 space-y-2">
+                      <label className="flex items-center gap-2 cursor-pointer">
+                        <input type="checkbox" checked={editingTemplate.glowEnabled ?? false} onChange={(e) => updateEditingField("glowEnabled", e.target.checked)} className="accent-violet-500" />
+                        <span className="text-xs text-white font-medium">Neon Glow</span>
+                      </label>
+                      {editingTemplate.glowEnabled && (
+                        <div className="flex gap-2">
+                          <div className="flex-1">
+                            <label className="block text-[10px] text-gray-500 mb-1">Color</label>
+                            <div className="flex gap-1">
+                              <input type="color" value={editingTemplate.glowColor || "#FF00FF"} onChange={(e) => updateEditingField("glowColor", e.target.value)} className="w-7 h-7 rounded cursor-pointer bg-transparent" />
+                              <input type="text" value={editingTemplate.glowColor || "#FF00FF"} onChange={(e) => updateEditingField("glowColor", e.target.value)} className="flex-1 px-2 py-1 rounded-lg bg-white/5 border border-white/10 text-white text-xs font-mono" />
+                            </div>
+                          </div>
+                          <div className="w-24">
+                            <label className="block text-[10px] text-gray-500 mb-1">Intensity: {editingTemplate.glowIntensity}</label>
+                            <input type="range" min={1} max={5} value={editingTemplate.glowIntensity ?? 2} onChange={(e) => updateEditingField("glowIntensity", Number(e.target.value))} className="w-full accent-violet-500" />
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Double Text */}
+                    <div className="rounded-xl border border-white/5 p-3 space-y-2">
+                      <label className="flex items-center gap-2 cursor-pointer">
+                        <input type="checkbox" checked={editingTemplate.doubleTextEnabled ?? false} onChange={(e) => updateEditingField("doubleTextEnabled", e.target.checked)} className="accent-violet-500" />
+                        <span className="text-xs text-white font-medium">Double Text (Outline + Fill)</span>
+                      </label>
+                      {editingTemplate.doubleTextEnabled && (
+                        <div className="flex gap-2">
+                          <div className="flex-1">
+                            <label className="block text-[10px] text-gray-500 mb-1">Outline Color</label>
+                            <div className="flex gap-1">
+                              <input type="color" value={editingTemplate.doubleTextOutlineColor || "#000000"} onChange={(e) => updateEditingField("doubleTextOutlineColor", e.target.value)} className="w-7 h-7 rounded cursor-pointer bg-transparent" />
+                              <input type="text" value={editingTemplate.doubleTextOutlineColor || "#000000"} onChange={(e) => updateEditingField("doubleTextOutlineColor", e.target.value)} className="flex-1 px-2 py-1 rounded-lg bg-white/5 border border-white/10 text-white text-xs font-mono" />
+                            </div>
+                          </div>
+                          <div className="w-24">
+                            <label className="block text-[10px] text-gray-500 mb-1">Outline: {editingTemplate.doubleTextOutlineWidth}px</label>
+                            <input type="range" min={1} max={10} value={editingTemplate.doubleTextOutlineWidth ?? 4} onChange={(e) => updateEditingField("doubleTextOutlineWidth", Number(e.target.value))} className="w-full accent-violet-500" />
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Text Gradient */}
+                    <div className="rounded-xl border border-white/5 p-3 space-y-2">
+                      <label className="flex items-center gap-2 cursor-pointer">
+                        <input type="checkbox" checked={editingTemplate.textGradientEnabled ?? false} onChange={(e) => updateEditingField("textGradientEnabled", e.target.checked)} className="accent-violet-500" />
+                        <span className="text-xs text-white font-medium">Text Gradient</span>
+                      </label>
+                      {editingTemplate.textGradientEnabled && (
+                        <div className="space-y-2">
+                          <div className="flex gap-2">
+                            <div className="flex-1">
+                              <label className="block text-[10px] text-gray-500 mb-1">Color 1</label>
+                              <div className="flex gap-1">
+                                <input type="color" value={editingTemplate.textGradientColor1 || "#FFFFFF"} onChange={(e) => updateEditingField("textGradientColor1", e.target.value)} className="w-7 h-7 rounded cursor-pointer bg-transparent" />
+                                <input type="text" value={editingTemplate.textGradientColor1 || "#FFFFFF"} onChange={(e) => updateEditingField("textGradientColor1", e.target.value)} className="flex-1 px-2 py-1 rounded-lg bg-white/5 border border-white/10 text-white text-xs font-mono" />
+                              </div>
+                            </div>
+                            <div className="flex-1">
+                              <label className="block text-[10px] text-gray-500 mb-1">Color 2</label>
+                              <div className="flex gap-1">
+                                <input type="color" value={editingTemplate.textGradientColor2 || "#00FFFF"} onChange={(e) => updateEditingField("textGradientColor2", e.target.value)} className="w-7 h-7 rounded cursor-pointer bg-transparent" />
+                                <input type="text" value={editingTemplate.textGradientColor2 || "#00FFFF"} onChange={(e) => updateEditingField("textGradientColor2", e.target.value)} className="flex-1 px-2 py-1 rounded-lg bg-white/5 border border-white/10 text-white text-xs font-mono" />
+                              </div>
+                            </div>
+                          </div>
+                          <div>
+                            <label className="block text-[10px] text-gray-500 mb-1">Angle: {editingTemplate.textGradientAngle}°</label>
+                            <input type="range" min={0} max={360} value={editingTemplate.textGradientAngle ?? 180} onChange={(e) => updateEditingField("textGradientAngle", Number(e.target.value))} className="w-full accent-violet-500" />
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* ═══ STRIP & LAYOUT TAB ═══ */}
+                {designTab === "strip" && (
+                  <div className="space-y-4">
+                    {/* Strip Shape */}
+                    <div>
+                      <label className="block text-[10px] text-gray-500 mb-1 uppercase tracking-wider">Strip Shape</label>
+                      <div className="flex gap-1">
+                        {["FULL", "PILL", "NONE"].map((s) => (
+                          <button key={s} onClick={() => updateEditingField("stripShape", s)} className={`flex-1 py-1.5 rounded-lg text-xs font-medium transition-all ${(editingTemplate.stripShape || "FULL") === s ? "bg-violet-500/20 text-violet-300 border border-violet-500/30" : "bg-white/5 text-gray-500 border border-white/5 hover:text-white"}`}>
+                            {s}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    {/* Background Color */}
+                    <div>
+                      <label className="block text-[10px] text-gray-500 mb-1 uppercase tracking-wider">Background</label>
+                      <div className="flex items-center gap-2">
+                        <input type="color" value={editingTemplate.bgStripColor || "#000000"} onChange={(e) => updateEditingField("bgStripColor", e.target.value)} className="w-8 h-7 rounded border border-white/10 cursor-pointer bg-transparent" />
+                        <input type="text" value={editingTemplate.bgStripColor || "#000000"} onChange={(e) => updateEditingField("bgStripColor", e.target.value)} className="flex-1 px-2.5 py-1.5 rounded-lg bg-white/5 border border-white/10 text-white text-xs font-mono" />
+                      </div>
+                    </div>
+                    <div>
+                      <label className="block text-[10px] text-gray-500 mb-1 uppercase tracking-wider">Opacity: {Math.round((editingTemplate.bgStripOpacity ?? 1) * 100)}%</label>
+                      <input type="range" min={0} max={100} value={Math.round((editingTemplate.bgStripOpacity ?? 1) * 100)} onChange={(e) => updateEditingField("bgStripOpacity", Number(e.target.value) / 100)} className="w-full accent-violet-500" />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] text-gray-500 mb-1 uppercase tracking-wider">Corner Radius: {editingTemplate.borderRadius}px</label>
+                      <input type="range" min={0} max={40} value={editingTemplate.borderRadius ?? 12} onChange={(e) => updateEditingField("borderRadius", Number(e.target.value))} className="w-full accent-violet-500" />
+                    </div>
+                    {/* Gradient Strip */}
+                    <div className="rounded-xl border border-white/5 p-3 space-y-2">
+                      <label className="flex items-center gap-2 cursor-pointer">
+                        <input type="checkbox" checked={editingTemplate.stripGradientEnabled ?? false} onChange={(e) => updateEditingField("stripGradientEnabled", e.target.checked)} className="accent-violet-500" />
+                        <span className="text-xs text-white font-medium">Gradient Strip</span>
+                      </label>
+                      {editingTemplate.stripGradientEnabled && (
+                        <div className="space-y-2">
+                          <div>
+                            <label className="block text-[10px] text-gray-500 mb-1">Color 2</label>
+                            <div className="flex gap-1">
+                              <input type="color" value={editingTemplate.stripGradientColor2 || "#333333"} onChange={(e) => updateEditingField("stripGradientColor2", e.target.value)} className="w-7 h-7 rounded cursor-pointer bg-transparent" />
+                              <input type="text" value={editingTemplate.stripGradientColor2 || "#333333"} onChange={(e) => updateEditingField("stripGradientColor2", e.target.value)} className="flex-1 px-2 py-1 rounded-lg bg-white/5 border border-white/10 text-white text-xs font-mono" />
+                            </div>
+                          </div>
+                          <div>
+                            <label className="block text-[10px] text-gray-500 mb-1">Angle: {editingTemplate.stripGradientAngle}°</label>
+                            <input type="range" min={0} max={360} value={editingTemplate.stripGradientAngle ?? 90} onChange={(e) => updateEditingField("stripGradientAngle", Number(e.target.value))} className="w-full accent-violet-500" />
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                    {/* Backdrop Blur */}
+                    <div className="rounded-xl border border-white/5 p-3 space-y-2">
+                      <label className="flex items-center gap-2 cursor-pointer">
+                        <input type="checkbox" checked={editingTemplate.backdropBlurEnabled ?? false} onChange={(e) => updateEditingField("backdropBlurEnabled", e.target.checked)} className="accent-violet-500" />
+                        <span className="text-xs text-white font-medium">Backdrop Blur</span>
+                      </label>
+                      {editingTemplate.backdropBlurEnabled && (
+                        <div>
+                          <label className="block text-[10px] text-gray-500 mb-1">Radius: {editingTemplate.backdropBlurRadius}px</label>
+                          <input type="range" min={2} max={30} value={editingTemplate.backdropBlurRadius ?? 10} onChange={(e) => updateEditingField("backdropBlurRadius", Number(e.target.value))} className="w-full accent-violet-500" />
+                        </div>
+                      )}
+                    </div>
+                    {/* Strip Border */}
+                    <div className="rounded-xl border border-white/5 p-3 space-y-2">
+                      <label className="flex items-center gap-2 cursor-pointer">
+                        <input type="checkbox" checked={editingTemplate.stripBorderEnabled ?? false} onChange={(e) => updateEditingField("stripBorderEnabled", e.target.checked)} className="accent-violet-500" />
+                        <span className="text-xs text-white font-medium">Strip Border</span>
+                      </label>
+                      {editingTemplate.stripBorderEnabled && (
+                        <div className="flex gap-2">
+                          <div className="flex-1">
+                            <label className="block text-[10px] text-gray-500 mb-1">Color</label>
+                            <div className="flex gap-1">
+                              <input type="color" value={editingTemplate.stripBorderColor || "#FFFFFF"} onChange={(e) => updateEditingField("stripBorderColor", e.target.value)} className="w-7 h-7 rounded cursor-pointer bg-transparent" />
+                              <input type="text" value={editingTemplate.stripBorderColor || "#FFFFFF"} onChange={(e) => updateEditingField("stripBorderColor", e.target.value)} className="flex-1 px-2 py-1 rounded-lg bg-white/5 border border-white/10 text-white text-xs font-mono" />
+                            </div>
+                          </div>
+                          <div className="w-20">
+                            <label className="block text-[10px] text-gray-500 mb-1">Width: {editingTemplate.stripBorderWidth}px</label>
+                            <input type="range" min={1} max={5} value={editingTemplate.stripBorderWidth ?? 1} onChange={(e) => updateEditingField("stripBorderWidth", Number(e.target.value))} className="w-full accent-violet-500" />
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                    {/* Strip Shadow */}
+                    <div className="rounded-xl border border-white/5 p-3 space-y-2">
+                      <label className="flex items-center gap-2 cursor-pointer">
+                        <input type="checkbox" checked={editingTemplate.stripShadowEnabled ?? false} onChange={(e) => updateEditingField("stripShadowEnabled", e.target.checked)} className="accent-violet-500" />
+                        <span className="text-xs text-white font-medium">Strip Shadow</span>
+                      </label>
+                      {editingTemplate.stripShadowEnabled && (
+                        <div className="flex gap-2">
+                          <div className="flex-1">
+                            <label className="block text-[10px] text-gray-500 mb-1">Color</label>
+                            <div className="flex gap-1">
+                              <input type="color" value={editingTemplate.stripShadowColor || "#000000"} onChange={(e) => updateEditingField("stripShadowColor", e.target.value)} className="w-7 h-7 rounded cursor-pointer bg-transparent" />
+                              <input type="text" value={editingTemplate.stripShadowColor || "#000000"} onChange={(e) => updateEditingField("stripShadowColor", e.target.value)} className="flex-1 px-2 py-1 rounded-lg bg-white/5 border border-white/10 text-white text-xs font-mono" />
+                            </div>
+                          </div>
+                          <div className="w-20">
+                            <label className="block text-[10px] text-gray-500 mb-1">Offset: {editingTemplate.stripShadowOffset}px</label>
+                            <input type="range" min={1} max={12} value={editingTemplate.stripShadowOffset ?? 4} onChange={(e) => updateEditingField("stripShadowOffset", Number(e.target.value))} className="w-full accent-violet-500" />
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                    {/* Layout Controls */}
+                    <div className="border-t border-white/5 pt-4 space-y-3">
+                      <h4 className="text-[10px] text-gray-500 uppercase tracking-wider font-bold">Position & Spacing</h4>
+                      <div>
+                        <label className="block text-[10px] text-gray-500 mb-1">Y Position: {editingTemplate.positionYPercent}%</label>
+                        <input type="range" min={0} max={100} value={editingTemplate.positionYPercent ?? 5} onChange={(e) => updateEditingField("positionYPercent", Number(e.target.value))} className="w-full accent-violet-500" />
+                      </div>
+                      <div>
+                        <label className="block text-[10px] text-gray-500 mb-1">Horizontal Margin: {editingTemplate.marginX}px</label>
+                        <input type="range" min={0} max={200} value={editingTemplate.marginX ?? 0} onChange={(e) => updateEditingField("marginX", Number(e.target.value))} className="w-full accent-violet-500" />
+                      </div>
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <label className="block text-[10px] text-gray-500 mb-1">Padding Y: {editingTemplate.paddingY}px</label>
+                          <input type="range" min={0} max={60} value={editingTemplate.paddingY ?? 20} onChange={(e) => updateEditingField("paddingY", Number(e.target.value))} className="w-full accent-violet-500" />
+                        </div>
+                        <div>
+                          <label className="block text-[10px] text-gray-500 mb-1">Padding X: {editingTemplate.paddingX}px</label>
+                          <input type="range" min={0} max={60} value={editingTemplate.paddingX ?? 20} onChange={(e) => updateEditingField("paddingX", Number(e.target.value))} className="w-full accent-violet-500" />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* ═══ ANIMATION TAB ═══ */}
+                {designTab === "animation" && (
+                  <div className="space-y-4">
+                    <div>
+                      <label className="block text-[10px] text-gray-500 mb-1 uppercase tracking-wider">Entrance Type</label>
+                      <div className="grid grid-cols-4 gap-1.5">
+                        {["NONE", "FADE_IN", "SLIDE_UP", "SCALE_IN"].map((a) => (
+                          <button key={a} onClick={() => updateEditingField("animationType", a)} className={`py-2 rounded-lg text-[10px] font-medium transition-all border ${(editingTemplate.animationType || "NONE") === a ? "bg-amber-500/15 text-amber-300 border-amber-500/30" : "bg-white/5 text-gray-500 border-white/5 hover:text-white"}`}>
+                            {a.replace("_", " ")}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    {editingTemplate.animationType && editingTemplate.animationType !== "NONE" && (
+                      <div>
+                        <label className="block text-[10px] text-gray-500 mb-1 uppercase tracking-wider">Duration: {editingTemplate.animationDuration?.toFixed(1)}s</label>
+                        <input type="range" min={0.2} max={1.5} step={0.1} value={editingTemplate.animationDuration ?? 0.5} onChange={(e) => updateEditingField("animationDuration", Number(e.target.value))} className="w-full accent-amber-500" />
+                      </div>
+                    )}
+                    <p className="text-[10px] text-gray-600">
+                      Animation controls how the text hook appears when the video plays. The effect is applied during FFmpeg rendering.
+                    </p>
+                  </div>
+                )}
+              </div>
             </div>
           </div>
         </div>
-      </div>
+      ) : (
+        /* ═══ NORMAL INLINE CONTROLS (no template editing) ═══ */
+        <div className="grid grid-cols-1 lg:grid-cols-[340px_1fr] gap-6">
+          {/* Left: Live Preview (9:16 phone frame) */}
+          <div className="space-y-3">
+            <h2 className="text-sm font-semibold text-white flex items-center gap-2">
+              <Move className="w-4 h-4 text-cyan-400" />
+              Live Preview
+              <span className="text-gray-600 text-[10px] font-normal ml-1">Drag strip to position</span>
+            </h2>
+            <div
+              ref={previewContainerRef}
+              className="relative rounded-2xl overflow-hidden border-2 border-white/10 bg-black mx-auto select-none"
+              style={{
+                width: 300,
+                height: 300 * (OUTPUT_H / OUTPUT_W), // 9:16 aspect
+              }}
+            >
+              {/* Video Background */}
+              {videoObjectUrl ? (
+                <video
+                  src={videoObjectUrl}
+                  muted
+                  loop
+                  autoPlay
+                  playsInline
+                  className="absolute inset-0 w-full h-full object-cover"
+                />
+              ) : (
+                <div className="absolute inset-0 bg-gradient-to-b from-gray-800 to-gray-900 flex items-center justify-center">
+                  <span className="text-gray-700 text-xs">Upload video to preview</span>
+                </div>
+              )}
+
+              {/* Text Strip Overlay — Draggable */}
+              <div
+                onMouseDown={handlePreviewMouseDown}
+                className="absolute left-0 right-0 flex items-center justify-center"
+                style={{
+                  top: `${(stripGeometry.stripY / OUTPUT_H) * 100}%`,
+                  height: `${(stripGeometry.stripHeight / OUTPUT_H) * 100}%`,
+                  left: `${(stripGeometry.stripX / OUTPUT_W) * 100}%`,
+                  right: `${(stripGeometry.stripX / OUTPUT_W) * 100}%`,
+                  width: `${(stripGeometry.stripW / OUTPUT_W) * 100}%`,
+                  backgroundColor: bgStripColor,
+                  opacity: bgStripOpacity,
+                  cursor: isDragging ? "grabbing" : "grab",
+                  padding: `${Math.max(2, stripPaddingY * (300 / OUTPUT_W))}px ${Math.max(6, Math.max(stripPaddingY, 16) * (300 / OUTPUT_W))}px`,
+                  borderRadius: `${Math.max(0, borderRadius * (300 / OUTPUT_W))}px`,
+                  transition: isDragging ? "none" : "top 0.15s ease-out",
+                }}
+              >
+                <span
+                  className="text-center leading-tight"
+                  style={{
+                    color: fontColor,
+                    fontSize: Math.max(8, fontSize * (300 / OUTPUT_W)),
+                    fontWeight: "bold",
+                    letterSpacing: "0.3px",
+                    wordBreak: "break-word",
+                  }}
+                >
+                  {previewText}
+                </span>
+              </div>
+
+              {/* Drag indicator lines */}
+              {isDragging && (
+                <>
+                  <div className="absolute left-2 right-2 border-t border-cyan-500/50 border-dashed" style={{ top: `${(stripGeometry.stripY / OUTPUT_H) * 100}%` }} />
+                  <div className="absolute left-2 right-2 border-t border-cyan-500/50 border-dashed" style={{ top: `${((stripGeometry.stripY + stripGeometry.stripHeight) / OUTPUT_H) * 100}%` }} />
+                </>
+              )}
+
+              {/* Position indicator */}
+              <div className="absolute bottom-2 right-2 bg-black/70 text-gray-300 text-[9px] px-1.5 py-0.5 rounded font-mono">
+                Y: {positionYPercent}%
+              </div>
+            </div>
+
+            {/* Quick position buttons */}
+            <div className="flex gap-1.5">
+              {[
+                { label: "Top", value: 0 },
+                { label: "25%", value: 25 },
+                { label: "Center", value: 50 },
+                { label: "75%", value: 75 },
+                { label: "Bottom", value: 100 },
+              ].map((p) => (
+                <button
+                  key={p.value}
+                  onClick={() => setPositionYPercent(p.value)}
+                  className={`flex-1 py-1.5 rounded-lg text-[10px] font-medium transition-all border ${
+                    positionYPercent === p.value
+                      ? "bg-cyan-500/15 text-cyan-300 border-cyan-500/30"
+                      : "bg-white/5 text-gray-600 border-white/5 hover:border-white/10 hover:text-gray-400"
+                  }`}
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Right: Controls */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+            {/* Text Controls */}
+            <div className="rounded-2xl border border-white/5 bg-[#111118] p-5 space-y-4">
+              <h2 className="text-sm font-semibold text-white flex items-center gap-2">
+                <Palette className="w-4 h-4 text-cyan-400" />
+                Text
+              </h2>
+
+              {/* Font Family */}
+              <div>
+                <label className="block text-[10px] text-gray-500 mb-1 uppercase tracking-wider">Font</label>
+                <select
+                  value={fontFamily}
+                  onChange={(e) => setFontFamily(e.target.value)}
+                  className="w-full px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white text-sm focus:outline-none focus:border-cyan-500/50"
+                >
+                  {FONT_OPTIONS.map((f) => (<option key={f} value={f}>{f}</option>))}
+                </select>
+              </div>
+
+              {/* Font Size */}
+              <div>
+                <label className="block text-[10px] text-gray-500 mb-1 uppercase tracking-wider">Size: {fontSize}px</label>
+                <input type="range" min={18} max={72} value={fontSize} onChange={(e) => setFontSize(Number(e.target.value))} className="w-full accent-cyan-500" />
+              </div>
+
+              {/* Font Color */}
+              <div>
+                <label className="block text-[10px] text-gray-500 mb-1 uppercase tracking-wider">Color</label>
+                <div className="flex items-center gap-2">
+                  <input type="color" value={fontColor} onChange={(e) => setFontColor(e.target.value)} className="w-8 h-7 rounded border border-white/10 cursor-pointer bg-transparent" />
+                  <input type="text" value={fontColor} onChange={(e) => setFontColor(e.target.value)} className="flex-1 px-2.5 py-1.5 rounded-lg bg-white/5 border border-white/10 text-white text-xs font-mono" />
+                </div>
+              </div>
+
+              {/* Text Case */}
+              <div>
+                <label className="block text-[10px] text-gray-500 mb-1 uppercase tracking-wider">Case</label>
+                <div className="grid grid-cols-4 gap-1.5">
+                  {TEXT_CASE_OPTIONS.map((opt) => (
+                    <button
+                      key={opt.value}
+                      onClick={() => setTextCase(opt.value)}
+                      className={`px-2 py-1.5 rounded-lg text-[10px] font-medium transition-all border ${
+                        textCase === opt.value
+                          ? "bg-cyan-500/15 text-cyan-300 border-cyan-500/30"
+                          : "bg-white/5 text-gray-500 border-white/5 hover:border-white/10"
+                      }`}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            {/* Strip & Position Controls */}
+            <div className="rounded-2xl border border-white/5 bg-[#111118] p-5 space-y-4">
+              <h2 className="text-sm font-semibold text-white flex items-center gap-2">
+                <Move className="w-4 h-4 text-cyan-400" />
+                Strip & Position
+              </h2>
+
+              {/* Background Color */}
+              <div>
+                <label className="block text-[10px] text-gray-500 mb-1 uppercase tracking-wider">Background</label>
+                <div className="flex items-center gap-2">
+                  <input type="color" value={bgStripColor} onChange={(e) => setBgStripColor(e.target.value)} className="w-8 h-7 rounded border border-white/10 cursor-pointer bg-transparent" />
+                  <input type="text" value={bgStripColor} onChange={(e) => setBgStripColor(e.target.value)} className="flex-1 px-2.5 py-1.5 rounded-lg bg-white/5 border border-white/10 text-white text-xs font-mono" />
+                </div>
+              </div>
+
+              {/* Opacity */}
+              <div>
+                <label className="block text-[10px] text-gray-500 mb-1 uppercase tracking-wider">Opacity: {Math.round(bgStripOpacity * 100)}%</label>
+                <input type="range" min={0} max={100} value={Math.round(bgStripOpacity * 100)} onChange={(e) => setBgStripOpacity(Number(e.target.value) / 100)} className="w-full accent-cyan-500" />
+              </div>
+
+              {/* Vertical Position */}
+              <div>
+                <label className="block text-[10px] text-gray-500 mb-1 uppercase tracking-wider">Y Position: {positionYPercent}%</label>
+                <input type="range" min={0} max={100} value={positionYPercent} onChange={(e) => setPositionYPercent(Number(e.target.value))} className="w-full accent-cyan-500" />
+              </div>
+
+              {/* Horizontal Margin */}
+              <div>
+                <label className="block text-[10px] text-gray-500 mb-1 uppercase tracking-wider">Horizontal Margin: {marginX}px</label>
+                <input type="range" min={0} max={200} value={marginX} onChange={(e) => setMarginX(Number(e.target.value))} className="w-full accent-cyan-500" />
+              </div>
+
+              {/* Inner Padding */}
+              <div>
+                <label className="block text-[10px] text-gray-500 mb-1 uppercase tracking-wider">Inner Padding: {stripPaddingY}px</label>
+                <input type="range" min={0} max={60} value={stripPaddingY} onChange={(e) => setStripPaddingY(Number(e.target.value))} className="w-full accent-cyan-500" />
+              </div>
+
+              {/* Border Radius */}
+              <div>
+                <label className="block text-[10px] text-gray-500 mb-1 uppercase tracking-wider">Corner Radius: {borderRadius}px</label>
+                <input type="range" min={0} max={40} value={borderRadius} onChange={(e) => setBorderRadius(Number(e.target.value))} className="w-full accent-cyan-500" />
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Create Button */}
       <button
@@ -1183,7 +1829,7 @@ export default function MultiplierPage() {
         {uploading ? (
           <><Loader2 className="w-4 h-4 animate-spin" /> Uploading...</>
         ) : (
-          <><Layers className="w-4 h-4" /> Create Batch {parsedHooks.length > 0 && `(${parsedHooks.length} videos`}{selectedTemplateIds.length > 0 ? `, ${selectedTemplateIds.length} design${selectedTemplateIds.length > 1 ? "s" : ""})` : parsedHooks.length > 0 ? ")" : ""}</>
+          <><Layers className="w-4 h-4" /> Create Batch {parsedHooks.length > 0 && (selectedTemplateIds.length > 1 ? `(${parsedHooks.length * selectedTemplateIds.length} videos = ${parsedHooks.length} hooks × ${selectedTemplateIds.length} designs)` : `(${parsedHooks.length} video${parsedHooks.length > 1 ? "s" : ""})`)}</>
         )}
       </button>
 
@@ -1379,298 +2025,6 @@ export default function MultiplierPage() {
           </div>
         </div>
       )}
-
-      {/* ─── Design Template Editor Modal ──────────────────────────────────── */}
-      {showTemplateEditor && editingTemplate && (
-        <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/80 backdrop-blur-sm overflow-y-auto py-8" onClick={() => setShowTemplateEditor(false)}>
-          <div className="bg-[#16161f] rounded-2xl border border-white/10 p-6 max-w-3xl w-full mx-4 shadow-2xl space-y-5" onClick={(e) => e.stopPropagation()}>
-            {/* Header */}
-            <div className="flex items-center justify-between">
-              <h3 className="text-white text-base font-semibold flex items-center gap-2">
-                <Palette className="w-5 h-5 text-violet-400" />
-                {editingTemplate.id ? "Edit Design Template" : "Create Design Template"}
-              </h3>
-              <button onClick={() => setShowTemplateEditor(false)} className="text-gray-500 hover:text-white"><X className="w-5 h-5" /></button>
-            </div>
-
-            {/* Template Name */}
-            <input
-              type="text"
-              placeholder="Template name (e.g. Neon Pink, Clean White, Bold Shadow)"
-              value={editingTemplate.name || ""}
-              onChange={(e) => updateEditingField("name", e.target.value)}
-              className="w-full px-4 py-2.5 rounded-xl bg-white/5 border border-white/10 text-white text-sm focus:outline-none focus:border-violet-500/50"
-            />
-
-            {/* Live Preview */}
-            <div className="rounded-xl overflow-hidden" style={{ background: "linear-gradient(135deg, #1a1a2e 0%, #0d0d15 100%)" }}>
-              <div className="flex items-center justify-center py-8 px-4">
-                <div style={{
-                  backgroundColor: `${editingTemplate.bgStripColor || "#000"}${Math.round((editingTemplate.bgStripOpacity ?? 1) * 255).toString(16).padStart(2, "0")}`,
-                  borderRadius: `${editingTemplate.borderRadius ?? 12}px`,
-                  padding: `${editingTemplate.paddingY ?? 20}px ${editingTemplate.paddingX ?? 20}px`,
-                  ...(editingTemplate.stripBorderEnabled ? { border: `${editingTemplate.stripBorderWidth}px solid ${editingTemplate.stripBorderColor}` } : {}),
-                  ...(editingTemplate.stripShadowEnabled ? { boxShadow: `${editingTemplate.stripShadowOffset}px ${editingTemplate.stripShadowOffset}px 12px ${editingTemplate.stripShadowColor}` } : {}),
-                }}>
-                  <span style={{
-                    fontFamily: (editingTemplate.fontFamily || "Outfit-Bold").includes("Outfit") ? "Outfit, sans-serif" : "sans-serif",
-                    fontSize: `${Math.min(editingTemplate.fontSize ?? 42, 60)}px`,
-                    color: editingTemplate.fontColor || "#FFFFFF",
-                    textTransform: editingTemplate.textCase === "UPPERCASE" ? "uppercase" : editingTemplate.textCase === "LOWERCASE" ? "lowercase" : "none",
-                    letterSpacing: `${((editingTemplate.letterSpacing ?? 1) - 1) * 6}px`,
-                    lineHeight: editingTemplate.lineHeight ?? 1.4,
-                    ...(editingTemplate.strokeEnabled ? { WebkitTextStroke: `${editingTemplate.strokeWidth}px ${editingTemplate.strokeColor}` } : {}),
-                    ...(editingTemplate.glowEnabled ? { textShadow: `0 0 ${(editingTemplate.glowIntensity ?? 2) * 6}px ${editingTemplate.glowColor}, 0 0 ${(editingTemplate.glowIntensity ?? 2) * 12}px ${editingTemplate.glowColor}` } : editingTemplate.shadowEnabled ? { textShadow: `${editingTemplate.shadowX}px ${editingTemplate.shadowY}px 3px ${editingTemplate.shadowColor}` } : {}),
-                  }}>
-                    Sample Hook Text
-                  </span>
-                </div>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-              {/* ── Typography ─────────────────── */}
-              <div className="space-y-3">
-                <h4 className="text-xs font-bold text-gray-400 uppercase tracking-wider">Typography</h4>
-                <div>
-                  <label className="block text-[10px] text-gray-500 mb-1">Font</label>
-                  <select value={editingTemplate.fontFamily || "Outfit-Bold"} onChange={(e) => updateEditingField("fontFamily", e.target.value)} className="w-full px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-white text-xs">
-                    {FONT_OPTIONS.map((f) => <option key={f} value={f} className="bg-[#111]">{f}</option>)}
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-[10px] text-gray-500 mb-1">Size: {editingTemplate.fontSize}px</label>
-                  <input type="range" min={16} max={120} value={editingTemplate.fontSize ?? 42} onChange={(e) => updateEditingField("fontSize", Number(e.target.value))} className="w-full accent-violet-500" />
-                </div>
-                <div className="flex gap-2">
-                  <div className="flex-1">
-                    <label className="block text-[10px] text-gray-500 mb-1">Color</label>
-                    <div className="flex gap-1.5">
-                      <input type="color" value={editingTemplate.fontColor || "#FFFFFF"} onChange={(e) => updateEditingField("fontColor", e.target.value)} className="w-8 h-8 rounded cursor-pointer bg-transparent" />
-                      <input type="text" value={editingTemplate.fontColor || "#FFFFFF"} onChange={(e) => updateEditingField("fontColor", e.target.value)} className="flex-1 px-2 py-1 rounded-lg bg-white/5 border border-white/10 text-white text-xs font-mono" />
-                    </div>
-                  </div>
-                  <div className="flex-1">
-                    <label className="block text-[10px] text-gray-500 mb-1">Case</label>
-                    <select value={editingTemplate.textCase || "UPPERCASE"} onChange={(e) => updateEditingField("textCase", e.target.value)} className="w-full px-2 py-1.5 rounded-lg bg-white/5 border border-white/10 text-white text-xs">
-                      {["UPPERCASE", "LOWERCASE", "CAPITALIZE", "NONE"].map((c) => <option key={c} value={c} className="bg-[#111]">{c}</option>)}
-                    </select>
-                  </div>
-                </div>
-                <div className="flex gap-2">
-                  <div className="flex-1">
-                    <label className="block text-[10px] text-gray-500 mb-1">Letter Spacing: {editingTemplate.letterSpacing?.toFixed(1)}×</label>
-                    <input type="range" min={0.5} max={2} step={0.1} value={editingTemplate.letterSpacing ?? 1} onChange={(e) => updateEditingField("letterSpacing", Number(e.target.value))} className="w-full accent-violet-500" />
-                  </div>
-                  <div className="flex-1">
-                    <label className="block text-[10px] text-gray-500 mb-1">Line Height: {editingTemplate.lineHeight?.toFixed(1)}×</label>
-                    <input type="range" min={1.0} max={2.5} step={0.1} value={editingTemplate.lineHeight ?? 1.4} onChange={(e) => updateEditingField("lineHeight", Number(e.target.value))} className="w-full accent-violet-500" />
-                  </div>
-                </div>
-                <div>
-                  <label className="block text-[10px] text-gray-500 mb-1">Alignment</label>
-                  <div className="flex gap-1">
-                    {["LEFT", "CENTER", "RIGHT"].map((a) => (
-                      <button key={a} onClick={() => updateEditingField("textAlign", a)} className={`flex-1 py-1.5 rounded-lg text-xs font-medium transition-all ${editingTemplate.textAlign === a ? "bg-violet-500/20 text-violet-300 border border-violet-500/30" : "bg-white/5 text-gray-500 border border-white/5 hover:text-white"}`}>
-                        {a}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              </div>
-
-              {/* ── Text Effects ───────────────── */}
-              <div className="space-y-3">
-                <h4 className="text-xs font-bold text-gray-400 uppercase tracking-wider">Text Effects</h4>
-
-                {/* Stroke */}
-                <div className="rounded-xl border border-white/5 p-3 space-y-2">
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input type="checkbox" checked={editingTemplate.strokeEnabled ?? false} onChange={(e) => updateEditingField("strokeEnabled", e.target.checked)} className="accent-violet-500" />
-                    <span className="text-xs text-white font-medium">Text Stroke / Outline</span>
-                  </label>
-                  {editingTemplate.strokeEnabled && (
-                    <div className="flex gap-2">
-                      <div className="flex-1">
-                        <label className="block text-[10px] text-gray-500 mb-1">Color</label>
-                        <div className="flex gap-1">
-                          <input type="color" value={editingTemplate.strokeColor || "#000000"} onChange={(e) => updateEditingField("strokeColor", e.target.value)} className="w-7 h-7 rounded cursor-pointer bg-transparent" />
-                          <input type="text" value={editingTemplate.strokeColor || "#000000"} onChange={(e) => updateEditingField("strokeColor", e.target.value)} className="flex-1 px-2 py-1 rounded-lg bg-white/5 border border-white/10 text-white text-xs font-mono" />
-                        </div>
-                      </div>
-                      <div className="w-20">
-                        <label className="block text-[10px] text-gray-500 mb-1">Width: {editingTemplate.strokeWidth}px</label>
-                        <input type="range" min={1} max={8} value={editingTemplate.strokeWidth ?? 2} onChange={(e) => updateEditingField("strokeWidth", Number(e.target.value))} className="w-full accent-violet-500" />
-                      </div>
-                    </div>
-                  )}
-                </div>
-
-                {/* Shadow */}
-                <div className="rounded-xl border border-white/5 p-3 space-y-2">
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input type="checkbox" checked={editingTemplate.shadowEnabled ?? false} onChange={(e) => updateEditingField("shadowEnabled", e.target.checked)} className="accent-violet-500" />
-                    <span className="text-xs text-white font-medium">Drop Shadow</span>
-                  </label>
-                  {editingTemplate.shadowEnabled && (
-                    <div className="space-y-2">
-                      <div>
-                        <label className="block text-[10px] text-gray-500 mb-1">Color</label>
-                        <div className="flex gap-1">
-                          <input type="color" value={editingTemplate.shadowColor || "#000000"} onChange={(e) => updateEditingField("shadowColor", e.target.value)} className="w-7 h-7 rounded cursor-pointer bg-transparent" />
-                          <input type="text" value={editingTemplate.shadowColor || "#000000"} onChange={(e) => updateEditingField("shadowColor", e.target.value)} className="flex-1 px-2 py-1 rounded-lg bg-white/5 border border-white/10 text-white text-xs font-mono" />
-                        </div>
-                      </div>
-                      <div className="flex gap-2">
-                        <div className="flex-1">
-                          <label className="block text-[10px] text-gray-500 mb-1">X: {editingTemplate.shadowX}px</label>
-                          <input type="range" min={0} max={10} value={editingTemplate.shadowX ?? 2} onChange={(e) => updateEditingField("shadowX", Number(e.target.value))} className="w-full accent-violet-500" />
-                        </div>
-                        <div className="flex-1">
-                          <label className="block text-[10px] text-gray-500 mb-1">Y: {editingTemplate.shadowY}px</label>
-                          <input type="range" min={0} max={10} value={editingTemplate.shadowY ?? 2} onChange={(e) => updateEditingField("shadowY", Number(e.target.value))} className="w-full accent-violet-500" />
-                        </div>
-                      </div>
-                    </div>
-                  )}
-                </div>
-
-                {/* Neon Glow */}
-                <div className="rounded-xl border border-white/5 p-3 space-y-2">
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input type="checkbox" checked={editingTemplate.glowEnabled ?? false} onChange={(e) => updateEditingField("glowEnabled", e.target.checked)} className="accent-violet-500" />
-                    <span className="text-xs text-white font-medium">Neon Glow</span>
-                  </label>
-                  {editingTemplate.glowEnabled && (
-                    <div className="flex gap-2">
-                      <div className="flex-1">
-                        <label className="block text-[10px] text-gray-500 mb-1">Color</label>
-                        <div className="flex gap-1">
-                          <input type="color" value={editingTemplate.glowColor || "#FF00FF"} onChange={(e) => updateEditingField("glowColor", e.target.value)} className="w-7 h-7 rounded cursor-pointer bg-transparent" />
-                          <input type="text" value={editingTemplate.glowColor || "#FF00FF"} onChange={(e) => updateEditingField("glowColor", e.target.value)} className="flex-1 px-2 py-1 rounded-lg bg-white/5 border border-white/10 text-white text-xs font-mono" />
-                        </div>
-                      </div>
-                      <div className="w-24">
-                        <label className="block text-[10px] text-gray-500 mb-1">Intensity: {editingTemplate.glowIntensity}</label>
-                        <input type="range" min={1} max={5} value={editingTemplate.glowIntensity ?? 2} onChange={(e) => updateEditingField("glowIntensity", Number(e.target.value))} className="w-full accent-violet-500" />
-                      </div>
-                    </div>
-                  )}
-                </div>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-              {/* ── Background Strip ───────────── */}
-              <div className="space-y-3">
-                <h4 className="text-xs font-bold text-gray-400 uppercase tracking-wider">Background Strip</h4>
-                <div className="flex gap-2">
-                  <div className="flex-1">
-                    <label className="block text-[10px] text-gray-500 mb-1">Color</label>
-                    <div className="flex gap-1">
-                      <input type="color" value={editingTemplate.bgStripColor || "#000000"} onChange={(e) => updateEditingField("bgStripColor", e.target.value)} className="w-7 h-7 rounded cursor-pointer bg-transparent" />
-                      <input type="text" value={editingTemplate.bgStripColor || "#000000"} onChange={(e) => updateEditingField("bgStripColor", e.target.value)} className="flex-1 px-2 py-1 rounded-lg bg-white/5 border border-white/10 text-white text-xs font-mono" />
-                    </div>
-                  </div>
-                  <div className="w-28">
-                    <label className="block text-[10px] text-gray-500 mb-1">Opacity: {Math.round((editingTemplate.bgStripOpacity ?? 1) * 100)}%</label>
-                    <input type="range" min={0} max={100} value={Math.round((editingTemplate.bgStripOpacity ?? 1) * 100)} onChange={(e) => updateEditingField("bgStripOpacity", Number(e.target.value) / 100)} className="w-full accent-violet-500" />
-                  </div>
-                </div>
-                <div>
-                  <label className="block text-[10px] text-gray-500 mb-1">Corner Radius: {editingTemplate.borderRadius}px</label>
-                  <input type="range" min={0} max={40} value={editingTemplate.borderRadius ?? 12} onChange={(e) => updateEditingField("borderRadius", Number(e.target.value))} className="w-full accent-violet-500" />
-                </div>
-
-                {/* Strip Border */}
-                <div className="rounded-xl border border-white/5 p-3 space-y-2">
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input type="checkbox" checked={editingTemplate.stripBorderEnabled ?? false} onChange={(e) => updateEditingField("stripBorderEnabled", e.target.checked)} className="accent-violet-500" />
-                    <span className="text-xs text-white font-medium">Strip Border</span>
-                  </label>
-                  {editingTemplate.stripBorderEnabled && (
-                    <div className="flex gap-2">
-                      <div className="flex-1">
-                        <label className="block text-[10px] text-gray-500 mb-1">Color</label>
-                        <div className="flex gap-1">
-                          <input type="color" value={editingTemplate.stripBorderColor || "#FFFFFF"} onChange={(e) => updateEditingField("stripBorderColor", e.target.value)} className="w-7 h-7 rounded cursor-pointer bg-transparent" />
-                          <input type="text" value={editingTemplate.stripBorderColor || "#FFFFFF"} onChange={(e) => updateEditingField("stripBorderColor", e.target.value)} className="flex-1 px-2 py-1 rounded-lg bg-white/5 border border-white/10 text-white text-xs font-mono" />
-                        </div>
-                      </div>
-                      <div className="w-20">
-                        <label className="block text-[10px] text-gray-500 mb-1">Width: {editingTemplate.stripBorderWidth}px</label>
-                        <input type="range" min={1} max={5} value={editingTemplate.stripBorderWidth ?? 1} onChange={(e) => updateEditingField("stripBorderWidth", Number(e.target.value))} className="w-full accent-violet-500" />
-                      </div>
-                    </div>
-                  )}
-                </div>
-
-                {/* Strip Shadow */}
-                <div className="rounded-xl border border-white/5 p-3 space-y-2">
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input type="checkbox" checked={editingTemplate.stripShadowEnabled ?? false} onChange={(e) => updateEditingField("stripShadowEnabled", e.target.checked)} className="accent-violet-500" />
-                    <span className="text-xs text-white font-medium">Strip Shadow</span>
-                  </label>
-                  {editingTemplate.stripShadowEnabled && (
-                    <div className="flex gap-2">
-                      <div className="flex-1">
-                        <label className="block text-[10px] text-gray-500 mb-1">Color</label>
-                        <div className="flex gap-1">
-                          <input type="color" value={editingTemplate.stripShadowColor || "#000000"} onChange={(e) => updateEditingField("stripShadowColor", e.target.value)} className="w-7 h-7 rounded cursor-pointer bg-transparent" />
-                          <input type="text" value={editingTemplate.stripShadowColor || "#000000"} onChange={(e) => updateEditingField("stripShadowColor", e.target.value)} className="flex-1 px-2 py-1 rounded-lg bg-white/5 border border-white/10 text-white text-xs font-mono" />
-                        </div>
-                      </div>
-                      <div className="w-20">
-                        <label className="block text-[10px] text-gray-500 mb-1">Offset: {editingTemplate.stripShadowOffset}px</label>
-                        <input type="range" min={1} max={12} value={editingTemplate.stripShadowOffset ?? 4} onChange={(e) => updateEditingField("stripShadowOffset", Number(e.target.value))} className="w-full accent-violet-500" />
-                      </div>
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              {/* ── Layout ─────────────────────── */}
-              <div className="space-y-3">
-                <h4 className="text-xs font-bold text-gray-400 uppercase tracking-wider">Layout</h4>
-                <div>
-                  <label className="block text-[10px] text-gray-500 mb-1">Y Position: {editingTemplate.positionYPercent}%</label>
-                  <input type="range" min={0} max={100} value={editingTemplate.positionYPercent ?? 5} onChange={(e) => updateEditingField("positionYPercent", Number(e.target.value))} className="w-full accent-violet-500" />
-                </div>
-                <div>
-                  <label className="block text-[10px] text-gray-500 mb-1">Horizontal Margin: {editingTemplate.marginX}px</label>
-                  <input type="range" min={0} max={200} value={editingTemplate.marginX ?? 0} onChange={(e) => updateEditingField("marginX", Number(e.target.value))} className="w-full accent-violet-500" />
-                </div>
-                <div className="flex gap-2">
-                  <div className="flex-1">
-                    <label className="block text-[10px] text-gray-500 mb-1">Padding Y: {editingTemplate.paddingY}px</label>
-                    <input type="range" min={0} max={60} value={editingTemplate.paddingY ?? 20} onChange={(e) => updateEditingField("paddingY", Number(e.target.value))} className="w-full accent-violet-500" />
-                  </div>
-                  <div className="flex-1">
-                    <label className="block text-[10px] text-gray-500 mb-1">Padding X: {editingTemplate.paddingX}px</label>
-                    <input type="range" min={0} max={60} value={editingTemplate.paddingX ?? 20} onChange={(e) => updateEditingField("paddingX", Number(e.target.value))} className="w-full accent-violet-500" />
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* Save Button */}
-            <div className="flex justify-end gap-3 pt-2">
-              <button onClick={() => setShowTemplateEditor(false)} className="px-4 py-2 rounded-lg text-gray-500 text-sm hover:text-white transition-all">
-                Cancel
-              </button>
-              <button
-                onClick={handleSaveTemplate}
-                disabled={savingTemplate}
-                className="px-6 py-2 rounded-lg bg-gradient-to-r from-violet-500 to-purple-600 text-white text-sm font-medium hover:from-violet-400 hover:to-purple-500 transition-all disabled:opacity-50 flex items-center gap-2"
-              >
-                {savingTemplate ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
-                Save Template
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
       {/* ─── Folder Picker Modal ──────────────────────────────────────────── */}
       {showFolderPicker && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm" onClick={() => setShowFolderPicker(null)}>

@@ -767,6 +767,37 @@ model MultiplierTemplate {
   paddingX         Int      @default(20)
   textAlign        String   @default("CENTER")
 
+  // ── Advanced: Gradient Strip Background ──
+  stripGradientEnabled  Boolean  @default(false)
+  stripGradientColor2   String   @default("#333333")
+  stripGradientAngle    Int      @default(90)       // 0=top→bottom, 90=left→right
+
+  // ── Advanced: Strip Shape Mode ──
+  stripShape            String   @default("FULL")   // FULL | PILL | NONE
+
+  // ── Advanced: Entrance Animation ──
+  animationType         String   @default("NONE")   // NONE | FADE_IN | SLIDE_UP | SCALE_IN
+  animationDuration     Float    @default(0.5)
+
+  // ── Advanced: Backdrop Blur (behind strip) ──
+  backdropBlurEnabled   Boolean  @default(false)
+  backdropBlurRadius    Int      @default(10)
+
+  // ── Advanced: Text Gradient (multi-color text via SVG) ──
+  textGradientEnabled   Boolean  @default(false)
+  textGradientColor1    String   @default("#FFFFFF")
+  textGradientColor2    String   @default("#00FFFF")
+  textGradientAngle     Int      @default(180)
+
+  // ── Advanced: Double Text (outline + fill layering) ──
+  doubleTextEnabled     Boolean  @default(false)
+  doubleTextOutlineColor String  @default("#000000")
+  doubleTextOutlineWidth Int     @default(4)
+
+  // ── Preset Origin ──
+  isPreset              Boolean  @default(false)
+  presetCategory        String?
+
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 }

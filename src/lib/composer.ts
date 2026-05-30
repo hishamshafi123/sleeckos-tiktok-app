@@ -836,7 +836,7 @@ export interface MultiplierComposeOptions {
   borderRadius: number;
   outputPath: string;
 
-  // New design template fields
+  // Design template fields
   paddingX?: number;
   textAlign?: "LEFT" | "CENTER" | "RIGHT";
   lineHeight?: number;
@@ -863,6 +863,33 @@ export interface MultiplierComposeOptions {
   stripShadowEnabled?: boolean;
   stripShadowColor?: string;
   stripShadowOffset?: number;
+
+  // ── Advanced: Gradient Strip ──
+  stripGradientEnabled?: boolean;
+  stripGradientColor2?: string;
+  stripGradientAngle?: number;
+
+  // ── Advanced: Strip Shape ──
+  stripShape?: string; // FULL | PILL | NONE
+
+  // ── Advanced: Entrance Animation ──
+  animationType?: string; // NONE | FADE_IN | SLIDE_UP | SCALE_IN
+  animationDuration?: number;
+
+  // ── Advanced: Backdrop Blur ──
+  backdropBlurEnabled?: boolean;
+  backdropBlurRadius?: number;
+
+  // ── Advanced: Text Gradient ──
+  textGradientEnabled?: boolean;
+  textGradientColor1?: string;
+  textGradientColor2?: string;
+  textGradientAngle?: number;
+
+  // ── Advanced: Double Text (outline + fill) ──
+  doubleTextEnabled?: boolean;
+  doubleTextOutlineColor?: string;
+  doubleTextOutlineWidth?: number;
 }
 
 export async function composeMultiplierVideo(options: MultiplierComposeOptions): Promise<string> {
@@ -876,6 +903,12 @@ export async function composeMultiplierVideo(options: MultiplierComposeOptions):
     glowEnabled = false, glowColor = "#FF00FF", glowIntensity = 2,
     stripBorderEnabled = false, stripBorderColor = "#FFFFFF", stripBorderWidth = 1,
     stripShadowEnabled = false, stripShadowColor = "#000000", stripShadowOffset = 4,
+    // Advanced
+    stripGradientEnabled = false, stripGradientColor2 = "#333333", stripGradientAngle = 90,
+    stripShape = "FULL",
+    animationType = "NONE", animationDuration = 0.5,
+    backdropBlurEnabled = false, backdropBlurRadius = 10,
+    doubleTextEnabled = false, doubleTextOutlineColor = "#000000", doubleTextOutlineWidth = 4,
   } = options;
 
   const OUTPUT_W = 720;
@@ -957,24 +990,56 @@ export async function composeMultiplierVideo(options: MultiplierComposeOptions):
   let nextLabelIdx = 0;
   const getNextLabel = (isFinal: boolean) => isFinal ? "[v]" : `[s${nextLabelIdx++}]`;
 
+  // Determine if strip should be drawn at all
+  const drawStrip = stripShape !== "NONE" && bgAlpha > 0;
+
+  // For PILL shape, shrink strip width to fit text content + padding
+  let effectiveStripW = stripW;
+  let effectiveStripX = stripX;
+  if (stripShape === "PILL") {
+    // Estimate text width from longest line
+    const longestLine = lines.reduce((a, b) => a.length > b.length ? a : b, "");
+    const estTextW = Math.round(longestLine.length * fontSize * 0.62);
+    effectiveStripW = Math.min(stripW, estTextW + padX * 2 + 16);
+    effectiveStripX = Math.round((OUTPUT_W - effectiveStripW) / 2);
+  }
+
+  // ── Backdrop Blur (blurred region behind strip) ───────────────────────
+  if (backdropBlurEnabled && backdropBlurRadius > 0 && drawStrip) {
+    const blurR = Math.min(backdropBlurRadius, 30);
+    const outLabel = getNextLabel(false);
+    // Crop the strip region, blur it, and overlay it back at the same position
+    filterParts.push(
+      `${currentLabel}split[blur_base][blur_src]`
+    );
+    const blurLabel = getNextLabel(false);
+    filterParts.push(
+      `[blur_src]crop=${effectiveStripW}:${stripHeight}:${effectiveStripX}:${stripY},boxblur=${blurR}:${blurR}${blurLabel}`
+    );
+    filterParts.push(
+      `[blur_base]${blurLabel}overlay=x=${effectiveStripX}:y=${stripY}${outLabel}`
+    );
+    currentLabel = outLabel;
+  }
+
   // ── Strip Shadow (behind the main strip) ──────────────────────────────
-  if (stripShadowEnabled && stripShadowOffset > 0) {
+  if (drawStrip && stripShadowEnabled && stripShadowOffset > 0) {
     const shCol = stripShadowColor.startsWith("#") ? "0x" + stripShadowColor.slice(1) : stripShadowColor;
-    const shX = stripX + stripShadowOffset;
+    const shX = effectiveStripX + stripShadowOffset;
     const shY = stripY + stripShadowOffset;
     const outLabel = getNextLabel(false);
     filterParts.push(
-      `${currentLabel}drawbox=x=${shX}:y=${shY}:w=${stripW}:h=${stripHeight}:color=${shCol}@0.4:t=fill${outLabel}`
+      `${currentLabel}drawbox=x=${shX}:y=${shY}:w=${effectiveStripW}:h=${stripHeight}:color=${shCol}@0.4:t=fill${outLabel}`
     );
     currentLabel = outLabel;
   }
 
   // ── Strip Border (slightly larger box behind the strip) ────────────────
-  if (stripBorderEnabled && stripBorderWidth > 0) {
+  if (drawStrip && stripBorderEnabled && stripBorderWidth > 0) {
     const brdCol = stripBorderColor.startsWith("#") ? "0x" + stripBorderColor.slice(1) : stripBorderColor;
-    const brdX = stripX - stripBorderWidth;
+    const brdX = effectiveStripX - stripBorderWidth;
     const brdY = stripY - stripBorderWidth;
-    const brdW = stripW + stripBorderWidth * 2;
+    const brdW = effectiveStripW + stripBorderWidth * 2;
     const brdH = stripHeight + stripBorderWidth * 2;
     const outLabel = getNextLabel(false);
     filterParts.push(
@@ -984,25 +1049,86 @@ export async function composeMultiplierVideo(options: MultiplierComposeOptions):
   }
 
   // ── Background Strip ──────────────────────────────────────────────────
-  if (R > 0) {
-    // Rounded rect via geq overlay
-    const rrectLabel = getNextLabel(false);
-    filterParts.push(
-      `color=c=0x${bgHex.padEnd(6, "0")}:s=${stripW}x${stripHeight}:d=1,format=yuva420p,geq=r='${cR}':g='${cG}':b='${cB}':a='if(gt(hypot(max(0,${R}-min(X,W-1-X)),max(0,${R}-min(Y,H-1-Y))),${R}),0,${alphaVal})'[rrect]`
-    );
-    const bgLabel = getNextLabel(false);
-    filterParts.push(
-      `${currentLabel}[rrect]overlay=x=${stripX}:y=${stripY}:eof_action=repeat${bgLabel}`
-    );
-    currentLabel = bgLabel;
-  } else {
-    // Simple drawbox
-    const bgColorFfmpeg = bgStripColor.startsWith("#") ? "0x" + bgStripColor.slice(1) : bgStripColor;
-    const bgLabel = getNextLabel(false);
-    filterParts.push(
-      `${currentLabel}drawbox=x=${stripX}:y=${stripY}:w=${stripW}:h=${stripHeight}:color=${bgColorFfmpeg}@${bgAlpha}:t=fill${bgLabel}`
-    );
-    currentLabel = bgLabel;
+  if (drawStrip) {
+    const effectiveR = stripShape === "PILL"
+      ? Math.max(R, Math.floor(stripHeight / 2)) // Force maximum rounding for pill
+      : R;
+
+    if (stripGradientEnabled) {
+      // Gradient strip: interpolate between two colors using geq
+      const hex2 = (stripGradientColor2 || "#333333").startsWith("#") ? (stripGradientColor2 || "#333333").slice(1) : (stripGradientColor2 || "#333333");
+      const c2R = parseInt(hex2.substring(0, 2), 16) || 0;
+      const c2G = parseInt(hex2.substring(2, 4), 16) || 0;
+      const c2B = parseInt(hex2.substring(4, 6), 16) || 0;
+
+      // Horizontal gradient (angle=90 default): interpolate using X/W
+      // Vertical gradient (angle=0/180): interpolate using Y/H
+      const isVertical = stripGradientAngle === 0 || stripGradientAngle === 180;
+      const gradAxis = isVertical ? "Y" : "X";
+      const gradSize = isVertical ? "H" : "W";
+      const gradR = `'${cR}+(${c2R}-${cR})*${gradAxis}/${gradSize}'`;
+      const gradG = `'${cG}+(${c2G}-${cG})*${gradAxis}/${gradSize}'`;
+      const gradB = `'${cB}+(${c2B}-${cB})*${gradAxis}/${gradSize}'`;
+
+      if (effectiveR > 0) {
+        const rrectLabel = getNextLabel(false);
+        filterParts.push(
+          `color=c=0x${bgHex.padEnd(6, "0")}:s=${effectiveStripW}x${stripHeight}:d=1,format=yuva420p,geq=r=${gradR}:g=${gradG}:b=${gradB}:a='if(gt(hypot(max(0,${effectiveR}-min(X,W-1-X)),max(0,${effectiveR}-min(Y,H-1-Y))),${effectiveR}),0,${alphaVal})'[rrect]`
+        );
+        const bgLabel = getNextLabel(false);
+        filterParts.push(
+          `${currentLabel}[rrect]overlay=x=${effectiveStripX}:y=${stripY}:eof_action=repeat${bgLabel}`
+        );
+        currentLabel = bgLabel;
+      } else {
+        const rrectLabel = getNextLabel(false);
+        filterParts.push(
+          `color=c=0x${bgHex.padEnd(6, "0")}:s=${effectiveStripW}x${stripHeight}:d=1,format=yuva420p,geq=r=${gradR}:g=${gradG}:b=${gradB}:a='${alphaVal}'[rrect]`
+        );
+        const bgLabel = getNextLabel(false);
+        filterParts.push(
+          `${currentLabel}[rrect]overlay=x=${effectiveStripX}:y=${stripY}:eof_action=repeat${bgLabel}`
+        );
+        currentLabel = bgLabel;
+      }
+    } else if (effectiveR > 0) {
+      // Rounded rect via geq overlay (existing)
+      const rrectLabel = getNextLabel(false);
+      filterParts.push(
+        `color=c=0x${bgHex.padEnd(6, "0")}:s=${effectiveStripW}x${stripHeight}:d=1,format=yuva420p,geq=r='${cR}':g='${cG}':b='${cB}':a='if(gt(hypot(max(0,${effectiveR}-min(X,W-1-X)),max(0,${effectiveR}-min(Y,H-1-Y))),${effectiveR}),0,${alphaVal})'[rrect]`
+      );
+      const bgLabel = getNextLabel(false);
+      filterParts.push(
+        `${currentLabel}[rrect]overlay=x=${effectiveStripX}:y=${stripY}:eof_action=repeat${bgLabel}`
+      );
+      currentLabel = bgLabel;
+    } else {
+      // Simple drawbox
+      const bgColorFfmpeg = bgStripColor.startsWith("#") ? "0x" + bgStripColor.slice(1) : bgStripColor;
+      const bgLabel = getNextLabel(false);
+      filterParts.push(
+        `${currentLabel}drawbox=x=${effectiveStripX}:y=${stripY}:w=${effectiveStripW}:h=${stripHeight}:color=${bgColorFfmpeg}@${bgAlpha}:t=fill${bgLabel}`
+      );
+      currentLabel = bgLabel;
+    }
+  }
+
+  // ── Build entrance animation alpha expression ─────────────────────────
+  let alphaExpr = "";
+  if (animationType === "FADE_IN" && animationDuration > 0) {
+    // Fade alpha from 0 to 1 over animationDuration seconds
+    const dur = Math.max(0.1, animationDuration);
+    alphaExpr = `:alpha='if(lt(t\\\\,${dur})\\\\,t/${dur}\\\\,1)'`;
+  }
+
+  // For SLIDE_UP, we offset Y based on time (slide from below into position)
+  function getAnimatedY(staticY: number): string {
+    if (animationType === "SLIDE_UP" && animationDuration > 0) {
+      const dur = Math.max(0.1, animationDuration);
+      const slideOffset = 60; // pixels to slide from
+      return `'${staticY}+if(lt(t\\\\,${dur})\\\\,${slideOffset}*(1-t/${dur})\\\\,0)'`;
+    }
+    return String(staticY);
   }
 
   // ── Neon Glow (multi-pass shadow drawtext underneath main text) ────────
@@ -1013,24 +1139,54 @@ export async function composeMultiplierVideo(options: MultiplierComposeOptions):
       const offset = pass * 2;
       for (let i = 0; i < lines.length; i++) {
         const lineY = Math.round(textYBase + i * lineHeightPx);
+        const yExpr = getAnimatedY(lineY);
         const escapedLineText = escapeFfmpegDrawtext(lines[i]);
         const outLabel = getNextLabel(false);
         filterParts.push(
-          `${currentLabel}drawtext=fontfile='${escapedFontPath}':text="${escapedLineText}":fontcolor=${glowCol}@0.3:fontsize=${fontSize}:x=${alignX}:y=${lineY}:shadowx=${offset}:shadowy=${offset}:shadowcolor=${glowCol}@0.5:expansion=none${outLabel}`
+          `${currentLabel}drawtext=fontfile='${escapedFontPath}':text="${escapedLineText}":fontcolor=${glowCol}@0.3:fontsize=${fontSize}:x=${alignX}:y=${yExpr}:shadowx=${offset}:shadowy=${offset}:shadowcolor=${glowCol}@0.5:expansion=none${alphaExpr}${outLabel}`
         );
         currentLabel = outLabel;
       }
     }
   }
 
+  // ── Double Text: Outline Pass (thick borderw underneath main text) ─────
+  if (doubleTextEnabled && doubleTextOutlineWidth > 0) {
+    const outlineCol = formatFfmpegColor(doubleTextOutlineColor);
+    for (let i = 0; i < lines.length; i++) {
+      const lineY = Math.round(textYBase + i * lineHeightPx);
+      const yExpr = getAnimatedY(lineY);
+      const escapedLineText = escapeFfmpegDrawtext(lines[i]);
+      const outLabel = getNextLabel(false);
+      filterParts.push(
+        `${currentLabel}drawtext=fontfile='${escapedFontPath}':text="${escapedLineText}":fontcolor=${outlineCol}:fontsize=${fontSize}:x=${alignX}:y=${yExpr}:borderw=${doubleTextOutlineWidth}:bordercolor=${outlineCol}:expansion=none${alphaExpr}${outLabel}`
+      );
+      currentLabel = outLabel;
+    }
+  }
+
   // ── Main Text Drawtext Chain ──────────────────────────────────────────
   for (let i = 0; i < lines.length; i++) {
     const lineY = Math.round(textYBase + i * lineHeightPx);
+    const yExpr = getAnimatedY(lineY);
     const escapedLineText = escapeFfmpegDrawtext(lines[i]);
     const isFinal = i === lines.length - 1;
     const outLabel = getNextLabel(isFinal);
+
+    // Build params with animated Y
+    let params = `fontfile='${escapedFontPath}':text="${escapedLineText}":fontcolor=${drawFontColor}:fontsize=${fontSize}:x=${alignX}:y=${yExpr}:expansion=none`;
+    if (strokeEnabled && strokeWidth > 0) {
+      const strokeCol = formatFfmpegColor(strokeColor);
+      params += `:borderw=${strokeWidth}:bordercolor=${strokeCol}`;
+    }
+    if (shadowEnabled) {
+      const shadowCol = formatFfmpegColor(shadowColor);
+      params += `:shadowx=${shadowX}:shadowy=${shadowY}:shadowcolor=${shadowCol}`;
+    }
+    params += alphaExpr;
+
     filterParts.push(
-      `${currentLabel}drawtext=${buildDrawtextParams(escapedLineText, lineY)}${outLabel}`
+      `${currentLabel}drawtext=${params}${outLabel}`
     );
     currentLabel = outLabel;
   }
