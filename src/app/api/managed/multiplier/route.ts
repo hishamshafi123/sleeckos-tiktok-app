@@ -69,9 +69,6 @@ export async function POST(req: Request) {
     if (!videoFile) {
       return NextResponse.json({ error: "Please upload a video file" }, { status: 400 });
     }
-    if (!csvFile) {
-      return NextResponse.json({ error: "Please upload a CSV file with text hooks" }, { status: 400 });
-    }
 
     // 1. Save the video file
     const uploadsDir = path.join(process.cwd(), "public", "uploads", "multiplier");
@@ -91,17 +88,41 @@ export async function POST(req: Request) {
 
     const videoUrl = `/uploads/multiplier/${videoFileName}`;
 
-    // 2. Parse the CSV file
-    const csvText = await csvFile.text();
-    const hooks = parseCSVHooks(csvText);
+    // 2. Parse the CSV file (if provided)
+    let hooks: string[] = [];
+    if (csvFile) {
+      const csvText = await csvFile.text();
+      hooks = parseCSVHooks(csvText);
+    }
+
+    // 3. Merge with template hooks if templateIds provided
+    const templateIdsRaw = formData.get("templateIds") as string;
+    if (templateIdsRaw) {
+      try {
+        const templateIds = JSON.parse(templateIdsRaw) as string[];
+        if (templateIds.length > 0) {
+          const templates = await prisma.multiplierTemplate.findMany({
+            where: { id: { in: templateIds } },
+          });
+          for (const tmpl of templates) {
+            const tmplHooks = JSON.parse(tmpl.hooks) as string[];
+            hooks = [...hooks, ...tmplHooks];
+          }
+          // Shuffle the combined hooks
+          hooks = hooks.sort(() => Math.random() - 0.5);
+        }
+      } catch (e) {
+        console.warn("[Multiplier API] Failed to parse templateIds:", e);
+      }
+    }
 
     if (hooks.length === 0) {
       // Clean up uploaded video
       try { fs.unlinkSync(videoLocalPath); } catch {}
-      return NextResponse.json({ error: "No text hooks found in the CSV file. Ensure at least one non-empty row." }, { status: 400 });
+      return NextResponse.json({ error: "No text hooks found. Upload a CSV or select templates." }, { status: 400 });
     }
 
-    // 3. Create batch + items
+    // 4. Create batch + items
     const batch = await prisma.multiplierBatch.create({
       data: {
         name: batchName,
@@ -192,6 +213,35 @@ export async function DELETE(req: Request) {
   } catch (err) {
     console.error("[Multiplier API] Error deleting batch:", err);
     return NextResponse.json({ error: "Failed to delete batch" }, { status: 500 });
+  }
+}
+
+// PATCH /api/managed/multiplier — Assign Drive folder to a batch
+export async function PATCH(req: Request) {
+  const session = await getSession();
+  if (!session || session.role !== "ADMIN") {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  try {
+    const { batchId, driveFolderId, driveFolderName } = await req.json();
+
+    if (!batchId) {
+      return NextResponse.json({ error: "Missing batchId" }, { status: 400 });
+    }
+
+    const batch = await prisma.multiplierBatch.update({
+      where: { id: batchId },
+      data: {
+        driveFolderId: driveFolderId || null,
+        driveFolderName: driveFolderName || null,
+      },
+    });
+
+    return NextResponse.json({ success: true, batch });
+  } catch (err) {
+    console.error("[Multiplier API] PATCH error:", err);
+    return NextResponse.json({ error: "Failed to update batch" }, { status: 500 });
   }
 }
 

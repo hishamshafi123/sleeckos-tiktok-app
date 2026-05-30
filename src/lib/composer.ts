@@ -190,16 +190,34 @@ function sanitizeQuoteText(text: string): string {
 }
 
 /**
+ * Extra-aggressive sanitizer for Multiplier hook text.
+ * Runs sanitizeQuoteText + strips newlines, collapses whitespace,
+ * and removes any remaining chars that could crash FFmpeg drawtext.
+ */
+function sanitizeMultiplierHookText(text: string): string {
+  return sanitizeQuoteText(text)
+    .replace(/\n/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
  * Escapes text for FFmpeg's drawtext filter string literal parameter.
- * Enclosed in single quotes, backslashes are escaped as \\ and single quotes as '\''
+ * Handles ALL FFmpeg filter-syntax reserved characters that cause "Command failed" errors.
+ * Within a filter_complex_script file, text="..." parameters need these escapes.
  */
 function escapeFfmpegDrawtext(text: string): string {
-  // Within double-quoted parameters inside a filtergraph script file:
-  // - Escape backslash as \\
-  // - Escape double quote as \"
   return text
     .replace(/\\/g, "\\\\")
-    .replace(/"/g, '\\"');
+    .replace(/"/g, '\\"')
+    .replace(/:/g, "\\:")
+    .replace(/'/g, "\'")
+    .replace(/\[/g, "\\[")
+    .replace(/\]/g, "\\]")
+    .replace(/%/g, "%%")
+    .replace(/;/g, "\\;")
+    .replace(/\{/g, "\\{")
+    .replace(/\}/g, "\\}");
 }
 
 /**
@@ -835,7 +853,7 @@ export async function composeMultiplierVideo(options: MultiplierComposeOptions):
   const resolvedFont = await resolveFontPath(fontFamily);
   const escapedFontPath = resolvedFont.replace(/\\/g, "/").replace(/:/g, "\\:");
 
-  const cleanText = sanitizeQuoteText(hookText);
+  const cleanText = sanitizeMultiplierHookText(hookText);
   const casedText = applyCasing(cleanText, textCase);
 
   const tempDir = path.join(os.tmpdir(), "temp_multiplier");

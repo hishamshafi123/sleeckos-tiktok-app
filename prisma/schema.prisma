@@ -691,6 +691,11 @@ model MultiplierBatch {
   marginX         Int                   @default(0)           // Horizontal margin from edges (px)
   borderRadius    Int                   @default(12)          // Corner radius in px
 
+  // Google Drive export
+  driveFolderId     String?               // assigned Google Drive folder ID
+  driveFolderName   String?               // folder display name
+  driveExportStatus String?               // EXPORTING | EXPORTED | FAILED | null
+
   errorMessage    String?
   createdAt       DateTime              @default(now())
   updatedAt       DateTime              @updatedAt
@@ -707,4 +712,28 @@ model MultiplierItem {
   errorMessage     String?
   createdAt        DateTime             @default(now())
   updatedAt        DateTime             @updatedAt
+}
+
+// ─── Multiplier Text Hook Templates ──────────────────────────────────────────
+
+model MultiplierTemplate {
+  id        String   @id @default(uuid())
+  name      String
+  hooks     String   @db.Text    // JSON array of hook strings
+  hookCount Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// ─── Global Google Drive Connection ──────────────────────────────────────────
+
+model GoogleDriveConnection {
+  id                    String    @id @default(uuid())
+  purpose               String    @default("multiplier")
+  googleEmail           String?
+  googleAccessToken     String?   @db.Text
+  googleRefreshToken    String?   @db.Text
+  googleTokenExpiresAt  DateTime?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
 }

@@ -4,6 +4,7 @@ import { toast } from "sonner";
 import {
   Upload, FileText, Play, Download, Trash2, Loader2,
   Check, X, Layers, RefreshCw, Palette, Move, Pause,
+  Plus, FolderOpen, Cloud, CloudOff, Search, BookTemplate, LogIn,
 } from "lucide-react";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -36,6 +37,22 @@ interface MultiplierBatch {
   createdAt: string;
   items: MultiplierItem[];
   _count?: { items: number };
+  driveFolderId: string | null;
+  driveFolderName: string | null;
+  driveExportStatus: string | null;
+}
+
+interface MultiplierTemplate {
+  id: string;
+  name: string;
+  hooks: string; // JSON array
+  hookCount: number;
+  createdAt: string;
+}
+
+interface DriveFolder {
+  id: string;
+  name: string;
 }
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -133,6 +150,23 @@ export default function MultiplierPage() {
   // Dragging state
   const [isDragging, setIsDragging] = useState(false);
   const dragStartRef = useRef<{ startY: number; startPercent: number } | null>(null);
+
+  // ─── Templates ──────────────────────────────────────────────────────────────
+  const [templates, setTemplates] = useState<MultiplierTemplate[]>([]);
+  const [selectedTemplateIds, setSelectedTemplateIds] = useState<string[]>([]);
+  const [showCreateTemplate, setShowCreateTemplate] = useState(false);
+  const [newTemplateName, setNewTemplateName] = useState("");
+  const [newTemplateHooksText, setNewTemplateHooksText] = useState("");
+  const [creatingTemplate, setCreatingTemplate] = useState(false);
+
+  // ─── Google Drive ───────────────────────────────────────────────────────────
+  const [driveConnected, setDriveConnected] = useState(false);
+  const [driveEmail, setDriveEmail] = useState("");
+  const [showFolderPicker, setShowFolderPicker] = useState<string | null>(null); // batchId
+  const [driveFolders, setDriveFolders] = useState<DriveFolder[]>([]);
+  const [folderSearch, setFolderSearch] = useState("");
+  const [searchingFolders, setSearchingFolders] = useState(false);
+  const [exportingBatches, setExportingBatches] = useState<Set<string>>(new Set());
 
   // ─── Video Object URL ─────────────────────────────────────────────────────
 
@@ -265,6 +299,158 @@ export default function MultiplierPage() {
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
   }, [renderingBatchId, fetchBatches]);
 
+  // ─── Templates Data ──────────────────────────────────────────────────────
+
+  const fetchTemplates = useCallback(async () => {
+    try {
+      const res = await fetch("/api/managed/multiplier/templates");
+      if (res.ok) setTemplates(await res.json());
+    } catch {}
+  }, []);
+
+  useEffect(() => { fetchTemplates(); }, [fetchTemplates]);
+
+  const handleCreateTemplate = async () => {
+    if (!newTemplateName.trim() || !newTemplateHooksText.trim()) {
+      toast.error("Name and hooks are required");
+      return;
+    }
+    setCreatingTemplate(true);
+    try {
+      const hooks = newTemplateHooksText
+        .split(/\r?\n/)
+        .map((l) => l.trim())
+        .filter(Boolean);
+      const res = await fetch("/api/managed/multiplier/templates", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: newTemplateName.trim(), hooks }),
+      });
+      if (!res.ok) throw new Error((await res.json()).error);
+      toast.success("Template created!");
+      setNewTemplateName("");
+      setNewTemplateHooksText("");
+      setShowCreateTemplate(false);
+      fetchTemplates();
+    } catch (err: any) {
+      toast.error(err.message || "Failed to create template");
+    } finally {
+      setCreatingTemplate(false);
+    }
+  };
+
+  const handleDeleteTemplate = async (id: string) => {
+    if (!confirm("Delete this template?")) return;
+    try {
+      await fetch(`/api/managed/multiplier/templates?id=${id}`, { method: "DELETE" });
+      toast.success("Template deleted");
+      setSelectedTemplateIds((prev) => prev.filter((t) => t !== id));
+      fetchTemplates();
+    } catch {
+      toast.error("Failed to delete");
+    }
+  };
+
+  const toggleTemplateSelection = (id: string) => {
+    setSelectedTemplateIds((prev) =>
+      prev.includes(id) ? prev.filter((t) => t !== id) : [...prev, id]
+    );
+  };
+
+  // ─── Google Drive ────────────────────────────────────────────────────────
+
+  const fetchDriveStatus = useCallback(async () => {
+    try {
+      const res = await fetch("/api/managed/multiplier/google/status");
+      if (res.ok) {
+        const data = await res.json();
+        setDriveConnected(data.connected);
+        setDriveEmail(data.email || "");
+      }
+    } catch {}
+  }, []);
+
+  useEffect(() => { fetchDriveStatus(); }, [fetchDriveStatus]);
+
+  const handleDisconnectDrive = async () => {
+    if (!confirm("Disconnect Google Drive?")) return;
+    try {
+      await fetch("/api/managed/multiplier/google/status", { method: "DELETE" });
+      setDriveConnected(false);
+      setDriveEmail("");
+      toast.success("Drive disconnected");
+    } catch {
+      toast.error("Failed to disconnect");
+    }
+  };
+
+  const searchDriveFolders = async (query: string) => {
+    setSearchingFolders(true);
+    try {
+      const res = await fetch(`/api/managed/multiplier/google/folders?q=${encodeURIComponent(query)}`);
+      if (res.ok) {
+        const data = await res.json();
+        setDriveFolders(data.folders || []);
+      }
+    } catch {} finally {
+      setSearchingFolders(false);
+    }
+  };
+
+  const handleAssignFolder = async (batchId: string, folderId: string, folderName: string) => {
+    try {
+      await fetch("/api/managed/multiplier", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ batchId, driveFolderId: folderId, driveFolderName: folderName }),
+      });
+      toast.success(`Folder "${folderName}" assigned`);
+      setShowFolderPicker(null);
+      fetchBatches();
+    } catch {
+      toast.error("Failed to assign folder");
+    }
+  };
+
+  const handleExportToDrive = async (batchId: string) => {
+    setExportingBatches((prev) => new Set([...prev, batchId]));
+    try {
+      const res = await fetch("/api/managed/multiplier/export", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ batchId }),
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error);
+      }
+      toast.success("Export started! Videos uploading to Drive...");
+      // Poll for completion
+      const pollExport = setInterval(async () => {
+        try {
+          const statusRes = await fetch(`/api/managed/multiplier/export?batchId=${batchId}`);
+          if (statusRes.ok) {
+            const statusData = await statusRes.json();
+            if (statusData.status === "EXPORTED") {
+              clearInterval(pollExport);
+              setExportingBatches((prev) => { const next = new Set(prev); next.delete(batchId); return next; });
+              toast.success("Export completed!");
+              fetchBatches();
+            } else if (statusData.status === "FAILED") {
+              clearInterval(pollExport);
+              setExportingBatches((prev) => { const next = new Set(prev); next.delete(batchId); return next; });
+              toast.error("Export failed");
+              fetchBatches();
+            }
+          }
+        } catch {}
+      }, 3000);
+    } catch (err: any) {
+      toast.error(err.message || "Export failed");
+      setExportingBatches((prev) => { const next = new Set(prev); next.delete(batchId); return next; });
+    }
+  };
+
   // ─── CSV Parsing ─────────────────────────────────────────────────────────
 
   const handleCsvUpload = async (file: File) => {
@@ -291,14 +477,14 @@ export default function MultiplierPage() {
   // ─── Upload & Create Batch ───────────────────────────────────────────────
 
   const handleCreateBatch = async () => {
-    if (!videoFile || !csvFile) { toast.error("Please upload both a video and a CSV file"); return; }
-    if (parsedHooks.length === 0) { toast.error("No text hooks found in the CSV"); return; }
+    if (!videoFile) { toast.error("Please upload a video file"); return; }
+    if (!csvFile && selectedTemplateIds.length === 0) { toast.error("Please upload a CSV or select templates"); return; }
 
     setUploading(true);
     try {
       const formData = new FormData();
       formData.append("video", videoFile);
-      formData.append("csv", csvFile);
+      if (csvFile) formData.append("csv", csvFile);
       formData.append("name", batchName);
       formData.append("fontFamily", fontFamily);
       formData.append("fontSize", String(fontSize));
@@ -311,6 +497,9 @@ export default function MultiplierPage() {
       formData.append("positionYPercent", String(positionYPercent));
       formData.append("marginX", String(marginX));
       formData.append("borderRadius", String(borderRadius));
+      if (selectedTemplateIds.length > 0) {
+        formData.append("templateIds", JSON.stringify(selectedTemplateIds));
+      }
 
       const res = await fetch("/api/managed/multiplier", { method: "POST", body: formData });
       if (!res.ok) {
@@ -318,8 +507,8 @@ export default function MultiplierPage() {
         throw new Error(errMsg);
       }
 
-      toast.success(`Batch created with ${parsedHooks.length} hooks!`);
-      setVideoFile(null); setCsvFile(null); setBatchName(""); setParsedHooks([]);
+      toast.success(`Batch created!`);
+      setVideoFile(null); setCsvFile(null); setBatchName(""); setParsedHooks([]); setSelectedTemplateIds([]);
       if (videoInputRef.current) videoInputRef.current.value = "";
       if (csvInputRef.current) csvInputRef.current.value = "";
       fetchBatches();
@@ -500,6 +689,130 @@ export default function MultiplierPage() {
         <p className="text-gray-500 mt-1 text-sm">
           Upload one video + a CSV of text hooks → get N videos with different text overlays
         </p>
+      </div>
+
+      {/* ─── Google Drive Connection ──────────────────────────────────────── */}
+      <div className="rounded-2xl border border-white/5 bg-[#111118] p-4 flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          {driveConnected ? (
+            <Cloud className="w-5 h-5 text-emerald-400" />
+          ) : (
+            <CloudOff className="w-5 h-5 text-gray-600" />
+          )}
+          <div>
+            <p className="text-sm font-medium text-white">
+              {driveConnected ? "Google Drive Connected" : "Google Drive Not Connected"}
+            </p>
+            {driveEmail && <p className="text-xs text-gray-500">{driveEmail}</p>}
+          </div>
+        </div>
+        {driveConnected ? (
+          <button onClick={handleDisconnectDrive} className="px-3 py-1.5 rounded-lg bg-red-500/10 text-red-400 border border-red-500/20 text-xs font-medium hover:bg-red-500/20 transition-all">
+            Disconnect
+          </button>
+        ) : (
+          <a href="/api/managed/multiplier/google/auth" className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-gradient-to-r from-blue-500 to-cyan-500 text-white text-xs font-medium hover:from-blue-400 hover:to-cyan-400 transition-all">
+            <LogIn className="w-3.5 h-3.5" /> Connect Google Drive
+          </a>
+        )}
+      </div>
+
+      {/* ─── Templates Manager ────────────────────────────────────────────── */}
+      <div className="rounded-2xl border border-white/5 bg-[#111118] p-5 space-y-4">
+        <div className="flex items-center justify-between">
+          <h2 className="text-sm font-semibold text-white flex items-center gap-2">
+            <BookTemplate className="w-4 h-4 text-violet-400" />
+            Text Hook Templates
+          </h2>
+          <button
+            onClick={() => setShowCreateTemplate(!showCreateTemplate)}
+            className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-violet-500/15 text-violet-300 border border-violet-500/20 text-xs font-medium hover:bg-violet-500/25 transition-all"
+          >
+            <Plus className="w-3 h-3" /> New Template
+          </button>
+        </div>
+
+        {/* Create Template Form */}
+        {showCreateTemplate && (
+          <div className="rounded-xl border border-white/5 bg-[#0c0c12] p-4 space-y-3">
+            <input
+              type="text"
+              placeholder="Template name (e.g. Motivational Hooks)"
+              value={newTemplateName}
+              onChange={(e) => setNewTemplateName(e.target.value)}
+              className="w-full px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white text-sm focus:outline-none focus:border-violet-500/50"
+            />
+            <textarea
+              placeholder="Paste hooks here (one per line)..."
+              value={newTemplateHooksText}
+              onChange={(e) => setNewTemplateHooksText(e.target.value)}
+              rows={6}
+              className="w-full px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white text-sm focus:outline-none focus:border-violet-500/50 resize-none font-mono"
+            />
+            <div className="flex items-center justify-between">
+              <p className="text-xs text-gray-600">
+                {newTemplateHooksText.split(/\r?\n/).filter(l => l.trim()).length} hooks
+              </p>
+              <div className="flex gap-2">
+                <button onClick={() => setShowCreateTemplate(false)} className="px-3 py-1.5 rounded-lg text-gray-500 text-xs hover:text-white transition-all">
+                  Cancel
+                </button>
+                <button
+                  onClick={handleCreateTemplate}
+                  disabled={creatingTemplate}
+                  className="px-4 py-1.5 rounded-lg bg-violet-500 text-white text-xs font-medium hover:bg-violet-400 transition-all disabled:opacity-50"
+                >
+                  {creatingTemplate ? <Loader2 className="w-3 h-3 animate-spin" /> : "Save Template"}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Template List — selectable for batch creation */}
+        {templates.length === 0 ? (
+          <p className="text-xs text-gray-600 text-center py-3">No templates yet. Create one to reuse hooks across batches.</p>
+        ) : (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+            {templates.map((tmpl) => {
+              const isSelected = selectedTemplateIds.includes(tmpl.id);
+              return (
+                <div
+                  key={tmpl.id}
+                  onClick={() => toggleTemplateSelection(tmpl.id)}
+                  className={`flex items-center justify-between p-3 rounded-xl border cursor-pointer transition-all ${
+                    isSelected
+                      ? "bg-violet-500/15 border-violet-500/40 shadow-lg shadow-violet-500/10"
+                      : "bg-white/[0.02] border-white/5 hover:border-white/10"
+                  }`}
+                >
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <div className={`w-4 h-4 rounded border-2 flex items-center justify-center flex-shrink-0 transition-all ${
+                      isSelected ? "bg-violet-500 border-violet-500" : "border-gray-600"
+                    }`}>
+                      {isSelected && <Check className="w-2.5 h-2.5 text-white" />}
+                    </div>
+                    <div className="min-w-0">
+                      <p className="text-sm text-white font-medium truncate">{tmpl.name}</p>
+                      <p className="text-[10px] text-gray-500">{tmpl.hookCount} hooks</p>
+                    </div>
+                  </div>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); handleDeleteTemplate(tmpl.id); }}
+                    className="p-1 rounded text-gray-700 hover:text-red-400 transition-all flex-shrink-0"
+                  >
+                    <Trash2 className="w-3 h-3" />
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        )}
+        {selectedTemplateIds.length > 0 && (
+          <p className="text-xs text-violet-300 font-medium">
+            ✓ {selectedTemplateIds.length} template{selectedTemplateIds.length > 1 ? "s" : ""} selected — hooks will be merged into the next batch
+          </p>
+        )}
       </div>
 
       {/* ─── Upload Section ──────────────────────────────────────────────── */}
@@ -789,13 +1102,13 @@ export default function MultiplierPage() {
       {/* Create Button */}
       <button
         onClick={handleCreateBatch}
-        disabled={uploading || !videoFile || !csvFile || parsedHooks.length === 0}
+        disabled={uploading || !videoFile || (!csvFile && selectedTemplateIds.length === 0)}
         className="w-full py-3.5 rounded-xl font-semibold text-sm transition-all disabled:opacity-40 disabled:cursor-not-allowed bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white shadow-lg shadow-cyan-500/20 flex items-center justify-center gap-2"
       >
         {uploading ? (
           <><Loader2 className="w-4 h-4 animate-spin" /> Uploading...</>
         ) : (
-          <><Layers className="w-4 h-4" /> Create Batch {parsedHooks.length > 0 && `(${parsedHooks.length} videos)`}</>
+          <><Layers className="w-4 h-4" /> Create Batch {(parsedHooks.length > 0 || selectedTemplateIds.length > 0) && `(${parsedHooks.length} CSV + ${selectedTemplateIds.length} templates)`}</>
         )}
       </button>
 
@@ -883,6 +1196,34 @@ export default function MultiplierPage() {
                           )}
                         </button>
                       )}
+                      {/* Drive Folder + Export */}
+                      {driveConnected && renderedCount > 0 && (
+                        <>
+                          <button
+                            onClick={() => { setShowFolderPicker(batch.id); setFolderSearch(""); setDriveFolders([]); searchDriveFolders(""); }}
+                            className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-blue-500/10 text-blue-300 border border-blue-500/20 text-xs font-medium hover:bg-blue-500/20 transition-all"
+                            title={batch.driveFolderName || "Select folder"}
+                          >
+                            <FolderOpen className="w-3.5 h-3.5" />
+                            {batch.driveFolderName ? batch.driveFolderName.substring(0, 15) : "Folder"}
+                          </button>
+                          {batch.driveFolderId && (
+                            <button
+                              onClick={() => handleExportToDrive(batch.id)}
+                              disabled={exportingBatches.has(batch.id) || batch.driveExportStatus === "EXPORTING"}
+                              className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-cyan-500/10 text-cyan-300 border border-cyan-500/20 text-xs font-medium hover:bg-cyan-500/20 transition-all disabled:opacity-50"
+                            >
+                              {exportingBatches.has(batch.id) || batch.driveExportStatus === "EXPORTING" ? (
+                                <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Exporting...</>
+                              ) : batch.driveExportStatus === "EXPORTED" ? (
+                                <><Check className="w-3.5 h-3.5" /> Exported</>
+                              ) : (
+                                <><Cloud className="w-3.5 h-3.5" /> Export</>
+                              )}
+                            </button>
+                          )}
+                        </>
+                      )}
                       <button onClick={() => handleDeleteBatch(batch.id)} className="p-2 rounded-lg text-gray-600 hover:text-red-400 hover:bg-red-500/10 transition-all">
                         <Trash2 className="w-4 h-4" />
                       </button>
@@ -960,6 +1301,59 @@ export default function MultiplierPage() {
               <button onClick={() => setPreviewUrl(null)} className="text-gray-500 hover:text-white"><X className="w-5 h-5" /></button>
             </div>
             <video src={`/api${previewUrl}`} controls autoPlay className="w-full rounded-xl" style={{ maxHeight: "70vh" }} />
+          </div>
+        </div>
+      )}
+
+      {/* ─── Folder Picker Modal ──────────────────────────────────────────── */}
+      {showFolderPicker && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm" onClick={() => setShowFolderPicker(null)}>
+          <div className="bg-[#16161f] rounded-2xl border border-white/10 p-5 max-w-md w-full mx-4 shadow-2xl space-y-4" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between">
+              <h3 className="text-white text-sm font-semibold flex items-center gap-2">
+                <FolderOpen className="w-4 h-4 text-blue-400" /> Select Drive Folder
+              </h3>
+              <button onClick={() => setShowFolderPicker(null)} className="text-gray-500 hover:text-white">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="flex gap-2">
+              <input
+                type="text"
+                placeholder="Search folders..."
+                value={folderSearch}
+                onChange={(e) => setFolderSearch(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && searchDriveFolders(folderSearch)}
+                className="flex-1 px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white text-sm focus:outline-none focus:border-blue-500/50"
+              />
+              <button
+                onClick={() => searchDriveFolders(folderSearch)}
+                disabled={searchingFolders}
+                className="px-3 py-2 rounded-lg bg-blue-500/15 text-blue-300 border border-blue-500/20 text-xs font-medium hover:bg-blue-500/25 transition-all disabled:opacity-50"
+              >
+                {searchingFolders ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
+              </button>
+            </div>
+
+            <div className="max-h-64 overflow-y-auto space-y-1">
+              {driveFolders.length === 0 ? (
+                <p className="text-xs text-gray-600 text-center py-6">
+                  {searchingFolders ? "Searching..." : "Type to search for folders"}
+                </p>
+              ) : (
+                driveFolders.map((folder) => (
+                  <button
+                    key={folder.id}
+                    onClick={() => handleAssignFolder(showFolderPicker, folder.id, folder.name)}
+                    className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-white/5 text-left transition-all group"
+                  >
+                    <FolderOpen className="w-4 h-4 text-blue-400 flex-shrink-0" />
+                    <span className="text-sm text-gray-300 group-hover:text-white truncate">{folder.name}</span>
+                  </button>
+                ))
+              )}
+            </div>
           </div>
         </div>
       )}

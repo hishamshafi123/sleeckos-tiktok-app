@@ -100,7 +100,7 @@ async function processMultiplierBatch(batchId: string) {
         const outputPath = path.join(rendersDir, `multi_${item.id}.mp4`);
 
         const { composeMultiplierVideo } = await import("@/lib/composer");
-        await composeMultiplierVideo({
+        const composeOpts = {
           inputVideoPath: sourceVideoPath,
           hookText: item.hookText,
           fontFamily: batch.fontFamily,
@@ -115,7 +115,20 @@ async function processMultiplierBatch(batchId: string) {
           marginX: batch.marginX,
           borderRadius: batch.borderRadius,
           outputPath,
-        });
+        };
+
+        try {
+          await composeMultiplierVideo(composeOpts);
+        } catch (firstErr: any) {
+          console.warn(`[Multiplier Worker] First attempt failed for item ${item.id}, retrying with ASCII-only text...`);
+          // Clean up failed output before retry
+          if (fs.existsSync(outputPath)) {
+            try { fs.unlinkSync(outputPath); } catch {}
+          }
+          // Retry with ultra-aggressive ASCII-only hook text
+          const asciiOnlyHook = item.hookText.replace(/[^\x20-\x7E]/g, "").trim();
+          await composeMultiplierVideo({ ...composeOpts, hookText: asciiOnlyHook || "Untitled" });
+        }
 
         await prisma.multiplierItem.update({
           where: { id: item.id },
@@ -127,7 +140,8 @@ async function processMultiplierBatch(batchId: string) {
 
         console.log(`[Multiplier Worker] Item ${item.id} rendered successfully`);
       } catch (itemErr: any) {
-        console.error(`[Multiplier Worker] Error rendering item ${item.id}:`, itemErr);
+        const errMsg = (itemErr.message || String(itemErr)).substring(0, 1000);
+        console.error(`[Multiplier Worker] Error rendering item ${item.id}:`, errMsg);
 
         // Clean up failed output
         const outputPath = path.join(rendersDir, `multi_${item.id}.mp4`);
@@ -139,7 +153,7 @@ async function processMultiplierBatch(batchId: string) {
           where: { id: item.id },
           data: {
             status: "FAILED",
-            errorMessage: itemErr.message || String(itemErr),
+            errorMessage: errMsg,
           },
         });
       }
