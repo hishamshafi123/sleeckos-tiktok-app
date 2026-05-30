@@ -947,7 +947,7 @@ export async function composeMultiplierVideo(options: MultiplierComposeOptions):
   // Build alignment X expression
   function buildAlignX(): string {
     const leftX = stripX + padX;
-    const centerExpr = `max(${leftX}\\\\,${stripX}+(${stripW}-text_w)/2)`;
+    const centerExpr = `max(${leftX}\\,${stripX}+(${stripW}-text_w)/2)`;
     const rightExpr = `${stripX + stripW - padX}-text_w`;
     if (textAlign === "LEFT") return String(leftX);
     if (textAlign === "RIGHT") return `'${rightExpr}'`;
@@ -1118,7 +1118,7 @@ export async function composeMultiplierVideo(options: MultiplierComposeOptions):
   if (animationType === "FADE_IN" && animationDuration > 0) {
     // Fade alpha from 0 to 1 over animationDuration seconds
     const dur = Math.max(0.1, animationDuration);
-    alphaExpr = `:alpha='if(lt(t\\\\,${dur})\\\\,t/${dur}\\\\,1)'`;
+    alphaExpr = `:alpha='if(lt(t\\,${dur})\\,t/${dur}\\,1)'`;
   }
 
   // For SLIDE_UP, we offset Y based on time (slide from below into position)
@@ -1126,7 +1126,7 @@ export async function composeMultiplierVideo(options: MultiplierComposeOptions):
     if (animationType === "SLIDE_UP" && animationDuration > 0) {
       const dur = Math.max(0.1, animationDuration);
       const slideOffset = 60; // pixels to slide from
-      return `'${staticY}+if(lt(t\\\\,${dur})\\\\,${slideOffset}*(1-t/${dur})\\\\,0)'`;
+      return `'${staticY}+if(lt(t\\,${dur})\\,${slideOffset}*(1-t/${dur})\\,0)'`;
     }
     return String(staticY);
   }
