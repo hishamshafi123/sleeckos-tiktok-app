@@ -212,6 +212,8 @@ export async function GET(req: NextRequest) {
       let caption = "";
       const sec = account.group.section;
 
+      console.log(`[PostScheduler] Caption build for ${accountKey}: captionSource=${account.captionSource}, section.descTags=${sec.descTags ? `"${sec.descTags}"` : "null"}, section.descTagCount=${sec.descTagCount}, section.descFixedText=${sec.descFixedText ? `"${sec.descFixedText}"` : "null"}, section.descFixedTextEnabled=${sec.descFixedTextEnabled}`);
+
       if (account.captionSource === "FILENAME") {
         caption = nextFile.name!.replace(/\.[^.]+$/, "");
       } else if (account.captionSource === "DEFAULT") {
@@ -243,6 +245,8 @@ export async function GET(req: NextRequest) {
           caption = caption ? `${caption}\n\n${tagLine}` : tagLine;
         }
       }
+
+      console.log(`[PostScheduler] Final caption for ${accountKey}: "${caption.substring(0, 200)}"`);
 
       // ── Create post record ───────────────────────────────────────────────
       const post = await prisma.scheduledPost.create({
