@@ -2,10 +2,9 @@ export const dynamic = "force-dynamic";
 import { NextResponse } from "next/server";
 import prisma from "@/lib/db";
 import { getSession } from "@/lib/session";
-import { google } from "googleapis";
 import fs from "fs";
 import path from "path";
-import { Readable } from "stream";
+import { getMultiplierDriveClient } from "../google/status/route";
 
 // POST /api/managed/multiplier/export — Upload rendered videos to assigned Drive folder
 export async function POST(req: Request) {
@@ -115,47 +114,12 @@ async function exportToDriveInBackground(batchId: string) {
       throw new Error("Batch or folder not found");
     }
 
-    // Get Drive client
-    const conn = await prisma.googleDriveConnection.findFirst({
-      where: { purpose: "multiplier" },
-    });
-
-    if (!conn || !conn.googleAccessToken) {
-      throw new Error("Google Drive not connected");
+    // Get Drive client from existing ManagedAccount connection
+    const drive = await getMultiplierDriveClient();
+    if (!drive) {
+      throw new Error("Google Drive not connected. Connect Drive in the Manage section first.");
     }
 
-    const oauth2Client = new google.auth.OAuth2(
-      process.env.GOOGLE_CLIENT_ID,
-      process.env.GOOGLE_CLIENT_SECRET,
-      `${process.env.APP_URL}/api/managed/multiplier/google/callback`
-    );
-
-    oauth2Client.setCredentials({
-      access_token: conn.googleAccessToken,
-      refresh_token: conn.googleRefreshToken || undefined,
-    });
-
-    // Refresh if needed
-    const now = new Date();
-    const isExpired = !conn.googleTokenExpiresAt ||
-      new Date(conn.googleTokenExpiresAt).getTime() - now.getTime() < 5 * 60 * 1000;
-
-    if (isExpired && conn.googleRefreshToken) {
-      const { credentials } = await oauth2Client.refreshAccessToken();
-      await prisma.googleDriveConnection.update({
-        where: { id: conn.id },
-        data: {
-          googleAccessToken: credentials.access_token || undefined,
-          googleTokenExpiresAt: credentials.expiry_date ? new Date(credentials.expiry_date) : undefined,
-        },
-      });
-      oauth2Client.setCredentials({
-        access_token: credentials.access_token || undefined,
-        refresh_token: credentials.refresh_token || conn.googleRefreshToken || undefined,
-      });
-    }
-
-    const drive = google.drive({ version: "v3", auth: oauth2Client });
     const publicDir = path.join(process.cwd(), "public");
 
     let uploadedCount = 0;

@@ -824,15 +824,12 @@ export default function MultiplierPage() {
               {driveConnected ? "Google Drive Connected" : "Google Drive Not Connected"}
             </p>
             {driveEmail && <p className="text-xs text-gray-500">{driveEmail}</p>}
+            {!driveConnected && <p className="text-xs text-gray-500">Connect Google Drive from the Manage section first</p>}
           </div>
         </div>
-        {driveConnected ? (
-          <button onClick={handleDisconnectDrive} className="px-3 py-1.5 rounded-lg bg-red-500/10 text-red-400 border border-red-500/20 text-xs font-medium hover:bg-red-500/20 transition-all">
-            Disconnect
-          </button>
-        ) : (
-          <a href="/api/managed/multiplier/google/auth" className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-gradient-to-r from-blue-500 to-cyan-500 text-white text-xs font-medium hover:from-blue-400 hover:to-cyan-400 transition-all">
-            <LogIn className="w-3.5 h-3.5" /> Connect Google Drive
+        {!driveConnected && (
+          <a href="/admin/accounts" className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-gradient-to-r from-blue-500 to-cyan-500 text-white text-xs font-medium hover:from-blue-400 hover:to-cyan-400 transition-all">
+            <LogIn className="w-3.5 h-3.5" /> Go to Manage
           </a>
         )}
       </div>
