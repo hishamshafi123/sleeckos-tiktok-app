@@ -191,35 +191,45 @@ function sanitizeQuoteText(text: string): string {
 
 /**
  * Extra-aggressive sanitizer for Multiplier hook text.
- * Runs sanitizeQuoteText + strips newlines, collapses whitespace,
- * and removes any remaining chars that could crash FFmpeg drawtext.
+ * Strips ALL quotes, special chars, and FFmpeg-breaking characters.
+ * Hook text is display-only — it never needs special characters.
  */
 function sanitizeMultiplierHookText(text: string): string {
   let cleaned = sanitizeQuoteText(text)
     .replace(/\n/g, " ")
     .replace(/\s+/g, " ")
     .trim();
-  // Strip surrounding quotes (common CSV artifact)
-  if (cleaned.startsWith('"') && cleaned.endsWith('"')) {
-    cleaned = cleaned.slice(1, -1).trim();
-  }
-  if (cleaned.startsWith("'") && cleaned.endsWith("'")) {
-    cleaned = cleaned.slice(1, -1).trim();
-  }
+  // Strip ALL quotes (double + single) — common CSV artifacts, never wanted in video overlays
+  cleaned = cleaned.replace(/["']/g, "");
+  // Strip FFmpeg-breaking characters: colons, semicolons, brackets, braces, backslashes, percent
+  cleaned = cleaned.replace(/[:\\;[\]{}%\\]/g, "");
+  // Collapse any resulting double-spaces
+  cleaned = cleaned.replace(/\s+/g, " ").trim();
   return cleaned;
 }
 
 /**
- * Escapes text for FFmpeg's drawtext filter string literal parameter.
- * Handles ALL FFmpeg filter-syntax reserved characters that cause "Command failed" errors.
- * Within a filter_complex_script file, text="..." parameters need these escapes.
+ * Escapes text for FFmpeg's drawtext filter in a filter_complex_script file.
+ * Since sanitizeMultiplierHookText already strips all dangerous characters,
+ * this only needs minimal escaping for the text='...' parameter context.
+ */
+function escapeMultiplierDrawtext(text: string): string {
+  // In filter_complex_script with text='...', single quotes inside the text
+  // would break parsing. We already stripped them in the sanitizer.
+  // Just escape any remaining backslashes.
+  return text.replace(/\\/g, "\\\\");
+}
+
+/**
+ * Escapes text for FFmpeg's drawtext filter (used by the genre composer).
+ * Handles FFmpeg filter-syntax reserved characters for filter_complex_script text="..." params.
  */
 function escapeFfmpegDrawtext(text: string): string {
   return text
     .replace(/\\/g, "\\\\")
     .replace(/"/g, '\\"')
     .replace(/:/g, "\\:")
-    .replace(/'/g, "\'")
+    .replace(/'/g, "\\'")
     .replace(/\[/g, "\\[")
     .replace(/\]/g, "\\]")
     .replace(/%/g, "%%")
@@ -934,8 +944,8 @@ export async function composeMultiplierVideo(options: MultiplierComposeOptions):
   const padX = rawPaddingX ?? Math.max(stripPaddingY, 16);
   const padY = stripPaddingY;
   const effectiveTextWidth = OUTPUT_W - marginX * 2 - padX * 2;
-  // Bold/wide fonts need a larger per-char estimate; use 0.56 for safer wrapping
-  const charsPerLine = Math.max(10, Math.floor(effectiveTextWidth / (fontSize * 0.56)));
+  // Bold uppercase fonts need a generous per-char estimate to prevent overflow
+  const charsPerLine = Math.max(10, Math.floor(effectiveTextWidth / (fontSize * 0.52)));
   const wrappedText = wrapText(casedText, charsPerLine);
   const lines = wrappedText.split("\n").map((line) => line.trim().replace(/\r/g, ""));
 
@@ -967,7 +977,7 @@ export async function composeMultiplierVideo(options: MultiplierComposeOptions):
 
   // Build drawtext params for a single line
   function buildDrawtextParams(escapedText: string, lineY: number): string {
-    let params = `fontfile='${escapedFontPath}':text="${escapedText}":fontcolor=${drawFontColor}:fontsize=${fontSize}:x=${alignX}:y=${lineY}:expansion=none`;
+    let params = `fontfile='${escapedFontPath}':text='${escapedText}':fontcolor=${drawFontColor}:fontsize=${fontSize}:x=${alignX}:y=${lineY}:expansion=none`;
 
     if (strokeEnabled && strokeWidth > 0) {
       const strokeCol = formatFfmpegColor(strokeColor);
@@ -1185,12 +1195,12 @@ export async function composeMultiplierVideo(options: MultiplierComposeOptions):
       for (let i = 0; i < lines.length; i++) {
         const lineY = Math.round(textYBase + i * lineHeightPx);
         const yExpr = getAnimatedY(lineY);
-        const escapedLineText = escapeFfmpegDrawtext(lines[i]);
+        const escapedLineText = escapeMultiplierDrawtext(lines[i]);
         const outLabel = getNextLabel(false);
         // Use the main text color at 0% opacity for the text body so only
         // the shadow (glow) is visible — prevents glow color tinting the text
         filterParts.push(
-          `${currentLabel}drawtext=fontfile='${escapedFontPath}':text="${escapedLineText}":fontcolor=${drawFontColor}@0.0:fontsize=${fontSize}:x=${alignX}:y=${yExpr}:shadowx=${offset}:shadowy=${offset}:shadowcolor=${glowCol}@0.6:expansion=none${alphaExpr}${outLabel}`
+          `${currentLabel}drawtext=fontfile='${escapedFontPath}':text='${escapedLineText}':fontcolor=${drawFontColor}@0.0:fontsize=${fontSize}:x=${alignX}:y=${yExpr}:shadowx=${offset}:shadowy=${offset}:shadowcolor=${glowCol}@0.6:expansion=none${alphaExpr}${outLabel}`
         );
         currentLabel = outLabel;
       }
@@ -1203,10 +1213,10 @@ export async function composeMultiplierVideo(options: MultiplierComposeOptions):
     for (let i = 0; i < lines.length; i++) {
       const lineY = Math.round(textYBase + i * lineHeightPx);
       const yExpr = getAnimatedY(lineY);
-      const escapedLineText = escapeFfmpegDrawtext(lines[i]);
+      const escapedLineText = escapeMultiplierDrawtext(lines[i]);
       const outLabel = getNextLabel(false);
       filterParts.push(
-        `${currentLabel}drawtext=fontfile='${escapedFontPath}':text="${escapedLineText}":fontcolor=${outlineCol}:fontsize=${fontSize}:x=${alignX}:y=${yExpr}:borderw=${doubleTextOutlineWidth}:bordercolor=${outlineCol}:expansion=none${alphaExpr}${outLabel}`
+        `${currentLabel}drawtext=fontfile='${escapedFontPath}':text='${escapedLineText}':fontcolor=${outlineCol}:fontsize=${fontSize}:x=${alignX}:y=${yExpr}:borderw=${doubleTextOutlineWidth}:bordercolor=${outlineCol}:expansion=none${alphaExpr}${outLabel}`
       );
       currentLabel = outLabel;
     }
@@ -1216,12 +1226,12 @@ export async function composeMultiplierVideo(options: MultiplierComposeOptions):
   for (let i = 0; i < lines.length; i++) {
     const lineY = Math.round(textYBase + i * lineHeightPx);
     const yExpr = getAnimatedY(lineY);
-    const escapedLineText = escapeFfmpegDrawtext(lines[i]);
+    const escapedLineText = escapeMultiplierDrawtext(lines[i]);
     const isFinal = i === lines.length - 1;
     const outLabel = getNextLabel(isFinal);
 
     // Build params with animated Y
-    let params = `fontfile='${escapedFontPath}':text="${escapedLineText}":fontcolor=${drawFontColor}:fontsize=${fontSize}:x=${alignX}:y=${yExpr}:expansion=none`;
+    let params = `fontfile='${escapedFontPath}':text='${escapedLineText}':fontcolor=${drawFontColor}:fontsize=${fontSize}:x=${alignX}:y=${yExpr}:expansion=none`;
     if (strokeEnabled && strokeWidth > 0) {
       const strokeCol = formatFfmpegColor(strokeColor);
       params += `:borderw=${strokeWidth}:bordercolor=${strokeCol}`;

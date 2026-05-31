@@ -112,19 +112,15 @@ export async function POST(req: Request) {
       }
     }
 
-    // 4. Create batch items: cross-product (every hook × every template)
-    //    If no templates selected, create one item per hook using inline styling.
+    // 4. Create batch items: one item per hook with round-robin template assignment.
+    //    Each hook gets ONE template, cycling through the selected templates.
+    //    e.g. 14 hooks × 3 templates → 14 videos (Hook1→TmplA, Hook2→TmplB, Hook3→TmplC, Hook4→TmplA, ...)
     const itemsToCreate: { hookText: string; status: "PENDING"; templateId: string | null }[] = [];
-    if (designTemplateIds.length > 0) {
-      for (const hook of hooks) {
-        for (const tmplId of designTemplateIds) {
-          itemsToCreate.push({ hookText: hook, status: "PENDING", templateId: tmplId });
-        }
-      }
-    } else {
-      for (const hook of hooks) {
-        itemsToCreate.push({ hookText: hook, status: "PENDING", templateId: null });
-      }
+    for (let i = 0; i < hooks.length; i++) {
+      const tmplId = designTemplateIds.length > 0
+        ? designTemplateIds[i % designTemplateIds.length]
+        : null;
+      itemsToCreate.push({ hookText: hooks[i], status: "PENDING", templateId: tmplId });
     }
 
     const batch = await prisma.multiplierBatch.create({

@@ -977,7 +977,7 @@ export default function MultiplierPage() {
         )}
         {selectedTemplateIds.length > 0 && (
           <p className="text-xs text-violet-300 font-medium">
-            ✓ {selectedTemplateIds.length} design{selectedTemplateIds.length > 1 ? "s" : ""} selected — each hook will be rendered with each design ({parsedHooks.length > 0 ? `${parsedHooks.length} × ${selectedTemplateIds.length} = ${parsedHooks.length * selectedTemplateIds.length} videos` : "upload hooks to see total"})
+            ✓ {selectedTemplateIds.length} design{selectedTemplateIds.length > 1 ? "s" : ""} selected — designs cycle across hooks ({parsedHooks.length > 0 ? `${parsedHooks.length} videos, cycling ${selectedTemplateIds.length} designs` : "upload hooks to see total"})
           </p>
         )}
       </div>
@@ -1829,7 +1829,7 @@ export default function MultiplierPage() {
         {uploading ? (
           <><Loader2 className="w-4 h-4 animate-spin" /> Uploading...</>
         ) : (
-          <><Layers className="w-4 h-4" /> Create Batch {parsedHooks.length > 0 && (selectedTemplateIds.length > 1 ? `(${parsedHooks.length * selectedTemplateIds.length} videos = ${parsedHooks.length} hooks × ${selectedTemplateIds.length} designs)` : `(${parsedHooks.length} video${parsedHooks.length > 1 ? "s" : ""})`)}</>
+          <><Layers className="w-4 h-4" /> Create Batch {parsedHooks.length > 0 && `(${parsedHooks.length} video${parsedHooks.length > 1 ? "s" : ""}${selectedTemplateIds.length > 1 ? `, cycling ${selectedTemplateIds.length} designs` : ""})`}</>
         )}
       </button>
 

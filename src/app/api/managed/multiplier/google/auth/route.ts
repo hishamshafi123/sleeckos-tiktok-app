@@ -30,7 +30,7 @@ export async function GET() {
 
   const authUrl = oauth2Client.generateAuthUrl({
     access_type: "offline",
-    prompt: "consent",
+    prompt: "consent select_account",
     scope: ["https://www.googleapis.com/auth/drive"],
     state: "multiplier",
   });
