@@ -1,4 +1,4 @@
-import { exec, execSync } from "child_process";
+import { exec, execSync, spawn } from "child_process";
 import fs from "fs";
 import path from "path";
 import os from "os";
@@ -572,7 +572,7 @@ export async function composeVideo(options: ComposeOptions): Promise<string> {
       filterComplex = [
         `[0:v]scale='if(gte(iw/ih,${OUTPUT_W}/${OUTPUT_H}),-1,${OUTPUT_W})':'if(gte(iw/ih,${OUTPUT_W}/${OUTPUT_H}),${OUTPUT_H},-1)',crop=${OUTPUT_W}:${OUTPUT_H}[scaled]`,
         // Set duration to 1s (:d=1) so geq math evaluates ONLY once for a static frame instead of every single frame (300x speedup!)
-        `color=c=0x${bgHex.padEnd(6, "0")}:s=${stripW}x${stripHeight}:d=1,format=yuva420p,geq=r='${cR}':g='${cG}':b='${cB}':a='if(gt(hypot(max(0,${R}-min(X,W-1-X)),max(0,${R}-min(Y,H-1-Y))),${R}),0,${alphaVal})'[rrect]`,
+        `color=c=0x${bgHex.padEnd(6, "0")}:s=${stripW}x${stripHeight}:d=1:r=1,format=yuva420p,geq=r='${cR}':g='${cG}':b='${cB}':a='if(gt(hypot(max(0,${R}-min(X,W-1-X)),max(0,${R}-min(Y,H-1-Y))),${R}),0,${alphaVal})'[rrect]`,
         // overlay repeats last frame indefinitely (eof_action=repeat) which is extremely cheap and fast
         `[scaled][rrect]overlay=x=${stripX}:y=${stripY}:eof_action=repeat[bg]`,
         ...drawtextFilters,
@@ -1050,7 +1050,7 @@ export async function composeMultiplierVideo(options: MultiplierComposeOptions):
 
   // ── Backdrop Blur (blurred region behind strip) ───────────────────────
   if (backdropBlurEnabled && backdropBlurRadius > 0 && drawStrip) {
-    const blurR = Math.min(backdropBlurRadius, 30);
+    const blurR = Math.min(backdropBlurRadius, 10); // capped at 10 for performance
     const outLabel = getNextLabel(false);
     // Crop the strip region, blur it, and overlay it back at the same position
     filterParts.push(
@@ -1079,7 +1079,7 @@ export async function composeMultiplierVideo(options: MultiplierComposeOptions):
     if (effectiveR > 0) {
       const shLabel = getNextLabel(false);
       filterParts.push(
-        `color=c=0x${shHex.padEnd(6, "0")}:s=${effectiveStripW}x${stripHeight}:d=1,format=yuva420p,geq=r='${shR}':g='${shG}':b='${shB}':a='if(gt(hypot(max(0,${effectiveR}-min(X,W-1-X)),max(0,${effectiveR}-min(Y,H-1-Y))),${effectiveR}),0,${shAlpha})'${shLabel}`
+        `color=c=0x${shHex.padEnd(6, "0")}:s=${effectiveStripW}x${stripHeight}:d=1:r=1,format=yuva420p,geq=r='${shR}':g='${shG}':b='${shB}':a='if(gt(hypot(max(0,${effectiveR}-min(X,W-1-X)),max(0,${effectiveR}-min(Y,H-1-Y))),${effectiveR}),0,${shAlpha})'${shLabel}`
       );
       const shOverLabel = getNextLabel(false);
       filterParts.push(
@@ -1115,7 +1115,7 @@ export async function composeMultiplierVideo(options: MultiplierComposeOptions):
     const outerDist = `hypot(max(0,${outerR}-min(X,W-1-X)),max(0,${outerR}-min(Y,H-1-Y)))`;
     const innerDist = `hypot(max(0,${innerR}-min(X-${bw},W-1-X-${bw})),max(0,${innerR}-min(Y-${bw},H-1-Y-${bw})))`;
     filterParts.push(
-      `color=c=0x${brdHex.padEnd(6, "0")}:s=${brdTotalW}x${brdTotalH}:d=1,format=yuva420p,geq=r='${brdR}':g='${brdG}':b='${brdB}':a='if(gt(${outerDist},${outerR}),0,if(lt(${innerDist},${innerR}),0,255))'${brdLabel}`
+      `color=c=0x${brdHex.padEnd(6, "0")}:s=${brdTotalW}x${brdTotalH}:d=1:r=1,format=yuva420p,geq=r='${brdR}':g='${brdG}':b='${brdB}':a='if(gt(${outerDist},${outerR}),0,if(lt(${innerDist},${innerR}),0,255))'${brdLabel}`
     );
     const brdOverLabel = getNextLabel(false);
     filterParts.push(
@@ -1145,7 +1145,7 @@ export async function composeMultiplierVideo(options: MultiplierComposeOptions):
       if (effectiveR > 0) {
         const rrectLabel = getNextLabel(false);
         filterParts.push(
-          `color=c=0x${bgHex.padEnd(6, "0")}:s=${effectiveStripW}x${stripHeight}:d=1,format=yuva420p,geq=r=${gradR}:g=${gradG}:b=${gradB}:a='if(gt(hypot(max(0,${effectiveR}-min(X,W-1-X)),max(0,${effectiveR}-min(Y,H-1-Y))),${effectiveR}),0,${alphaVal})'[rrect]`
+          `color=c=0x${bgHex.padEnd(6, "0")}:s=${effectiveStripW}x${stripHeight}:d=1:r=1,format=yuva420p,geq=r=${gradR}:g=${gradG}:b=${gradB}:a='if(gt(hypot(max(0,${effectiveR}-min(X,W-1-X)),max(0,${effectiveR}-min(Y,H-1-Y))),${effectiveR}),0,${alphaVal})'[rrect]`
         );
         const bgLabel = getNextLabel(false);
         filterParts.push(
@@ -1155,7 +1155,7 @@ export async function composeMultiplierVideo(options: MultiplierComposeOptions):
       } else {
         const rrectLabel = getNextLabel(false);
         filterParts.push(
-          `color=c=0x${bgHex.padEnd(6, "0")}:s=${effectiveStripW}x${stripHeight}:d=1,format=yuva420p,geq=r=${gradR}:g=${gradG}:b=${gradB}:a='${alphaVal}'[rrect]`
+          `color=c=0x${bgHex.padEnd(6, "0")}:s=${effectiveStripW}x${stripHeight}:d=1:r=1,format=yuva420p,geq=r=${gradR}:g=${gradG}:b=${gradB}:a='${alphaVal}'[rrect]`
         );
         const bgLabel = getNextLabel(false);
         filterParts.push(
@@ -1167,7 +1167,7 @@ export async function composeMultiplierVideo(options: MultiplierComposeOptions):
       // Rounded rect via geq overlay (existing)
       const rrectLabel = getNextLabel(false);
       filterParts.push(
-        `color=c=0x${bgHex.padEnd(6, "0")}:s=${effectiveStripW}x${stripHeight}:d=1,format=yuva420p,geq=r='${cR}':g='${cG}':b='${cB}':a='if(gt(hypot(max(0,${effectiveR}-min(X,W-1-X)),max(0,${effectiveR}-min(Y,H-1-Y))),${effectiveR}),0,${alphaVal})'[rrect]`
+        `color=c=0x${bgHex.padEnd(6, "0")}:s=${effectiveStripW}x${stripHeight}:d=1:r=1,format=yuva420p,geq=r='${cR}':g='${cG}':b='${cB}':a='if(gt(hypot(max(0,${effectiveR}-min(X,W-1-X)),max(0,${effectiveR}-min(Y,H-1-Y))),${effectiveR}),0,${alphaVal})'[rrect]`
       );
       const bgLabel = getNextLabel(false);
       filterParts.push(
@@ -1270,37 +1270,79 @@ export async function composeMultiplierVideo(options: MultiplierComposeOptions):
   const filterComplex = filterParts.join(";\n");
   fs.writeFileSync(filterFile, filterComplex);
 
-  const cmd = [
-    "ffmpeg -y",
-    `-i "${inputVideoPath}"`,
-    `-filter_complex_script "${filterFile}"`,
-    '-map "[v]" -map 0:a?',
-    "-c:v libx264 -preset fast -crf 23",
-    "-c:a aac -b:a 128k",
+  const ffmpegArgs = [
+    "-y",
+    "-i", inputVideoPath,
+    "-filter_complex_script", filterFile,
+    "-map", "[v]", "-map", "0:a?",
+    "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
+    "-threads", "2",
+    "-c:a", "aac", "-b:a", "128k",
     "-shortest",
-    "-movflags +faststart",
-    `"${outputPath}"`,
-  ].join(" ");
+    "-movflags", "+faststart",
+    outputPath,
+  ];
 
   console.log("[Multiplier Composer] fontColor:", fontColor, "→ drawFontColor:", drawFontColor);
   console.log("[Multiplier Composer] charsPerLine:", charsPerLine, "fontSize:", fontSize, "effectiveTextWidth:", effectiveTextWidth);
   console.log("[Multiplier Composer] lines:", lines);
   console.log("[Multiplier Composer] Filter script:\n", filterComplex.substring(0, 2000));
-  console.log("[Multiplier Composer] Running drawtext chain:", cmd.substring(0, 400) + "...");
+  console.log("[Multiplier Composer] Running ffmpeg with", ffmpegArgs.length, "args");
+
+  const TIMEOUT_MS = 120_000; // 2 minutes per video
 
   return new Promise<string>((resolve, reject) => {
-    exec(cmd, { maxBuffer: 50 * 1024 * 1024, timeout: 300000, killSignal: "SIGKILL" }, (error, _stdout, stderr) => {
+    const proc = spawn("ffmpeg", ffmpegArgs, { stdio: ["pipe", "pipe", "pipe"] });
+    let stderrChunks: string[] = [];
+    let killed = false;
+    let finished = false;
+
+    // Timeout: force-kill if FFmpeg hangs
+    const timer = setTimeout(() => {
+      if (!finished) {
+        killed = true;
+        console.error(`[Multiplier Composer] TIMEOUT after ${TIMEOUT_MS / 1000}s — killing FFmpeg`);
+        proc.kill("SIGKILL");
+      }
+    }, TIMEOUT_MS);
+
+    proc.stderr?.on("data", (chunk: Buffer) => {
+      const text = chunk.toString();
+      // Keep last 20 chunks for diagnostics (prevent memory bloat)
+      stderrChunks.push(text);
+      if (stderrChunks.length > 20) stderrChunks.shift();
+    });
+
+    proc.on("error", (err) => {
+      finished = true;
+      clearTimeout(timer);
+      try { if (fs.existsSync(filterFile)) fs.unlinkSync(filterFile); } catch {}
+      reject(new Error("FFmpeg spawn error: " + err.message));
+    });
+
+    proc.on("close", (code) => {
+      finished = true;
+      clearTimeout(timer);
       try { if (fs.existsSync(filterFile)) fs.unlinkSync(filterFile); } catch {}
 
-      if (error) {
-        console.error("[Multiplier Composer] FFmpeg failed:", stderr?.substring(0, 1000));
-        reject(new Error("FFmpeg composition failed: " + error.message));
+      const stderrText = stderrChunks.join("");
+
+      if (killed) {
+        reject(new Error(`FFmpeg timed out after ${TIMEOUT_MS / 1000}s. The video may be too long or the template too complex.`));
         return;
       }
+
+      if (code !== 0) {
+        console.error("[Multiplier Composer] FFmpeg failed (code", code, "):", stderrText.substring(stderrText.length - 1000));
+        reject(new Error("FFmpeg composition failed (exit code " + code + "): " + stderrText.substring(stderrText.length - 500)));
+        return;
+      }
+
       if (!fs.existsSync(outputPath)) {
         reject(new Error("FFmpeg did not produce output file"));
         return;
       }
+
       console.log("[Multiplier Composer] Successfully rendered:", outputPath);
       resolve(outputPath);
     });
