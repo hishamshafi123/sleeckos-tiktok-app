@@ -274,14 +274,27 @@ export default function MultiplierPage() {
   // ─── Strip Geometry (mirroring FFmpeg logic) ──────────────────────────────
 
   const stripGeometry = useMemo(() => {
-    // Estimate line count based on chars per line (matching FFmpeg logic)
+    // Adaptive char width: must match FFmpeg logic exactly
+    const isUppercase = textCase.trim().toLowerCase() === "uppercase";
+    const charWidthMultiplier = isUppercase ? 0.65 : 0.55;
     const paddingX = Math.max(stripPaddingY, 16);
     const effectiveTextWidth = OUTPUT_W - marginX * 2 - paddingX * 2;
-    const charsPerLine = Math.max(10, Math.floor(effectiveTextWidth / (fontSize * 0.62)));
+    const charsPerLine = Math.max(8, Math.floor(effectiveTextWidth / (fontSize * charWidthMultiplier)));
     const words = previewText.split(" ");
     let lines = 1;
     let currentLineLength = 0;
     for (const word of words) {
+      // Handle words longer than charsPerLine (force break)
+      if (word.length > charsPerLine) {
+        if (currentLineLength > 0) {
+          lines++;
+          currentLineLength = 0;
+        }
+        const chunks = Math.ceil(word.length / charsPerLine);
+        lines += chunks - 1; // first chunk is the current line
+        currentLineLength = word.length % charsPerLine || charsPerLine;
+        continue;
+      }
       if (currentLineLength + word.length + 1 > charsPerLine && currentLineLength > 0) {
         lines++;
         currentLineLength = word.length;
@@ -303,7 +316,7 @@ export default function MultiplierPage() {
       stripW: OUTPUT_W - marginX * 2,
       lines,
     };
-  }, [fontSize, marginX, stripPaddingY, positionYPercent, previewText]);
+  }, [fontSize, marginX, stripPaddingY, positionYPercent, previewText, textCase]);
 
   // ─── Drag to Position ─────────────────────────────────────────────────────
 
@@ -1128,6 +1141,7 @@ export default function MultiplierPage() {
                       ...(editingTemplate.stripBorderEnabled ? { border: `${editingTemplate.stripBorderWidth}px solid ${editingTemplate.stripBorderColor}` } : {}),
                       ...(editingTemplate.stripShadowEnabled ? { boxShadow: `${editingTemplate.stripShadowOffset}px ${editingTemplate.stripShadowOffset}px 8px ${editingTemplate.stripShadowColor}` } : {}),
                       ...(editingTemplate.backdropBlurEnabled ? { backdropFilter: `blur(${editingTemplate.backdropBlurRadius ?? 10}px)` } : {}),
+                      overflow: "hidden",
                     }}
                   >
                     <span
@@ -1656,6 +1670,7 @@ export default function MultiplierPage() {
                   padding: `${Math.max(2, stripPaddingY * (300 / OUTPUT_W))}px ${Math.max(6, Math.max(stripPaddingY, 16) * (300 / OUTPUT_W))}px`,
                   borderRadius: `${Math.max(0, borderRadius * (300 / OUTPUT_W))}px`,
                   transition: isDragging ? "none" : "top 0.15s ease-out",
+                  overflow: "hidden",
                 }}
               >
                 <span

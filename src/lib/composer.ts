@@ -275,6 +275,20 @@ export function wrapText(text: string, maxCharsPerLine: number = 25): string {
 
     let currentLine = "";
     for (const word of words) {
+      // If the word itself is longer than maxCharsPerLine, force-break it
+      if (word.length > maxCharsPerLine) {
+        if (currentLine) {
+          finalLines.push(currentLine);
+          currentLine = "";
+        }
+        // Break the long word into chunks
+        for (let i = 0; i < word.length; i += maxCharsPerLine) {
+          const chunk = word.substring(i, i + maxCharsPerLine);
+          finalLines.push(chunk);
+        }
+        continue;
+      }
+
       if ((currentLine + " " + word).trim().length <= maxCharsPerLine) {
         currentLine = currentLine ? currentLine + " " + word : word;
       } else {
@@ -944,8 +958,11 @@ export async function composeMultiplierVideo(options: MultiplierComposeOptions):
   const padX = rawPaddingX ?? Math.max(stripPaddingY, 16);
   const padY = stripPaddingY;
   const effectiveTextWidth = OUTPUT_W - marginX * 2 - padX * 2;
-  // Bold uppercase fonts need a generous per-char estimate to prevent overflow
-  const charsPerLine = Math.max(10, Math.floor(effectiveTextWidth / (fontSize * 0.52)));
+  // Adaptive char width: uppercase bold fonts are MUCH wider than mixed-case.
+  // Use worst-case estimates to guarantee text never overflows the strip.
+  const isUppercase = textCase.trim().toLowerCase() === "uppercase";
+  const charWidthMultiplier = isUppercase ? 0.65 : 0.55;
+  const charsPerLine = Math.max(8, Math.floor(effectiveTextWidth / (fontSize * charWidthMultiplier)));
   const wrappedText = wrapText(casedText, charsPerLine);
   const lines = wrappedText.split("\n").map((line) => line.trim().replace(/\r/g, ""));
 
@@ -963,11 +980,13 @@ export async function composeMultiplierVideo(options: MultiplierComposeOptions):
   const bgAlpha = Math.max(0, Math.min(1, bgStripOpacity));
   const R = Math.max(0, Math.min(borderRadius, Math.floor(stripHeight / 2)));
 
-  // Build alignment X expression
+  // Build alignment X expression — clamped to strip bounds
   function buildAlignX(): string {
     const leftX = stripX + padX;
-    const centerExpr = `max(${leftX}\\,${stripX}+(${stripW}-text_w)/2)`;
-    const rightExpr = `${stripX + stripW - padX}-text_w`;
+    const rightBound = stripX + stripW - padX;
+    // Center: clamp between leftX and rightBound-text_w to guarantee text stays inside strip
+    const centerExpr = `min(${rightBound}-text_w\\,max(${leftX}\\,${stripX}+(${stripW}-text_w)/2))`;
+    const rightExpr = `min(${rightBound}-text_w\\,${stripX + stripW - padX}-text_w)`;
     if (textAlign === "LEFT") return String(leftX);
     if (textAlign === "RIGHT") return `'${rightExpr}'`;
     return `'${centerExpr}'`;
