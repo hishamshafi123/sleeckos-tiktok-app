@@ -252,6 +252,12 @@ export default function MultiplierPage() {
   const [exportingBatches, setExportingBatches] = useState<Set<string>>(new Set());
   const [renamingBatchId, setRenamingBatchId] = useState<string | null>(null);
   const [renamingBatchValue, setRenamingBatchValue] = useState("");
+  // Multi-folder batch assignment
+  const [multiFolderPickerBatchId, setMultiFolderPickerBatchId] = useState<string | null>(null);
+  const [batchSelectedFolders, setBatchSelectedFolders] = useState<Record<string, DriveFolder[]>>({});
+  const [multiFolderSearch, setMultiFolderSearch] = useState("");
+  const [multiFolderResults, setMultiFolderResults] = useState<DriveFolder[]>([]);
+  const [searchingMultiFolders, setSearchingMultiFolders] = useState(false);
 
   // ─── Video Object URL ─────────────────────────────────────────────────────
 
@@ -536,9 +542,42 @@ export default function MultiplierPage() {
     }
   };
 
-  const handleAssignFolder = async (targetId: string, folderId: string, folderName: string) => {
+  const searchMultiFolders = async (query: string) => {
+    setSearchingMultiFolders(true);
     try {
-      const isItem = folderPickerTarget?.type === "item";
+      const res = await fetch(`/api/managed/multiplier/google/folders?q=${encodeURIComponent(query)}`);
+      if (res.ok) {
+        const data = await res.json();
+        setMultiFolderResults(data.folders || []);
+      }
+    } catch {} finally {
+      setSearchingMultiFolders(false);
+    }
+  };
+
+  const handleAssignFolder = async (targetId: string, folderId: string, folderName: string) => {
+    const isItem = folderPickerTarget?.type === "item";
+    // Optimistic local state update — prevents scroll jump
+    setBatches((prev) =>
+      prev.map((b) => {
+        if (isItem) {
+          return {
+            ...b,
+            items: b.items.map((item) =>
+              item.id === targetId ? { ...item, driveFolderId: folderId, driveFolderName: folderName } : item
+            ),
+          };
+        } else if (b.id === targetId) {
+          return { ...b, driveFolderId: folderId, driveFolderName: folderName };
+        }
+        return b;
+      })
+    );
+    setFolderPickerTarget(null);
+    toast.success(`Folder "${folderName}" assigned`);
+
+    // Persist to server in background (no refetch)
+    try {
       await fetch("/api/managed/multiplier", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
@@ -548,26 +587,93 @@ export default function MultiplierPage() {
             : { batchId: targetId, driveFolderId: folderId, driveFolderName: folderName }
         ),
       });
-      toast.success(`Folder "${folderName}" assigned`);
-      setFolderPickerTarget(null);
-      fetchBatches();
     } catch {
-      toast.error("Failed to assign folder");
+      toast.error("Failed to save folder — please refresh");
+    }
+  };
+
+  // ─── Multi-folder batch assignment (round-robin) ──────────────────────────
+
+  const handleBatchMultiFolderSelect = (batchId: string, folder: DriveFolder) => {
+    setBatchSelectedFolders((prev) => {
+      const existing = prev[batchId] || [];
+      // Toggle: add if not present, remove if already selected
+      const isSelected = existing.some((f) => f.id === folder.id);
+      if (isSelected) {
+        return { ...prev, [batchId]: existing.filter((f) => f.id !== folder.id) };
+      }
+      return { ...prev, [batchId]: [...existing, folder] };
+    });
+  };
+
+  const handleBatchMultiFolderAssign = async (batchId: string) => {
+    const folders = batchSelectedFolders[batchId] || [];
+    if (folders.length === 0) { toast.error("Select at least one folder"); return; }
+
+    const batch = batches.find((b) => b.id === batchId);
+    if (!batch) return;
+
+    const renderedItems = batch.items.filter((i) => i.status === "RENDERED");
+    if (renderedItems.length === 0) { toast.error("No rendered videos to assign"); return; }
+
+    // Round-robin: assign folders cyclically to rendered items
+    const assignments: { itemId: string; folderId: string; folderName: string }[] = [];
+    renderedItems.forEach((item, idx) => {
+      const folder = folders[idx % folders.length];
+      assignments.push({ itemId: item.id, folderId: folder.id, folderName: folder.name });
+    });
+
+    // Optimistic local state update
+    setBatches((prev) =>
+      prev.map((b) => {
+        if (b.id !== batchId) return b;
+        return {
+          ...b,
+          items: b.items.map((item) => {
+            const assignment = assignments.find((a) => a.itemId === item.id);
+            if (assignment) {
+              return { ...item, driveFolderId: assignment.folderId, driveFolderName: assignment.folderName };
+            }
+            return item;
+          }),
+        };
+      })
+    );
+
+    setMultiFolderPickerBatchId(null);
+    setBatchSelectedFolders((prev) => { const copy = { ...prev }; delete copy[batchId]; return copy; });
+    toast.success(`${folders.length} folder(s) assigned to ${renderedItems.length} videos (round-robin)`);
+
+    // Persist all to server in background
+    try {
+      await Promise.all(
+        assignments.map((a) =>
+          fetch("/api/managed/multiplier", {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ itemId: a.itemId, driveFolderId: a.folderId, driveFolderName: a.folderName }),
+          })
+        )
+      );
+    } catch {
+      toast.error("Some folder assignments failed — please refresh");
     }
   };
 
   const handleRenameBatch = async (batchId: string, newName: string) => {
+    // Optimistic local state update
+    setBatches((prev) => prev.map((b) => (b.id === batchId ? { ...b, name: newName } : b)));
+    setRenamingBatchId(null);
+    toast.success("Batch renamed");
+
     try {
       await fetch("/api/managed/multiplier", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ batchId, name: newName }),
       });
-      toast.success("Batch renamed");
-      setRenamingBatchId(null);
-      fetchBatches();
     } catch {
-      toast.error("Failed to rename batch");
+      toast.error("Failed to save name — please refresh");
     }
   };
 
@@ -1970,22 +2076,34 @@ export default function MultiplierPage() {
                           )}
                         </button>
                       )}
-                      {/* Drive Export — uses per-item folders */}
+                      {/* Drive Folders + Export */}
                       {driveConnected && renderedCount > 0 && (
-                        <button
-                          onClick={() => handleExportToDrive(batch.id)}
-                          disabled={exportingBatches.has(batch.id) || batch.driveExportStatus === "EXPORTING" || !batch.items.some((i: any) => i.driveFolderId || batch.driveFolderId)}
-                          className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-cyan-500/10 text-cyan-300 border border-cyan-500/20 text-xs font-medium hover:bg-cyan-500/20 transition-all disabled:opacity-50"
-                          title={batch.items.some((i: any) => i.driveFolderId || batch.driveFolderId) ? "Export all to assigned Drive folders" : "Assign Drive folders to items first"}
-                        >
-                          {exportingBatches.has(batch.id) || batch.driveExportStatus === "EXPORTING" ? (
-                            <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Exporting...</>
-                          ) : batch.driveExportStatus === "EXPORTED" ? (
-                            <><Check className="w-3.5 h-3.5" /> Exported</>
-                          ) : (
-                            <><Cloud className="w-3.5 h-3.5" /> Export All</>
-                          )}
-                        </button>
+                        <>
+                          <button
+                            onClick={() => { setMultiFolderPickerBatchId(batch.id); setMultiFolderSearch(""); setMultiFolderResults([]); searchMultiFolders(""); }}
+                            className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-blue-500/10 text-blue-300 border border-blue-500/20 text-xs font-medium hover:bg-blue-500/20 transition-all"
+                          >
+                            <FolderOpen className="w-3.5 h-3.5" />
+                            Select Folders
+                            {(batchSelectedFolders[batch.id]?.length || 0) > 0 && (
+                              <span className="ml-1 px-1.5 py-0.5 rounded-full bg-blue-500/30 text-[9px] font-bold">{batchSelectedFolders[batch.id].length}</span>
+                            )}
+                          </button>
+                          <button
+                            onClick={() => handleExportToDrive(batch.id)}
+                            disabled={exportingBatches.has(batch.id) || batch.driveExportStatus === "EXPORTING" || !batch.items.some((i: any) => i.driveFolderId || batch.driveFolderId)}
+                            className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-cyan-500/10 text-cyan-300 border border-cyan-500/20 text-xs font-medium hover:bg-cyan-500/20 transition-all disabled:opacity-50"
+                            title={batch.items.some((i: any) => i.driveFolderId || batch.driveFolderId) ? "Export all to assigned Drive folders" : "Assign Drive folders to items first"}
+                          >
+                            {exportingBatches.has(batch.id) || batch.driveExportStatus === "EXPORTING" ? (
+                              <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Exporting...</>
+                            ) : batch.driveExportStatus === "EXPORTED" ? (
+                              <><Check className="w-3.5 h-3.5" /> Exported</>
+                            ) : (
+                              <><Cloud className="w-3.5 h-3.5" /> Export All</>
+                            )}
+                          </button>
+                        </>
                       )}
                       <button onClick={() => handleDeleteBatch(batch.id)} className="p-2 rounded-lg text-gray-600 hover:text-red-400 hover:bg-red-500/10 transition-all">
                         <Trash2 className="w-4 h-4" />
@@ -2137,6 +2255,103 @@ export default function MultiplierPage() {
           </div>
         </div>
       )}
+      {/* ─── Multi-Folder Picker Modal ──────────────────────────────────── */}
+      {multiFolderPickerBatchId && (() => {
+        const targetBatch = batches.find((b) => b.id === multiFolderPickerBatchId);
+        const renderedCount = targetBatch?.items.filter((i) => i.status === "RENDERED").length || 0;
+        const selectedFolders = batchSelectedFolders[multiFolderPickerBatchId] || [];
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm" onClick={() => setMultiFolderPickerBatchId(null)}>
+            <div className="bg-[#16161f] rounded-2xl border border-white/10 p-5 max-w-md w-full mx-4 shadow-2xl space-y-4" onClick={(e) => e.stopPropagation()}>
+              <div className="flex items-center justify-between">
+                <h3 className="text-white text-sm font-semibold flex items-center gap-2">
+                  <FolderOpen className="w-4 h-4 text-blue-400" /> Select Multiple Folders
+                </h3>
+                <button onClick={() => setMultiFolderPickerBatchId(null)} className="text-gray-500 hover:text-white">
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <p className="text-gray-500 text-[11px]">
+                Select folders and they will be distributed round-robin across {renderedCount} rendered videos.
+                {selectedFolders.length > 0 && (
+                  <span className="text-blue-400 ml-1">{selectedFolders.length} folder(s) selected</span>
+                )}
+              </p>
+
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  placeholder="Search folders..."
+                  value={multiFolderSearch}
+                  onChange={(e) => setMultiFolderSearch(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && searchMultiFolders(multiFolderSearch)}
+                  className="flex-1 px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white text-sm focus:outline-none focus:border-blue-500/50"
+                />
+                <button
+                  onClick={() => searchMultiFolders(multiFolderSearch)}
+                  disabled={searchingMultiFolders}
+                  className="px-3 py-2 rounded-lg bg-blue-500/15 text-blue-300 border border-blue-500/20 text-xs font-medium hover:bg-blue-500/25 transition-all disabled:opacity-50"
+                >
+                  {searchingMultiFolders ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
+                </button>
+              </div>
+
+              {/* Selected folders chips */}
+              {selectedFolders.length > 0 && (
+                <div className="flex flex-wrap gap-1.5">
+                  {selectedFolders.map((f, idx) => (
+                    <span
+                      key={f.id}
+                      className="flex items-center gap-1 px-2 py-1 rounded-md bg-blue-500/15 text-blue-300 text-[10px] font-medium border border-blue-500/20"
+                    >
+                      <span className="text-blue-500/50 font-mono">{idx + 1}.</span>
+                      {f.name.substring(0, 18)}
+                      <button onClick={() => handleBatchMultiFolderSelect(multiFolderPickerBatchId, f)} className="ml-0.5 text-blue-400/50 hover:text-red-400">
+                        <X className="w-3 h-3" />
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              )}
+
+              <div className="max-h-48 overflow-y-auto space-y-1">
+                {multiFolderResults.length === 0 ? (
+                  <p className="text-xs text-gray-600 text-center py-6">
+                    {searchingMultiFolders ? "Searching..." : "Type to search for folders"}
+                  </p>
+                ) : (
+                  multiFolderResults.map((folder) => {
+                    const isSelected = selectedFolders.some((f) => f.id === folder.id);
+                    return (
+                      <button
+                        key={folder.id}
+                        onClick={() => handleBatchMultiFolderSelect(multiFolderPickerBatchId, folder)}
+                        className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-left transition-all group ${isSelected ? "bg-blue-500/10 border border-blue-500/20" : "hover:bg-white/5"}`}
+                      >
+                        <div className={`w-4 h-4 rounded border flex items-center justify-center flex-shrink-0 ${isSelected ? "bg-blue-500 border-blue-500" : "border-white/20"}`}>
+                          {isSelected && <Check className="w-3 h-3 text-white" />}
+                        </div>
+                        <FolderOpen className="w-4 h-4 text-blue-400 flex-shrink-0" />
+                        <span className={`text-sm truncate ${isSelected ? "text-white" : "text-gray-300 group-hover:text-white"}`}>{folder.name}</span>
+                      </button>
+                    );
+                  })
+                )}
+              </div>
+
+              {/* Assign button */}
+              <button
+                onClick={() => handleBatchMultiFolderAssign(multiFolderPickerBatchId)}
+                disabled={selectedFolders.length === 0}
+                className="w-full py-2.5 rounded-xl bg-gradient-to-r from-blue-500 to-cyan-500 text-white text-sm font-semibold hover:from-blue-400 hover:to-cyan-400 transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+              >
+                Assign {selectedFolders.length} Folder{selectedFolders.length !== 1 ? "s" : ""} to {renderedCount} Videos
+              </button>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }
