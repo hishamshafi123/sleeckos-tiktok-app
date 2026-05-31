@@ -802,6 +802,33 @@ export default function MultiplierPage() {
     } catch (err: any) { toast.error(err.message || "Failed to start rendering"); }
   };
 
+  const handleRetryFailed = async (batchId: string) => {
+    try {
+      // Reset failed items to PENDING first
+      const resetRes = await fetch("/api/managed/multiplier/render", {
+        method: "PATCH", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ batchId, action: "retry-failed" }),
+      });
+      if (!resetRes.ok) {
+        const errMsg = await getErrorMessage(resetRes, "Reset failed");
+        throw new Error(errMsg);
+      }
+
+      // Now start the render (it will skip already-RENDERED items)
+      const res = await fetch("/api/managed/multiplier/render", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ batchId }),
+      });
+      if (!res.ok) {
+        const errMsg = await getErrorMessage(res, "Render failed");
+        throw new Error(errMsg);
+      }
+      toast.success("Retrying failed renders!");
+      setRenderingBatchId(batchId);
+      fetchBatches();
+    } catch (err: any) { toast.error(err.message || "Failed to retry rendering"); }
+  };
+
   const handlePauseRender = async (batchId: string) => {
     try {
       setPausingBatchId(batchId);
@@ -2040,6 +2067,11 @@ export default function MultiplierPage() {
                       {(batch.status === "READY" || batch.status === "FAILED") && (
                         <button onClick={() => handleStartRender(batch.id)} className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-gradient-to-r from-cyan-500 to-blue-600 text-white text-xs font-medium hover:from-cyan-400 hover:to-blue-500 transition-all">
                           <Play className="w-3.5 h-3.5" /> {batch.status === "FAILED" ? "Resume Render" : "Render All"}
+                        </button>
+                      )}
+                      {batch.status === "COMPLETED" && failedCount > 0 && (
+                        <button onClick={() => handleRetryFailed(batch.id)} className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-gradient-to-r from-amber-500 to-orange-600 text-white text-xs font-medium hover:from-amber-400 hover:to-orange-500 transition-all">
+                          <RefreshCw className="w-3.5 h-3.5" /> Retry Failed ({failedCount})
                         </button>
                       )}
                       {batch.status === "RENDERING" && (

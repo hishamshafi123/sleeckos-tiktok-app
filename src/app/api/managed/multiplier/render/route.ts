@@ -5,6 +5,33 @@ import { getSession } from "@/lib/session";
 import fs from "fs";
 import path from "path";
 
+// PATCH /api/managed/multiplier/render — Reset failed items for retry
+export async function PATCH(req: Request) {
+  const session = await getSession();
+  if (!session || session.role !== "ADMIN") {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  try {
+    const { batchId, action } = await req.json();
+
+    if (!batchId || action !== "retry-failed") {
+      return NextResponse.json({ error: "Invalid request" }, { status: 400 });
+    }
+
+    // Reset all FAILED items to PENDING
+    const result = await prisma.multiplierItem.updateMany({
+      where: { batchId, status: "FAILED" },
+      data: { status: "PENDING", errorMessage: null },
+    });
+
+    return NextResponse.json({ success: true, resetCount: result.count });
+  } catch (err) {
+    console.error("[Multiplier Render API] PATCH error:", err);
+    return NextResponse.json({ error: "Failed to reset items" }, { status: 500 });
+  }
+}
+
 // POST /api/managed/multiplier/render — Start rendering a batch
 export async function POST(req: Request) {
   const session = await getSession();
