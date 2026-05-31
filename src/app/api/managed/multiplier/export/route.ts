@@ -34,8 +34,10 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Batch not found" }, { status: 404 });
     }
 
-    if (!batch.driveFolderId) {
-      return NextResponse.json({ error: "No Drive folder assigned. Select a folder first." }, { status: 400 });
+    // Check that at least batch folder or some item folders exist
+    const hasAnyFolder = batch.driveFolderId || batch.items.some((i: any) => i.driveFolderId);
+    if (!hasAnyFolder) {
+      return NextResponse.json({ error: "No Drive folder assigned. Select a folder for items or the batch first." }, { status: 400 });
     }
 
     if (batch.items.length === 0) {
@@ -110,8 +112,14 @@ async function exportToDriveInBackground(batchId: string) {
       },
     });
 
-    if (!batch || !batch.driveFolderId) {
-      throw new Error("Batch or folder not found");
+    if (!batch) {
+      throw new Error("Batch not found");
+    }
+
+    // Check that there's at least one folder assigned (batch or item level)
+    const hasAnyFolder = batch.driveFolderId || batch.items.some((i) => i.driveFolderId);
+    if (!hasAnyFolder) {
+      throw new Error("No Drive folders assigned");
     }
 
     // Get Drive client from existing ManagedAccount connection
@@ -142,13 +150,20 @@ async function exportToDriveInBackground(batchId: string) {
         .substring(0, 40);
       const fileName = `${String(i + 1).padStart(3, "0")}_${hookSlug}.mp4`;
 
+      // Use per-item folder if set, otherwise fall back to batch folder
+      const targetFolderId = item.driveFolderId || batch.driveFolderId;
+      if (!targetFolderId) {
+        console.warn(`[Multiplier Export Worker] No folder for item ${item.id}, skipping`);
+        continue;
+      }
+
       try {
         const fileStream = fs.createReadStream(filePath);
 
         await drive.files.create({
           requestBody: {
             name: fileName,
-            parents: [batch.driveFolderId!],
+            parents: [targetFolderId],
           },
           media: {
             mimeType: "video/mp4",

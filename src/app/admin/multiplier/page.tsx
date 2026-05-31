@@ -17,6 +17,8 @@ interface MultiplierItem {
   renderedVideoUrl: string | null;
   errorMessage: string | null;
   templateId: string | null;
+  driveFolderId: string | null;
+  driveFolderName: string | null;
 }
 
 interface MultiplierBatch {
@@ -241,11 +243,15 @@ export default function MultiplierPage() {
   // ─── Google Drive ───────────────────────────────────────────────────────────
   const [driveConnected, setDriveConnected] = useState(false);
   const [driveEmail, setDriveEmail] = useState("");
-  const [showFolderPicker, setShowFolderPicker] = useState<string | null>(null); // batchId
+  // Folder picker target: { type: 'batch' | 'item', id: string }
+  const [folderPickerTarget, setFolderPickerTarget] = useState<{ type: "batch" | "item"; id: string } | null>(null);
+  const showFolderPicker = folderPickerTarget?.id || null; // backward compat for modal
   const [driveFolders, setDriveFolders] = useState<DriveFolder[]>([]);
   const [folderSearch, setFolderSearch] = useState("");
   const [searchingFolders, setSearchingFolders] = useState(false);
   const [exportingBatches, setExportingBatches] = useState<Set<string>>(new Set());
+  const [renamingBatchId, setRenamingBatchId] = useState<string | null>(null);
+  const [renamingBatchValue, setRenamingBatchValue] = useState("");
 
   // ─── Video Object URL ─────────────────────────────────────────────────────
 
@@ -530,18 +536,38 @@ export default function MultiplierPage() {
     }
   };
 
-  const handleAssignFolder = async (batchId: string, folderId: string, folderName: string) => {
+  const handleAssignFolder = async (targetId: string, folderId: string, folderName: string) => {
+    try {
+      const isItem = folderPickerTarget?.type === "item";
+      await fetch("/api/managed/multiplier", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(
+          isItem
+            ? { itemId: targetId, driveFolderId: folderId, driveFolderName: folderName }
+            : { batchId: targetId, driveFolderId: folderId, driveFolderName: folderName }
+        ),
+      });
+      toast.success(`Folder "${folderName}" assigned`);
+      setFolderPickerTarget(null);
+      fetchBatches();
+    } catch {
+      toast.error("Failed to assign folder");
+    }
+  };
+
+  const handleRenameBatch = async (batchId: string, newName: string) => {
     try {
       await fetch("/api/managed/multiplier", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ batchId, driveFolderId: folderId, driveFolderName: folderName }),
+        body: JSON.stringify({ batchId, name: newName }),
       });
-      toast.success(`Folder "${folderName}" assigned`);
-      setShowFolderPicker(null);
+      toast.success("Batch renamed");
+      setRenamingBatchId(null);
       fetchBatches();
     } catch {
-      toast.error("Failed to assign folder");
+      toast.error("Failed to rename batch");
     }
   };
 
@@ -1875,9 +1901,24 @@ export default function MultiplierPage() {
                   <div className="p-5 flex items-center justify-between">
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-3">
-                        <h3 className="text-white font-semibold text-sm truncate">
-                          {batch.name || `Batch ${batch.id.substring(0, 8)}`}
-                        </h3>
+                        {renamingBatchId === batch.id ? (
+                          <input
+                            autoFocus
+                            className="bg-white/5 border border-white/10 rounded-lg px-2 py-0.5 text-white text-sm font-semibold outline-none focus:border-cyan-500/50 w-48"
+                            value={renamingBatchValue}
+                            onChange={(e) => setRenamingBatchValue(e.target.value)}
+                            onBlur={() => { if (renamingBatchValue.trim()) handleRenameBatch(batch.id, renamingBatchValue.trim()); else setRenamingBatchId(null); }}
+                            onKeyDown={(e) => { if (e.key === "Enter" && renamingBatchValue.trim()) handleRenameBatch(batch.id, renamingBatchValue.trim()); if (e.key === "Escape") setRenamingBatchId(null); }}
+                          />
+                        ) : (
+                          <h3
+                            className="text-white font-semibold text-sm truncate cursor-pointer hover:text-cyan-300 transition-colors"
+                            onDoubleClick={() => { setRenamingBatchId(batch.id); setRenamingBatchValue(batch.name || `Batch ${batch.id.substring(0, 8)}`); }}
+                            title="Double-click to rename"
+                          >
+                            {batch.name || `Batch ${batch.id.substring(0, 8)}`}
+                          </h3>
+                        )}
                         <span className={`text-[10px] px-2 py-0.5 rounded-full border font-medium ${statusColor(batch.status)}`}>
                           {batch.status}
                         </span>
@@ -1929,33 +1970,22 @@ export default function MultiplierPage() {
                           )}
                         </button>
                       )}
-                      {/* Drive Folder + Export */}
+                      {/* Drive Export — uses per-item folders */}
                       {driveConnected && renderedCount > 0 && (
-                        <>
-                          <button
-                            onClick={() => { setShowFolderPicker(batch.id); setFolderSearch(""); setDriveFolders([]); searchDriveFolders(""); }}
-                            className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-blue-500/10 text-blue-300 border border-blue-500/20 text-xs font-medium hover:bg-blue-500/20 transition-all"
-                            title={batch.driveFolderName || "Select folder"}
-                          >
-                            <FolderOpen className="w-3.5 h-3.5" />
-                            {batch.driveFolderName ? batch.driveFolderName.substring(0, 15) : "Folder"}
-                          </button>
-                          {batch.driveFolderId && (
-                            <button
-                              onClick={() => handleExportToDrive(batch.id)}
-                              disabled={exportingBatches.has(batch.id) || batch.driveExportStatus === "EXPORTING"}
-                              className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-cyan-500/10 text-cyan-300 border border-cyan-500/20 text-xs font-medium hover:bg-cyan-500/20 transition-all disabled:opacity-50"
-                            >
-                              {exportingBatches.has(batch.id) || batch.driveExportStatus === "EXPORTING" ? (
-                                <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Exporting...</>
-                              ) : batch.driveExportStatus === "EXPORTED" ? (
-                                <><Check className="w-3.5 h-3.5" /> Exported</>
-                              ) : (
-                                <><Cloud className="w-3.5 h-3.5" /> Export</>
-                              )}
-                            </button>
+                        <button
+                          onClick={() => handleExportToDrive(batch.id)}
+                          disabled={exportingBatches.has(batch.id) || batch.driveExportStatus === "EXPORTING" || !batch.items.some((i: any) => i.driveFolderId || batch.driveFolderId)}
+                          className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-cyan-500/10 text-cyan-300 border border-cyan-500/20 text-xs font-medium hover:bg-cyan-500/20 transition-all disabled:opacity-50"
+                          title={batch.items.some((i: any) => i.driveFolderId || batch.driveFolderId) ? "Export all to assigned Drive folders" : "Assign Drive folders to items first"}
+                        >
+                          {exportingBatches.has(batch.id) || batch.driveExportStatus === "EXPORTING" ? (
+                            <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Exporting...</>
+                          ) : batch.driveExportStatus === "EXPORTED" ? (
+                            <><Check className="w-3.5 h-3.5" /> Exported</>
+                          ) : (
+                            <><Cloud className="w-3.5 h-3.5" /> Export All</>
                           )}
-                        </>
+                        </button>
                       )}
                       <button onClick={() => handleDeleteBatch(batch.id)} className="p-2 rounded-lg text-gray-600 hover:text-red-400 hover:bg-red-500/10 transition-all">
                         <Trash2 className="w-4 h-4" />
@@ -1999,14 +2029,29 @@ export default function MultiplierPage() {
                   )}
 
                   {/* Items List */}
-                  <div className="border-t border-white/5 max-h-64 overflow-y-auto">
+                  <div className="border-t border-white/5 max-h-80 overflow-y-auto">
                     {batch.items.map((item, idx) => (
                       <div key={item.id} className="flex items-center gap-3 px-5 py-2.5 border-b border-white/[0.03] last:border-b-0 hover:bg-white/[0.02] transition-all">
                         <span className="text-gray-700 text-xs font-mono w-6 text-right flex-shrink-0">{idx + 1}</span>
                         {itemIcon(item.status)}
                         <span className="text-gray-400 text-sm flex-1 truncate">{item.hookText}</span>
+                        {/* Per-item Drive folder selector */}
+                        {driveConnected && item.status === "RENDERED" && (
+                          <button
+                            onClick={() => { setFolderPickerTarget({ type: "item", id: item.id }); setFolderSearch(""); setDriveFolders([]); searchDriveFolders(""); }}
+                            className={`flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-medium transition-all flex-shrink-0 ${
+                              item.driveFolderId
+                                ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 hover:bg-emerald-500/20"
+                                : "bg-white/5 text-gray-500 border border-white/10 hover:bg-white/10 hover:text-gray-300"
+                            }`}
+                            title={item.driveFolderName || "Select Drive folder"}
+                          >
+                            <FolderOpen className="w-3 h-3" />
+                            {item.driveFolderName ? item.driveFolderName.substring(0, 12) : "Folder"}
+                          </button>
+                        )}
                         {item.renderedVideoUrl && (
-                          <button onClick={() => setPreviewUrl(item.renderedVideoUrl)} className="text-cyan-500 hover:text-cyan-300 transition-all">
+                          <button onClick={() => setPreviewUrl(item.renderedVideoUrl)} className="text-cyan-500 hover:text-cyan-300 transition-all flex-shrink-0">
                             <Play className="w-3.5 h-3.5" />
                           </button>
                         )}
@@ -2038,14 +2083,17 @@ export default function MultiplierPage() {
         </div>
       )}
       {/* ─── Folder Picker Modal ──────────────────────────────────────────── */}
-      {showFolderPicker && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm" onClick={() => setShowFolderPicker(null)}>
+      {folderPickerTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm" onClick={() => setFolderPickerTarget(null)}>
           <div className="bg-[#16161f] rounded-2xl border border-white/10 p-5 max-w-md w-full mx-4 shadow-2xl space-y-4" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between">
               <h3 className="text-white text-sm font-semibold flex items-center gap-2">
                 <FolderOpen className="w-4 h-4 text-blue-400" /> Select Drive Folder
+                <span className="text-gray-600 text-[10px] font-normal">
+                  ({folderPickerTarget.type === "item" ? "for video" : "for batch"})
+                </span>
               </h3>
-              <button onClick={() => setShowFolderPicker(null)} className="text-gray-500 hover:text-white">
+              <button onClick={() => setFolderPickerTarget(null)} className="text-gray-500 hover:text-white">
                 <X className="w-5 h-5" />
               </button>
             </div>
@@ -2077,7 +2125,7 @@ export default function MultiplierPage() {
                 driveFolders.map((folder) => (
                   <button
                     key={folder.id}
-                    onClick={() => handleAssignFolder(showFolderPicker, folder.id, folder.name)}
+                    onClick={() => handleAssignFolder(folderPickerTarget.id, folder.id, folder.name)}
                     className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-white/5 text-left transition-all group"
                   >
                     <FolderOpen className="w-4 h-4 text-blue-400 flex-shrink-0" />

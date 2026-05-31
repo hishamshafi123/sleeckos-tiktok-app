@@ -26,6 +26,8 @@ export async function GET() {
             status: true,
             renderedVideoUrl: true,
             errorMessage: true,
+            driveFolderId: true,
+            driveFolderName: true,
           },
           orderBy: { createdAt: "asc" },
         },
@@ -221,24 +223,40 @@ export async function PATCH(req: Request) {
   }
 
   try {
-    const { batchId, driveFolderId, driveFolderName } = await req.json();
+    const body = await req.json();
+    const { batchId, itemId, driveFolderId, driveFolderName, name } = body;
 
-    if (!batchId) {
-      return NextResponse.json({ error: "Missing batchId" }, { status: 400 });
+    // 1. Per-item folder assignment
+    if (itemId) {
+      const item = await prisma.multiplierItem.update({
+        where: { id: itemId },
+        data: {
+          driveFolderId: driveFolderId || null,
+          driveFolderName: driveFolderName || null,
+        },
+      });
+      return NextResponse.json({ success: true, item });
     }
+
+    // 2. Batch-level updates (folder and/or rename)
+    if (!batchId) {
+      return NextResponse.json({ error: "Missing batchId or itemId" }, { status: 400 });
+    }
+
+    const updateData: any = {};
+    if (driveFolderId !== undefined) updateData.driveFolderId = driveFolderId || null;
+    if (driveFolderName !== undefined) updateData.driveFolderName = driveFolderName || null;
+    if (name !== undefined) updateData.name = name;
 
     const batch = await prisma.multiplierBatch.update({
       where: { id: batchId },
-      data: {
-        driveFolderId: driveFolderId || null,
-        driveFolderName: driveFolderName || null,
-      },
+      data: updateData,
     });
 
     return NextResponse.json({ success: true, batch });
   } catch (err) {
     console.error("[Multiplier API] PATCH error:", err);
-    return NextResponse.json({ error: "Failed to update batch" }, { status: 500 });
+    return NextResponse.json({ error: "Failed to update" }, { status: 500 });
   }
 }
 

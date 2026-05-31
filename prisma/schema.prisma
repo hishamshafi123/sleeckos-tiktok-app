@@ -711,6 +711,8 @@ model MultiplierItem {
   status           MultiplierItemStatus @default(PENDING)
   errorMessage     String?
   templateId       String?              // which design template was used
+  driveFolderId    String?              // per-item Drive folder override
+  driveFolderName  String?              // per-item folder display name
   createdAt        DateTime             @default(now())
   updatedAt        DateTime             @updatedAt
 }
