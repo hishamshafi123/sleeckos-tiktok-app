@@ -390,7 +390,15 @@ export default function MultiplierPage() {
     }
   }, []);
 
-  useEffect(() => { fetchBatches(); }, [fetchBatches]);
+  useEffect(() => {
+    // Reset any batches stuck at "EXPORTING" from previous failed sessions
+    fetch("/api/managed/multiplier/export", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "reset-stuck" }),
+    }).catch(() => {});
+    fetchBatches();
+  }, [fetchBatches]);
 
   // Poll while rendering
   useEffect(() => {
@@ -690,8 +698,18 @@ export default function MultiplierPage() {
         throw new Error(err.error);
       }
       toast.success("Export started! Videos uploading to Drive...");
-      // Poll for completion
+      // Poll for completion (max 10 minutes)
+      let pollCount = 0;
+      const maxPolls = 200; // 200 * 3s = 10 min
       const pollExport = setInterval(async () => {
+        pollCount++;
+        if (pollCount > maxPolls) {
+          clearInterval(pollExport);
+          setExportingBatches((prev) => { const next = new Set(prev); next.delete(batchId); return next; });
+          toast.error("Export timed out — check batches for status");
+          fetchBatches();
+          return;
+        }
         try {
           const statusRes = await fetch(`/api/managed/multiplier/export?batchId=${batchId}`);
           if (statusRes.ok) {
@@ -701,10 +719,10 @@ export default function MultiplierPage() {
               setExportingBatches((prev) => { const next = new Set(prev); next.delete(batchId); return next; });
               toast.success("Export completed!");
               fetchBatches();
-            } else if (statusData.status === "FAILED") {
+            } else if (statusData.status === "FAILED" || statusData.status === null) {
               clearInterval(pollExport);
               setExportingBatches((prev) => { const next = new Set(prev); next.delete(batchId); return next; });
-              toast.error("Export failed");
+              toast.error("Export failed — you can retry");
               fetchBatches();
             }
           }
@@ -2124,13 +2142,19 @@ export default function MultiplierPage() {
                           <button
                             onClick={() => handleExportToDrive(batch.id)}
                             disabled={exportingBatches.has(batch.id) || batch.driveExportStatus === "EXPORTING" || !batch.items.some((i: any) => i.driveFolderId || batch.driveFolderId)}
-                            className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-cyan-500/10 text-cyan-300 border border-cyan-500/20 text-xs font-medium hover:bg-cyan-500/20 transition-all disabled:opacity-50"
+                            className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium transition-all disabled:opacity-50 ${
+                              batch.driveExportStatus === "FAILED"
+                                ? "bg-red-500/10 text-red-300 border border-red-500/20 hover:bg-red-500/20"
+                                : "bg-cyan-500/10 text-cyan-300 border border-cyan-500/20 hover:bg-cyan-500/20"
+                            }`}
                             title={batch.items.some((i: any) => i.driveFolderId || batch.driveFolderId) ? "Export all to assigned Drive folders" : "Assign Drive folders to items first"}
                           >
                             {exportingBatches.has(batch.id) || batch.driveExportStatus === "EXPORTING" ? (
                               <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Exporting...</>
                             ) : batch.driveExportStatus === "EXPORTED" ? (
                               <><Check className="w-3.5 h-3.5" /> Exported</>
+                            ) : batch.driveExportStatus === "FAILED" ? (
+                              <><RefreshCw className="w-3.5 h-3.5" /> Retry Export</>
                             ) : (
                               <><Cloud className="w-3.5 h-3.5" /> Export All</>
                             )}
