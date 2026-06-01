@@ -6,6 +6,26 @@ import fs from "fs";
 import path from "path";
 import { getMultiplierDriveClient } from "../google/status/route";
 
+// Global export queue — serialize exports to prevent rate limiting
+let exportQueue: string[] = [];
+let isProcessingQueue = false;
+
+async function processExportQueue() {
+  if (isProcessingQueue) return;
+  isProcessingQueue = true;
+
+  while (exportQueue.length > 0) {
+    const batchId = exportQueue.shift()!;
+    try {
+      await exportToDriveInBackground(batchId);
+    } catch (err: any) {
+      console.error(`[Export Queue] Failed batch ${batchId}:`, err?.message || err);
+    }
+  }
+
+  isProcessingQueue = false;
+}
+
 // POST /api/managed/multiplier/export — Upload rendered videos to assigned Drive folder
 export async function POST(req: Request) {
   const session = await getSession();
@@ -48,27 +68,22 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Export already in progress" }, { status: 400 });
     }
 
-    // Verify Drive client is available BEFORE starting background work
-    const drive = await getMultiplierDriveClient();
-    if (!drive) {
-      return NextResponse.json({ error: "Google Drive not connected. Connect Drive in the Manage section first." }, { status: 400 });
-    }
-
     // Mark as exporting
     await prisma.multiplierBatch.update({
       where: { id: batchId },
-      data: { driveExportStatus: "EXPORTING" },
+      data: { driveExportStatus: "EXPORTING", errorMessage: null },
     });
 
-    // Start background upload
-    exportToDriveInBackground(batchId).catch((err) => {
-      console.error(`[Multiplier Export] Background export failed for ${batchId}:`, err);
+    // Add to serialized queue instead of running concurrently
+    exportQueue.push(batchId);
+    processExportQueue().catch((err) => {
+      console.error(`[Export Queue] Queue processing failed:`, err);
     });
 
-    return NextResponse.json({ success: true, message: "Export started" });
-  } catch (err) {
+    return NextResponse.json({ success: true, message: "Export queued" });
+  } catch (err: any) {
     console.error("[Multiplier Export] Error:", err);
-    return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
+    return NextResponse.json({ error: err?.message || "Internal Server Error" }, { status: 500 });
   }
 }
 
@@ -88,7 +103,7 @@ export async function GET(req: Request) {
 
   const batch = await prisma.multiplierBatch.findUnique({
     where: { id: batchId },
-    select: { driveExportStatus: true, driveFolderId: true, driveFolderName: true },
+    select: { driveExportStatus: true, driveFolderId: true, driveFolderName: true, errorMessage: true },
   });
 
   if (!batch) {
@@ -99,6 +114,7 @@ export async function GET(req: Request) {
     status: batch.driveExportStatus,
     folderId: batch.driveFolderId,
     folderName: batch.driveFolderName,
+    error: batch.errorMessage,
   });
 }
 
@@ -113,10 +129,9 @@ export async function PATCH(req: Request) {
     const { action } = await req.json();
 
     if (action === "reset-stuck") {
-      // Reset all batches stuck at EXPORTING to null (allow retry)
       const result = await prisma.multiplierBatch.updateMany({
         where: { driveExportStatus: "EXPORTING" },
-        data: { driveExportStatus: null },
+        data: { driveExportStatus: null, errorMessage: null },
       });
       return NextResponse.json({ success: true, resetCount: result.count });
     }
@@ -128,19 +143,19 @@ export async function PATCH(req: Request) {
   }
 }
 
-// Simple delay helper
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
 function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-// Upload a single file with retries
 async function uploadWithRetry(
   drive: any,
   filePath: string,
   fileName: string,
   folderId: string,
   maxRetries = 3
-): Promise<boolean> {
+): Promise<{ success: boolean; error?: string }> {
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
       const fileStream = fs.createReadStream(filePath);
@@ -156,32 +171,31 @@ async function uploadWithRetry(
         fields: "id",
         supportsAllDrives: true,
       });
-      return true;
+      return { success: true };
     } catch (err: any) {
       const status = err?.response?.status || err?.code;
-      const message = err?.message || String(err);
+      const message = err?.response?.data?.error?.message || err?.message || String(err);
 
-      // Don't retry on auth errors — they won't self-resolve
+      // Don't retry on auth errors
       if (status === 401 || status === 403) {
-        console.error(`[Multiplier Export] Auth error (${status}), not retrying: ${message}`);
-        throw err;
+        return { success: false, error: `Auth error (${status}): ${message}` };
       }
 
-      console.warn(`[Multiplier Export] Upload attempt ${attempt}/${maxRetries} failed: ${message}`);
+      console.warn(`[Export] Upload attempt ${attempt}/${maxRetries} failed: ${message}`);
 
       if (attempt < maxRetries) {
-        // Exponential backoff: 3s, 9s, 27s
         const backoff = Math.pow(3, attempt) * 1000;
-        console.log(`[Multiplier Export] Retrying in ${backoff / 1000}s...`);
         await delay(backoff);
       }
     }
   }
-  return false;
+  return { success: false, error: "Failed after 3 retries" };
 }
 
+// ─── Background Export Worker ────────────────────────────────────────────────
+
 async function exportToDriveInBackground(batchId: string) {
-  console.log(`[Multiplier Export Worker] Starting export for batch ${batchId}`);
+  console.log(`[Export Worker] Starting export for batch ${batchId}`);
 
   try {
     const batch = await prisma.multiplierBatch.findUnique({
@@ -198,23 +212,31 @@ async function exportToDriveInBackground(batchId: string) {
       throw new Error("Batch not found");
     }
 
-    // Check that there's at least one folder assigned (batch or item level)
     const hasAnyFolder = batch.driveFolderId || batch.items.some((i) => i.driveFolderId);
     if (!hasAnyFolder) {
-      throw new Error("No Drive folders assigned");
+      throw new Error("No Drive folders assigned to batch or items");
     }
 
-    // Get Drive client — single call, reused for all uploads
+    // Get Drive client
     const drive = await getMultiplierDriveClient();
     if (!drive) {
-      throw new Error("Google Drive not connected. Connect Drive in the Manage section first.");
+      throw new Error("Google Drive not connected or token expired. Reconnect Drive in the Manage section.");
+    }
+
+    // Quick connectivity check — list 1 file to verify token works
+    try {
+      await drive.files.list({ pageSize: 1, fields: "files(id)" });
+      console.log("[Export Worker] Drive connectivity check passed");
+    } catch (checkErr: any) {
+      const msg = checkErr?.response?.data?.error?.message || checkErr?.message || String(checkErr);
+      throw new Error(`Drive connectivity check failed: ${msg}`);
     }
 
     const publicDir = path.join(process.cwd(), "public");
-
     let uploadedCount = 0;
     let skippedCount = 0;
     let failedCount = 0;
+    let lastError = "";
 
     for (let i = 0; i < batch.items.length; i++) {
       const item = batch.items[i];
@@ -225,20 +247,18 @@ async function exportToDriveInBackground(batchId: string) {
 
       const filePath = path.join(publicDir, item.renderedVideoUrl);
       if (!fs.existsSync(filePath)) {
-        console.warn(`[Multiplier Export Worker] File not found: ${filePath}`);
+        console.warn(`[Export Worker] File not found: ${filePath}`);
+        lastError = `File not found: ${item.renderedVideoUrl}`;
         skippedCount++;
         continue;
       }
 
-      // Use per-item folder if set, otherwise fall back to batch folder
       const targetFolderId = item.driveFolderId || batch.driveFolderId;
       if (!targetFolderId) {
-        console.warn(`[Multiplier Export Worker] No folder for item ${item.id}, skipping`);
         skippedCount++;
         continue;
       }
 
-      // Generate a clean filename
       const hookSlug = item.hookText
         .replace(/[^a-zA-Z0-9 ]/g, "")
         .trim()
@@ -246,46 +266,45 @@ async function exportToDriveInBackground(batchId: string) {
         .substring(0, 40);
       const fileName = `${String(i + 1).padStart(3, "0")}_${hookSlug || "video"}.mp4`;
 
-      try {
-        const success = await uploadWithRetry(drive, filePath, fileName, targetFolderId);
-        if (success) {
-          uploadedCount++;
-          console.log(`[Multiplier Export Worker] Uploaded ${uploadedCount}/${batch.items.length}: ${fileName}`);
-        } else {
-          failedCount++;
-          console.error(`[Multiplier Export Worker] Failed after retries: ${fileName}`);
-        }
-      } catch (uploadErr: any) {
+      const result = await uploadWithRetry(drive, filePath, fileName, targetFolderId);
+      if (result.success) {
+        uploadedCount++;
+        console.log(`[Export Worker] Uploaded ${uploadedCount}/${batch.items.length}: ${fileName}`);
+      } else {
         failedCount++;
-        const errMsg = uploadErr?.message || String(uploadErr);
-        console.error(`[Multiplier Export Worker] Fatal error uploading ${fileName}: ${errMsg}`);
-        
-        // If it's an auth error, stop all uploads — they'll all fail
-        const status = uploadErr?.response?.status || uploadErr?.code;
-        if (status === 401 || status === 403) {
-          console.error(`[Multiplier Export Worker] Auth error — stopping batch export`);
+        lastError = result.error || "Unknown upload error";
+        console.error(`[Export Worker] Failed: ${fileName} — ${lastError}`);
+
+        // If auth error, stop — all subsequent uploads will fail too
+        if (lastError.includes("Auth error")) {
+          console.error(`[Export Worker] Auth error — stopping batch export`);
           break;
         }
       }
 
-      // Rate limit: wait 1.5s between uploads to avoid Google API throttling
+      // Rate limit: 2s between uploads
       if (i < batch.items.length - 1) {
-        await delay(1500);
+        await delay(2000);
       }
     }
 
     const finalStatus = uploadedCount > 0 ? "EXPORTED" : "FAILED";
+    const errorMsg = finalStatus === "FAILED" 
+      ? `${lastError} (${failedCount} failed, ${skippedCount} skipped, ${uploadedCount} uploaded)`
+      : null;
+
     await prisma.multiplierBatch.update({
       where: { id: batchId },
-      data: { driveExportStatus: finalStatus },
+      data: { driveExportStatus: finalStatus, errorMessage: errorMsg },
     });
 
-    console.log(`[Multiplier Export Worker] Batch ${batchId} export completed. ${uploadedCount} uploaded, ${failedCount} failed, ${skippedCount} skipped.`);
+    console.log(`[Export Worker] Batch ${batchId} done: ${uploadedCount} uploaded, ${failedCount} failed, ${skippedCount} skipped`);
   } catch (err: any) {
-    console.error(`[Multiplier Export Worker] Fatal error for batch ${batchId}:`, err?.message || err);
+    const errMsg = err?.message || String(err);
+    console.error(`[Export Worker] Fatal error for batch ${batchId}: ${errMsg}`);
     await prisma.multiplierBatch.update({
       where: { id: batchId },
-      data: { driveExportStatus: "FAILED" },
+      data: { driveExportStatus: "FAILED", errorMessage: errMsg.substring(0, 500) },
     });
   }
 }

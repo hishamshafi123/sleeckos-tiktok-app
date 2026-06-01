@@ -722,7 +722,7 @@ export default function MultiplierPage() {
             } else if (statusData.status === "FAILED" || statusData.status === null) {
               clearInterval(pollExport);
               setExportingBatches((prev) => { const next = new Set(prev); next.delete(batchId); return next; });
-              toast.error("Export failed — you can retry");
+              toast.error(statusData.error ? `Export failed: ${statusData.error}` : "Export failed — you can retry");
               fetchBatches();
             }
           }
