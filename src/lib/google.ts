@@ -146,16 +146,33 @@ export async function downloadDriveFile(fileId: string, accountId?: string, useS
 }
 
 // ── Delete/trash a file from Drive (after successful post) ───────────────────
-export async function deleteDriveFile(fileId: string, accountId?: string, useServiceAccount = true): Promise<void> {
+// NOTE: useServiceAccount defaults to FALSE because the Service Account often
+// lacks delete permissions on files in the user's personal Drive.
+export async function deleteDriveFile(fileId: string, accountId?: string, useServiceAccount = false): Promise<void> {
   const drive = await getDriveClient(accountId, useServiceAccount);
 
   // Try permanent delete
   try {
     await drive.files.delete({ fileId, supportsAllDrives: true });
-    console.log(`[Drive] Permanently deleted file ${fileId}`);
+    console.log(`[Drive] Permanently deleted file ${fileId} (account=${accountId || 'default'})`);
     return;
-  } catch (delErr) {
-    console.log(`[Drive] delete() failed for ${fileId}, trying trash...`, delErr instanceof Error ? delErr.message : String(delErr));
+  } catch (delErr: any) {
+    const status = delErr?.response?.status || delErr?.code;
+    const msg = delErr?.response?.data?.error?.message || delErr?.message || String(delErr);
+    console.warn(`[Drive] delete() failed for ${fileId} (status=${status}): ${msg}`);
+
+    // If Service Account was used and it got a 403/404, retry with OAuth
+    if (useServiceAccount && accountId && (status === 403 || status === 404)) {
+      console.log(`[Drive] Retrying delete with OAuth credentials for account ${accountId}`);
+      try {
+        const oauthDrive = await getDriveClient(accountId, false);
+        await oauthDrive.files.delete({ fileId, supportsAllDrives: true });
+        console.log(`[Drive] Permanently deleted file ${fileId} via OAuth fallback`);
+        return;
+      } catch (oauthErr: any) {
+        console.warn(`[Drive] OAuth delete also failed: ${oauthErr?.message || oauthErr}`);
+      }
+    }
   }
 
   // Fallback: move to trash
@@ -167,8 +184,9 @@ export async function deleteDriveFile(fileId: string, accountId?: string, useSer
     });
     console.log(`[Drive] Trashed file ${fileId}`);
     return;
-  } catch (trashErr) {
-    console.error(`[Drive] trash() also failed for ${fileId}:`, trashErr instanceof Error ? trashErr.message : String(trashErr));
+  } catch (trashErr: any) {
+    const msg = trashErr?.response?.data?.error?.message || trashErr?.message || String(trashErr);
+    console.warn(`[Drive] trash() failed for ${fileId}: ${msg}`);
   }
 
   // Last resort: remove file from folder (unparent it so it disappears from listing)
@@ -184,8 +202,9 @@ export async function deleteDriveFile(fileId: string, accountId?: string, useSer
       console.log(`[Drive] Removed file ${fileId} from parent folder(s)`);
       return;
     }
-  } catch (removeErr) {
-    console.error(`[Drive] removeParents also failed for ${fileId}:`, removeErr instanceof Error ? removeErr.message : String(removeErr));
+  } catch (removeErr: any) {
+    const msg = removeErr?.response?.data?.error?.message || removeErr?.message || String(removeErr);
+    console.error(`[Drive] All delete methods failed for ${fileId}: ${msg}`);
     throw removeErr;
   }
 }
