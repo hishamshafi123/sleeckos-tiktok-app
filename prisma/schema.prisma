@@ -574,6 +574,9 @@ model TrackLyricalTemplate {
   particleFx      String           @default("none")
   mirrorBg        Boolean          @default(false)
   bgSpeed         Float            @default(1.0)
+  animationMode   String           @default("highlight")  // "highlight" = existing, "word_builder" = progressive append
+  bgColor         String?          // Solid background color hex (e.g. "#D4A017"). When set, replaces video bg
+  textColor       String?          // Text color override (e.g. "#000000"). Defaults to white if null
   overlayVideoUrl String?          // Local transparent .mov video overlay file URL
   previewImageUrl String?          // Local transparent preview PNG image file URL
   createdAt       DateTime         @default(now())

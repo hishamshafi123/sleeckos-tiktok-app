@@ -136,6 +136,9 @@ export async function PATCH(req: Request) {
       particleFx = "none",
       mirrorBg = false,
       bgSpeed = 1.0,
+      animationMode = "highlight",
+      bgColor = null,
+      textColor = null,
     } = body;
 
     if (!trackId || !templateName) {
@@ -168,6 +171,9 @@ export async function PATCH(req: Request) {
       particleFx,
       mirrorBg,
       bgSpeed,
+      animationMode,
+      bgColor,
+      textColor,
       overlayVideoUrl: overlayRelativePath,
       previewImageUrl: previewRelativePath,
     };
@@ -198,11 +204,12 @@ export async function PATCH(req: Request) {
     const duration = track.duration || 10.0;
 
     // Generate static preview frame (launches headless browser, takes ~2s)
+    const rendererConfig = { fontFamily, fontSize, activeColor, strokeWidth, strokeColor, positionY, colorFilter, vignette, particleFx, animationMode: animationMode as "highlight" | "word_builder", bgColor, textColor };
     try {
       const { renderPreviewFrame } = await import("@/lib/canvas-overlay-renderer");
       await renderPreviewFrame(
         words,
-        { fontFamily, fontSize, activeColor, strokeWidth, strokeColor, positionY, colorFilter, vignette, particleFx },
+        rendererConfig,
         previewAbsolutePath,
       );
       console.log(`[Lyrical API] Preview frame generated: ${previewRelativePath}`);
@@ -217,7 +224,7 @@ export async function PATCH(req: Request) {
         console.log(`[Lyrical API] Starting Canvas overlay pre-render for '${templateName}'...`);
         await renderCanvasOverlay(
           words,
-          { fontFamily, fontSize, activeColor, strokeWidth, strokeColor, positionY, colorFilter, vignette, particleFx },
+          rendererConfig,
           duration,
           overlayAbsolutePath,
         );

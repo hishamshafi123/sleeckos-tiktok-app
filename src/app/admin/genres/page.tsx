@@ -473,6 +473,9 @@ export default function GenresDashboard() {
   const [setupLyricalParticleFx, setSetupLyricalParticleFx] = useState<string>("none");
   const [setupLyricalMirrorBg, setSetupLyricalMirrorBg] = useState<boolean>(false);
   const [setupLyricalBgSpeed, setSetupLyricalBgSpeed] = useState<number>(1.0);
+  const [lyricalAnimationMode, setLyricalAnimationMode] = useState<string>("highlight");
+  const [lyricalBgColor, setLyricalBgColor] = useState<string | null>(null);
+  const [lyricalTextColor, setLyricalTextColor] = useState<string | null>(null);
   const [mixupVisuals, setMixupVisuals] = useState<boolean>(true);
 
 
@@ -703,6 +706,9 @@ export default function GenresDashboard() {
           particleFx: setupLyricalParticleFx,
           mirrorBg: setupLyricalMirrorBg,
           bgSpeed: setupLyricalBgSpeed,
+          animationMode: lyricalAnimationMode,
+          bgColor: lyricalBgColor,
+          textColor: lyricalTextColor,
         }),
       });
       if (res.ok) {
@@ -1979,6 +1985,35 @@ export default function GenresDashboard() {
             { word: "Preview", start: 2.0, end: 3.0 }
           ];
 
+          // ── Word Builder: group into larger phrases (up to 12 words, split on gaps >1.5s)
+          const phrases = (() => {
+            if (lyricalAnimationMode !== "word_builder") return [];
+            const res: any[][] = [];
+            let current: any[] = [];
+            let lastEnd = 0;
+            for (const w of wordsList) {
+              if (current.length > 0 && (w.start - lastEnd > 1.5 || current.length >= 12)) {
+                res.push(current);
+                current = [];
+              }
+              current.push(w);
+              lastEnd = w.end;
+            }
+            if (current.length > 0) res.push(current);
+            return res;
+          })();
+
+          // Find current phrase for word_builder mode
+          const currentPhrase = phrases.find(phrase => {
+            if (phrase.length === 0) return false;
+            return lyricalPlaybackTime >= phrase[0].start - 0.05 && lyricalPlaybackTime <= phrase[phrase.length - 1].end + 0.3;
+          }) || null;
+
+          // Words to show in word_builder mode (all words whose start <= current time)
+          const wordBuilderVisibleWords = currentPhrase
+            ? currentPhrase.filter((w: any) => lyricalPlaybackTime >= w.start - 0.05)
+            : [];
+
           // Map font-family string option to CSS family name
           const cssColorFilterStyle = (() => {
             if (setupLyricalColorFilter === "cyberpunk") {
@@ -2140,6 +2175,9 @@ export default function GenresDashboard() {
                               setLyricalStrokeWidth(5);
                               setLyricalStrokeColor("#000000");
                               setLyricalPositionY(0.75);
+                              setLyricalAnimationMode("highlight");
+                              setLyricalBgColor(null);
+                              setLyricalTextColor(null);
                             } else if (val === "vibrant-yellow") {
                               setLyricalTemplateName("Vibrant Yellow");
                               setLyricalFontFamily("Anton");
@@ -2148,6 +2186,9 @@ export default function GenresDashboard() {
                               setLyricalStrokeWidth(4);
                               setLyricalStrokeColor("#000000");
                               setLyricalPositionY(0.70);
+                              setLyricalAnimationMode("highlight");
+                              setLyricalBgColor(null);
+                              setLyricalTextColor(null);
                             } else if (val === "electric-green") {
                               setLyricalTemplateName("Electric Green");
                               setLyricalFontFamily("Outfit-Bold");
@@ -2156,6 +2197,9 @@ export default function GenresDashboard() {
                               setLyricalStrokeWidth(6);
                               setLyricalStrokeColor("#111111");
                               setLyricalPositionY(0.80);
+                              setLyricalAnimationMode("highlight");
+                              setLyricalBgColor(null);
+                              setLyricalTextColor(null);
                             } else if (val === "hot-pink") {
                               setLyricalTemplateName("Hot Pink");
                               setLyricalFontFamily("Inter-Bold");
@@ -2164,6 +2208,24 @@ export default function GenresDashboard() {
                               setLyricalStrokeWidth(5);
                               setLyricalStrokeColor("#000000");
                               setLyricalPositionY(0.75);
+                              setLyricalAnimationMode("highlight");
+                              setLyricalBgColor(null);
+                              setLyricalTextColor(null);
+                            } else if (val === "word-builder-yellow") {
+                              setLyricalTemplateName("Minimalist Word Builder");
+                              setLyricalFontFamily("Inter-Bold");
+                              setLyricalFontSize(40);
+                              setLyricalActiveColor("#000000");
+                              setLyricalStrokeWidth(0);
+                              setLyricalStrokeColor("#000000");
+                              setLyricalPositionY(0.50);
+                              setLyricalAnimationMode("word_builder");
+                              setLyricalBgColor("#D4A017");
+                              setLyricalTextColor("#000000");
+                              setSetupLyricalColorFilter("none");
+                              setSetupLyricalVignette("none");
+                              setSetupLyricalParticleFx("none");
+                              setSetupLyricalBgVideoUrl("");
                             }
                           }}
                           className="w-full bg-black/45 border border-white/10 hover:border-white/20 rounded-2xl px-3 py-2.5 text-xs text-gray-300 focus:outline-none transition-all duration-300 cursor-pointer"
@@ -2173,6 +2235,7 @@ export default function GenresDashboard() {
                           <option value="vibrant-yellow">Vibrant Yellow (Anton Bold)</option>
                           <option value="electric-green">Electric Green (Outfit Active)</option>
                           <option value="hot-pink">Hot Pink (Vibrant Neon Pink)</option>
+                          <option value="word-builder-yellow">⚡ Minimalist Word Builder (Yellow & Black)</option>
                         </select>
                       </div>
 
@@ -2451,8 +2514,14 @@ export default function GenresDashboard() {
                       onClick={() => togglePlayTrack(selectedTrack)}
                       className="relative aspect-[9/16] w-full max-w-[200px] bg-[#07070d] border border-white/15 rounded-[36px] overflow-hidden shadow-2xl flex flex-col justify-between group cursor-pointer hover:border-purple-500/30 transition-all duration-300"
                     >
-                      {/* Background video loop layer */}
-                      {setupLyricalBgVideoUrl ? (
+                      {/* Background layer */}
+                      {lyricalBgColor ? (
+                        /* Solid color background for Word Builder mode */
+                        <div 
+                          className="absolute inset-0 z-0 select-none" 
+                          style={{ background: lyricalBgColor }}
+                        />
+                      ) : setupLyricalBgVideoUrl ? (
                         <>
                           <video
                             ref={previewVideoRef}
@@ -2670,42 +2739,75 @@ export default function GenresDashboard() {
                       </div>
 
                       {/* Live Captions Typography Layer */}
-                      <div 
-                        className="absolute left-0 right-0 px-3 text-center transform -translate-y-1/2 transition-all duration-150 z-10 select-none pointer-events-none"
-                        style={{ 
-                          top: `${lyricalPositionY * 100}%`,
-                          fontFamily: cssFontFamily,
-                          fontSize: `${lyricalFontSize * 0.23}px`,
-                          lineHeight: 1.25
-                        }}
-                      >
-                        <div className="flex flex-wrap justify-center items-center gap-x-1 gap-y-0.5">
-                          {currentChunk.map((w: any, idx: number) => {
-                            const isActive = isPlayingThis 
-                              ? (lyricalPlaybackTime >= w.start && lyricalPlaybackTime <= w.end)
-                              : (idx === 0);
-                            
-                            const activeColor = getWordColor(w, idx, isActive);
-                            
-                            return (
+                      {lyricalAnimationMode === "word_builder" ? (
+                        /* ── WORD BUILDER MODE: Progressive word append ── */
+                        <div 
+                          className="absolute left-0 right-0 px-4 text-left transform -translate-y-1/2 transition-all duration-150 z-10 select-none pointer-events-none"
+                          style={{ 
+                            top: `${lyricalPositionY * 100}%`,
+                            fontFamily: cssFontFamily,
+                            fontSize: `${lyricalFontSize * 0.23}px`,
+                            lineHeight: 1.35
+                          }}
+                        >
+                          <div 
+                            className="flex flex-wrap justify-start items-center gap-x-1 gap-y-0.5"
+                            style={{ maxHeight: `${Math.round(lyricalFontSize * 0.23 * 1.35 * 3 + 8)}px`, overflow: "hidden" }}
+                          >
+                            {wordBuilderVisibleWords.map((w: any, idx: number) => (
                               <span
                                 key={idx}
                                 style={{
-                                  color: isActive ? activeColor : "#ffffff",
-                                  WebkitTextStroke: `${lyricalStrokeWidth * 0.23}px ${lyricalStrokeColor}`,
-                                  textShadow: isActive ? `0 0 8px ${activeColor}cc, 0 0 16px ${activeColor}50` : "none",
-                                  transform: isActive ? "scale(1.12)" : "scale(1.0)",
-                                  transition: "all 0.08s ease-out",
-                                  display: "inline-block"
+                                  color: lyricalTextColor || "#000000",
+                                  fontWeight: 500,
+                                  textTransform: "lowercase" as const,
+                                  display: "inline-block",
                                 }}
-                                className={`${isActive ? "font-black tracking-tight" : "font-extrabold"}`}
                               >
-                                {w.word}
+                                {w.word.toLowerCase()}
                               </span>
-                            );
-                          })}
+                            ))}
+                          </div>
                         </div>
-                      </div>
+                      ) : (
+                        /* ── HIGHLIGHT MODE: Existing chunk-based rendering ── */
+                        <div 
+                          className="absolute left-0 right-0 px-3 text-center transform -translate-y-1/2 transition-all duration-150 z-10 select-none pointer-events-none"
+                          style={{ 
+                            top: `${lyricalPositionY * 100}%`,
+                            fontFamily: cssFontFamily,
+                            fontSize: `${lyricalFontSize * 0.23}px`,
+                            lineHeight: 1.25
+                          }}
+                        >
+                          <div className="flex flex-wrap justify-center items-center gap-x-1 gap-y-0.5">
+                            {currentChunk.map((w: any, idx: number) => {
+                              const isActive = isPlayingThis 
+                                ? (lyricalPlaybackTime >= w.start && lyricalPlaybackTime <= w.end)
+                                : (idx === 0);
+                              
+                              const activeColor = getWordColor(w, idx, isActive);
+                              
+                              return (
+                                <span
+                                  key={idx}
+                                  style={{
+                                    color: isActive ? activeColor : "#ffffff",
+                                    WebkitTextStroke: `${lyricalStrokeWidth * 0.23}px ${lyricalStrokeColor}`,
+                                    textShadow: isActive ? `0 0 8px ${activeColor}cc, 0 0 16px ${activeColor}50` : "none",
+                                    transform: isActive ? "scale(1.12)" : "scale(1.0)",
+                                    transition: "all 0.08s ease-out",
+                                    display: "inline-block"
+                                  }}
+                                  className={`${isActive ? "font-black tracking-tight" : "font-extrabold"}`}
+                                >
+                                  {w.word}
+                                </span>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
 
                       {/* Progress bar */}
                       <div className="absolute bottom-0 left-0 right-0 h-1 bg-white/10 z-20">
@@ -2787,6 +2889,12 @@ export default function GenresDashboard() {
                                   setSetupLyricalParticleFx(tpl.particleFx || "none");
                                   setSetupLyricalMirrorBg(tpl.mirrorBg || false);
                                   setSetupLyricalBgSpeed(tpl.bgSpeed || 1.0);
+                                  setLyricalAnimationMode(tpl.animationMode || "highlight");
+                                  setLyricalBgColor(tpl.bgColor || null);
+                                  setLyricalTextColor(tpl.textColor || null);
+                                  if (tpl.bgColor) {
+                                    setSetupLyricalBgVideoUrl("");
+                                  }
                                 }}
                                 className={`p-3 rounded-2xl border text-left cursor-pointer transition-all duration-300 flex items-center justify-between gap-3 group/card relative overflow-hidden ${
                                   isActive 

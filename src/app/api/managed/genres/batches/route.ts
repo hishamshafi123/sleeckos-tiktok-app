@@ -812,7 +812,33 @@ async function processBatchRendering(batchId: string) {
 
           let cmd: string;
 
-          if (hasPreRenderedOverlay) {
+          // Check if this template uses a solid background color (e.g. Word Builder)
+          // In this case the overlay WebM IS the full video — no background needed
+          const hasSolidBg = !!item.lyricalTemplate?.bgColor;
+
+          if (hasPreRenderedOverlay && hasSolidBg) {
+            // ═══════════════════════════════════════════════════════════════
+            // G0: SOLID BACKGROUND PATH (Word Builder)
+            // The WebM overlay IS the full video (opaque, with solid bg baked in)
+            // FFmpeg only needs to mux: overlay_video + audio
+            // ═══════════════════════════════════════════════════════════════
+            console.log(`[Batch Worker Lyrical] Solid bg template — using overlay as full video`);
+
+            cmd = [
+              `ffmpeg -y`,
+              `-i "${overlayPath}"`,
+              `-i "${audioPath}"`,
+              `-c:v libx264`,
+              `-pix_fmt yuv420p`,
+              `-preset superfast`,
+              `-c:a aac -b:a 192k`,
+              `-t ${duration}`,
+              `"${localOutFile}"`,
+            ].join(" ");
+
+            console.log(`[Batch Worker Lyrical] FFmpeg cmd (solid bg): ${cmd.substring(0, 500)}...`);
+
+          } else if (hasPreRenderedOverlay) {
             // ═══════════════════════════════════════════════════════════════
             // G1: CANVAS OVERLAY PATH (WYSIWYG)
             // The WebM overlay contains: captions + vignette + particles + dark overlay

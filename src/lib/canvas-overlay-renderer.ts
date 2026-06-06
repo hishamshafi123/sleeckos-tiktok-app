@@ -34,6 +34,9 @@ interface TemplateConfig {
   colorFilter: string;
   vignette: string;
   particleFx: string;
+  animationMode?: "highlight" | "word_builder";
+  bgColor?: string | null;
+  textColor?: string | null;
 }
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -76,6 +79,26 @@ function chunkWords(words: Word[], maxPerChunk = 4): Word[][] {
   }
   if (current.length > 0) chunks.push(current);
   return chunks;
+}
+
+// ─── Phrase Chunking for Word Builder mode ──────────────────────────────────
+// Larger groups (up to 12 words) split only on audio gaps > 1.5s
+
+function chunkPhrases(words: Word[]): Word[][] {
+  const phrases: Word[][] = [];
+  let current: Word[] = [];
+  let lastEnd = 0;
+
+  for (const w of words) {
+    if (current.length > 0 && (w.start - lastEnd > 1.5 || current.length >= 12)) {
+      phrases.push(current);
+      current = [];
+    }
+    current.push(w);
+    lastEnd = w.end;
+  }
+  if (current.length > 0) phrases.push(current);
+  return phrases;
 }
 
 // ─── HTML Template Generator ────────────────────────────────────────────────
@@ -247,9 +270,13 @@ function generateOverlayHTML(
   }
 
   // Serialize chunks to JSON for the page script
-  const chunksJSON = JSON.stringify(chunks);
+  const isWordBuilder = config.animationMode === "word_builder";
+  const phrases = isWordBuilder ? chunkPhrases(words) : [];
+  const chunksJSON = isWordBuilder ? JSON.stringify(phrases) : JSON.stringify(chunks);
   const activeColor = config.activeColor;
   const multiColorsJSON = JSON.stringify(MULTI_COLORS);
+  const textColor = config.textColor || "#ffffff";
+  const bgColor = config.bgColor || null;
 
   return `<!DOCTYPE html>
 <html>
@@ -275,7 +302,7 @@ function generateOverlayHTML(
     width: ${WIDTH}px;
     height: ${HEIGHT}px;
     overflow: hidden;
-    background: transparent;
+    background: ${bgColor ? bgColor : "transparent"};
   }
 
   #container {
@@ -308,13 +335,13 @@ function generateOverlayHTML(
     position: absolute;
     left: 0;
     right: 0;
-    padding: 0 12px;
-    text-align: center;
+    padding: 0 ${isWordBuilder ? "32" : "12"}px;
+    text-align: ${isWordBuilder ? "left" : "center"};
     transform: translateY(-50%);
     top: ${config.positionY * 100}%;
     font-family: 'PrimaryFont', ${fontEntry.css};
     font-size: ${config.fontSize}px;
-    line-height: 1.25;
+    line-height: ${isWordBuilder ? "1.35" : "1.25"};
     z-index: 10;
     user-select: none;
     pointer-events: none;
@@ -323,24 +350,26 @@ function generateOverlayHTML(
   #captions .words {
     display: flex;
     flex-wrap: wrap;
-    justify-content: center;
+    justify-content: ${isWordBuilder ? "flex-start" : "center"};
     align-items: center;
-    gap: 4px 4px;
+    gap: ${isWordBuilder ? "6px 8px" : "4px 4px"};
+    ${isWordBuilder ? `max-height: ${Math.round(config.fontSize * 1.35 * 3 + 20)}px; overflow: hidden;` : ""}
   }
 
   #captions .word {
     display: inline-block;
-    color: #ffffff;
-    -webkit-text-stroke: ${config.strokeWidth}px ${config.strokeColor};
-    font-weight: 800;
+    color: ${isWordBuilder ? textColor : "#ffffff"};
+    ${isWordBuilder ? "" : `-webkit-text-stroke: ${config.strokeWidth}px ${config.strokeColor};`}
+    font-weight: ${isWordBuilder ? "500" : "800"};
+    ${isWordBuilder ? "text-transform: lowercase;" : ""}
     transition: all 0.08s ease-out;
   }
 
-  #captions .word.active {
+  ${isWordBuilder ? "" : `#captions .word.active {
     font-weight: 900;
     letter-spacing: -0.025em;
     transform: scale(1.12);
-  }
+  }`}
 
   /* Particle animations — matching Live Studio Preview keyframes */
   @keyframes floatDust {
@@ -387,8 +416,11 @@ function generateOverlayHTML(
     const multiColors = ${multiColorsJSON};
     const strokeWidth = ${config.strokeWidth};
     const strokeColor = "${config.strokeColor}";
+    const animationMode = "${config.animationMode || "highlight"}";
+    const textColor = "${textColor}";
 
     function getWordColor(idx, isActive) {
+      if (animationMode === "word_builder") return textColor;
       if (!isActive) return "#ffffff";
       if (activeColorConfig === "multi") return multiColors[idx % multiColors.length];
       return activeColorConfig;
@@ -397,8 +429,38 @@ function generateOverlayHTML(
     // Exposed to Puppeteer — sets the current time and re-renders captions
     window.setTime = function(t) {
       const container = document.getElementById("wordsContainer");
-      
-      // Find the active chunk
+
+      if (animationMode === "word_builder") {
+        // ── WORD BUILDER MODE: Progressive append with hard-cut between phrases ──
+        let currentPhrase = null;
+        for (const phrase of chunks) {
+          if (phrase.length === 0) continue;
+          const phraseStart = phrase[0].start;
+          const phraseEnd = phrase[phrase.length - 1].end;
+          if (t >= phraseStart - 0.05 && t <= phraseEnd + 0.3) {
+            currentPhrase = phrase;
+            break;
+          }
+        }
+
+        if (!currentPhrase) {
+          container.innerHTML = "";
+          return;
+        }
+
+        // Show only words whose start time has been reached
+        let html = "";
+        for (let i = 0; i < currentPhrase.length; i++) {
+          const w = currentPhrase[i];
+          if (t < w.start - 0.05) break; // don't show future words
+          const color = textColor;
+          html += '<span class="word" style="color:' + color + '">' + w.word.toLowerCase() + '</span>';
+        }
+        container.innerHTML = html;
+        return;
+      }
+
+      // ── HIGHLIGHT MODE (existing behavior) ──
       let currentChunk = null;
       for (const chunk of chunks) {
         const chunkStart = chunk[0].start;
@@ -526,22 +588,22 @@ export async function renderCanvasOverlay(
     await page.evaluate(() => document.fonts.ready);
     console.log(`[Browser Renderer] Page loaded, fonts ready. Starting frame capture...`);
 
-    // Spawn FFmpeg to receive PNG frames and encode to WebM VP8 with alpha
-    // NOTE: Higher quality settings are critical for preserving semi-transparent
-    // vignette gradients in the alpha channel. Using 'good' quality + CRF
-    // instead of 'realtime' which destroys subtle alpha gradients.
+    // Spawn FFmpeg to receive PNG frames and encode to WebM VP8
+    // When bgColor is set, the overlay is a FULL opaque video (no alpha needed)
+    // When transparent, use yuva420p for alpha channel compositing
+    const hasSolidBg = !!config.bgColor;
     const ffmpegArgs = [
       "-y",
       "-f", "image2pipe",
       "-framerate", String(FPS),
       "-i", "-",
       "-c:v", "libvpx",
-      "-pix_fmt", "yuva420p",
+      "-pix_fmt", hasSolidBg ? "yuv420p" : "yuva420p",
       "-auto-alt-ref", "0",
       "-quality", "good",
       "-speed", "3",
-      "-crf", "18",
-      "-b:v", "4M",
+      "-crf", hasSolidBg ? "15" : "18",
+      "-b:v", hasSolidBg ? "6M" : "4M",
       "-t", String(duration),
       tmpPath,
     ];
