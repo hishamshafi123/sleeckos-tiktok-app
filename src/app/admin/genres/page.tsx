@@ -2358,7 +2358,50 @@ export default function GenresDashboard() {
                         </div>
                       </div>
 
-                      {/* Mirror, Speed, BG Video */}
+                      {/* Solid Background Color Toggle */}
+                      <div className="space-y-2 bg-black/20 p-3 rounded-2xl border border-white/5 shadow-inner">
+                        <div className="flex items-center justify-between">
+                          <label className="block text-[9px] uppercase tracking-wider font-extrabold text-gray-500">Solid Background Color</label>
+                          <button
+                            onClick={() => {
+                              if (lyricalBgColor) {
+                                setLyricalBgColor(null);
+                              } else {
+                                setLyricalBgColor("#F5A623");
+                              }
+                            }}
+                            className={`relative w-9 h-5 rounded-full transition-all duration-300 ${lyricalBgColor ? "bg-amber-500" : "bg-gray-700"}`}
+                          >
+                            <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow-md transition-all duration-300 ${lyricalBgColor ? "left-[18px]" : "left-0.5"}`} />
+                          </button>
+                        </div>
+                        {lyricalBgColor && (
+                          <div className="flex items-center gap-2 mt-1">
+                            <input
+                              type="color"
+                              value={lyricalBgColor}
+                              onChange={(e) => setLyricalBgColor(e.target.value)}
+                              className="w-8 h-8 rounded-xl border border-white/10 cursor-pointer bg-transparent"
+                            />
+                            <input
+                              type="text"
+                              value={lyricalBgColor}
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                if (/^#[0-9a-fA-F]{0,6}$/.test(val)) setLyricalBgColor(val);
+                              }}
+                              className="flex-1 bg-black/45 border border-white/10 hover:border-white/20 rounded-xl px-3 py-1.5 text-xs text-gray-300 font-mono focus:outline-none transition-all duration-300"
+                              placeholder="#F5A623"
+                            />
+                          </div>
+                        )}
+                        {lyricalBgColor && (
+                          <p className="text-[8px] text-gray-600 mt-1">Video background will be replaced with this solid color</p>
+                        )}
+                      </div>
+
+                      {/* Mirror, Speed, BG Video — hidden when solid bg is active */}
+                      {!lyricalBgColor && (
                       <div className="space-y-3 bg-black/20 p-3 rounded-2xl border border-white/5 shadow-inner">
                         <div className="space-y-1">
                           <label className="block text-[9px] uppercase tracking-wider font-extrabold text-gray-500">Preview BG Loop</label>
@@ -2411,6 +2454,7 @@ export default function GenresDashboard() {
                           </div>
                         </div>
                       </div>
+                      )}
 
                       {/* Vignette, Filters, Particles */}
                       <div className="grid grid-cols-3 gap-2">
