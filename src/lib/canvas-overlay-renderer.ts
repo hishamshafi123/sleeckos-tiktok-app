@@ -55,6 +55,8 @@ const FONT_CSS_MAP: Record<string, { css: string; file: string }> = {
   "Outfit-Bold":      { css: "'Outfit', sans-serif",     file: "Outfit-Bold.ttf" },
   "Anton":            { css: "'Anton', sans-serif",      file: "Anton.ttf" },
   "Inter-Bold":       { css: "'Inter', sans-serif",      file: "Inter-Bold.ttf" },
+  "Inter-Light":      { css: "'Inter', sans-serif",      file: "Inter-Light.ttf" },
+  "Inter-Regular":    { css: "'Inter', sans-serif",      file: "Inter-Regular.ttf" },
   "Caveat-Bold":      { css: "'Caveat', cursive",        file: "Caveat-Bold.ttf" },
   "Oswald-Bold":      { css: "'Oswald', sans-serif",     file: "Oswald-Bold.ttf" },
   "PlayfairDisplay-Bold": { css: "'Playfair Display', serif", file: "PlayfairDisplay-Bold.ttf" },
@@ -341,7 +343,7 @@ function generateOverlayHTML(
     top: ${config.positionY * 100}%;
     font-family: 'PrimaryFont', ${fontEntry.css};
     font-size: ${config.fontSize}px;
-    line-height: ${isWordBuilder ? "1.35" : "1.25"};
+    line-height: ${isWordBuilder ? "1.6" : "1.25"};
     z-index: 10;
     user-select: none;
     pointer-events: none;
@@ -352,16 +354,16 @@ function generateOverlayHTML(
     flex-wrap: wrap;
     justify-content: ${isWordBuilder ? "flex-start" : "center"};
     align-items: center;
-    gap: ${isWordBuilder ? "6px 8px" : "4px 4px"};
-    ${isWordBuilder ? `max-height: ${Math.round(config.fontSize * 1.35 * 3 + 20)}px; overflow: hidden;` : ""}
+    gap: ${isWordBuilder ? "20px 30px" : "4px 4px"};
+    ${isWordBuilder ? `max-height: ${Math.round(config.fontSize * 1.5 * 3 + 40)}px; overflow: hidden;` : ""}
   }
 
   #captions .word {
     display: inline-block;
     color: ${isWordBuilder ? textColor : "#ffffff"};
     ${isWordBuilder ? "" : `-webkit-text-stroke: ${config.strokeWidth}px ${config.strokeColor};`}
-    font-weight: ${isWordBuilder ? "500" : "800"};
-    ${isWordBuilder ? "text-transform: lowercase;" : ""}
+    font-weight: ${isWordBuilder ? "300" : "800"};
+    ${isWordBuilder ? "text-transform: lowercase; letter-spacing: -0.01em;" : ""}
     transition: all 0.08s ease-out;
   }
 

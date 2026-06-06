@@ -2213,14 +2213,14 @@ export default function GenresDashboard() {
                               setLyricalTextColor(null);
                             } else if (val === "word-builder-yellow") {
                               setLyricalTemplateName("Minimalist Word Builder");
-                              setLyricalFontFamily("Inter-Bold");
-                              setLyricalFontSize(40);
+                              setLyricalFontFamily("Inter-Light");
+                              setLyricalFontSize(56);
                               setLyricalActiveColor("#000000");
                               setLyricalStrokeWidth(0);
                               setLyricalStrokeColor("#000000");
-                              setLyricalPositionY(0.50);
+                              setLyricalPositionY(0.40);
                               setLyricalAnimationMode("word_builder");
-                              setLyricalBgColor("#D4A017");
+                              setLyricalBgColor("#F5A623");
                               setLyricalTextColor("#000000");
                               setSetupLyricalColorFilter("none");
                               setSetupLyricalVignette("none");
@@ -2262,6 +2262,8 @@ export default function GenresDashboard() {
                             <option value="Outfit-Bold">Outfit Bold</option>
                             <option value="Anton">Anton</option>
                             <option value="Inter-Bold">Inter Bold</option>
+                            <option value="Inter-Regular">Inter Regular</option>
+                            <option value="Inter-Light">Inter Light</option>
                             <option value="Caveat-Bold">Caveat Bold</option>
                           </select>
                         </div>
@@ -2747,20 +2749,21 @@ export default function GenresDashboard() {
                             top: `${lyricalPositionY * 100}%`,
                             fontFamily: cssFontFamily,
                             fontSize: `${lyricalFontSize * 0.23}px`,
-                            lineHeight: 1.35
+                            lineHeight: 1.6
                           }}
                         >
                           <div 
-                            className="flex flex-wrap justify-start items-center gap-x-1 gap-y-0.5"
-                            style={{ maxHeight: `${Math.round(lyricalFontSize * 0.23 * 1.35 * 3 + 8)}px`, overflow: "hidden" }}
+                            className="flex flex-wrap justify-start items-center gap-x-3 gap-y-2"
+                            style={{ maxHeight: `${Math.round(lyricalFontSize * 0.23 * 1.6 * 3 + 12)}px`, overflow: "hidden" }}
                           >
                             {wordBuilderVisibleWords.map((w: any, idx: number) => (
                               <span
                                 key={idx}
                                 style={{
                                   color: lyricalTextColor || "#000000",
-                                  fontWeight: 500,
+                                  fontWeight: 300,
                                   textTransform: "lowercase" as const,
+                                  letterSpacing: "-0.01em",
                                   display: "inline-block",
                                 }}
                               >
