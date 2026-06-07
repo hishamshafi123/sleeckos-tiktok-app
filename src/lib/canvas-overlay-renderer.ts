@@ -546,6 +546,15 @@ export async function renderCanvasOverlay(
   console.log(`[Browser Renderer] Effects: vignette=${config.vignette}, particles=${config.particleFx}`);
   console.log(`[Browser Renderer] Output: ${outputPath}`);
 
+  // ── Kill any zombie chromium/ffmpeg processes from previous failed renders ──
+  try {
+    const { execSync } = require("child_process");
+    try { execSync("pkill -f 'chromium.*--headless' 2>/dev/null || true", { timeout: 3000 }); } catch {}
+    try { execSync("pkill -f 'ffmpeg.*overlay' 2>/dev/null || true", { timeout: 3000 }); } catch {}
+    await new Promise(r => setTimeout(r, 500));
+    console.log(`[Browser Renderer] Cleaned up zombie processes`);
+  } catch {}
+
   // Ensure output directory exists
   const outDir = path.dirname(outputPath);
   fs.mkdirSync(outDir, { recursive: true });
@@ -576,9 +585,15 @@ export async function renderCanvasOverlay(
       "--disable-gpu",
       "--disable-web-security",
       "--allow-file-access-from-files",
+      "--disable-extensions",
+      "--disable-background-networking",
+      "--single-process",
+      "--no-zygote",
       `--window-size=${WIDTH},${HEIGHT}`,
     ],
   });
+
+  let ffmpegProcess: ReturnType<typeof spawn> | null = null;
 
   try {
     const page = await browser.newPage();
@@ -611,35 +626,56 @@ export async function renderCanvasOverlay(
       tmpPath,
     ];
 
-    const ffmpeg = spawn("ffmpeg", ffmpegArgs, {
+    ffmpegProcess = spawn("ffmpeg", ffmpegArgs, {
       stdio: ["pipe", "pipe", "pipe"],
     });
+    const ffmpeg = ffmpegProcess;
 
+    // Cap stderr to prevent memory bloat
     let ffmpegStderr = "";
-    ffmpeg.stderr.on("data", (data: Buffer) => {
-      ffmpegStderr += data.toString();
+    ffmpeg.stderr!.on("data", (data: Buffer) => {
+      if (ffmpegStderr.length < 5000) ffmpegStderr += data.toString();
     });
 
-    // Capture frames
+    // Track if FFmpeg died early
+    let ffmpegDead = false;
+    ffmpeg.on("close", () => { ffmpegDead = true; });
+
+    // Capture frames with per-frame error recovery
+    let consecutiveFailures = 0;
     for (let frame = 0; frame < totalFrames; frame++) {
+      if (ffmpegDead) {
+        throw new Error("FFmpeg process died during frame capture");
+      }
+
       const t = frame / FPS;
 
-      // Update the page's current time (triggers re-render of captions)
-      await page.evaluate((time: number) => {
-        (window as any).setTime(time);
-      }, t);
+      try {
+        // Update the page's current time (triggers re-render of captions)
+        await page.evaluate((time: number) => {
+          (window as any).setTime(time);
+        }, t);
 
-      // Screenshot with transparent background → PNG buffer
-      const screenshot = await page.screenshot({
-        type: "png",
-        omitBackground: true,
-        clip: { x: 0, y: 0, width: WIDTH, height: HEIGHT },
-      });
+        // Screenshot with transparent background → PNG buffer
+        const screenshot = await page.screenshot({
+          type: "png",
+          omitBackground: true,
+          clip: { x: 0, y: 0, width: WIDTH, height: HEIGHT },
+        });
 
-      // Write PNG frame to FFmpeg stdin (image2pipe decoder handles PNG)
-      const canWrite = ffmpeg.stdin.write(screenshot);
-      if (!canWrite) {
-        await new Promise<void>((resolve) => ffmpeg.stdin.once("drain", resolve));
+        // Write PNG frame to FFmpeg stdin
+        const canWrite = ffmpeg.stdin!.write(screenshot);
+        if (!canWrite) {
+          await new Promise<void>((resolve) => ffmpeg.stdin!.once("drain", resolve));
+        }
+        consecutiveFailures = 0;
+      } catch (frameErr) {
+        consecutiveFailures++;
+        console.error(`[Browser Renderer] Frame ${frame} FAILED (${consecutiveFailures}/3):`, frameErr);
+        if (consecutiveFailures >= 3) {
+          throw new Error(`Chromium crashed after ${consecutiveFailures} consecutive frame failures`);
+        }
+        continue;
       }
 
       // Progress logging every 2 seconds
@@ -655,7 +691,7 @@ export async function renderCanvasOverlay(
     }
 
     // Close FFmpeg stdin and wait for completion
-    ffmpeg.stdin.end();
+    ffmpeg.stdin!.end();
 
     await new Promise<void>((resolve, reject) => {
       ffmpeg.on("close", (code) => {
@@ -693,9 +729,15 @@ export async function renderCanvasOverlay(
     });
 
   } finally {
-    await browser.close();
-    // Cleanup temp HTML file
+    // Always kill FFmpeg if still running
+    if (ffmpegProcess && !ffmpegProcess.killed) {
+      try { ffmpegProcess.kill("SIGKILL"); } catch {}
+    }
+    // Always close browser
+    try { await browser.close(); } catch {}
+    // Cleanup temp HTML
     try { fs.unlinkSync(htmlPath); } catch {}
+    console.log(`[Browser Renderer] Cleanup complete`);
   }
 }
 

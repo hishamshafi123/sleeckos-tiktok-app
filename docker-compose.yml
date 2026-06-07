@@ -23,6 +23,7 @@ services:
   app:
     build: .
     restart: unless-stopped
+    shm_size: '256m'
     env_file: .env
     environment:
       # Constructed from the individual POSTGRES_* vars so password is set once.
