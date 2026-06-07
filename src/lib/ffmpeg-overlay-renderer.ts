@@ -49,14 +49,16 @@ const FONT_MAP: Record<string, { name: string; file: string }> = {
   "Outfit-Bold":      { name: "Outfit",     file: "Outfit-Bold.ttf" },
   "Anton":            { name: "Anton",      file: "Anton.ttf" },
   "Inter-Bold":       { name: "Inter",      file: "Inter-Bold.ttf" },
-  "Inter-Light":      { name: "Inter",      file: "Inter-Light.ttf" },
-  "Inter-Regular":    { name: "Inter",      file: "Inter-Regular.ttf" },
+  "Inter-Light":      { name: "Inter",      file: "Inter-Bold.ttf" },
+  "Inter-Regular":    { name: "Inter",      file: "Inter-Bold.ttf" },
   "Caveat-Bold":      { name: "Caveat",     file: "Caveat-Bold.ttf" },
   "Oswald-Bold":      { name: "Oswald",     file: "Oswald-Bold.ttf" },
   "PlayfairDisplay-Bold": { name: "Playfair Display", file: "PlayfairDisplay-Bold.ttf" },
   "GreatVibes-Regular":   { name: "Great Vibes",      file: "GreatVibes-Regular.ttf" },
   "Lora-Bold":        { name: "Lora",       file: "Lora-Bold.ttf" },
 };
+
+const FALLBACK_FONT = "Montserrat-Bold.ttf";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -274,16 +276,19 @@ export async function renderCanvasOverlay(
   try { fs.unlinkSync(tmpPath); } catch {}
   try { fs.unlinkSync(outputPath); } catch {}
 
-  // Verify font file exists
+  // Verify font file exists, fallback if not
   const fontEntry = FONT_MAP[config.fontFamily] || FONT_MAP["Montserrat-Black"];
-  const fontFile = path.join(fontsDir, fontEntry.file);
+  let fontFile = path.join(fontsDir, fontEntry.file);
   if (!fs.existsSync(fontFile)) {
-    console.error("[FFmpeg Renderer] Font file not found: " + fontFile);
-    console.error("[FFmpeg Renderer] Available fonts: " + fs.readdirSync(fontsDir).join(", "));
-    if (progressFile) {
-      try { fs.writeFileSync(progressFile, JSON.stringify({ current: 0, total: 100, percent: 0, status: "failed", error: "Font file not found: " + fontEntry.file }), "utf-8"); } catch {}
+    console.warn("[FFmpeg Renderer] Font not found: " + fontEntry.file + ", falling back to " + FALLBACK_FONT);
+    fontFile = path.join(fontsDir, FALLBACK_FONT);
+    if (!fs.existsSync(fontFile)) {
+      console.error("[FFmpeg Renderer] Fallback font also missing! Available: " + fs.readdirSync(fontsDir).join(", "));
+      if (progressFile) {
+        try { fs.writeFileSync(progressFile, JSON.stringify({ current: 0, total: 100, percent: 0, status: "failed", error: "No font files found" }), "utf-8"); } catch {}
+      }
+      throw new Error("No font files found in " + fontsDir);
     }
-    throw new Error("Font file not found: " + fontFile);
   }
 
   if (progressFile) {
