@@ -176,14 +176,17 @@ export async function POST(req: NextRequest) {
 
   console.log(`[RefreshLinks] Tier 2: ${missingUrlPosts.length} posts need PostPeer fetch`);
 
-  for (const post of missingUrlPosts) {
+  for (let i = 0; i < missingUrlPosts.length; i++) {
+    const post = missingUrlPosts[i];
     const postpeerId = post.tiktokPublishId!;
+    console.log(`[RefreshLinks] Tier 2 [${i+1}/${missingUrlPosts.length}] Fetching PostPeer post ${postpeerId}...`);
     try {
       const res = await fetch(`${POSTPEER_API}/posts/${postpeerId}`, {
         headers: { "x-access-key": postpeerKey },
       });
 
       if (!res.ok) {
+        console.log(`[RefreshLinks] PostPeer API error ${res.status} for ${postpeerId}`);
         results.errors++;
         results.details[postpeerId] = `api_error_${res.status}`;
         continue;
@@ -199,6 +202,7 @@ export async function POST(req: NextRequest) {
         : null;
 
       if (!tiktokPlatform) {
+        console.log(`[RefreshLinks] No tiktok platform in response for ${postpeerId}, keys: ${Object.keys(postData).join(",")}`);
         results.noUrl++;
         results.details[postpeerId] = "no_tiktok_platform_in_response";
         continue;
@@ -217,6 +221,8 @@ export async function POST(req: NextRequest) {
         tiktokVideoId = rawPlatformPostId;
       }
 
+      console.log(`[RefreshLinks] PostPeer ${postpeerId}: raw=${rawPlatformPostId}, videoId=${tiktokVideoId}, username=${post.account.tiktokUsername}`);
+
       if (tiktokVideoId && post.account.tiktokUsername) {
         const finalUrl = `https://www.tiktok.com/@${post.account.tiktokUsername}/video/${tiktokVideoId}`;
 
@@ -234,10 +240,13 @@ export async function POST(req: NextRequest) {
         results.details[postpeerId] = `no_video_id (raw: ${rawPlatformPostId}, username: ${post.account.tiktokUsername})`;
       }
     } catch (err) {
+      console.log(`[RefreshLinks] Error for ${postpeerId}: ${err instanceof Error ? err.message : String(err)}`);
       results.errors++;
       results.details[postpeerId] = `error: ${err instanceof Error ? err.message : String(err)}`;
     }
   }
+
+  console.log(`[RefreshLinks] DONE: updated=${results.updated}, noUrl=${results.noUrl}, errors=${results.errors}`);
 
   return NextResponse.json({
     ok: true,
