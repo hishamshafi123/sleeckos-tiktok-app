@@ -282,10 +282,13 @@ export async function GET(req: NextRequest) {
         );
 
         // Extract TikTok video URL/ID from PostPeer response
-        const tiktokPostUrl = result.platformPostUrl || null;
+        // platformPostId is already parsed to the numeric TikTok video ID by postpeer.ts
         const tiktokVideoId = result.platformPostId || null;
+        const tiktokPostUrl = tiktokVideoId && account.tiktokUsername
+          ? `https://www.tiktok.com/@${account.tiktokUsername}/video/${tiktokVideoId}`
+          : result.platformPostUrl || null;
 
-        console.log(`[PostScheduler] PostPeer result for ${accountKey}: postId=${result.postId}, platformPostUrl=${tiktokPostUrl}, platformPostId=${tiktokVideoId}, raw=${JSON.stringify(result.raw).substring(0, 500)}`);
+        console.log(`[PostScheduler] PostPeer result for ${accountKey}: postId=${result.postId}, tiktokVideoId=${tiktokVideoId}, tiktokPostUrl=${tiktokPostUrl}`);
 
         await prisma.scheduledPost.update({
           where: { id: post.id },

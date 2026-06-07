@@ -158,56 +158,47 @@ export async function POST(req: NextRequest) {
 
       const data = await res.json();
 
-      // Log the full response structure for debugging
-      console.log(`[RefreshLinks] PostPeer response for ${postpeerId}:`, JSON.stringify(data).substring(0, 1000));
-
-      // Try multiple possible response structures
-      const platforms = data.platforms || data.platform_results || data.platformResults || [];
+      // PostPeer response structure: { success: true, post: { platforms: [...] } }
+      const postData = data.post || data;
+      const platforms = postData.platforms || [];
       const tiktokPlatform = Array.isArray(platforms)
-        ? platforms.find((p: Record<string, unknown>) =>
-            p.platform === "tiktok" || p.platformName === "tiktok" || p.type === "tiktok"
-          )
+        ? platforms.find((p: Record<string, unknown>) => p.platform === "tiktok")
         : null;
 
-      // Try to extract URL from various possible field names
-      const platformPostUrl =
-        tiktokPlatform?.platformPostUrl ||
-        tiktokPlatform?.postUrl ||
-        tiktokPlatform?.url ||
-        tiktokPlatform?.permalink ||
-        data.platformPostUrl ||
-        data.postUrl ||
-        data.url ||
-        null;
+      if (!tiktokPlatform) {
+        results.noUrl++;
+        results.details[postpeerId] = "no_tiktok_platform_in_response";
+        continue;
+      }
 
-      const platformPostId =
-        tiktokPlatform?.platformPostId ||
-        tiktokPlatform?.externalId ||
-        tiktokPlatform?.videoId ||
-        data.platformPostId ||
-        data.externalId ||
-        null;
+      // platformPostId format from PostPeer: "v_pub_url~v2-1.7647150213232183318"
+      // The actual TikTok video ID is the number after the last dot
+      const rawPlatformPostId: string = tiktokPlatform.platformPostId || "";
+      let tiktokVideoId: string | null = null;
 
-      if (platformPostUrl || platformPostId) {
-        const finalUrl = platformPostUrl
-          || (platformPostId && post.account.tiktokUsername
-            ? `https://www.tiktok.com/@${post.account.tiktokUsername}/video/${platformPostId}`
-            : null);
+      if (rawPlatformPostId.includes(".")) {
+        // Extract the number after the last dot: "v_pub_url~v2-1.7647150213232183318" → "7647150213232183318"
+        tiktokVideoId = rawPlatformPostId.split(".").pop() || null;
+      } else if (/^\d+$/.test(rawPlatformPostId)) {
+        // Already a plain numeric ID
+        tiktokVideoId = rawPlatformPostId;
+      }
+
+      if (tiktokVideoId && post.account.tiktokUsername) {
+        const finalUrl = `https://www.tiktok.com/@${post.account.tiktokUsername}/video/${tiktokVideoId}`;
 
         await prisma.scheduledPost.update({
           where: { id: post.id },
           data: {
             tiktokPostUrl: finalUrl,
-            tiktokVideoId: platformPostId || post.tiktokVideoId,
+            tiktokVideoId,
           },
         });
         results.updated++;
         results.details[postpeerId] = `✅ ${finalUrl}`;
       } else {
         results.noUrl++;
-        // Store a debug snapshot of what PostPeer returned
-        const keys = Object.keys(data).join(", ");
-        results.details[postpeerId] = `no_url_found (keys: ${keys})`;
+        results.details[postpeerId] = `no_video_id (raw: ${rawPlatformPostId}, username: ${post.account.tiktokUsername})`;
       }
     } catch (err) {
       results.errors++;

@@ -110,31 +110,36 @@ export async function GET(req: NextRequest) {
 
         const data = await res.json();
 
-        // Extract platform URL from PostPeer response
-        const platforms = data.platforms || data.platform_results || [];
+        // PostPeer response: { success: true, post: { platforms: [...] } }
+        const postData = data.post || data;
+        const platforms = postData.platforms || [];
         const tiktokPlatform = Array.isArray(platforms)
-          ? platforms.find((p: Record<string, unknown>) => p.platform === "tiktok" || p.platformName === "tiktok")
+          ? platforms.find((p: Record<string, unknown>) => p.platform === "tiktok")
           : null;
 
-        const platformPostUrl = tiktokPlatform?.platformPostUrl || tiktokPlatform?.postUrl || data.platformPostUrl || null;
-        const platformPostId = tiktokPlatform?.platformPostId || tiktokPlatform?.postId || data.platformPostId || null;
+        // platformPostId format: "v_pub_url~v2-1.7647150213232183318"
+        const rawPlatformPostId: string = tiktokPlatform?.platformPostId || "";
+        let tiktokVideoId: string | null = null;
 
-        if (platformPostUrl || platformPostId) {
-          const finalUrl = platformPostUrl
-            || (platformPostId && post.account.tiktokUsername
-              ? `https://www.tiktok.com/@${post.account.tiktokUsername}/video/${platformPostId}`
-              : null);
+        if (rawPlatformPostId.includes(".")) {
+          tiktokVideoId = rawPlatformPostId.split(".").pop() || null;
+        } else if (/^\d+$/.test(rawPlatformPostId)) {
+          tiktokVideoId = rawPlatformPostId;
+        }
+
+        if (tiktokVideoId && post.account.tiktokUsername) {
+          const finalUrl = `https://www.tiktok.com/@${post.account.tiktokUsername}/video/${tiktokVideoId}`;
 
           await prisma.scheduledPost.update({
             where: { id: post.id },
             data: {
               tiktokPostUrl: finalUrl,
-              tiktokVideoId: platformPostId || post.tiktokVideoId,
+              tiktokVideoId,
             },
           });
           results[`pp_${postpeerId}`] = `url_updated: ${finalUrl}`;
         } else {
-          results[`pp_${postpeerId}`] = "no_url_yet";
+          results[`pp_${postpeerId}`] = `no_video_id (raw: ${rawPlatformPostId})`;
         }
       } catch (err) {
         results[`pp_${postpeerId}`] = `error: ${err instanceof Error ? err.message : String(err)}`;

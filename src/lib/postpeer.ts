@@ -106,17 +106,30 @@ export async function postViaPostPeer(
     );
   }
 
-  // Extract platform-specific data (TikTok URL and post ID)
-  const platforms = data.platforms || data.platform_results || [];
+  // PostPeer response: { success: true, post: { postId, platforms: [...] } }
+  // OR the initial POST might return a flat structure
+  const postData = data.post || data;
+  const platforms = postData.platforms || [];
   const tiktokPlatform = Array.isArray(platforms)
-    ? platforms.find((p: Record<string, unknown>) => p.platform === "tiktok" || p.platformName === "tiktok")
+    ? platforms.find((p: Record<string, unknown>) => p.platform === "tiktok")
     : null;
+
+  // platformPostId format: "v_pub_url~v2-1.7647150213232183318"
+  // The actual TikTok video ID is the number after the last dot
+  const rawPlatformPostId: string = tiktokPlatform?.platformPostId || "";
+  let extractedVideoId: string | undefined;
+
+  if (rawPlatformPostId.includes(".")) {
+    extractedVideoId = rawPlatformPostId.split(".").pop();
+  } else if (/^\d+$/.test(rawPlatformPostId)) {
+    extractedVideoId = rawPlatformPostId;
+  }
 
   return {
     ok: true,
-    postId: data.id || data.postId || data._id,
-    platformPostUrl: tiktokPlatform?.platformPostUrl || tiktokPlatform?.postUrl || data.platformPostUrl || undefined,
-    platformPostId: tiktokPlatform?.platformPostId || tiktokPlatform?.postId || data.platformPostId || undefined,
+    postId: postData.postId || data.id || data.postId || data._id,
+    platformPostUrl: tiktokPlatform?.platformPostUrl || undefined,
+    platformPostId: extractedVideoId || undefined,
     raw: data,
   };
 }
