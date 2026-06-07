@@ -43,7 +43,7 @@ interface TemplateConfig {
 
 const WIDTH = 720;
 const HEIGHT = 1280;
-const FPS = 25;
+const FPS = 15; // 15fps is sufficient for text caption overlays (word highlights change every 200-500ms)
 
 const MULTI_COLORS = ["#FFFF00", "#00FF00", "#00FFFF", "#FF00FF", "#FF5F00", "#FF007F"];
 
@@ -603,10 +603,10 @@ export async function renderCanvasOverlay(
       "-c:v", "libvpx",
       "-pix_fmt", hasSolidBg ? "yuv420p" : "yuva420p",
       "-auto-alt-ref", "0",
-      "-quality", "good",
-      "-speed", "3",
-      "-crf", hasSolidBg ? "15" : "18",
-      "-b:v", hasSolidBg ? "6M" : "4M",
+      "-quality", "realtime",
+      "-speed", "5",
+      "-crf", hasSolidBg ? "20" : "23",
+      "-b:v", hasSolidBg ? "4M" : "2M",
       "-t", String(duration),
       tmpPath,
     ];
