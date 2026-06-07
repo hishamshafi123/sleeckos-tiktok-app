@@ -12,6 +12,7 @@ import {
   CheckCircle2,
   SkipForward,
   XCircle,
+  Link2,
 } from "lucide-react";
 
 type HistoryPost = {
@@ -44,6 +45,7 @@ export default function HistoryPage() {
   const [posts, setPosts] = useState<HistoryPost[]>([]);
   const [sections, setSections] = useState<Section[]>([]);
   const [loading, setLoading] = useState(true);
+  const [refreshingLinks, setRefreshingLinks] = useState(false);
 
   // Filters
   const [sectionFilter, setSectionFilter] = useState("");
@@ -102,6 +104,31 @@ export default function HistoryPage() {
     toast.success(`${links.split("\n").length} link(s) copied`);
   };
 
+  const refreshLinks = async () => {
+    setRefreshingLinks(true);
+    try {
+      const res = await fetch("/api/managed/history", { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed");
+
+      if (data.totalChecked === 0) {
+        toast.info("No posts need link refresh");
+      } else if (data.updated > 0) {
+        toast.success(`Updated ${data.updated} link(s)! ${data.noUrl > 0 ? `${data.noUrl} still pending.` : ""}`);
+        fetchPosts(); // Reload to show new links
+      } else {
+        toast.info(`Checked ${data.totalChecked} posts — PostPeer hasn't returned URLs yet. ${data.details ? `Keys: ${JSON.stringify(Object.values(data.details)[0])}` : ""}`);
+      }
+
+      // Log full details for debugging
+      console.log("[RefreshLinks] Full result:", data);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to refresh links");
+    } finally {
+      setRefreshingLinks(false);
+    }
+  };
+
   const statusCounts = posts.reduce(
     (acc, p) => {
       acc[p.status] = (acc[p.status] || 0) + 1;
@@ -123,6 +150,19 @@ export default function HistoryPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
+          <button
+            onClick={refreshLinks}
+            disabled={refreshingLinks}
+            className="flex items-center gap-1.5 text-xs font-semibold text-amber-400 hover:text-amber-300 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/20 px-3 py-2 rounded-xl transition-all disabled:opacity-50"
+            title="Fetch TikTok URLs from PostPeer for posts missing links"
+          >
+            {refreshingLinks ? (
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+            ) : (
+              <Link2 className="w-3.5 h-3.5" />
+            )}
+            Refresh Links
+          </button>
           {linksCount > 0 && (
             <button
               onClick={copyAllLinks}

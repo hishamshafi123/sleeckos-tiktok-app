@@ -103,3 +103,121 @@ export async function GET(req: NextRequest) {
 
   return NextResponse.json(serialized);
 }
+
+/**
+ * POST /api/managed/history
+ *
+ * Fetches TikTok URLs from PostPeer for all PUBLISHED posts missing links.
+ * Called from the "Refresh Links" button on the History page.
+ */
+export async function POST(req: NextRequest) {
+  const session = await getSession();
+  if (!session || session.role !== "ADMIN") {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  const POSTPEER_API = "https://api.postpeer.dev/v1";
+  const postpeerKey = process.env.POSTPEER_ACCESS_KEY;
+
+  if (!postpeerKey) {
+    return NextResponse.json({ error: "POSTPEER_ACCESS_KEY not configured" }, { status: 500 });
+  }
+
+  // Find all PUBLISHED posts that have a PostPeer ID but no TikTok URL
+  const missingUrlPosts = await prisma.scheduledPost.findMany({
+    where: {
+      status: "PUBLISHED",
+      tiktokPublishId: { not: null },
+      tiktokPostUrl: null,
+    },
+    include: {
+      account: { select: { tiktokUsername: true } },
+    },
+    take: 100,
+  });
+
+  const results: { updated: number; noUrl: number; errors: number; details: Record<string, string> } = {
+    updated: 0,
+    noUrl: 0,
+    errors: 0,
+    details: {},
+  };
+
+  for (const post of missingUrlPosts) {
+    const postpeerId = post.tiktokPublishId!;
+    try {
+      const res = await fetch(`${POSTPEER_API}/posts/${postpeerId}`, {
+        headers: { "x-access-key": postpeerKey },
+      });
+
+      if (!res.ok) {
+        results.errors++;
+        results.details[postpeerId] = `api_error_${res.status}`;
+        continue;
+      }
+
+      const data = await res.json();
+
+      // Log the full response structure for debugging
+      console.log(`[RefreshLinks] PostPeer response for ${postpeerId}:`, JSON.stringify(data).substring(0, 1000));
+
+      // Try multiple possible response structures
+      const platforms = data.platforms || data.platform_results || data.platformResults || [];
+      const tiktokPlatform = Array.isArray(platforms)
+        ? platforms.find((p: Record<string, unknown>) =>
+            p.platform === "tiktok" || p.platformName === "tiktok" || p.type === "tiktok"
+          )
+        : null;
+
+      // Try to extract URL from various possible field names
+      const platformPostUrl =
+        tiktokPlatform?.platformPostUrl ||
+        tiktokPlatform?.postUrl ||
+        tiktokPlatform?.url ||
+        tiktokPlatform?.permalink ||
+        data.platformPostUrl ||
+        data.postUrl ||
+        data.url ||
+        null;
+
+      const platformPostId =
+        tiktokPlatform?.platformPostId ||
+        tiktokPlatform?.externalId ||
+        tiktokPlatform?.videoId ||
+        data.platformPostId ||
+        data.externalId ||
+        null;
+
+      if (platformPostUrl || platformPostId) {
+        const finalUrl = platformPostUrl
+          || (platformPostId && post.account.tiktokUsername
+            ? `https://www.tiktok.com/@${post.account.tiktokUsername}/video/${platformPostId}`
+            : null);
+
+        await prisma.scheduledPost.update({
+          where: { id: post.id },
+          data: {
+            tiktokPostUrl: finalUrl,
+            tiktokVideoId: platformPostId || post.tiktokVideoId,
+          },
+        });
+        results.updated++;
+        results.details[postpeerId] = `✅ ${finalUrl}`;
+      } else {
+        results.noUrl++;
+        // Store a debug snapshot of what PostPeer returned
+        const keys = Object.keys(data).join(", ");
+        results.details[postpeerId] = `no_url_found (keys: ${keys})`;
+      }
+    } catch (err) {
+      results.errors++;
+      results.details[postpeerId] = `error: ${err instanceof Error ? err.message : String(err)}`;
+    }
+  }
+
+  return NextResponse.json({
+    ok: true,
+    totalChecked: missingUrlPosts.length,
+    ...results,
+  });
+}
