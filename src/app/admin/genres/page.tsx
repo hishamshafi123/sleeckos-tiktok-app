@@ -755,17 +755,29 @@ export default function GenresDashboard() {
 
   const handleReRenderOverlay = async (templateId: string, templateName: string) => {
     setReRenderingTemplateId(templateId);
-    toast.info(`Re-rendering overlay for "${templateName}"... This may take 30-60 seconds.`);
+    toast.info(`Starting overlay render for "${templateName}" in background...`);
     try {
       const res = await fetch("/api/managed/genres/tracks/lyrical", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ templateId }),
       });
+
+      // Guard against non-JSON responses (HTML error pages from timeouts)
+      const contentType = res.headers.get("content-type") || "";
+      if (!contentType.includes("application/json")) {
+        if (res.ok) {
+          toast.success(`Overlay rendering queued for "${templateName}" ✅`);
+        } else {
+          toast.error(`Server error (${res.status}). Check Docker logs for details.`);
+        }
+        return;
+      }
+
+      const data = await res.json();
       if (res.ok) {
-        toast.success(`Overlay for "${templateName}" rendered successfully! ✅`);
+        toast.success(`Overlay rendering started for "${templateName}" in background! Check Docker logs for completion (30-60s). ✅`);
       } else {
-        const data = await res.json();
         toast.error(data.error || "Failed to re-render overlay");
       }
     } catch (err: any) {

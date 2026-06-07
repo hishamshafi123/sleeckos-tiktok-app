@@ -308,13 +308,22 @@ export async function PUT(req: Request) {
 
     console.log(`[Lyrical API] Re-rendering overlay for template '${template.templateName}' (${templateId})...`);
 
-    // Run synchronously so the user knows when it's done
-    const { renderCanvasOverlay } = await import("@/lib/canvas-overlay-renderer");
-    await renderCanvasOverlay(words, rendererConfig, duration, overlayAbsolutePath);
+    // Fire and forget — rendering is slow (30-60s+), we can't block the HTTP response
+    (async () => {
+      try {
+        const { renderCanvasOverlay } = await import("@/lib/canvas-overlay-renderer");
+        await renderCanvasOverlay(words, rendererConfig, duration, overlayAbsolutePath);
+        console.log(`[Lyrical API] ✅ Re-render COMPLETE for '${template.templateName}': ${overlayUrl}`);
+      } catch (err) {
+        console.error(`[Lyrical API] ❌ Re-render FAILED for '${template.templateName}':`, err);
+      }
+    })();
 
-    console.log(`[Lyrical API] Re-render complete: ${overlayUrl}`);
-
-    return NextResponse.json({ success: true, overlayUrl });
+    return NextResponse.json({ 
+      success: true, 
+      message: `Overlay rendering started for "${template.templateName}". Check Docker logs for progress (30-60s).`,
+      overlayUrl,
+    });
   } catch (err: any) {
     console.error("[Lyrical API] Error re-rendering overlay:", err);
     return NextResponse.json({ error: err.message || "Overlay re-render failed" }, { status: 500 });
