@@ -242,6 +242,85 @@ export async function PATCH(req: Request) {
   }
 }
 
+// 2.5. PUT /api/managed/genres/tracks/lyrical — Re-render overlay for an existing template
+export async function PUT(req: Request) {
+  const session = await getSession();
+  if (!session || session.role !== "ADMIN") {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  try {
+    const body = await req.json();
+    const { templateId } = body;
+
+    if (!templateId) {
+      return NextResponse.json({ error: "Missing templateId" }, { status: 400 });
+    }
+
+    const template = await prisma.trackLyricalTemplate.findUnique({
+      where: { id: templateId },
+      include: { track: true },
+    });
+
+    if (!template) {
+      return NextResponse.json({ error: "Template not found" }, { status: 404 });
+    }
+
+    if (!template.track.lyricalTranscription) {
+      return NextResponse.json({ error: "Track has no Whisper alignment data" }, { status: 400 });
+    }
+
+    const words: { word: string; start: number; end: number }[] = JSON.parse(template.track.lyricalTranscription);
+    const duration = template.track.duration || 10.0;
+
+    // Resolve overlay path
+    let overlayUrl = template.overlayVideoUrl;
+    if (!overlayUrl) {
+      const sanitizedName = template.templateName.replace(/[^a-zA-Z0-9]/g, "_").toLowerCase();
+      overlayUrl = `/uploads/lyrical/overlays/track_${template.trackId}_${sanitizedName}.webm`;
+      // Save the resolved path to DB
+      await prisma.trackLyricalTemplate.update({
+        where: { id: templateId },
+        data: { overlayVideoUrl: overlayUrl },
+      });
+    }
+
+    const overlayAbsolutePath = path.join(process.cwd(), "public", ...overlayUrl.split("/").filter(Boolean));
+
+    // Ensure directory exists
+    const outDir = path.dirname(overlayAbsolutePath);
+    fs.mkdirSync(outDir, { recursive: true });
+
+    const rendererConfig = {
+      fontFamily: template.fontFamily,
+      fontSize: template.fontSize,
+      activeColor: template.activeColor,
+      strokeWidth: template.strokeWidth,
+      strokeColor: template.strokeColor,
+      positionY: template.positionY,
+      colorFilter: template.colorFilter,
+      vignette: template.vignette,
+      particleFx: template.particleFx,
+      animationMode: template.animationMode as "highlight" | "word_builder",
+      bgColor: template.bgColor,
+      textColor: template.textColor,
+    };
+
+    console.log(`[Lyrical API] Re-rendering overlay for template '${template.templateName}' (${templateId})...`);
+
+    // Run synchronously so the user knows when it's done
+    const { renderCanvasOverlay } = await import("@/lib/canvas-overlay-renderer");
+    await renderCanvasOverlay(words, rendererConfig, duration, overlayAbsolutePath);
+
+    console.log(`[Lyrical API] Re-render complete: ${overlayUrl}`);
+
+    return NextResponse.json({ success: true, overlayUrl });
+  } catch (err: any) {
+    console.error("[Lyrical API] Error re-rendering overlay:", err);
+    return NextResponse.json({ error: err.message || "Overlay re-render failed" }, { status: 500 });
+  }
+}
+
 // 3. GET /api/managed/genres/tracks/lyrical — Fetch all templates and alignments attached to a track
 export async function GET(req: Request) {
   const session = await getSession();

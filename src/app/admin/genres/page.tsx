@@ -751,6 +751,30 @@ export default function GenresDashboard() {
     }
   };
 
+  const [reRenderingTemplateId, setReRenderingTemplateId] = useState<string | null>(null);
+
+  const handleReRenderOverlay = async (templateId: string, templateName: string) => {
+    setReRenderingTemplateId(templateId);
+    toast.info(`Re-rendering overlay for "${templateName}"... This may take 30-60 seconds.`);
+    try {
+      const res = await fetch("/api/managed/genres/tracks/lyrical", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ templateId }),
+      });
+      if (res.ok) {
+        toast.success(`Overlay for "${templateName}" rendered successfully! ✅`);
+      } else {
+        const data = await res.json();
+        toast.error(data.error || "Failed to re-render overlay");
+      }
+    } catch (err: any) {
+      toast.error(err.message || "Failed to re-render overlay");
+    } finally {
+      setReRenderingTemplateId(null);
+    }
+  };
+
   const fetchAccounts = async () => {
     setLoadingAccounts(true);
     try {
@@ -2969,17 +2993,32 @@ export default function GenresDashboard() {
                                   </div>
                                 </div>
 
-                                <button
-                                  type="button"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    handleDeleteLyricalTemplate(tpl.id, selectedTrack.id);
-                                  }}
-                                  className="p-1.5 rounded-xl text-gray-500 hover:text-red-400 hover:bg-red-500/10 transition-all duration-300 opacity-40 group-hover/card:opacity-100 cursor-pointer flex items-center justify-center border border-transparent hover:border-red-500/10 flex-shrink-0"
-                                  title="Delete Styling Template"
-                                >
-                                  <Trash2 className="w-3.5 h-3.5" />
-                                </button>
+                                <div className="flex items-center gap-1 flex-shrink-0">
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleReRenderOverlay(tpl.id, tpl.templateName);
+                                    }}
+                                    disabled={reRenderingTemplateId === tpl.id}
+                                    className="p-1.5 rounded-xl text-gray-500 hover:text-amber-400 hover:bg-amber-500/10 transition-all duration-300 opacity-40 group-hover/card:opacity-100 cursor-pointer flex items-center justify-center border border-transparent hover:border-amber-500/10 flex-shrink-0 disabled:opacity-100"
+                                    title="Re-render Overlay (Pre-bake WebM)"
+                                  >
+                                    <RefreshCw className={`w-3.5 h-3.5 ${reRenderingTemplateId === tpl.id ? "animate-spin text-amber-400" : ""}`} />
+                                  </button>
+
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleDeleteLyricalTemplate(tpl.id, selectedTrack.id);
+                                    }}
+                                    className="p-1.5 rounded-xl text-gray-500 hover:text-red-400 hover:bg-red-500/10 transition-all duration-300 opacity-40 group-hover/card:opacity-100 cursor-pointer flex items-center justify-center border border-transparent hover:border-red-500/10 flex-shrink-0"
+                                    title="Delete Styling Template"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                  </button>
+                                </div>
                               </div>
                             );
                           })}
