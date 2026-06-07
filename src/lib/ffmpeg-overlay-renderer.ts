@@ -1,8 +1,9 @@
 /**
  * FFmpeg-Based Overlay Renderer (No Browser Needed)
  *
- * Uses FFmpeg drawtext filters with word timings to generate
- * text overlay videos. No Puppeteer/Chromium dependency.
+ * Generates styled ASS subtitles from word timings + template config,
+ * then burns them onto a transparent canvas via FFmpeg's `ass` filter.
+ * Uses filter_complex_script to avoid command-line escaping issues.
  *
  * ~5-15 seconds vs 5+ minutes (or crashing) with Puppeteer.
  */
@@ -58,18 +59,27 @@ const FONT_MAP: Record<string, { name: string; file: string }> = {
   "Lora-Bold":        { name: "Lora",       file: "Lora-Bold.ttf" },
 };
 
-const FALLBACK_FONT = "Montserrat-Bold.ttf";
+const FALLBACK_FONT_FILE = "Montserrat-Bold.ttf";
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
+// ─── ASS Helpers ─────────────────────────────────────────────────────────────
 
-function escapeDrawtext(text: string): string {
-  // FFmpeg drawtext special chars: ' : \ { } [ ] ; , =
-  return text
-    .replace(/\\/g, "\\\\\\\\")
-    .replace(/'/g, "'\\\\\\''")
-    .replace(/:/g, "\\\\:")
-    .replace(/;/g, "\\\\;")
-    .replace(/%/g, "%%");
+function hexToASS(hex: string): string {
+  // ASS color: &HAABBGGRR
+  const clean = hex.replace("#", "");
+  if (clean.length === 6) {
+    const r = clean.substring(0, 2);
+    const g = clean.substring(2, 4);
+    const b = clean.substring(4, 6);
+    return "&H00" + b + g + r;
+  }
+  return "&H00FFFFFF";
+}
+
+function secondsToASS(s: number): string {
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  return h + ":" + String(m).padStart(2, "0") + ":" + sec.toFixed(2).padStart(5, "0");
 }
 
 // ─── Word Chunking ───────────────────────────────────────────────────────────
@@ -106,138 +116,80 @@ function chunkPhrases(words: Word[]): Word[][] {
   return phrases;
 }
 
-// ─── Approach: Generate a concat script with per-segment drawtext ────────────
-// For each word timing slot, we generate a tiny video segment with the correct
-// text rendered, then concat them all. This avoids the complexity of filter
-// enable/disable timing with hundreds of drawtext filters.
-//
-// Actually, simpler approach: use a single FFmpeg command with drawtext filters
-// that use enable='between(t,start,end)' for timing.
+// ─── ASS File Generator ─────────────────────────────────────────────────────
 
-function buildDrawtextFilterChain(
-  words: Word[],
-  config: TemplateConfig,
-  fontsDir: string,
-): string {
+function generateASS(words: Word[], config: TemplateConfig): string {
   const fontEntry = FONT_MAP[config.fontFamily] || FONT_MAP["Montserrat-Black"];
-  const fontFile = path.join(fontsDir, fontEntry.file);
+  const fontName = fontEntry.name;
   const fontSize = config.fontSize || 48;
   const posY = Math.round(HEIGHT * (config.positionY || 0.75));
-  const isMulti = config.activeColor === "multi";
-  
-  // Escape the font file path for FFmpeg
-  const escapedFontFile = fontFile.replace(/:/g, "\\\\:").replace(/'/g, "'\\\\\\''");
-  
-  const strokeColor = config.strokeColor || "#000000";
-  const inactiveColor = config.textColor || "#888888";
-  const borderW = Math.min(config.strokeWidth || 3, 6);
 
-  const filters: string[] = [];
+  const activeColor = hexToASS(config.activeColor === "multi" ? "#FFFF00" : config.activeColor || "#FFFFFF");
+  const inactiveColor = config.textColor ? hexToASS(config.textColor) : "&H00888888";
+  const strokeColor = hexToASS(config.strokeColor || "#000000");
+  const outline = Math.min(config.strokeWidth || 3, 6);
+
+  const isMulti = config.activeColor === "multi";
+
+  // Build ASS file using string array (no template literals to avoid escape confusion)
+  const lines: string[] = [];
+  lines.push("[Script Info]");
+  lines.push("Title: Lyrical Overlay");
+  lines.push("ScriptType: v4.00+");
+  lines.push("WrapStyle: 0");
+  lines.push("ScaledBorderAndShadow: yes");
+  lines.push("YCbCr Matrix: None");
+  lines.push("PlayResX: " + WIDTH);
+  lines.push("PlayResY: " + HEIGHT);
+  lines.push("");
+  lines.push("[V4+ Styles]");
+  lines.push("Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding");
+  lines.push("Style: Default," + fontName + "," + fontSize + "," + activeColor + "," + activeColor + "," + strokeColor + ",&H00000000,1,0,0,0,100,100,0,0,1," + outline + ",0,5,20,20,10,1");
+  lines.push("");
+  lines.push("[Events]");
+  lines.push("Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text");
 
   if (config.animationMode === "word_builder") {
-    // Word Builder: show words appearing one at a time
     const phrases = chunkPhrases(words);
-    
     for (const phrase of phrases) {
       const phraseEnd = phrase[phrase.length - 1].end + 0.3;
-      
       for (let i = 0; i < phrase.length; i++) {
         const word = phrase[i];
         const nextStart = (i + 1 < phrase.length) ? phrase[i + 1].start : phraseEnd;
-        
-        // Build the text showing all words up to current
-        const builtWords = phrase.slice(0, i + 1).map(w => w.word);
-        const fullText = escapeDrawtext(builtWords.join(" "));
-        
-        // Show entire built phrase in inactive color
-        filters.push(
-          "drawtext=fontfile='" + escapedFontFile + "'" +
-          ":text='" + fullText + "'" +
-          ":fontsize=" + fontSize +
-          ":fontcolor=" + inactiveColor +
-          ":borderw=" + borderW +
-          ":bordercolor=" + strokeColor +
-          ":x=(w-text_w)/2" +
-          ":y=" + posY +
-          ":enable='between(t," + word.start.toFixed(3) + "," + nextStart.toFixed(3) + ")'"
-        );
-        
-        // Overlay the active word on top in the active color
-        // Calculate x position for the active word
-        const activeColor = isMulti ? MULTI_COLORS[i % MULTI_COLORS.length] : (config.activeColor || "#FFFFFF");
-        const activeWordText = escapeDrawtext(word.word);
-        
-        // For the active word, we need to figure out its position within the line
-        // Use a simpler approach: just render the active word centered
-        // Actually, let's render the whole line but only show the active word colored
-        // We'll use two layers: inactive full text + active single word on top
-        
-        // Calculate prefix width to position active word correctly
-        const prefixWords = builtWords.slice(0, i);
-        const prefixText = prefixWords.length > 0 ? escapeDrawtext(prefixWords.join(" ") + " ") : "";
-        
-        if (prefixText) {
-          // Active word offset from center
-          filters.push(
-            "drawtext=fontfile='" + escapedFontFile + "'" +
-            ":text='" + activeWordText + "'" +
-            ":fontsize=" + fontSize +
-            ":fontcolor=" + activeColor +
-            ":borderw=" + borderW +
-            ":bordercolor=" + strokeColor +
-            // Position: center of full text + offset by prefix width
-            // This is approximate but works well enough
-            ":x=(w-text_w)/2" +
-            ":y=" + posY +
-            ":enable='between(t," + word.start.toFixed(3) + "," + nextStart.toFixed(3) + ")'"
-          );
-        } else {
-          // First word — just overlay at same position
-          filters.push(
-            "drawtext=fontfile='" + escapedFontFile + "'" +
-            ":text='" + activeWordText + "'" +
-            ":fontsize=" + fontSize +
-            ":fontcolor=" + activeColor +
-            ":borderw=" + borderW +
-            ":bordercolor=" + strokeColor +
-            ":x=(w-text_w)/2" +
-            ":y=" + posY +
-            ":enable='between(t," + word.start.toFixed(3) + "," + nextStart.toFixed(3) + ")'"
-          );
+        const ac = isMulti ? hexToASS(MULTI_COLORS[i % MULTI_COLORS.length]) : activeColor;
+
+        // Build text: all words up to current, active word is highlighted
+        // ASS override tags use single backslash: \c, \r, \pos
+        const textParts: string[] = [];
+        for (let j = 0; j <= i; j++) {
+          const c = j === i ? ac : inactiveColor;
+          textParts.push("{\\c" + c + "}" + phrase[j].word + "{\\r}");
         }
+        const dialogueText = "{\\pos(" + (WIDTH / 2) + "," + posY + ")}" + textParts.join(" ");
+        lines.push("Dialogue: 0," + secondsToASS(word.start) + "," + secondsToASS(nextStart) + ",Default,,0,0,0,," + dialogueText);
       }
     }
   } else {
-    // Highlight mode: show chunk of words, active word changes color
     const chunks = chunkWords(words);
-    
     for (const chunk of chunks) {
-      const chunkStart = chunk[0].start;
       const chunkEnd = chunk[chunk.length - 1].end + 0.1;
-      const fullText = escapeDrawtext(chunk.map(w => w.word).join(" "));
-      
       for (let i = 0; i < chunk.length; i++) {
         const word = chunk[i];
         const nextStart = (i + 1 < chunk.length) ? chunk[i + 1].start : chunkEnd;
-        const activeColor = isMulti ? MULTI_COLORS[i % MULTI_COLORS.length] : (config.activeColor || "#FFFFFF");
-        
-        // Show the full chunk text in inactive color
-        filters.push(
-          "drawtext=fontfile='" + escapedFontFile + "'" +
-          ":text='" + fullText + "'" +
-          ":fontsize=" + fontSize +
-          ":fontcolor=" + inactiveColor +
-          ":borderw=" + borderW +
-          ":bordercolor=" + strokeColor +
-          ":x=(w-text_w)/2" +
-          ":y=" + posY +
-          ":enable='between(t," + word.start.toFixed(3) + "," + nextStart.toFixed(3) + ")'"
-        );
+        const ac = isMulti ? hexToASS(MULTI_COLORS[i % MULTI_COLORS.length]) : activeColor;
+
+        const textParts: string[] = [];
+        for (let j = 0; j < chunk.length; j++) {
+          const c = j === i ? ac : inactiveColor;
+          textParts.push("{\\c" + c + "}" + chunk[j].word + "{\\r}");
+        }
+        const dialogueText = "{\\pos(" + (WIDTH / 2) + "," + posY + ")}" + textParts.join(" ");
+        lines.push("Dialogue: 0," + secondsToASS(word.start) + "," + secondsToASS(nextStart) + ",Default,,0,0,0,," + dialogueText);
       }
     }
   }
 
-  return filters.join(",");
+  return lines.join("\n") + "\n";
 }
 
 // ─── Main Overlay Renderer ──────────────────────────────────────────────────
@@ -255,12 +207,6 @@ export async function renderCanvasOverlay(
   console.log("[FFmpeg Renderer] Config: font=" + config.fontFamily + ", size=" + config.fontSize + ", active=" + config.activeColor);
   console.log("[FFmpeg Renderer] Mode: " + (config.animationMode || "highlight") + ", bg=" + (config.bgColor || "transparent"));
   console.log("[FFmpeg Renderer] Output: " + outputPath);
-
-  // Check FFmpeg available filters for debugging
-  try {
-    const filtersOut = execSync("ffmpeg -filters 2>&1 | grep -E 'ass|subtitles|drawtext' || true", { timeout: 5000 }).toString().trim();
-    console.log("[FFmpeg Renderer] Available filters: " + filtersOut);
-  } catch {}
 
   if (progressFile) {
     try { fs.writeFileSync(progressFile, JSON.stringify({ current: 5, total: 100, percent: 5, status: "rendering" }), "utf-8"); } catch {}
@@ -280,39 +226,47 @@ export async function renderCanvasOverlay(
   const fontEntry = FONT_MAP[config.fontFamily] || FONT_MAP["Montserrat-Black"];
   let fontFile = path.join(fontsDir, fontEntry.file);
   if (!fs.existsSync(fontFile)) {
-    console.warn("[FFmpeg Renderer] Font not found: " + fontEntry.file + ", falling back to " + FALLBACK_FONT);
-    fontFile = path.join(fontsDir, FALLBACK_FONT);
-    if (!fs.existsSync(fontFile)) {
-      console.error("[FFmpeg Renderer] Fallback font also missing! Available: " + fs.readdirSync(fontsDir).join(", "));
-      if (progressFile) {
-        try { fs.writeFileSync(progressFile, JSON.stringify({ current: 0, total: 100, percent: 0, status: "failed", error: "No font files found" }), "utf-8"); } catch {}
-      }
-      throw new Error("No font files found in " + fontsDir);
-    }
+    console.warn("[FFmpeg Renderer] Font not found: " + fontEntry.file + ", falling back to " + FALLBACK_FONT_FILE);
+    fontFile = path.join(fontsDir, FALLBACK_FONT_FILE);
   }
+  console.log("[FFmpeg Renderer] Using font: " + fontFile);
+
+  // Generate ASS subtitle file
+  const assContent = generateASS(words, config);
+  const ts = Date.now();
+  const assPath = "/tmp/overlay_" + ts + ".ass";
+  fs.writeFileSync(assPath, assContent, "utf-8");
+
+  // Log the first dialogue line for debugging
+  const firstDialogue = assContent.split("\n").find(l => l.startsWith("Dialogue:"));
+  console.log("[FFmpeg Renderer] ASS file: " + assPath + " (" + (assContent.length / 1024).toFixed(1) + "KB)");
+  console.log("[FFmpeg Renderer] First event: " + (firstDialogue || "NONE").substring(0, 200));
 
   if (progressFile) {
     try { fs.writeFileSync(progressFile, JSON.stringify({ current: 15, total: 100, percent: 15, status: "rendering" }), "utf-8"); } catch {}
   }
 
-  // Build the drawtext filter chain
-  const drawtextChain = buildDrawtextFilterChain(words, config, fontsDir);
-  
-  // Build FFmpeg command
+  // Build FFmpeg command using a filtergraph script file to avoid escaping issues
   const hasSolidBg = !!config.bgColor;
-  const bgColor = hasSolidBg ? config.bgColor!.replace("#", "0x") : "black@0.0";
-  
-  // Build input + filter
-  const colorSrc = "color=c=" + bgColor + ":s=" + WIDTH + "x" + HEIGHT + ":d=" + duration + ":r=" + FPS;
-  const fullFilter = hasSolidBg
-    ? drawtextChain
-    : "format=yuva420p," + drawtextChain;
+  const bgColor = hasSolidBg ? config.bgColor! : "black@0.0";
+  // FFmpeg color source: use named or 0xRRGGBB format
+  const colorVal = bgColor.startsWith("#") ? bgColor.replace("#", "0x") : bgColor;
+
+  // Write filter script to file (avoids all command-line escaping issues)
+  const filterScript = "/tmp/overlay_filter_" + ts + ".txt";
+  // The filter graph: color source -> ass subtitles -> output
+  // For transparent: need format=yuva420p before ass
+  const filterContent = hasSolidBg
+    ? "color=c=" + colorVal + ":s=" + WIDTH + "x" + HEIGHT + ":d=" + duration + ":r=" + FPS + ",ass=" + assPath + ":fontsdir=" + fontsDir + " [out]"
+    : "color=c=" + colorVal + ":s=" + WIDTH + "x" + HEIGHT + ":d=" + duration + ":r=" + FPS + ",format=yuva420p,ass=" + assPath + ":fontsdir=" + fontsDir + " [out]";
+  fs.writeFileSync(filterScript, filterContent, "utf-8");
+  console.log("[FFmpeg Renderer] Filter script: " + filterScript);
+  console.log("[FFmpeg Renderer] Filter content: " + filterContent);
 
   const ffmpegArgs = [
     "-y",
-    "-f", "lavfi",
-    "-i", colorSrc,
-    "-vf", fullFilter,
+    "-filter_complex_script", filterScript,
+    "-map", "[out]",
     "-c:v", "libvpx",
     "-pix_fmt", hasSolidBg ? "yuv420p" : "yuva420p",
     "-auto-alt-ref", "0",
@@ -324,10 +278,7 @@ export async function renderCanvasOverlay(
     tmpPath,
   ];
 
-  // Log the command (truncated for readability)
-  const cmdStr = "ffmpeg " + ffmpegArgs.join(" ");
-  console.log("[FFmpeg Renderer] Command length: " + cmdStr.length + " chars");
-  console.log("[FFmpeg Renderer] First 500 chars: " + cmdStr.substring(0, 500));
+  console.log("[FFmpeg Renderer] Command: ffmpeg " + ffmpegArgs.join(" "));
 
   if (progressFile) {
     try { fs.writeFileSync(progressFile, JSON.stringify({ current: 20, total: 100, percent: 20, status: "rendering" }), "utf-8"); } catch {}
@@ -342,9 +293,9 @@ export async function renderCanvasOverlay(
     let stderr = "";
     ffmpeg.stderr!.on("data", (data: Buffer) => {
       const chunk = data.toString();
-      if (stderr.length < 20000) stderr += chunk;
+      if (stderr.length < 50000) stderr += chunk;
 
-      // Parse progress from FFmpeg output
+      // Parse progress
       const timeMatch = chunk.match(/time=(\d+):(\d+):([\d.]+)/);
       if (timeMatch && progressFile) {
         const t = parseInt(timeMatch[1]) * 3600 + parseInt(timeMatch[2]) * 60 + parseFloat(timeMatch[3]);
@@ -354,13 +305,17 @@ export async function renderCanvasOverlay(
     });
 
     ffmpeg.on("close", (code) => {
+      // Cleanup temp files
+      try { fs.unlinkSync(assPath); } catch {}
+      try { fs.unlinkSync(filterScript); } catch {}
+
       if (code === 0 && fs.existsSync(tmpPath)) {
         const stat = fs.statSync(tmpPath);
         if (stat.size < 1024) {
           console.error("[FFmpeg Renderer] Output too small (" + stat.size + " bytes)");
           try { fs.unlinkSync(tmpPath); } catch {}
           if (progressFile) {
-            try { fs.writeFileSync(progressFile, JSON.stringify({ current: 0, total: 100, percent: 0, status: "failed", error: "Output too small" }), "utf-8"); } catch {}
+            try { fs.writeFileSync(progressFile, JSON.stringify({ current: 0, total: 100, percent: 0, status: "failed", error: "Output file too small" }), "utf-8"); } catch {}
           }
           reject(new Error("FFmpeg overlay output too small"));
           return;
@@ -373,9 +328,13 @@ export async function renderCanvasOverlay(
         }
         resolve();
       } else {
-        // Log FULL stderr for debugging
-        console.error("[FFmpeg Renderer] ═══ FULL STDERR ═══");
-        console.error(stderr);
+        console.error("[FFmpeg Renderer] ❌ FAILED with exit code: " + code);
+        console.error("[FFmpeg Renderer] ═══ FULL STDERR (" + stderr.length + " bytes) ═══");
+        // Log stderr in chunks to avoid log truncation
+        const stderrLines = stderr.split("\n");
+        for (const line of stderrLines) {
+          if (line.trim()) console.error("[FFmpeg STDERR] " + line);
+        }
         console.error("[FFmpeg Renderer] ═══ END STDERR ═══");
         try { fs.unlinkSync(tmpPath); } catch {}
         if (progressFile) {
@@ -386,10 +345,12 @@ export async function renderCanvasOverlay(
     });
 
     ffmpeg.on("error", (err) => {
-      console.error("[FFmpeg Renderer] Spawn error:", err);
+      console.error("[FFmpeg Renderer] ❌ SPAWN ERROR:", err);
+      try { fs.unlinkSync(assPath); } catch {}
+      try { fs.unlinkSync(filterScript); } catch {}
       try { fs.unlinkSync(tmpPath); } catch {}
       if (progressFile) {
-        try { fs.writeFileSync(progressFile, JSON.stringify({ current: 0, total: 100, percent: 0, status: "failed", error: String(err) }), "utf-8"); } catch {}
+        try { fs.writeFileSync(progressFile, JSON.stringify({ current: 0, total: 100, percent: 0, status: "failed", error: "Spawn error: " + String(err) }), "utf-8"); } catch {}
       }
       reject(err);
     });
