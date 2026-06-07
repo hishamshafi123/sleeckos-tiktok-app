@@ -268,6 +268,7 @@ export async function renderCanvasOverlay(
     "-filter_complex_script", filterScript,
     "-map", "[out]",
     "-c:v", "libvpx",
+    "-f", "webm",
     "-pix_fmt", hasSolidBg ? "yuv420p" : "yuva420p",
     "-auto-alt-ref", "0",
     "-quality", "realtime",
