@@ -131,8 +131,28 @@ export async function POST(req: NextRequest) {
     errors: 0,
     details: {},
   };
+  // === CLEANUP: Clear incorrectly-stored URLs that were constructed from publish_id ===
+  // The platformPostId from PostPeer is TikTok's publish_id, NOT the video_id.
+  // Any tiktokPostUrl that was constructed from these is WRONG.
+  // Clear them so Refresh Links can re-populate correctly from PostPeer's platformPostUrl.
+  const cleanedUp = await prisma.scheduledPost.updateMany({
+    where: {
+      status: "PUBLISHED",
+      tiktokPostUrl: { not: null },
+      tiktokVideoId: { not: null },
+      // These were ALL incorrectly constructed - clear them
+    },
+    data: {
+      tiktokPostUrl: null,
+      tiktokVideoId: null,
+    },
+  });
+  if (cleanedUp.count > 0) {
+    console.log(`[RefreshLinks] Cleaned up ${cleanedUp.count} incorrectly-stored URLs`);
+  }
 
-  // === Tier 1: Posts that have tiktokVideoId but no URL (e.g. after username change) ===
+  // === Tier 1: DISABLED — tiktokVideoId values were wrong (publish_id, not video_id) ===
+  // Previously rebuilt URLs from stored tiktokVideoId, but those IDs were incorrect.
   // These can be rebuilt instantly without calling PostPeer
   const rebuildablePosts = await prisma.scheduledPost.findMany({
     where: {
@@ -208,37 +228,37 @@ export async function POST(req: NextRequest) {
         continue;
       }
 
-      // platformPostId format from PostPeer: "v_pub_url~v2-1.7647150213232183318"
-      // The actual TikTok video ID is the number after the last dot
-      const rawPlatformPostId: string = tiktokPlatform.platformPostId || "";
-      let tiktokVideoId: string | null = null;
+      // Log the full platform object so we can see ALL available fields
+      console.log(`[RefreshLinks] PostPeer ${postpeerId} platform:`, JSON.stringify(tiktokPlatform));
 
-      if (rawPlatformPostId.includes(".")) {
-        // Extract the number after the last dot: "v_pub_url~v2-1.7647150213232183318" → "7647150213232183318"
-        tiktokVideoId = rawPlatformPostId.split(".").pop() || null;
-      } else if (/^\d+$/.test(rawPlatformPostId)) {
-        // Already a plain numeric ID
-        tiktokVideoId = rawPlatformPostId;
-      }
+      // PRIORITY 1: Use platformPostUrl directly from PostPeer (the actual TikTok URL)
+      const directUrl: string | null = tiktokPlatform.platformPostUrl || null;
 
-      console.log(`[RefreshLinks] PostPeer ${postpeerId}: raw=${rawPlatformPostId}, videoId=${tiktokVideoId}, username=${post.account.tiktokUsername}`);
-
-      if (tiktokVideoId && post.account.tiktokUsername) {
-        const finalUrl = `https://www.tiktok.com/@${post.account.tiktokUsername}/video/${tiktokVideoId}`;
+      if (directUrl) {
+        // PostPeer gave us the actual URL — use it directly
+        // Extract video ID from URL for our records: https://www.tiktok.com/@user/video/XXXXX
+        const videoIdMatch = directUrl.match(/\/video\/(\d+)/);
+        const tiktokVideoId = videoIdMatch ? videoIdMatch[1] : null;
 
         await prisma.scheduledPost.update({
           where: { id: post.id },
           data: {
-            tiktokPostUrl: finalUrl,
+            tiktokPostUrl: directUrl,
             tiktokVideoId,
           },
         });
         results.updated++;
-        results.details[postpeerId] = `✅ ${finalUrl}`;
-      } else {
-        results.noUrl++;
-        results.details[postpeerId] = `no_video_id (raw: ${rawPlatformPostId}, username: ${post.account.tiktokUsername})`;
+        results.details[postpeerId] = `✅ direct: ${directUrl}`;
+        console.log(`[RefreshLinks] ✅ Direct URL from PostPeer: ${directUrl}`);
+        continue;
       }
+
+      // PRIORITY 2: platformPostUrl is null — PostPeer hasn't populated it yet
+      // The platformPostId contains TikTok's publish_id, NOT the video_id
+      // We CANNOT construct a valid URL from it
+      const rawPlatformPostId: string = tiktokPlatform.platformPostId || "";
+      results.noUrl++;
+      results.details[postpeerId] = `waiting (platformPostUrl=null, publishId=${rawPlatformPostId}, username=${post.account.tiktokUsername})`;
     } catch (err) {
       console.log(`[RefreshLinks] Error for ${postpeerId}: ${err instanceof Error ? err.message : String(err)}`);
       results.errors++;
