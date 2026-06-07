@@ -217,20 +217,20 @@ export async function PATCH(req: Request) {
       console.error(`[Lyrical API] Preview frame generation failed:`, previewErr);
     }
 
-    // Fire and forget — render WebM overlay asynchronously (slow — hundreds of frames)
+    // Fire and forget — render WebM overlay asynchronously via FFmpeg
     (async () => {
       try {
-        const { renderCanvasOverlay } = await import("@/lib/canvas-overlay-renderer");
-        console.log(`[Lyrical API] Starting Canvas overlay pre-render for '${templateName}'...`);
+        const { renderCanvasOverlay } = await import("@/lib/ffmpeg-overlay-renderer");
+        console.log(`[Lyrical API] Starting FFmpeg overlay render for '${templateName}'...`);
         await renderCanvasOverlay(
           words,
           rendererConfig,
           duration,
           overlayAbsolutePath,
         );
-        console.log(`[Lyrical API] Canvas overlay pre-render complete: ${overlayRelativePath}`);
+        console.log(`[Lyrical API] FFmpeg overlay render complete: ${overlayRelativePath}`);
       } catch (err) {
-        console.error(`[Lyrical API] Canvas overlay pre-render failed for '${templateName}':`, err);
+        console.error(`[Lyrical API] FFmpeg overlay render failed for '${templateName}':`, err);
       }
     })();
 
@@ -315,7 +315,7 @@ export async function PUT(req: Request) {
     // Fire and forget — rendering is slow (30-60s+), we can't block the HTTP response
     (async () => {
       try {
-        const { renderCanvasOverlay } = await import("@/lib/canvas-overlay-renderer");
+        const { renderCanvasOverlay } = await import("@/lib/ffmpeg-overlay-renderer");
         await renderCanvasOverlay(words, rendererConfig, duration, overlayAbsolutePath, progressFile);
         console.log(`[Lyrical API] ✅ Re-render COMPLETE for '${template.templateName}': ${overlayUrl}`);
       } catch (err) {
