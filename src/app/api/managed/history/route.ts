@@ -111,7 +111,9 @@ export async function GET(req: NextRequest) {
  * Called from the "Refresh Links" button on the History page.
  */
 export async function POST(req: NextRequest) {
+  console.log("[RefreshLinks] POST /api/managed/history called");
   const session = await getSession();
+  console.log("[RefreshLinks] Session:", session ? `role=${session.role}` : "null");
   if (!session || session.role !== "ADMIN") {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
@@ -144,6 +146,8 @@ export async function POST(req: NextRequest) {
     take: 200,
   });
 
+  console.log(`[RefreshLinks] Tier 1: ${rebuildablePosts.length} posts with videoId but no URL`);
+
   for (const post of rebuildablePosts) {
     if (post.tiktokVideoId && post.account.tiktokUsername) {
       const url = `https://www.tiktok.com/@${post.account.tiktokUsername}/video/${post.tiktokVideoId}`;
@@ -170,7 +174,7 @@ export async function POST(req: NextRequest) {
     take: 100,
   });
 
-
+  console.log(`[RefreshLinks] Tier 2: ${missingUrlPosts.length} posts need PostPeer fetch`);
 
   for (const post of missingUrlPosts) {
     const postpeerId = post.tiktokPublishId!;
