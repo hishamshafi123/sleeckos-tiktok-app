@@ -18,7 +18,7 @@ export async function GET(req: NextRequest) {
 
   const processingPosts = await prisma.scheduledPost.findMany({
     where: { status: "PROCESSING", tiktokPublishId: { not: null } },
-    include: { account: { select: { tiktokAccessToken: true } } },
+    include: { account: { select: { tiktokAccessToken: true, tiktokUsername: true } } },
     take: 50,
   });
 
@@ -35,15 +35,21 @@ export async function GET(req: NextRequest) {
       const publishId = post.tiktokPublishId!;
 
       if (status === "PUBLISH_COMPLETE") {
+        const videoId = data.data?.publicaly_available_post_id?.[0] || null;
+        const postUrl = videoId && post.account.tiktokUsername
+          ? `https://www.tiktok.com/@${post.account.tiktokUsername}/video/${videoId}`
+          : null;
+
         await prisma.scheduledPost.update({
           where: { id: post.id },
           data: {
             status: "PUBLISHED",
             publishedAt: new Date(),
-            tiktokVideoId: data.data?.publicaly_available_post_id?.[0] || null,
+            tiktokVideoId: videoId,
+            tiktokPostUrl: postUrl,
           },
         });
-        results[publishId] = "published";
+        results[publishId] = `published${postUrl ? ` → ${postUrl}` : ""}`;
       } else if (status === "FAILED") {
         const reason =
           data.data?.fail_reason || "TikTok reported processing failure";

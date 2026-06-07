@@ -12,7 +12,181 @@ import {
   Pencil,
   X,
   Power,
+  Link2,
+  Search,
+  Copy,
+  ExternalLink,
+  ChevronDown,
+  ChevronUp,
+  Calendar,
+  Hash,
 } from "lucide-react";
+
+// ── Video Links Panel (per section) ──────────────────────────────────────────
+type VideoLink = {
+  id: string;
+  url: string;
+  videoId: string | null;
+  caption: string;
+  publishedAt: string | null;
+  username: string;
+  avatarUrl: string;
+  groupName: string;
+};
+
+function VideoLinksPanel({ sectionId, sectionColor }: { sectionId: string; sectionColor: string }) {
+  const [open, setOpen] = useState(false);
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
+  const [hashtag, setHashtag] = useState("");
+  const [videos, setVideos] = useState<VideoLink[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [searched, setSearched] = useState(false);
+
+  const handleSearch = async () => {
+    setLoading(true);
+    setSearched(true);
+    try {
+      const params = new URLSearchParams();
+      if (from) params.set("from", from);
+      if (to) params.set("to", to);
+      if (hashtag.trim()) params.set("hashtag", hashtag.trim());
+      const res = await fetch(`/api/managed/sections/${sectionId}/video-links?${params}`);
+      if (!res.ok) throw new Error("Failed to fetch");
+      const data = await res.json();
+      setVideos(data.videos || []);
+    } catch {
+      toast.error("Failed to fetch video links");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const copyAllLinks = () => {
+    const links = videos.map((v) => v.url).join("\n");
+    navigator.clipboard.writeText(links);
+    toast.success(`${videos.length} link(s) copied to clipboard`);
+  };
+
+  return (
+    <div className="mt-3 mb-3">
+      <button
+        onClick={() => setOpen(!open)}
+        className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider px-3 py-1.5 rounded-lg transition-all w-full justify-between"
+        style={{ color: sectionColor, backgroundColor: `${sectionColor}10` }}
+      >
+        <span className="flex items-center gap-1.5">
+          <Link2 className="w-3 h-3" />
+          Video Links
+        </span>
+        {open ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+      </button>
+
+      {open && (
+        <div className="mt-2 space-y-2 bg-black/30 rounded-xl p-3 border border-white/5">
+          {/* Filters */}
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <label className="text-[9px] uppercase text-gray-500 font-bold tracking-wider flex items-center gap-1">
+                <Calendar className="w-2.5 h-2.5" /> From
+              </label>
+              <input
+                type="date"
+                value={from}
+                onChange={(e) => setFrom(e.target.value)}
+                className="w-full bg-white/5 border border-white/10 rounded-lg px-2 py-1.5 text-xs text-gray-300 focus:outline-none focus:border-purple-500 transition-colors"
+              />
+            </div>
+            <div>
+              <label className="text-[9px] uppercase text-gray-500 font-bold tracking-wider flex items-center gap-1">
+                <Calendar className="w-2.5 h-2.5" /> To
+              </label>
+              <input
+                type="date"
+                value={to}
+                onChange={(e) => setTo(e.target.value)}
+                className="w-full bg-white/5 border border-white/10 rounded-lg px-2 py-1.5 text-xs text-gray-300 focus:outline-none focus:border-purple-500 transition-colors"
+              />
+            </div>
+          </div>
+          <div>
+            <label className="text-[9px] uppercase text-gray-500 font-bold tracking-wider flex items-center gap-1">
+              <Hash className="w-2.5 h-2.5" /> Hashtag Filter
+            </label>
+            <input
+              type="text"
+              value={hashtag}
+              onChange={(e) => setHashtag(e.target.value)}
+              placeholder="e.g. #fyp"
+              className="w-full bg-white/5 border border-white/10 rounded-lg px-2 py-1.5 text-xs text-gray-300 placeholder-gray-600 focus:outline-none focus:border-purple-500 transition-colors"
+              onKeyDown={(e) => e.key === "Enter" && handleSearch()}
+            />
+          </div>
+          <button
+            onClick={handleSearch}
+            disabled={loading}
+            className="w-full flex items-center justify-center gap-1.5 text-xs font-semibold py-2 rounded-lg transition-all text-white"
+            style={{ backgroundColor: sectionColor }}
+          >
+            {loading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Search className="w-3 h-3" />}
+            Search Videos
+          </button>
+
+          {/* Results */}
+          {searched && (
+            <div className="space-y-1.5">
+              {videos.length > 0 && (
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] text-gray-500 font-semibold">
+                    {videos.length} video{videos.length !== 1 ? "s" : ""} found
+                  </span>
+                  <button
+                    onClick={copyAllLinks}
+                    className="flex items-center gap-1 text-[10px] font-semibold text-purple-400 hover:text-purple-300 transition-colors"
+                  >
+                    <Copy className="w-2.5 h-2.5" />
+                    Copy All Links
+                  </button>
+                </div>
+              )}
+              <div className="max-h-48 overflow-y-auto space-y-1 custom-scrollbar">
+                {videos.length === 0 ? (
+                  <p className="text-xs text-gray-600 text-center py-3">No videos found for these filters</p>
+                ) : (
+                  videos.map((v) => (
+                    <a
+                      key={v.id}
+                      href={v.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex items-center justify-between px-2 py-1.5 rounded-lg bg-white/3 hover:bg-white/5 transition-colors group/link"
+                    >
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-xs text-gray-300 font-medium truncate">@{v.username}</span>
+                          <span className="text-[9px] text-gray-600">{v.groupName}</span>
+                        </div>
+                        <p className="text-[10px] text-gray-500 truncate">
+                          {v.caption?.slice(0, 60) || "No caption"}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-2 flex-shrink-0 ml-2">
+                        <span className="text-[9px] text-gray-600">
+                          {v.publishedAt ? new Date(v.publishedAt).toLocaleDateString() : ""}
+                        </span>
+                        <ExternalLink className="w-3 h-3 text-gray-600 group-hover/link:text-white transition-colors" />
+                      </div>
+                    </a>
+                  ))
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
 type Section = {
   id: string;
@@ -280,6 +454,8 @@ export default function AccountsPage() {
                     No groups yet — click to add one
                   </p>
                 )}
+
+                <VideoLinksPanel sectionId={section.id} sectionColor={section.color} />
 
                 <Link
                   href={`/admin/accounts/${section.slug}`}
