@@ -185,18 +185,19 @@ export async function POST(req: NextRequest) {
     where: {
       status: "PUBLISHED",
       tiktokPublishId: { not: null },
-      tiktokVideoId: null,
       tiktokPostUrl: null,
     },
     include: {
       account: { select: { tiktokUsername: true } },
     },
-    take: 100,
+    take: 20,
   });
 
   console.log(`[RefreshLinks] Tier 2: ${missingUrlPosts.length} posts need PostPeer fetch`);
 
   for (let i = 0; i < missingUrlPosts.length; i++) {
+    // Rate limit: 500ms between requests to avoid PostPeer 500 errors
+    if (i > 0) await new Promise(r => setTimeout(r, 500));
     const post = missingUrlPosts[i];
     const postpeerId = post.tiktokPublishId!;
     console.log(`[RefreshLinks] Tier 2 [${i+1}/${missingUrlPosts.length}] Fetching PostPeer post ${postpeerId}...`);
