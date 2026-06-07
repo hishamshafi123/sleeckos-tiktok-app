@@ -536,6 +536,7 @@ export async function renderCanvasOverlay(
   config: TemplateConfig,
   duration: number,
   outputPath: string,
+  progressFile?: string,
 ): Promise<void> {
   const fontsDir = path.join(process.cwd(), "public", "fonts");
   const totalFrames = Math.ceil(duration * FPS);
@@ -643,7 +644,13 @@ export async function renderCanvasOverlay(
 
       // Progress logging every 2 seconds
       if (frame % (FPS * 2) === 0) {
-        console.log(`[Browser Renderer] Frame ${frame}/${totalFrames} (${((frame / totalFrames) * 100).toFixed(0)}%)`);
+        const pct = Math.round((frame / totalFrames) * 100);
+        console.log(`[Browser Renderer] Frame ${frame}/${totalFrames} (${pct}%)`);
+        if (progressFile) {
+          try {
+            fs.writeFileSync(progressFile, JSON.stringify({ current: frame, total: totalFrames, percent: pct, status: "rendering" }), "utf-8");
+          } catch {}
+        }
       }
     }
 
@@ -664,10 +671,16 @@ export async function renderCanvasOverlay(
           fs.renameSync(tmpPath, outputPath);
           fs.writeFileSync(outputPath + ".ready", new Date().toISOString(), "utf-8");
           console.log(`[Browser Renderer] Complete! Output: ${outputPath} (${(stat.size / 1024).toFixed(0)}KB)`);
+          if (progressFile) {
+            try { fs.writeFileSync(progressFile, JSON.stringify({ current: totalFrames, total: totalFrames, percent: 100, status: "done" }), "utf-8"); } catch {}
+          }
           resolve();
         } else {
           console.error(`[Browser Renderer] FFmpeg failed with code ${code}:`, ffmpegStderr.slice(-1000));
           try { fs.unlinkSync(tmpPath); } catch {}
+          if (progressFile) {
+            try { fs.writeFileSync(progressFile, JSON.stringify({ current: 0, total: totalFrames, percent: 0, status: "failed", error: `FFmpeg code ${code}` }), "utf-8"); } catch {}
+          }
           reject(new Error(`FFmpeg encoding failed with code ${code}`));
         }
       });

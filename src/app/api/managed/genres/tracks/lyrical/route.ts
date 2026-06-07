@@ -308,20 +308,26 @@ export async function PUT(req: Request) {
 
     console.log(`[Lyrical API] Re-rendering overlay for template '${template.templateName}' (${templateId})...`);
 
+    const progressFile = `/tmp/overlay_progress_${templateId}.json`;
+    // Initialize progress file so polling can start immediately
+    fs.writeFileSync(progressFile, JSON.stringify({ current: 0, total: 0, percent: 0, status: "starting" }), "utf-8");
+
     // Fire and forget — rendering is slow (30-60s+), we can't block the HTTP response
     (async () => {
       try {
         const { renderCanvasOverlay } = await import("@/lib/canvas-overlay-renderer");
-        await renderCanvasOverlay(words, rendererConfig, duration, overlayAbsolutePath);
+        await renderCanvasOverlay(words, rendererConfig, duration, overlayAbsolutePath, progressFile);
         console.log(`[Lyrical API] ✅ Re-render COMPLETE for '${template.templateName}': ${overlayUrl}`);
       } catch (err) {
         console.error(`[Lyrical API] ❌ Re-render FAILED for '${template.templateName}':`, err);
+        try { fs.writeFileSync(progressFile, JSON.stringify({ current: 0, total: 0, percent: 0, status: "failed", error: String(err) }), "utf-8"); } catch {}
       }
     })();
 
     return NextResponse.json({ 
       success: true, 
-      message: `Overlay rendering started for "${template.templateName}". Check Docker logs for progress (30-60s).`,
+      templateId,
+      message: `Overlay rendering started for "${template.templateName}".`,
       overlayUrl,
     });
   } catch (err: any) {
@@ -339,6 +345,25 @@ export async function GET(req: Request) {
 
   const { searchParams } = new URL(req.url);
   const trackId = searchParams.get("trackId");
+  const progressTemplateId = searchParams.get("progressTemplateId");
+
+  // Progress polling for overlay re-rendering
+  if (progressTemplateId) {
+    const progressFile = `/tmp/overlay_progress_${progressTemplateId}.json`;
+    try {
+      if (fs.existsSync(progressFile)) {
+        const data = JSON.parse(fs.readFileSync(progressFile, "utf-8"));
+        // Clean up progress file when done or failed
+        if (data.status === "done" || data.status === "failed") {
+          try { fs.unlinkSync(progressFile); } catch {}
+        }
+        return NextResponse.json(data);
+      }
+      return NextResponse.json({ current: 0, total: 0, percent: 0, status: "idle" });
+    } catch {
+      return NextResponse.json({ current: 0, total: 0, percent: 0, status: "unknown" });
+    }
+  }
 
   if (!trackId) {
     return NextResponse.json({ error: "Missing trackId" }, { status: 400 });

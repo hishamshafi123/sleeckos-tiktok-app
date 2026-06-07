@@ -752,10 +752,11 @@ export default function GenresDashboard() {
   };
 
   const [reRenderingTemplateId, setReRenderingTemplateId] = useState<string | null>(null);
+  const [renderProgress, setRenderProgress] = useState<{ percent: number; status: string }>({ percent: 0, status: "idle" });
 
   const handleReRenderOverlay = async (templateId: string, templateName: string) => {
     setReRenderingTemplateId(templateId);
-    toast.info(`Starting overlay render for "${templateName}" in background...`);
+    setRenderProgress({ percent: 0, status: "starting" });
     try {
       const res = await fetch("/api/managed/genres/tracks/lyrical", {
         method: "PUT",
@@ -763,27 +764,52 @@ export default function GenresDashboard() {
         body: JSON.stringify({ templateId }),
       });
 
-      // Guard against non-JSON responses (HTML error pages from timeouts)
       const contentType = res.headers.get("content-type") || "";
       if (!contentType.includes("application/json")) {
-        if (res.ok) {
-          toast.success(`Overlay rendering queued for "${templateName}" ✅`);
-        } else {
-          toast.error(`Server error (${res.status}). Check Docker logs for details.`);
+        if (!res.ok) {
+          toast.error(`Server error (${res.status}). Check Docker logs.`);
+          setReRenderingTemplateId(null);
+          setRenderProgress({ percent: 0, status: "idle" });
+          return;
         }
-        return;
       }
 
-      const data = await res.json();
-      if (res.ok) {
-        toast.success(`Overlay rendering started for "${templateName}" in background! Check Docker logs for completion (30-60s). ✅`);
-      } else {
-        toast.error(data.error || "Failed to re-render overlay");
-      }
+      // Start polling progress
+      const pollInterval = setInterval(async () => {
+        try {
+          const pollRes = await fetch(`/api/managed/genres/tracks/lyrical?progressTemplateId=${templateId}`);
+          if (pollRes.ok) {
+            const progress = await pollRes.json();
+            setRenderProgress({ percent: progress.percent || 0, status: progress.status || "rendering" });
+            
+            if (progress.status === "done") {
+              clearInterval(pollInterval);
+              toast.success(`Overlay for "${templateName}" rendered successfully! ✅`);
+              setReRenderingTemplateId(null);
+              setRenderProgress({ percent: 100, status: "done" });
+            } else if (progress.status === "failed") {
+              clearInterval(pollInterval);
+              toast.error(`Overlay render failed for "${templateName}". Check Docker logs.`);
+              setReRenderingTemplateId(null);
+              setRenderProgress({ percent: 0, status: "idle" });
+            }
+          }
+        } catch {}
+      }, 2000);
+
+      // Safety: stop polling after 5 minutes no matter what
+      setTimeout(() => {
+        clearInterval(pollInterval);
+        if (reRenderingTemplateId === templateId) {
+          setReRenderingTemplateId(null);
+          setRenderProgress({ percent: 0, status: "idle" });
+        }
+      }, 300000);
+
     } catch (err: any) {
       toast.error(err.message || "Failed to re-render overlay");
-    } finally {
       setReRenderingTemplateId(null);
+      setRenderProgress({ percent: 0, status: "idle" });
     }
   };
 
@@ -3031,6 +3057,23 @@ export default function GenresDashboard() {
                                     <Trash2 className="w-3.5 h-3.5" />
                                   </button>
                                 </div>
+
+                                {/* Progress bar for overlay rendering */}
+                                {reRenderingTemplateId === tpl.id && (
+                                  <div className="absolute bottom-0 left-0 right-0 px-3 pb-2">
+                                    <div className="flex items-center gap-2">
+                                      <div className="flex-1 h-1.5 bg-white/5 rounded-full overflow-hidden">
+                                        <div 
+                                          className="h-full bg-gradient-to-r from-amber-500 to-purple-500 rounded-full transition-all duration-500 ease-out"
+                                          style={{ width: `${Math.max(renderProgress.percent, 2)}%` }}
+                                        />
+                                      </div>
+                                      <span className="text-[8px] font-black text-amber-400 tabular-nums min-w-[28px] text-right">
+                                        {renderProgress.percent}%
+                                      </span>
+                                    </div>
+                                  </div>
+                                )}
                               </div>
                             );
                           })}
