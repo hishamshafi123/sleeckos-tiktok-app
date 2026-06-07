@@ -40,6 +40,9 @@ export async function PATCH(
     data.driveConnected = !!body.driveFolderId;
   }
 
+  // Profile
+  if (body.tiktokUsername !== undefined) data.tiktokUsername = body.tiktokUsername.replace(/^@/, "");
+
   // Group reassignment
   if (body.groupId !== undefined) data.groupId = body.groupId;
 
@@ -47,6 +50,20 @@ export async function PATCH(
     where: { id },
     data,
   });
+
+  // If username changed, clear all existing TikTok URLs for this account
+  // so "Refresh Links" will reconstruct them with the new username
+  if (body.tiktokUsername !== undefined) {
+    await prisma.scheduledPost.updateMany({
+      where: {
+        accountId: id,
+        tiktokPostUrl: { not: null },
+      },
+      data: {
+        tiktokPostUrl: null,
+      },
+    });
+  }
 
   return NextResponse.json(account);
 }

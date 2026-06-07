@@ -16,6 +16,7 @@ import {
   ExternalLink,
   AlertCircle,
   Zap,
+  Pencil,
 } from "lucide-react";
 
 type Account = {
@@ -77,6 +78,7 @@ export default function GroupPage({
   const [loading, setLoading] = useState(true);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editForm, setEditForm] = useState({
+    tiktokUsername: "",
     postTimeSlots: "12:00",
     postTimezone: "UTC",
     postDays: "1,2,3,4,5,6,7",
@@ -280,6 +282,7 @@ export default function GroupPage({
     setEditingId(acc.id);
     const slots = acc.postTimeSlots || `${acc.postTimeHour.toString().padStart(2,"0")}:${acc.postTimeMinute.toString().padStart(2,"0")}`;
     setEditForm({
+      tiktokUsername: acc.tiktokUsername,
       postTimeSlots: slots,
       postTimezone: acc.postTimezone,
       postDays: acc.postDays,
@@ -667,6 +670,24 @@ export default function GroupPage({
                 {/* Edit panel */}
                 {editingId === acc.id && (
                   <div className="mt-4 pt-4 border-t border-white/5 space-y-4">
+                    {/* Username Edit */}
+                    <div>
+                      <label className="block text-xs text-gray-400 mb-1">TikTok Username</label>
+                      <div className="flex gap-2">
+                        <div className="flex items-center gap-1 flex-1">
+                          <span className="text-gray-500 text-sm">@</span>
+                          <input
+                            type="text"
+                            value={editForm.tiktokUsername}
+                            onChange={(e) => setEditForm({ ...editForm, tiktokUsername: e.target.value.replace(/^@/, "") })}
+                            className="flex-1 bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-purple-500"
+                            placeholder="username"
+                          />
+                        </div>
+                      </div>
+                      <p className="text-[10px] text-gray-600 mt-1">Changing username will reset video links — use Refresh Links in History to rebuild them.</p>
+                    </div>
+
                     <h4 className="font-semibold text-white text-sm">
                       Schedule Settings
                     </h4>

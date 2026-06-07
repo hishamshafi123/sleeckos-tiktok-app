@@ -123,11 +123,45 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "POSTPEER_ACCESS_KEY not configured" }, { status: 500 });
   }
 
-  // Find all PUBLISHED posts that have a PostPeer ID but no TikTok URL
+  const results: { updated: number; noUrl: number; errors: number; details: Record<string, string> } = {
+    updated: 0,
+    noUrl: 0,
+    errors: 0,
+    details: {},
+  };
+
+  // === Tier 1: Posts that have tiktokVideoId but no URL (e.g. after username change) ===
+  // These can be rebuilt instantly without calling PostPeer
+  const rebuildablePosts = await prisma.scheduledPost.findMany({
+    where: {
+      status: "PUBLISHED",
+      tiktokVideoId: { not: null },
+      tiktokPostUrl: null,
+    },
+    include: {
+      account: { select: { tiktokUsername: true } },
+    },
+    take: 200,
+  });
+
+  for (const post of rebuildablePosts) {
+    if (post.tiktokVideoId && post.account.tiktokUsername) {
+      const url = `https://www.tiktok.com/@${post.account.tiktokUsername}/video/${post.tiktokVideoId}`;
+      await prisma.scheduledPost.update({
+        where: { id: post.id },
+        data: { tiktokPostUrl: url },
+      });
+      results.updated++;
+      results.details[post.id] = `✅ rebuilt: ${url}`;
+    }
+  }
+
+  // === Tier 2: Posts with PostPeer ID but no video ID — need to fetch from PostPeer ===
   const missingUrlPosts = await prisma.scheduledPost.findMany({
     where: {
       status: "PUBLISHED",
       tiktokPublishId: { not: null },
+      tiktokVideoId: null,
       tiktokPostUrl: null,
     },
     include: {
@@ -136,12 +170,7 @@ export async function POST(req: NextRequest) {
     take: 100,
   });
 
-  const results: { updated: number; noUrl: number; errors: number; details: Record<string, string> } = {
-    updated: 0,
-    noUrl: 0,
-    errors: 0,
-    details: {},
-  };
+
 
   for (const post of missingUrlPosts) {
     const postpeerId = post.tiktokPublishId!;
@@ -208,7 +237,7 @@ export async function POST(req: NextRequest) {
 
   return NextResponse.json({
     ok: true,
-    totalChecked: missingUrlPosts.length,
+    totalChecked: rebuildablePosts.length + missingUrlPosts.length,
     ...results,
   });
 }
