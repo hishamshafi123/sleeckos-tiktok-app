@@ -33,6 +33,8 @@ export interface PostPeerOptions {
 export interface PostPeerResult {
   ok: boolean;
   postId?: string;
+  platformPostUrl?: string;
+  platformPostId?: string;
   raw: Record<string, unknown>;
 }
 
@@ -104,9 +106,17 @@ export async function postViaPostPeer(
     );
   }
 
+  // Extract platform-specific data (TikTok URL and post ID)
+  const platforms = data.platforms || data.platform_results || [];
+  const tiktokPlatform = Array.isArray(platforms)
+    ? platforms.find((p: Record<string, unknown>) => p.platform === "tiktok" || p.platformName === "tiktok")
+    : null;
+
   return {
     ok: true,
     postId: data.id || data.postId || data._id,
+    platformPostUrl: tiktokPlatform?.platformPostUrl || tiktokPlatform?.postUrl || data.platformPostUrl || undefined,
+    platformPostId: tiktokPlatform?.platformPostId || tiktokPlatform?.postId || data.platformPostId || undefined,
     raw: data,
   };
 }
