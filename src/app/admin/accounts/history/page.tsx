@@ -10,8 +10,8 @@ export default async function HistoryPage() {
 
   const posts = await prisma.scheduledPost.findMany({
     where: { status: { in: ["PUBLISHED", "SKIPPED"] } },
-    orderBy: { publishedAt: "desc" },
-    take: 100,
+    orderBy: [{ publishedAt: "desc" }, { createdAt: "desc" }],
+    take: 200,
     include: {
       account: {
         select: {
@@ -55,7 +55,9 @@ export default async function HistoryPage() {
                   </div>
                 </td>
                 <td className="px-4 py-3 text-gray-500 text-xs">{post.account.group.section.name} / {post.account.group.name}</td>
-                <td className="px-4 py-3 text-gray-400 text-xs max-w-[180px] truncate">{post.caption || "—"}</td>
+                <td className="px-4 py-3 text-gray-400 text-xs max-w-[220px]">
+                  <p className="truncate" title={post.caption || ""}>{post.caption || "—"}</p>
+                </td>
                 <td className="px-4 py-3">
                   <span className={`text-xs px-2 py-0.5 rounded-full ${
                     post.status === "PUBLISHED" ? "bg-green-500/10 text-green-400" : "bg-gray-500/10 text-gray-500"
@@ -67,8 +69,14 @@ export default async function HistoryPage() {
                 <td className="px-4 py-3 text-gray-600 text-xs">{post.publishedAt ? new Date(post.publishedAt).toLocaleDateString() : "—"}</td>
                 <td className="px-4 py-3">
                   {post.tiktokPostUrl ? (
-                    <a href={post.tiktokPostUrl} target="_blank" rel="noopener noreferrer" className="text-purple-400 hover:text-purple-300">
-                      <ExternalLink className="w-3.5 h-3.5" />
+                    <a href={post.tiktokPostUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-xs text-purple-400 hover:text-purple-300 transition-colors">
+                      <ExternalLink className="w-3 h-3" />
+                      <span className="truncate max-w-[120px]">Open on TikTok</span>
+                    </a>
+                  ) : post.tiktokVideoId ? (
+                    <a href={`https://www.tiktok.com/@${post.account.tiktokUsername}/video/${post.tiktokVideoId}`} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-xs text-purple-400 hover:text-purple-300 transition-colors">
+                      <ExternalLink className="w-3 h-3" />
+                      <span>Open on TikTok</span>
                     </a>
                   ) : "—"}
                 </td>

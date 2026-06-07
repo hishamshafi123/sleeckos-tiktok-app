@@ -7,8 +7,8 @@ import { getSession } from "@/lib/session";
  * GET /api/managed/sections/[id]/video-links
  *
  * Returns published video links for a section, with optional filters:
- *   ?from=YYYY-MM-DD   — start date (publishedAt)
- *   ?to=YYYY-MM-DD     — end date (publishedAt)
+ *   ?from=YYYY-MM-DD   — start date (createdAt)
+ *   ?to=YYYY-MM-DD     — end date (createdAt)
  *   ?hashtag=#fyp       — filter captions containing this hashtag
  *   ?limit=500          — max results (default 500)
  */
@@ -37,10 +37,13 @@ export async function GET(
     return NextResponse.json({ error: "Section not found" }, { status: 404 });
   }
 
-  // Build where clause
+  // Build where clause — include posts with tiktokPostUrl OR tiktokVideoId
   const where: Record<string, unknown> = {
     status: "PUBLISHED",
-    tiktokPostUrl: { not: null },
+    OR: [
+      { tiktokPostUrl: { not: null } },
+      { tiktokVideoId: { not: null } },
+    ],
     account: {
       group: {
         sectionId,
@@ -48,12 +51,12 @@ export async function GET(
     },
   };
 
-  // Date range filter on publishedAt
+  // Date range filter — use createdAt since many posts lack publishedAt
   if (from || to) {
     const dateFilter: Record<string, Date> = {};
     if (from) dateFilter.gte = new Date(`${from}T00:00:00Z`);
     if (to) dateFilter.lte = new Date(`${to}T23:59:59Z`);
-    where.publishedAt = dateFilter;
+    where.createdAt = dateFilter;
   }
 
   // Hashtag filter — case-insensitive contains on caption
@@ -64,7 +67,7 @@ export async function GET(
 
   const posts = await prisma.scheduledPost.findMany({
     where,
-    orderBy: { publishedAt: "desc" },
+    orderBy: [{ publishedAt: "desc" }, { createdAt: "desc" }],
     take: limit,
     select: {
       id: true,
@@ -72,6 +75,7 @@ export async function GET(
       tiktokVideoId: true,
       caption: true,
       publishedAt: true,
+      createdAt: true,
       account: {
         select: {
           tiktokUsername: true,
@@ -89,15 +93,23 @@ export async function GET(
   return NextResponse.json({
     section: section.name,
     count: posts.length,
-    videos: posts.map((p) => ({
-      id: p.id,
-      url: p.tiktokPostUrl,
-      videoId: p.tiktokVideoId,
-      caption: p.caption,
-      publishedAt: p.publishedAt,
-      username: p.account.tiktokUsername,
-      avatarUrl: p.account.tiktokAvatarUrl,
-      groupName: p.account.group.name,
-    })),
+    videos: posts.map((p) => {
+      // Construct URL on-the-fly if not stored
+      const videoUrl = p.tiktokPostUrl
+        || (p.tiktokVideoId && p.account.tiktokUsername
+          ? `https://www.tiktok.com/@${p.account.tiktokUsername}/video/${p.tiktokVideoId}`
+          : null);
+
+      return {
+        id: p.id,
+        url: videoUrl,
+        videoId: p.tiktokVideoId,
+        caption: p.caption,
+        publishedAt: p.publishedAt || p.createdAt,
+        username: p.account.tiktokUsername,
+        avatarUrl: p.account.tiktokAvatarUrl,
+        groupName: p.account.group.name,
+      };
+    }),
   });
 }

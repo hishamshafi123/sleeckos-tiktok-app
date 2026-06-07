@@ -24,6 +24,8 @@ type QueuePost = {
   publishedAt: string | null;
   errorMessage: string | null;
   caption: string;
+  tiktokPostUrl: string | null;
+  tiktokVideoId: string | null;
   createdAt: string;
   account: {
     tiktokUsername: string;
@@ -276,13 +278,31 @@ export default function QueuePage() {
                         </span>
                       </div>
                       <p className="text-gray-400 text-xs mt-0.5 truncate">
-                        {post.driveFileName || post.caption || "—"}
+                        {post.driveFileName || "—"}
                       </p>
-                      <p className="text-gray-600 text-[10px] mt-1">
-                        {timeAgo(post.createdAt)}
-                        {post.publishedAt &&
-                          ` · Published ${timeAgo(post.publishedAt)}`}
-                      </p>
+                      {post.caption && (
+                        <p className="text-gray-500 text-[10px] mt-0.5 truncate" title={post.caption}>
+                          📝 {post.caption.slice(0, 80)}{post.caption.length > 80 ? "…" : ""}
+                        </p>
+                      )}
+                      <div className="flex items-center gap-2 mt-1">
+                        <span className="text-gray-600 text-[10px]">
+                          {timeAgo(post.createdAt)}
+                          {post.publishedAt &&
+                            ` · Published ${timeAgo(post.publishedAt)}`}
+                        </span>
+                        {(post.tiktokPostUrl || post.tiktokVideoId) && (
+                          <a
+                            href={post.tiktokPostUrl || `https://www.tiktok.com/@${post.account.tiktokUsername}/video/${post.tiktokVideoId}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-0.5 text-[10px] text-purple-400 hover:text-purple-300 transition-colors"
+                          >
+                            <ExternalLink className="w-2.5 h-2.5" />
+                            TikTok Link
+                          </a>
+                        )}
+                      </div>
                     </div>
                   </div>
 
