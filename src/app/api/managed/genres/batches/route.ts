@@ -130,6 +130,34 @@ export async function POST(req: Request) {
         }
       }
 
+      // ── Validate ALL selected templates have pre-rendered overlays on disk ──
+      const templatesToValidate = lyricalTemplateId === "mix_all" ? templatesPool : [template!];
+      const missingOverlays: string[] = [];
+
+      for (const tpl of templatesToValidate) {
+        let overlayUrl = tpl.overlayVideoUrl;
+        if (!overlayUrl) {
+          const sanitizedName = tpl.templateName.replace(/[^a-zA-Z0-9]/g, "_").toLowerCase();
+          overlayUrl = `/uploads/lyrical/overlays/track_${tpl.trackId}_${sanitizedName}.webm`;
+        }
+        const overlayPath = path.join(process.cwd(), "public", overlayUrl);
+        const readyPath = overlayPath + ".ready";
+        const exists = fs.existsSync(overlayPath);
+        const ready = fs.existsSync(readyPath);
+        let size = 0;
+        if (exists) { try { size = fs.statSync(overlayPath).size; } catch {} }
+
+        if (!exists || !ready || size < 10240) {
+          missingOverlays.push(`"${tpl.templateName}" (exists=${exists}, ready=${ready}, size=${(size/1024).toFixed(0)}KB)`);
+        }
+      }
+
+      if (missingOverlays.length > 0) {
+        return NextResponse.json({
+          error: `Cannot start batch: ${missingOverlays.length} template(s) missing pre-rendered overlay. Please open each template in the Track Editor and click "Pre-render Overlay" first.\n\nMissing: ${missingOverlays.join(", ")}`,
+        }, { status: 400 });
+      }
+
       const totalPosts = accountIds.length * postsPerAccount;
 
       // Create a Lyrical Batch directly in RENDERING status
