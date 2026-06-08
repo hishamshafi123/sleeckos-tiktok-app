@@ -577,6 +577,9 @@ model TrackLyricalTemplate {
   animationMode   String           @default("highlight")  // "highlight" = existing, "word_builder" = progressive append
   bgColor         String?          // Solid background color hex (e.g. "#D4A017"). When set, replaces video bg
   textColor       String?          // Text color override (e.g. "#000000"). Defaults to white if null
+  textAlign       String           @default("center")     // "left" | "center" | "right"
+  wordSpacing     String           @default("normal")     // "normal" | "wide" | "extra_wide"
+  letterSpacing   Int              @default(0)            // Extra letter spacing in pixels
   overlayVideoUrl String?          // Local transparent .mov video overlay file URL
   previewImageUrl String?          // Local transparent preview PNG image file URL
   createdAt       DateTime         @default(now())

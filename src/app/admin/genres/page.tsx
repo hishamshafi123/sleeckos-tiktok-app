@@ -476,6 +476,9 @@ export default function GenresDashboard() {
   const [lyricalAnimationMode, setLyricalAnimationMode] = useState<string>("highlight");
   const [lyricalBgColor, setLyricalBgColor] = useState<string | null>(null);
   const [lyricalTextColor, setLyricalTextColor] = useState<string | null>(null);
+  const [lyricalTextAlign, setLyricalTextAlign] = useState<string>("center");
+  const [lyricalWordSpacing, setLyricalWordSpacing] = useState<string>("normal");
+  const [lyricalLetterSpacing, setLyricalLetterSpacing] = useState<number>(0);
   const [mixupVisuals, setMixupVisuals] = useState<boolean>(true);
 
 
@@ -709,6 +712,9 @@ export default function GenresDashboard() {
           animationMode: lyricalAnimationMode,
           bgColor: lyricalBgColor,
           textColor: lyricalTextColor,
+          textAlign: lyricalTextAlign,
+          wordSpacing: lyricalWordSpacing,
+          letterSpacing: lyricalLetterSpacing,
         }),
       });
       if (res.ok) {
@@ -2244,6 +2250,9 @@ export default function GenresDashboard() {
                               setLyricalAnimationMode("highlight");
                               setLyricalBgColor(null);
                               setLyricalTextColor(null);
+                              setLyricalTextAlign("center");
+                              setLyricalWordSpacing("normal");
+                              setLyricalLetterSpacing(0);
                             } else if (val === "vibrant-yellow") {
                               setLyricalTemplateName("Vibrant Yellow");
                               setLyricalFontFamily("Anton");
@@ -2255,6 +2264,9 @@ export default function GenresDashboard() {
                               setLyricalAnimationMode("highlight");
                               setLyricalBgColor(null);
                               setLyricalTextColor(null);
+                              setLyricalTextAlign("center");
+                              setLyricalWordSpacing("normal");
+                              setLyricalLetterSpacing(0);
                             } else if (val === "electric-green") {
                               setLyricalTemplateName("Electric Green");
                               setLyricalFontFamily("Outfit-Bold");
@@ -2266,6 +2278,9 @@ export default function GenresDashboard() {
                               setLyricalAnimationMode("highlight");
                               setLyricalBgColor(null);
                               setLyricalTextColor(null);
+                              setLyricalTextAlign("center");
+                              setLyricalWordSpacing("normal");
+                              setLyricalLetterSpacing(0);
                             } else if (val === "hot-pink") {
                               setLyricalTemplateName("Hot Pink");
                               setLyricalFontFamily("Inter-Bold");
@@ -2277,6 +2292,9 @@ export default function GenresDashboard() {
                               setLyricalAnimationMode("highlight");
                               setLyricalBgColor(null);
                               setLyricalTextColor(null);
+                              setLyricalTextAlign("center");
+                              setLyricalWordSpacing("normal");
+                              setLyricalLetterSpacing(0);
                             } else if (val === "word-builder-yellow") {
                               setLyricalTemplateName("Minimalist Word Builder");
                               setLyricalFontFamily("Inter-Light");
@@ -2292,6 +2310,9 @@ export default function GenresDashboard() {
                               setSetupLyricalVignette("none");
                               setSetupLyricalParticleFx("none");
                               setSetupLyricalBgVideoUrl("");
+                              setLyricalTextAlign("left");
+                              setLyricalWordSpacing("extra_wide");
+                              setLyricalLetterSpacing(0);
                             }
                           }}
                           className="w-full bg-black/45 border border-white/10 hover:border-white/20 rounded-2xl px-3 py-2.5 text-xs text-gray-300 focus:outline-none transition-all duration-300 cursor-pointer"
@@ -2381,6 +2402,53 @@ export default function GenresDashboard() {
                             max="90"
                             value={lyricalPositionY * 100}
                             onChange={(e) => setLyricalPositionY(parseInt(e.target.value) / 100)}
+                            className="w-full h-1.5 bg-gray-800 rounded-lg appearance-none cursor-pointer accent-purple-500"
+                          />
+                        </div>
+                      </div>
+
+                      {/* Alignment & Spacing Block */}
+                      <div className="space-y-3 bg-black/30 p-3 rounded-2xl border border-white/5 shadow-inner">
+                        {/* Text Alignment */}
+                        <div className="space-y-1">
+                          <label className="block text-[9px] uppercase tracking-wider font-extrabold text-gray-500">Text Alignment</label>
+                          <select
+                            value={lyricalTextAlign}
+                            onChange={(e) => setLyricalTextAlign(e.target.value)}
+                            className="w-full bg-black/45 border border-white/10 hover:border-white/20 rounded-2xl px-3 py-2 text-xs text-gray-300 focus:outline-none transition-all duration-300 cursor-pointer"
+                          >
+                            <option value="center">Center</option>
+                            <option value="left">Left</option>
+                            <option value="right">Right</option>
+                          </select>
+                        </div>
+
+                        {/* Word Spacing */}
+                        <div className="space-y-1">
+                          <label className="block text-[9px] uppercase tracking-wider font-extrabold text-gray-500">Word Spacing</label>
+                          <select
+                            value={lyricalWordSpacing}
+                            onChange={(e) => setLyricalWordSpacing(e.target.value)}
+                            className="w-full bg-black/45 border border-white/10 hover:border-white/20 rounded-2xl px-3 py-2 text-xs text-gray-300 focus:outline-none transition-all duration-300 cursor-pointer"
+                          >
+                            <option value="normal">Normal</option>
+                            <option value="wide">Wide</option>
+                            <option value="extra_wide">Extra Wide</option>
+                          </select>
+                        </div>
+
+                        {/* Letter Spacing */}
+                        <div className="space-y-1">
+                          <div className="flex justify-between items-center text-[9px] uppercase tracking-wider font-extrabold text-gray-500">
+                            <span>Letter Spacing</span>
+                            <span className="text-purple-400 font-black">{lyricalLetterSpacing}px</span>
+                          </div>
+                          <input
+                            type="range"
+                            min="-5"
+                            max="15"
+                            value={lyricalLetterSpacing}
+                            onChange={(e) => setLyricalLetterSpacing(parseInt(e.target.value))}
                             className="w-full h-1.5 bg-gray-800 rounded-lg appearance-none cursor-pointer accent-purple-500"
                           />
                         </div>
@@ -2851,76 +2919,100 @@ export default function GenresDashboard() {
                       </div>
 
                       {/* Live Captions Typography Layer */}
-                      {lyricalAnimationMode === "word_builder" ? (
-                        /* ── WORD BUILDER MODE: Progressive word append ── */
-                        <div 
-                          className="absolute left-0 right-0 px-4 text-left transform -translate-y-1/2 transition-all duration-150 z-10 select-none pointer-events-none"
-                          style={{ 
-                            top: `${lyricalPositionY * 100}%`,
-                            fontFamily: cssFontFamily,
-                            fontSize: `${lyricalFontSize * 0.23}px`,
-                            lineHeight: 1.6
-                          }}
-                        >
+                      {(() => {
+                        const justify = lyricalTextAlign === "left" ? "flex-start" : lyricalTextAlign === "right" ? "flex-end" : "center";
+                        const textAlignClass = lyricalTextAlign === "left" ? "text-left" : lyricalTextAlign === "right" ? "text-right" : "text-center";
+                        const gapX = (() => {
+                          if (lyricalWordSpacing === "wide") return lyricalAnimationMode === "word_builder" ? "14px" : "10px";
+                          if (lyricalWordSpacing === "extra_wide") return lyricalAnimationMode === "word_builder" ? "20px" : "16px";
+                          if (lyricalWordSpacing === "normal") return lyricalAnimationMode === "word_builder" ? "6px" : "4px";
+                          return lyricalAnimationMode === "word_builder" ? "20px" : "4px";
+                        })();
+                        const gapY = lyricalAnimationMode === "word_builder" ? "8px" : "2px";
+                        
+                        return lyricalAnimationMode === "word_builder" ? (
+                          /* ── WORD BUILDER MODE: Progressive word append ── */
                           <div 
-                            className="flex flex-wrap justify-start items-center gap-x-3 gap-y-2"
-                            style={{ maxHeight: `${Math.round(lyricalFontSize * 0.23 * 1.6 * 3 + 12)}px`, overflow: "hidden" }}
+                            className={`absolute left-0 right-0 px-4 transform -translate-y-1/2 transition-all duration-150 z-10 select-none pointer-events-none ${textAlignClass}`}
+                            style={{ 
+                              top: `${lyricalPositionY * 100}%`,
+                              fontFamily: cssFontFamily,
+                              fontSize: `${lyricalFontSize * 0.23}px`,
+                              lineHeight: 1.6
+                            }}
                           >
-                            {wordBuilderVisibleWords.map((w: any, idx: number) => (
-                              <span
-                                key={idx}
-                                style={{
-                                  color: lyricalTextColor || "#000000",
-                                  fontWeight: 300,
-                                  textTransform: "lowercase" as const,
-                                  letterSpacing: "-0.01em",
-                                  display: "inline-block",
-                                }}
-                              >
-                                {w.word.toLowerCase()}
-                              </span>
-                            ))}
-                          </div>
-                        </div>
-                      ) : (
-                        /* ── HIGHLIGHT MODE: Existing chunk-based rendering ── */
-                        <div 
-                          className="absolute left-0 right-0 px-3 text-center transform -translate-y-1/2 transition-all duration-150 z-10 select-none pointer-events-none"
-                          style={{ 
-                            top: `${lyricalPositionY * 100}%`,
-                            fontFamily: cssFontFamily,
-                            fontSize: `${lyricalFontSize * 0.23}px`,
-                            lineHeight: 1.25
-                          }}
-                        >
-                          <div className="flex flex-wrap justify-center items-center gap-x-1 gap-y-0.5">
-                            {currentChunk.map((w: any, idx: number) => {
-                              const isActive = isPlayingThis 
-                                ? (lyricalPlaybackTime >= w.start && lyricalPlaybackTime <= w.end)
-                                : (idx === 0);
-                              
-                              const activeColor = getWordColor(w, idx, isActive);
-                              
-                              return (
+                            <div 
+                              className="flex flex-wrap items-center"
+                              style={{ 
+                                justifyContent: justify,
+                                gap: `${gapY} ${gapX}`,
+                                maxHeight: `${Math.round(lyricalFontSize * 0.23 * 1.6 * 3 + 12)}px`, 
+                                overflow: "hidden" 
+                              }}
+                            >
+                              {wordBuilderVisibleWords.map((w: any, idx: number) => (
                                 <span
                                   key={idx}
                                   style={{
-                                    color: isActive ? activeColor : "#ffffff",
-                                    WebkitTextStroke: `${lyricalStrokeWidth * 0.23}px ${lyricalStrokeColor}`,
-                                    textShadow: isActive ? `0 0 8px ${activeColor}cc, 0 0 16px ${activeColor}50` : "none",
-                                    transform: isActive ? "scale(1.12)" : "scale(1.0)",
-                                    transition: "all 0.08s ease-out",
-                                    display: "inline-block"
+                                    color: lyricalTextColor || "#000000",
+                                    fontWeight: 300,
+                                    textTransform: "lowercase" as const,
+                                    letterSpacing: `${lyricalLetterSpacing * 0.23}px`,
+                                    display: "inline-block",
                                   }}
-                                  className={`${isActive ? "font-black tracking-tight" : "font-extrabold"}`}
                                 >
-                                  {w.word}
+                                  {w.word.toLowerCase()}
                                 </span>
-                              );
-                            })}
+                              ))}
+                            </div>
                           </div>
-                        </div>
-                      )}
+                        ) : (
+                          /* ── HIGHLIGHT MODE: Existing chunk-based rendering ── */
+                          <div 
+                            className={`absolute left-0 right-0 px-3 transform -translate-y-1/2 transition-all duration-150 z-10 select-none pointer-events-none ${textAlignClass}`}
+                            style={{ 
+                              top: `${lyricalPositionY * 100}%`,
+                              fontFamily: cssFontFamily,
+                              fontSize: `${lyricalFontSize * 0.23}px`,
+                              lineHeight: 1.25
+                            }}
+                          >
+                            <div 
+                              className="flex flex-wrap items-center"
+                              style={{ 
+                                justifyContent: justify,
+                                gap: `${gapY} ${gapX}`
+                              }}
+                            >
+                              {currentChunk.map((w: any, idx: number) => {
+                                const isActive = isPlayingThis 
+                                  ? (lyricalPlaybackTime >= w.start && lyricalPlaybackTime <= w.end)
+                                  : (idx === 0);
+                                
+                                const activeColor = getWordColor(w, idx, isActive);
+                                
+                                return (
+                                  <span
+                                    key={idx}
+                                    style={{
+                                      color: isActive ? activeColor : (lyricalTextColor || "#ffffff"),
+                                      WebkitTextStroke: `${lyricalStrokeWidth * 0.23}px ${lyricalStrokeColor}`,
+                                      textShadow: isActive ? `0 0 8px ${activeColor}cc, 0 0 16px ${activeColor}50` : "none",
+                                      transform: isActive ? "scale(1.12)" : "scale(1.0)",
+                                      letterSpacing: `${lyricalLetterSpacing * 0.23}px`,
+                                      transition: "all 0.08s ease-out",
+                                      display: "inline-block"
+                                    }}
+                                    className={`${isActive ? "font-black tracking-tight" : "font-extrabold"}`}
+                                  >
+                                    {w.word}
+                                  </span>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        );
+                      })()}
 
                       {/* Progress bar */}
                       <div className="absolute bottom-0 left-0 right-0 h-1 bg-white/10 z-20">
@@ -3005,6 +3097,9 @@ export default function GenresDashboard() {
                                   setLyricalAnimationMode(tpl.animationMode || "highlight");
                                   setLyricalBgColor(tpl.bgColor || null);
                                   setLyricalTextColor(tpl.textColor || null);
+                                  setLyricalTextAlign(tpl.textAlign || "center");
+                                  setLyricalWordSpacing(tpl.wordSpacing || "normal");
+                                  setLyricalLetterSpacing(tpl.letterSpacing || 0);
                                   if (tpl.bgColor) {
                                     setSetupLyricalBgVideoUrl("");
                                   }

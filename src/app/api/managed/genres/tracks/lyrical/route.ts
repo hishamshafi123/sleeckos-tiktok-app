@@ -139,6 +139,9 @@ export async function PATCH(req: Request) {
       animationMode = "highlight",
       bgColor = null,
       textColor = null,
+      textAlign = "center",
+      wordSpacing = "normal",
+      letterSpacing = 0,
     } = body;
 
     if (!trackId || !templateName) {
@@ -174,6 +177,9 @@ export async function PATCH(req: Request) {
       animationMode,
       bgColor,
       textColor,
+      textAlign,
+      wordSpacing,
+      letterSpacing,
       overlayVideoUrl: overlayRelativePath,
       previewImageUrl: previewRelativePath,
     };
@@ -204,7 +210,23 @@ export async function PATCH(req: Request) {
     const duration = track.duration || 10.0;
 
     // Generate static preview frame (launches headless browser, takes ~2s)
-    const rendererConfig = { fontFamily, fontSize, activeColor, strokeWidth, strokeColor, positionY, colorFilter, vignette, particleFx, animationMode: animationMode as "highlight" | "word_builder", bgColor, textColor };
+    const rendererConfig = {
+      fontFamily,
+      fontSize,
+      activeColor,
+      strokeWidth,
+      strokeColor,
+      positionY,
+      colorFilter,
+      vignette,
+      particleFx,
+      animationMode: animationMode as "highlight" | "word_builder",
+      bgColor,
+      textColor,
+      textAlign,
+      wordSpacing,
+      letterSpacing
+    };
     try {
       const { renderPreviewFrame } = await import("@/lib/canvas-overlay-renderer");
       await renderPreviewFrame(
@@ -304,6 +326,9 @@ export async function PUT(req: Request) {
       animationMode: template.animationMode as "highlight" | "word_builder",
       bgColor: template.bgColor,
       textColor: template.textColor,
+      textAlign: template.textAlign,
+      wordSpacing: template.wordSpacing,
+      letterSpacing: template.letterSpacing,
     };
 
     console.log(`[Lyrical API] Re-rendering overlay for template '${template.templateName}' (${templateId})...`);

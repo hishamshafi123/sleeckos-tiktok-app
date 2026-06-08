@@ -37,6 +37,9 @@ interface TemplateConfig {
   animationMode?: "highlight" | "word_builder";
   bgColor?: string | null;
   textColor?: string | null;
+  textAlign?: string;
+  wordSpacing?: string;
+  letterSpacing?: number;
 }
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -338,12 +341,13 @@ function generateOverlayHTML(
     left: 0;
     right: 0;
     padding: 0 ${isWordBuilder ? "32" : "12"}px;
-    text-align: ${isWordBuilder ? "left" : "center"};
+    text-align: ${config.textAlign || (isWordBuilder ? "left" : "center")};
     transform: translateY(-50%);
     top: ${config.positionY * 100}%;
     font-family: 'PrimaryFont', ${fontEntry.css};
     font-size: ${config.fontSize}px;
     line-height: ${isWordBuilder ? "1.6" : "1.25"};
+    letter-spacing: ${config.letterSpacing || 0}px;
     z-index: 10;
     user-select: none;
     pointer-events: none;
@@ -352,9 +356,12 @@ function generateOverlayHTML(
   #captions .words {
     display: flex;
     flex-wrap: wrap;
-    justify-content: ${isWordBuilder ? "flex-start" : "center"};
+    justify-content: ${config.textAlign === "left" ? "flex-start" : config.textAlign === "right" ? "flex-end" : "center"};
     align-items: center;
-    gap: ${isWordBuilder ? "34px 52px" : "4px 4px"};
+    gap: ${isWordBuilder 
+      ? `34px ${config.wordSpacing === "wide" ? "42px" : config.wordSpacing === "extra_wide" ? "52px" : config.wordSpacing === "normal" ? "12px" : "52px"}`
+      : `4px ${config.wordSpacing === "wide" ? "12px" : config.wordSpacing === "extra_wide" ? "20px" : "4px"}`
+    };
     ${isWordBuilder ? `max-height: ${Math.round(config.fontSize * 1.5 * 3 + 40)}px; overflow: hidden;` : ""}
   }
 

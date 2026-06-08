@@ -33,6 +33,9 @@ interface TemplateConfig {
   animationMode?: "highlight" | "word_builder";
   bgColor?: string | null;
   textColor?: string | null;
+  textAlign?: string;
+  wordSpacing?: string;
+  letterSpacing?: number;
 }
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -127,7 +130,7 @@ function generateASS(words: Word[], config: TemplateConfig): string {
   const activeColor = hexToASS(config.activeColor === "multi" ? "#FFFF00" : config.activeColor || "#FFFFFF");
   const inactiveColor = config.textColor ? hexToASS(config.textColor) : "&H00888888";
   const strokeColor = hexToASS(config.strokeColor || "#000000");
-  const outline = Math.min(config.strokeWidth || 3, 6);
+  const outline = Math.min(config.strokeWidth ?? 3, 6);
 
   const isMulti = config.activeColor === "multi";
   const boldVal = fontEntry.weight || 700;
@@ -145,10 +148,21 @@ function generateASS(words: Word[], config: TemplateConfig): string {
   lines.push("");
   lines.push("[V4+ Styles]");
   lines.push("Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding");
-  lines.push("Style: Default," + fontName + "," + fontSize + "," + activeColor + "," + activeColor + "," + strokeColor + ",&H00000000," + boldVal + ",0,0,0,100,100,0,0,1," + outline + ",0,5,20,20,10,1");
+  lines.push("Style: Default," + fontName + "," + fontSize + "," + activeColor + "," + activeColor + "," + strokeColor + ",&H00000000," + boldVal + ",0,0,0,100,100," + (config.letterSpacing || 0) + ",0,1," + outline + ",0,5,20,20,10,1");
   lines.push("");
   lines.push("[Events]");
   lines.push("Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text");
+
+  // Determine spacing spacer based on config
+  const wordSpacer = (() => {
+    if (config.wordSpacing === "wide") return " \\h ";
+    if (config.wordSpacing === "extra_wide") return " \\h \\h ";
+    if (config.wordSpacing === "normal") return " ";
+    return config.animationMode === "word_builder" ? " \\h \\h " : " ";
+  })();
+
+  const alignTag = config.textAlign === "left" ? "\\an4" : config.textAlign === "right" ? "\\an6" : "\\an5";
+  const alignX = config.textAlign === "left" ? 50 : config.textAlign === "right" ? 670 : 360;
 
   if (config.animationMode === "word_builder") {
     const phrases = chunkPhrases(words);
@@ -167,7 +181,7 @@ function generateASS(words: Word[], config: TemplateConfig): string {
           const wordText = phrase[j].word.toLowerCase();
           textParts.push("{\\c" + c + "}" + wordText + "{\\r}");
         }
-        const dialogueText = "{\\pos(" + (WIDTH / 2) + "," + posY + ")}" + textParts.join(" \\h \\h ");
+        const dialogueText = "{\\pos(" + alignX + "," + posY + ")}" + alignTag + textParts.join(wordSpacer);
         lines.push("Dialogue: 0," + secondsToASS(word.start) + "," + secondsToASS(nextStart) + ",Default,,0,0,0,," + dialogueText);
       }
     }
@@ -185,7 +199,7 @@ function generateASS(words: Word[], config: TemplateConfig): string {
           const c = j === i ? ac : inactiveColor;
           textParts.push("{\\c" + c + "}" + chunk[j].word + "{\\r}");
         }
-        const dialogueText = "{\\pos(" + (WIDTH / 2) + "," + posY + ")}" + textParts.join(" ");
+        const dialogueText = "{\\pos(" + alignX + "," + posY + ")}" + alignTag + textParts.join(wordSpacer);
         lines.push("Dialogue: 0," + secondsToASS(word.start) + "," + secondsToASS(nextStart) + ",Default,,0,0,0,," + dialogueText);
       }
     }
