@@ -216,8 +216,8 @@ export async function renderCanvasOverlay(
   const outDir = path.dirname(outputPath);
   fs.mkdirSync(outDir, { recursive: true });
 
-  // Atomic write
-  const tmpPath = outputPath + ".tmp";
+  // Atomic write - keep the extension in the temp file so FFmpeg can detect the output format
+  const tmpPath = outputPath.replace(/\.[^/.]+$/, "") + ".tmp" + path.extname(outputPath);
   try { fs.unlinkSync(outputPath + ".ready"); } catch {}
   try { fs.unlinkSync(tmpPath); } catch {}
   try { fs.unlinkSync(outputPath); } catch {}
