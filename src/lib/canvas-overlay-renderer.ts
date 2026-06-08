@@ -50,18 +50,18 @@ const MULTI_COLORS = ["#FFFF00", "#00FF00", "#00FFFF", "#FF00FF", "#FF5F00", "#F
 // ─── Font Mapping ───────────────────────────────────────────────────────────
 // Maps config fontFamily values to CSS font-family + the TTF filename
 
-const FONT_CSS_MAP: Record<string, { css: string; file: string }> = {
-  "Montserrat-Black": { css: "'Montserrat', sans-serif", file: "Montserrat-Bold.ttf" },
-  "Outfit-Bold":      { css: "'Outfit', sans-serif",     file: "Outfit-Bold.ttf" },
-  "Anton":            { css: "'Anton', sans-serif",      file: "Anton.ttf" },
-  "Inter-Bold":       { css: "'Inter', sans-serif",      file: "Inter-Bold.ttf" },
-  "Inter-Light":      { css: "'Inter', sans-serif",      file: "Inter-Bold.ttf" },
-  "Inter-Regular":    { css: "'Inter', sans-serif",      file: "Inter-Bold.ttf" },
-  "Caveat-Bold":      { css: "'Caveat', cursive",        file: "Caveat-Bold.ttf" },
-  "Oswald-Bold":      { css: "'Oswald', sans-serif",     file: "Oswald-Bold.ttf" },
-  "PlayfairDisplay-Bold": { css: "'Playfair Display', serif", file: "PlayfairDisplay-Bold.ttf" },
-  "GreatVibes-Regular":   { css: "'Great Vibes', cursive",    file: "GreatVibes-Regular.ttf" },
-  "Lora-Bold":        { css: "'Lora', serif",            file: "Lora-Bold.ttf" },
+const FONT_CSS_MAP: Record<string, { css: string; file: string; weight: number }> = {
+  "Montserrat-Black": { css: "'Montserrat', sans-serif", file: "Montserrat-Bold.ttf", weight: 900 },
+  "Outfit-Bold":      { css: "'Outfit', sans-serif",     file: "Outfit-Bold.ttf", weight: 700 },
+  "Anton":            { css: "'Anton', sans-serif",      file: "Anton.ttf", weight: 400 },
+  "Inter-Bold":       { css: "'Inter', sans-serif",      file: "Inter-Bold.ttf", weight: 700 },
+  "Inter-Light":      { css: "'Inter', sans-serif",      file: "Inter-Light.ttf", weight: 300 },
+  "Inter-Regular":    { css: "'Inter', sans-serif",      file: "Inter-Regular.ttf", weight: 400 },
+  "Caveat-Bold":      { css: "'Caveat', cursive",        file: "Caveat-Bold.ttf", weight: 700 },
+  "Oswald-Bold":      { css: "'Oswald', sans-serif",     file: "Oswald-Bold.ttf", weight: 700 },
+  "PlayfairDisplay-Bold": { css: "'Playfair Display', serif", file: "PlayfairDisplay-Bold.ttf", weight: 700 },
+  "GreatVibes-Regular":   { css: "'Great Vibes', cursive",    file: "GreatVibes-Regular.ttf", weight: 400 },
+  "Lora-Bold":        { css: "'Lora', serif",            file: "Lora-Bold.ttf", weight: 700 },
 };
 
 // ─── Word Chunking (same logic as Live Studio Preview) ──────────────────────
@@ -288,7 +288,7 @@ function generateOverlayHTML(
   @font-face {
     font-family: 'PrimaryFont';
     src: url('file://${fontFilePath}');
-    font-weight: 900;
+    font-weight: ${fontEntry.weight || 900};
     font-style: normal;
   }
   @font-face {
@@ -354,7 +354,7 @@ function generateOverlayHTML(
     flex-wrap: wrap;
     justify-content: ${isWordBuilder ? "flex-start" : "center"};
     align-items: center;
-    gap: ${isWordBuilder ? "20px 30px" : "4px 4px"};
+    gap: ${isWordBuilder ? "34px 52px" : "4px 4px"};
     ${isWordBuilder ? `max-height: ${Math.round(config.fontSize * 1.5 * 3 + 40)}px; overflow: hidden;` : ""}
   }
 

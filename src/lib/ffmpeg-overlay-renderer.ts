@@ -45,18 +45,18 @@ const MULTI_COLORS = ["#FFFF00", "#00FF00", "#00FFFF", "#FF00FF", "#FF5F00", "#F
 
 // ─── Font Mapping ────────────────────────────────────────────────────────────
 
-const FONT_MAP: Record<string, { name: string; file: string }> = {
-  "Montserrat-Black": { name: "Montserrat", file: "Montserrat-Bold.ttf" },
-  "Outfit-Bold":      { name: "Outfit",     file: "Outfit-Bold.ttf" },
-  "Anton":            { name: "Anton",      file: "Anton.ttf" },
-  "Inter-Bold":       { name: "Inter",      file: "Inter-Bold.ttf" },
-  "Inter-Light":      { name: "Inter",      file: "Inter-Bold.ttf" },
-  "Inter-Regular":    { name: "Inter",      file: "Inter-Bold.ttf" },
-  "Caveat-Bold":      { name: "Caveat",     file: "Caveat-Bold.ttf" },
-  "Oswald-Bold":      { name: "Oswald",     file: "Oswald-Bold.ttf" },
-  "PlayfairDisplay-Bold": { name: "Playfair Display", file: "PlayfairDisplay-Bold.ttf" },
-  "GreatVibes-Regular":   { name: "Great Vibes",      file: "GreatVibes-Regular.ttf" },
-  "Lora-Bold":        { name: "Lora",       file: "Lora-Bold.ttf" },
+const FONT_MAP: Record<string, { name: string; file: string; weight: number }> = {
+  "Montserrat-Black": { name: "Montserrat", file: "Montserrat-Bold.ttf", weight: 900 },
+  "Outfit-Bold":      { name: "Outfit",     file: "Outfit-Bold.ttf", weight: 700 },
+  "Anton":            { name: "Anton",      file: "Anton.ttf", weight: 400 },
+  "Inter-Bold":       { name: "Inter",      file: "Inter-Bold.ttf", weight: 700 },
+  "Inter-Light":      { name: "Inter",      file: "Inter-Light.ttf", weight: 300 },
+  "Inter-Regular":    { name: "Inter",      file: "Inter-Regular.ttf", weight: 400 },
+  "Caveat-Bold":      { name: "Caveat",     file: "Caveat-Bold.ttf", weight: 700 },
+  "Oswald-Bold":      { name: "Oswald",     file: "Oswald-Bold.ttf", weight: 700 },
+  "PlayfairDisplay-Bold": { name: "Playfair Display", file: "PlayfairDisplay-Bold.ttf", weight: 700 },
+  "GreatVibes-Regular":   { name: "Great Vibes",      file: "GreatVibes-Regular.ttf", weight: 400 },
+  "Lora-Bold":        { name: "Lora",       file: "Lora-Bold.ttf", weight: 700 },
 };
 
 const FALLBACK_FONT_FILE = "Montserrat-Bold.ttf";
@@ -130,6 +130,7 @@ function generateASS(words: Word[], config: TemplateConfig): string {
   const outline = Math.min(config.strokeWidth || 3, 6);
 
   const isMulti = config.activeColor === "multi";
+  const boldVal = fontEntry.weight || 700;
 
   // Build ASS file using string array (no template literals to avoid escape confusion)
   const lines: string[] = [];
@@ -144,7 +145,7 @@ function generateASS(words: Word[], config: TemplateConfig): string {
   lines.push("");
   lines.push("[V4+ Styles]");
   lines.push("Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding");
-  lines.push("Style: Default," + fontName + "," + fontSize + "," + activeColor + "," + activeColor + "," + strokeColor + ",&H00000000,1,0,0,0,100,100,0,0,1," + outline + ",0,5,20,20,10,1");
+  lines.push("Style: Default," + fontName + "," + fontSize + "," + activeColor + "," + activeColor + "," + strokeColor + ",&H00000000," + boldVal + ",0,0,0,100,100,0,0,1," + outline + ",0,5,20,20,10,1");
   lines.push("");
   lines.push("[Events]");
   lines.push("Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text");
@@ -158,14 +159,15 @@ function generateASS(words: Word[], config: TemplateConfig): string {
         const nextStart = (i + 1 < phrase.length) ? phrase[i + 1].start : phraseEnd;
         const ac = isMulti ? hexToASS(MULTI_COLORS[i % MULTI_COLORS.length]) : activeColor;
 
-        // Build text: all words up to current, active word is highlighted
-        // ASS override tags use single backslash: \c, \r, \pos
+        // Build text: all words up to current, active word is highlighted.
+        // Convert to lowercase and join with non-breaking spaces to match the web preview's visual layout.
         const textParts: string[] = [];
         for (let j = 0; j <= i; j++) {
           const c = j === i ? ac : inactiveColor;
-          textParts.push("{\\c" + c + "}" + phrase[j].word + "{\\r}");
+          const wordText = phrase[j].word.toLowerCase();
+          textParts.push("{\\c" + c + "}" + wordText + "{\\r}");
         }
-        const dialogueText = "{\\pos(" + (WIDTH / 2) + "," + posY + ")}" + textParts.join(" ");
+        const dialogueText = "{\\pos(" + (WIDTH / 2) + "," + posY + ")}" + textParts.join(" \\h \\h ");
         lines.push("Dialogue: 0," + secondsToASS(word.start) + "," + secondsToASS(nextStart) + ",Default,,0,0,0,," + dialogueText);
       }
     }

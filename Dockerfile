@@ -73,6 +73,8 @@ RUN python3 -m venv venv && \
 RUN mkdir -p public/fonts && \
     curl -fsSL -o public/fonts/Outfit-Bold.ttf    "https://fonts.gstatic.com/s/outfit/v15/QGYyz_MVcBeNP4NjuGObqx1XmO1I4deyO4a0Fg.ttf" && \
     curl -fsSL -o public/fonts/Inter-Bold.ttf     "https://fonts.gstatic.com/s/inter/v20/UcCO3FwrK3iLTeHuS_nVMrMxCp50SjIw2boKoduKmMEVuFuYAZ9hjQ.ttf" && \
+    curl -fsSL -o public/fonts/Inter-Light.ttf    "https://fonts.gstatic.com/s/inter/v20/UcCO3FwrK3iLTeHuS_nVMrMxCp50SjIw2boKoduKmMEVuOKfMZhrib2Au-0.ttf" && \
+    curl -fsSL -o public/fonts/Inter-Regular.ttf  "https://fonts.gstatic.com/s/inter/v20/UcCO3FwrK3iLTeHuS_nVMrMxCp50SjIw2boKoduKmMEVuLyfMZhrib2Au-0.ttf" && \
     curl -fsSL -o public/fonts/PlayfairDisplay-Bold.ttf "https://fonts.gstatic.com/s/playfairdisplay/v40/nuFvD-vYSZviVYUb_rj3ij__anPXJzDwcbmjWBN2PKeiunDXbtY.ttf" && \
     curl -fsSL -o public/fonts/GreatVibes-Regular.ttf   "https://fonts.gstatic.com/s/greatvibes/v21/RWmMoKWR9v4ksMfaWd_JN9XFiaE.ttf" && \
     curl -fsSL -o public/fonts/Anton.ttf          "https://fonts.gstatic.com/s/anton/v27/1Ptgg87LROyAm3Kz-Co.ttf" && \

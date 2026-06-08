@@ -2121,11 +2121,15 @@ export default function GenresDashboard() {
           })();
 
           const cssFontFamily = (() => {
-            if (lyricalFontFamily === "Montserrat-Black") return "'Montserrat', sans-serif";
-            if (lyricalFontFamily === "Outfit-Bold") return "'Outfit', sans-serif";
-            if (lyricalFontFamily === "Anton") return "'Anton', sans-serif";
-            if (lyricalFontFamily === "Inter-Bold") return "'Inter', sans-serif";
-            if (lyricalFontFamily === "Caveat-Bold") return "'Caveat', cursive";
+            if (lyricalFontFamily.startsWith("Montserrat")) return "'Montserrat', sans-serif";
+            if (lyricalFontFamily.startsWith("Outfit")) return "'Outfit', sans-serif";
+            if (lyricalFontFamily.startsWith("Anton")) return "'Anton', sans-serif";
+            if (lyricalFontFamily.startsWith("Inter")) return "'Inter', sans-serif";
+            if (lyricalFontFamily.startsWith("Caveat")) return "'Caveat', cursive";
+            if (lyricalFontFamily.startsWith("Oswald")) return "'Oswald', sans-serif";
+            if (lyricalFontFamily.startsWith("PlayfairDisplay")) return "'Playfair Display', serif";
+            if (lyricalFontFamily.startsWith("GreatVibes")) return "'Great Vibes', cursive";
+            if (lyricalFontFamily.startsWith("Lora")) return "'Lora', serif";
             return "'Montserrat', sans-serif";
           })();
 
