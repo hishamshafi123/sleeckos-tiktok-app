@@ -2455,40 +2455,112 @@ export default function GenresDashboard() {
                       </div>
 
                       {/* Colors Block */}
-                      <div className="grid grid-cols-2 gap-3">
-                        <div className="space-y-1">
-                          <label className="block text-[9px] uppercase tracking-wider font-extrabold text-gray-500">Active Neon Color</label>
-                          <select
-                            value={lyricalActiveColor}
-                            onChange={(e) => setLyricalActiveColor(e.target.value)}
-                            className="w-full bg-black/45 border border-white/10 hover:border-white/20 rounded-2xl px-3 py-2 text-xs text-gray-300 focus:outline-none transition-all duration-300 cursor-pointer"
-                          >
-                            <option value="multi">Neon Rainbow (Cycles)</option>
-                            <option value="#ffff00">Neon Yellow</option>
-                            <option value="#00ff00">Neon Green</option>
-                            <option value="#00ffff">Neon Cyan</option>
-                            <option value="#ff007f">Neon Pink</option>
-                            <option value="#ff5500">Neon Orange</option>
-                            <option value="#bf00ff">Neon Purple</option>
-                            <option value="#ff0040">Neon Red</option>
-                            <option value="#00ff88">Neon Mint</option>
-                            <option value="#ff69b4">Hot Pink</option>
-                            <option value="#7b68ee">Medium Slate</option>
-                            <option value="#ffffff">Pure White</option>
-                          </select>
+                      <div className="space-y-3 bg-black/20 p-3 rounded-2xl border border-white/5 shadow-inner">
+                        <div className="grid grid-cols-2 gap-3">
+                          <div className="space-y-1">
+                            <label className="block text-[9px] uppercase tracking-wider font-extrabold text-gray-500">Active Neon Color</label>
+                            <select
+                              value={
+                                ["multi", "#ffff00", "#00ff00", "#00ffff", "#ff007f", "#ff5500", "#bf00ff", "#ff0040", "#00ff88", "#ff69b4", "#7b68ee", "#ffffff"].includes(lyricalActiveColor)
+                                  ? lyricalActiveColor
+                                  : "custom"
+                              }
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                if (val === "custom") {
+                                  setLyricalActiveColor("#ffffff");
+                                } else {
+                                  setLyricalActiveColor(val);
+                                }
+                              }}
+                              className="w-full bg-black/45 border border-white/10 hover:border-white/20 rounded-2xl px-3 py-2 text-xs text-gray-300 focus:outline-none transition-all duration-300 cursor-pointer"
+                            >
+                              <option value="multi">Neon Rainbow (Cycles)</option>
+                              <option value="#ffff00">Neon Yellow</option>
+                              <option value="#00ff00">Neon Green</option>
+                              <option value="#00ffff">Neon Cyan</option>
+                              <option value="#ff007f">Neon Pink</option>
+                              <option value="#ff5500">Neon Orange</option>
+                              <option value="#bf00ff">Neon Purple</option>
+                              <option value="#ff0040">Neon Red</option>
+                              <option value="#00ff88">Neon Mint</option>
+                              <option value="#ff69b4">Hot Pink</option>
+                              <option value="#7b68ee">Medium Slate</option>
+                              <option value="#ffffff">Pure White</option>
+                              <option value="custom">Custom Color...</option>
+                            </select>
+                            {lyricalActiveColor !== "multi" && (
+                              <div className="flex items-center gap-2 mt-1.5">
+                                <input
+                                  type="color"
+                                  value={lyricalActiveColor.startsWith("#") ? lyricalActiveColor : "#ffffff"}
+                                  onChange={(e) => setLyricalActiveColor(e.target.value)}
+                                  className="w-7 h-7 rounded-lg border border-white/10 cursor-pointer bg-transparent"
+                                />
+                                <input
+                                  type="text"
+                                  value={lyricalActiveColor}
+                                  onChange={(e) => {
+                                    const val = e.target.value;
+                                    if (/^#[0-9a-fA-F]{0,6}$/.test(val)) setLyricalActiveColor(val);
+                                  }}
+                                  className="flex-1 bg-black/45 border border-white/10 hover:border-white/20 rounded-xl px-2 py-1 text-[10px] text-gray-300 font-mono focus:outline-none"
+                                  placeholder="#FFFFFF"
+                                />
+                              </div>
+                            )}
+                          </div>
+                          <div className="space-y-1">
+                            <label className="block text-[9px] uppercase tracking-wider font-extrabold text-gray-500">Stroke Outline Color</label>
+                            <select
+                              value={lyricalStrokeColor}
+                              onChange={(e) => setLyricalStrokeColor(e.target.value)}
+                              className="w-full bg-black/45 border border-white/10 hover:border-white/20 rounded-2xl px-3 py-2 text-xs text-gray-300 focus:outline-none transition-all duration-300 cursor-pointer"
+                            >
+                              <option value="#000000">Black (#000000)</option>
+                              <option value="#ffffff">White (#ffffff)</option>
+                              <option value="#1a1a1a">Charcoal (#1a1a1a)</option>
+                              <option value="#333333">Grey (#333333)</option>
+                            </select>
+                          </div>
                         </div>
-                        <div className="space-y-1">
-                          <label className="block text-[9px] uppercase tracking-wider font-extrabold text-gray-500">Stroke Outline Color</label>
-                          <select
-                            value={lyricalStrokeColor}
-                            onChange={(e) => setLyricalStrokeColor(e.target.value)}
-                            className="w-full bg-black/45 border border-white/10 hover:border-white/20 rounded-2xl px-3 py-2 text-xs text-gray-300 focus:outline-none transition-all duration-300 cursor-pointer"
-                          >
-                            <option value="#000000">Black (#000000)</option>
-                            <option value="#ffffff">White (#ffffff)</option>
-                            <option value="#1a1a1a">Charcoal (#1a1a1a)</option>
-                            <option value="#333333">Grey (#333333)</option>
-                          </select>
+
+                        {/* Inactive / Base Text Color */}
+                        <div className="space-y-1 pt-1.5 border-t border-white/5">
+                          <div className="flex justify-between items-center">
+                            <label className="block text-[9px] uppercase tracking-wider font-extrabold text-gray-500">Base/Inactive Text Color</label>
+                            {lyricalTextColor && (
+                              <button
+                                type="button"
+                                onClick={() => setLyricalTextColor(null)}
+                                className="text-[8px] text-red-400 hover:underline cursor-pointer"
+                              >
+                                Reset to Default
+                              </button>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-2 mt-1">
+                            <input
+                              type="color"
+                              value={lyricalTextColor || "#ffffff"}
+                              onChange={(e) => setLyricalTextColor(e.target.value)}
+                              className="w-7 h-7 rounded-lg border border-white/10 cursor-pointer bg-transparent"
+                            />
+                            <input
+                              type="text"
+                              value={lyricalTextColor || ""}
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                if (val === "") {
+                                  setLyricalTextColor(null);
+                                } else if (/^#[0-9a-fA-F]{0,6}$/.test(val)) {
+                                  setLyricalTextColor(val);
+                                }
+                              }}
+                              className="flex-1 bg-black/45 border border-white/10 hover:border-white/20 rounded-xl px-2 py-1 text-[10px] text-gray-300 font-mono focus:outline-none"
+                              placeholder="Default (#ffffff)"
+                            />
+                          </div>
                         </div>
                       </div>
 

@@ -876,7 +876,7 @@ async function processBatchRendering(batchId: string) {
 
             const inputs: string[] = [];
             inputs.push(`-stream_loop -1 -i "${bgPath}"`);
-            inputs.push(`-i "${overlayPath}"`);
+            inputs.push(`-c:v libvpx -i "${overlayPath}"`);
             inputs.push(`-i "${audioPath}"`);
 
             let filterComplex = "";
