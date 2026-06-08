@@ -181,7 +181,7 @@ function generateASS(words: Word[], config: TemplateConfig): string {
           const wordText = phrase[j].word.toLowerCase();
           textParts.push("{\\c" + c + "}" + wordText + "{\\r}");
         }
-        const dialogueText = "{\\pos(" + alignX + "," + posY + ")}" + alignTag + textParts.join(wordSpacer);
+        const dialogueText = "{\\pos(" + alignX + "," + posY + ")" + alignTag + "}" + textParts.join(wordSpacer);
         lines.push("Dialogue: 0," + secondsToASS(word.start) + "," + secondsToASS(nextStart) + ",Default,,0,0,0,," + dialogueText);
       }
     }
@@ -199,7 +199,7 @@ function generateASS(words: Word[], config: TemplateConfig): string {
           const c = j === i ? ac : inactiveColor;
           textParts.push("{\\c" + c + "}" + chunk[j].word + "{\\r}");
         }
-        const dialogueText = "{\\pos(" + alignX + "," + posY + ")}" + alignTag + textParts.join(wordSpacer);
+        const dialogueText = "{\\pos(" + alignX + "," + posY + ")" + alignTag + "}" + textParts.join(wordSpacer);
         lines.push("Dialogue: 0," + secondsToASS(word.start) + "," + secondsToASS(nextStart) + ",Default,,0,0,0,," + dialogueText);
       }
     }
