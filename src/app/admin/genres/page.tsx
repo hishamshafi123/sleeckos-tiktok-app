@@ -1572,6 +1572,47 @@ export default function GenresDashboard() {
     }
   };
 
+  const handleReRenderItems = async (batchId: string, itemIds: string[]) => {
+    // Set retrying state for all requested items
+    setRetryingItemIds(prev => {
+      const next = { ...prev };
+      for (const id of itemIds) next[id] = true;
+      return next;
+    });
+
+    try {
+      const res = await fetch("/api/managed/genres/batches", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "RE_RENDER_ITEMS",
+          batchId,
+          itemIds,
+        }),
+      });
+
+      if (res.ok) {
+        toast.success(itemIds.length === 1 ? "Re-rendering video initiated!" : "Re-rendering selected videos initiated!");
+        fetchBatches();
+        if (activeBatch?.id === batchId) {
+          const statusRes = await fetch(`/api/managed/genres/batches?batchId=${batchId}`);
+          if (statusRes.ok) setActiveBatch(await statusRes.json());
+        }
+      } else {
+        const errData = await res.json();
+        toast.error(errData.error || "Failed to re-render videos");
+      }
+    } catch {
+      toast.error("Error initiating re-render");
+    } finally {
+      setRetryingItemIds(prev => {
+        const next = { ...prev };
+        for (const id of itemIds) next[id] = false;
+        return next;
+      });
+    }
+  };
+
   const handleUploadToDrive = async (itemId: string) => {
     setUploadingItems(prev => ({ ...prev, [itemId]: true }));
     try {
@@ -5928,6 +5969,24 @@ export default function GenresDashboard() {
                               )}
                               Upload
                             </button>
+
+                            <button
+                              onClick={() => {
+                                if (confirm("Are you sure you want to re-render this video? This will delete the existing file and generate it again.")) {
+                                  handleReRenderItems(activeBatch.id, [item.id]);
+                                }
+                              }}
+                              disabled={!!retryingItemIds[item.id] || activeBatch.status === "RENDERING"}
+                              className="flex items-center gap-1 px-3 py-1.5 bg-amber-500/15 hover:bg-amber-500 text-amber-400 hover:text-black border border-amber-500/20 hover:border-amber-500 rounded-xl text-xs font-extrabold transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed"
+                              title="Re-render this video"
+                            >
+                              {retryingItemIds[item.id] ? (
+                                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                              ) : (
+                                <RefreshCw className="w-3.5 h-3.5" />
+                              )}
+                              Re-render
+                            </button>
                           </div>
                         )}
 
@@ -5949,6 +6008,23 @@ export default function GenresDashboard() {
                                 View File
                               </a>
                             )}
+                            <button
+                              onClick={() => {
+                                if (confirm("Are you sure you want to re-render this video? This will delete the existing file and generate it again.")) {
+                                  handleReRenderItems(activeBatch.id, [item.id]);
+                                }
+                              }}
+                              disabled={!!retryingItemIds[item.id] || activeBatch.status === "RENDERING"}
+                              className="flex items-center gap-1 px-3 py-1.5 bg-amber-500/15 hover:bg-amber-500 text-amber-400 hover:text-black border border-amber-500/20 hover:border-amber-500 rounded-xl text-xs font-extrabold transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed"
+                              title="Re-render this video"
+                            >
+                              {retryingItemIds[item.id] ? (
+                                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                              ) : (
+                                <RefreshCw className="w-3.5 h-3.5" />
+                              )}
+                              Re-render
+                            </button>
                           </div>
                         )}
 
@@ -5970,6 +6046,23 @@ export default function GenresDashboard() {
                                 <RefreshCw className="w-3.5 h-3.5" />
                               )}
                               Retry
+                            </button>
+                            <button
+                              onClick={() => {
+                                if (confirm("Are you sure you want to re-render this video? This will delete any partial render and generate it again.")) {
+                                  handleReRenderItems(activeBatch.id, [item.id]);
+                                }
+                              }}
+                              disabled={!!retryingItemIds[item.id] || activeBatch.status === "RENDERING"}
+                              className="flex items-center gap-1 px-3 py-1.5 bg-amber-500/15 hover:bg-amber-500 text-amber-400 hover:text-black border border-amber-500/20 hover:border-amber-500 rounded-xl text-xs font-extrabold transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed"
+                              title="Re-render this video"
+                            >
+                              {retryingItemIds[item.id] ? (
+                                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                              ) : (
+                                <RefreshCw className="w-3.5 h-3.5" />
+                              )}
+                              Re-render
                             </button>
                           </div>
                         )}
@@ -6101,7 +6194,7 @@ export default function GenresDashboard() {
                 )}
 
                 {activeBatch.status !== "RENDERING" ? (
-                  <div className="flex gap-3">
+                  <div className="flex flex-wrap gap-3">
                     {activeBatch.items?.some(i => i.status === "FAILED") && (
                       <button
                         onClick={() => handleRetryFailedRenders(activeBatch.id)}
@@ -6121,6 +6214,18 @@ export default function GenresDashboard() {
                         )}
                       </button>
                     )}
+                    <button
+                      onClick={() => {
+                        if (confirm("Are you sure you want to re-render all videos in this batch? This will delete all existing rendered files and start over.")) {
+                          const itemIds = activeBatch.items?.map(i => i.id) || [];
+                          handleReRenderItems(activeBatch.id, itemIds);
+                        }
+                      }}
+                      className="bg-amber-500/10 hover:bg-amber-500 text-amber-400 hover:text-black font-extrabold py-3.5 px-6 rounded-2xl border border-amber-500/20 hover:border-amber-500 transition-all flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-amber-500/5 transition-all duration-300"
+                    >
+                      <RefreshCw className="w-4 h-4" />
+                      Re-render Whole Batch ({activeBatch.items?.length || 0} videos)
+                    </button>
                     <button
                       onClick={() => {
                         setWizardStep(1);

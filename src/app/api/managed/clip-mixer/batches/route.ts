@@ -246,6 +246,78 @@ export async function DELETE(req: NextRequest) {
   }
 }
 
+// PUT /api/managed/clip-mixer/batches — Re-render specific items or the entire batch
+export async function PUT(req: Request) {
+  const session = await getSession();
+  if (!session || session.role !== "ADMIN") {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  try {
+    const body = await req.json();
+    const { batchId, itemIds } = body;
+
+    if (!batchId || !Array.isArray(itemIds) || itemIds.length === 0) {
+      return NextResponse.json({ error: "Missing batchId or itemIds list" }, { status: 400 });
+    }
+
+    const batch = await prisma.clipMixerBatch.findUnique({
+      where: { id: batchId },
+      include: { items: true },
+    });
+
+    if (!batch) {
+      return NextResponse.json({ error: "Batch not found" }, { status: 404 });
+    }
+
+    // Delete rendered files from disk
+    const itemsToReset = batch.items.filter(item => itemIds.includes(item.id));
+    for (const item of itemsToReset) {
+      if (item.renderedVideoUrl) {
+        try {
+          const filePath = path.join(process.cwd(), "public", item.renderedVideoUrl);
+          if (fs.existsSync(filePath)) {
+            fs.unlinkSync(filePath);
+          }
+        } catch (fsErr) {
+          console.warn("[Clip Mixer Batches PUT] File delete warning:", fsErr);
+        }
+      }
+    }
+
+    // Reset status to PENDING
+    await prisma.clipMixerItem.updateMany({
+      where: {
+        id: { in: itemIds },
+        batchId,
+      },
+      data: {
+        status: "PENDING",
+        errorMessage: null,
+      },
+    });
+
+    // Reset batch status to RENDERING
+    await prisma.clipMixerBatch.update({
+      where: { id: batchId },
+      data: { status: "RENDERING" },
+    });
+
+    // Kick off rendering in the background
+    processClipMixerBatch(batchId).catch((err) => {
+      console.error(`[Clip Mixer Queue] Background re-render runner error for batch ${batchId}:`, err);
+    });
+
+    return NextResponse.json({
+      success: true,
+      message: "Selected items queued for re-rendering",
+    });
+  } catch (err) {
+    console.error("[Clip Mixer Batches PUT] Error:", err);
+    return NextResponse.json({ error: "Failed to queue items for re-rendering" }, { status: 500 });
+  }
+}
+
 // Sequential batch processing worker logic
 async function processClipMixerBatch(batchId: string) {
   console.log(`[Clip Mixer Worker] Sequential queue starting for batch: ${batchId}`);

@@ -110,6 +110,8 @@ export default function ClipMixerPage() {
   const [accountCountInput, setAccountCountInput] = useState<number>(5);
   const [videosPerAccountInput, setVideosPerAccountInput] = useState<number>(3);
   const [muteAudio, setMuteAudio] = useState<boolean>(false);
+  const [retryingItemIds, setRetryingItemIds] = useState<Record<string, boolean>>({});
+  const [retryingBatchId, setRetryingBatchId] = useState<string | null>(null);
   
   const [activeTab, setActiveTab] = useState<"folders" | "generator" | "batches">("folders");
   
@@ -432,6 +434,46 @@ export default function ClipMixerPage() {
       }
     } catch (err: any) {
       toast.error(err.message || "Failed to delete batch");
+    }
+  };
+
+  const handleReRenderClipMixerItems = async (batchId: string, itemIds: string[]) => {
+    // Set retrying state for all requested items
+    setRetryingItemIds(prev => {
+      const next = { ...prev };
+      for (const id of itemIds) next[id] = true;
+      return next;
+    });
+
+    try {
+      const res = await fetch("/api/managed/clip-mixer/batches", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          batchId,
+          itemIds,
+        }),
+      });
+
+      if (res.ok) {
+        toast.success(itemIds.length === 1 ? "Re-rendering video initiated!" : "Re-rendering selected videos initiated!");
+        fetchBatches();
+        if (activeBatch?.id === batchId) {
+          const statusRes = await fetch(`/api/managed/clip-mixer/batches?batchId=${batchId}`);
+          if (statusRes.ok) setActiveBatch(await statusRes.json());
+        }
+      } else {
+        const errData = await res.json();
+        toast.error(errData.error || "Failed to re-render videos");
+      }
+    } catch {
+      toast.error("Error initiating re-render");
+    } finally {
+      setRetryingItemIds(prev => {
+        const next = { ...prev };
+        for (const id of itemIds) next[id] = false;
+        return next;
+      });
     }
   };
 
@@ -1225,6 +1267,20 @@ export default function ClipMixerPage() {
                           )}
                         </div>
                       )}
+                      {activeBatch.status !== "RENDERING" && (
+                        <button
+                          onClick={() => {
+                            if (confirm("Are you sure you want to re-render all videos in this batch? This will delete existing rendered files and start over.")) {
+                              const itemIds = activeBatch.items?.map(i => i.id) || [];
+                              handleReRenderClipMixerItems(activeBatch.id, itemIds);
+                            }
+                          }}
+                          className="bg-amber-500/10 hover:bg-amber-500 text-amber-400 hover:text-black font-extrabold py-3.5 px-6 rounded-2xl border border-amber-500/20 hover:border-amber-500 cursor-pointer w-full text-sm transition-all flex items-center justify-center gap-2"
+                        >
+                          <RefreshCw className="w-4 h-4" />
+                          Re-render Whole Batch ({total} videos)
+                        </button>
+                      )}
                     </div>
                   );
                 })()}
@@ -1269,23 +1325,40 @@ export default function ClipMixerPage() {
                           )}
                         </div>
 
-                        {item.status === "RENDERED" && item.renderedVideoUrl && (
+                        {((item.status === "RENDERED" && item.renderedVideoUrl) || item.status === "FAILED") && (
                           <div className="flex items-center gap-2 self-end sm:self-auto">
+                            {item.status === "RENDERED" && item.renderedVideoUrl && (
+                              <>
+                                <button
+                                  onClick={() => setPreviewVideoUrl(item.renderedVideoUrl)}
+                                  className="flex items-center gap-1.5 bg-white/5 hover:bg-white/10 text-white font-bold py-1.5 px-3 rounded-lg text-xs transition-all border border-white/5 cursor-pointer"
+                                >
+                                  <Eye className="w-3.5 h-3.5" />
+                                  Watch
+                                </button>
+                                <a
+                                  href={resolveUrl(item.renderedVideoUrl)}
+                                  download={`render_${item.id}.mp4`}
+                                  className="flex items-center gap-1.5 bg-purple-500/15 hover:bg-purple-500/25 text-purple-300 font-bold py-1.5 px-3 rounded-lg text-xs transition-all border border-purple-500/20 cursor-pointer"
+                                >
+                                  <Download className="w-3.5 h-3.5" />
+                                  Download
+                                </a>
+                              </>
+                            )}
                             <button
-                              onClick={() => setPreviewVideoUrl(item.renderedVideoUrl)}
-                              className="flex items-center gap-1.5 bg-white/5 hover:bg-white/10 text-white font-bold py-1.5 px-3 rounded-lg text-xs transition-all border border-white/5 cursor-pointer"
+                              onClick={() => handleReRenderClipMixerItems(activeBatch.id, [item.id])}
+                              disabled={!!retryingItemIds[item.id] || activeBatch.status === "RENDERING"}
+                              className="flex items-center gap-1.5 bg-amber-500/10 hover:bg-amber-500 text-amber-400 hover:text-black font-bold py-1.5 px-3 rounded-lg text-xs transition-all border border-amber-500/20 hover:border-amber-500 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                              title="Re-render this video composition"
                             >
-                              <Eye className="w-3.5 h-3.5" />
-                              Watch
+                              {retryingItemIds[item.id] ? (
+                                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                              ) : (
+                                <RefreshCw className="w-3.5 h-3.5" />
+                              )}
+                              Re-render
                             </button>
-                            <a
-                              href={resolveUrl(item.renderedVideoUrl)}
-                              download={`render_${item.id}.mp4`}
-                              className="flex items-center gap-1.5 bg-purple-500/15 hover:bg-purple-500/25 text-purple-300 font-bold py-1.5 px-3 rounded-lg text-xs transition-all border border-purple-500/20 cursor-pointer"
-                            >
-                              <Download className="w-3.5 h-3.5" />
-                              Download
-                            </a>
                           </div>
                         )}
 

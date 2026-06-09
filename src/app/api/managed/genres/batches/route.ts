@@ -654,6 +654,63 @@ export async function POST(req: Request) {
       return NextResponse.json({ success: true, message: "Retrying failed renders started in the background" });
     }
 
+    if (action === "RE_RENDER_ITEMS") {
+      const { batchId, itemIds } = body;
+      if (!batchId || !Array.isArray(itemIds) || itemIds.length === 0) {
+        return NextResponse.json({ error: "Missing batchId or itemIds" }, { status: 400 });
+      }
+
+      const batch = await prisma.genreBatch.findUnique({
+        where: { id: batchId },
+        include: { items: true },
+      });
+
+      if (!batch) {
+        return NextResponse.json({ error: "Batch not found" }, { status: 404 });
+      }
+
+      const itemsToReset = batch.items.filter(item => itemIds.includes(item.id));
+
+      // Delete rendered video files from disk
+      for (const item of itemsToReset) {
+        if (item.renderedVideoUrl) {
+          try {
+            const filePath = path.join(process.cwd(), "public", item.renderedVideoUrl);
+            if (fs.existsSync(filePath)) {
+              fs.unlinkSync(filePath);
+            }
+          } catch (fsErr) {
+            console.warn(`[Batches API RE_RENDER_ITEMS] Clean up file warning: ${item.renderedVideoUrl}`, fsErr);
+          }
+        }
+      }
+
+      // Reset status to PENDING
+      await prisma.genreBatchItem.updateMany({
+        where: {
+          id: { in: itemIds },
+          batchId,
+        },
+        data: {
+          status: "PENDING",
+          errorMessage: null,
+        },
+      });
+
+      // Reset batch status to RENDERING
+      await prisma.genreBatch.update({
+        where: { id: batchId },
+        data: { status: "RENDERING" },
+      });
+
+      // Trigger background rendering loop
+      processBatchRendering(batchId).catch(err => {
+        console.error(`[Batches API] Re-render process background failure for batch ${batchId}:`, err);
+      });
+
+      return NextResponse.json({ success: true, message: "Selected videos queued for re-rendering" });
+    }
+
     return NextResponse.json({ error: "Invalid action" }, { status: 400 });
   } catch (err) {
     console.error("[Batches API] Error handling batch action:", err);
