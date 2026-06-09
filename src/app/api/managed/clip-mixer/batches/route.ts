@@ -331,10 +331,15 @@ async function processClipMixerBatch(batchId: string) {
 
         const slices: { clipPath: string; start: number; duration: number }[] = [];
         let currentDuration = 0;
-        let attempts = 0;
 
-        while (currentDuration < T && attempts < 150) {
-          const clip = clips[Math.floor(Math.random() * clips.length)];
+        // Shuffle the clips array to ensure randomized picking order
+        const shuffledClips = [...clips].sort(() => Math.random() - 0.5);
+
+        for (const clip of shuffledClips) {
+          if (currentDuration >= T) {
+            break;
+          }
+
           const remaining = T - currentDuration;
 
           let sliceDuration = Math.random() * 2.0 + 3.0; // random chunk duration between 3.0s and 5.0s
@@ -363,7 +368,6 @@ async function processClipMixerBatch(batchId: string) {
           });
 
           currentDuration += sliceDuration;
-          attempts++;
         }
 
         if (slices.length === 0) {
@@ -414,16 +418,23 @@ async function processClipMixerBatch(batchId: string) {
           // Normalizes clips: force vertical aspect, 720x1280, 30fps, sar=1, color space yuv420p
           filterComplex += `[${i}:v]scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,setsar=1,fps=30,format=yuv420p[v${i}];`;
         }
-        for (let i = 0; i < slices.length; i++) {
-          filterComplex += `[v${i}]`;
+
+        let lastVideoLabel = "";
+        if (slices.length > 1) {
+          for (let i = 0; i < slices.length; i++) {
+            filterComplex += `[v${i}]`;
+          }
+          filterComplex += `concat=n=${slices.length}:v=1:a=0[v_concated];`;
+          lastVideoLabel = "v_concated";
+        } else {
+          lastVideoLabel = "v0";
         }
-        filterComplex += `concat=n=${slices.length}:v=1:a=0[v_concated];`;
 
         // Scale lyrics overlay video
         filterComplex += `[${overlayIdx}:v]scale=720:1280[overlay_scaled];`;
 
-        // Composite lyrics overlay onto clips chain
-        filterComplex += `[v_concated][overlay_scaled]overlay=0:0:format=auto[v_final]`;
+        // Composite lyrics overlay onto clips chain using shortest=1 to resolve alpha overlaying
+        filterComplex += `[${lastVideoLabel}][overlay_scaled]overlay=0:0:shortest=1[v_final]`;
 
         const cmd = [
           `ffmpeg -y`,
