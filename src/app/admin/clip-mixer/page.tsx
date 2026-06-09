@@ -4,7 +4,7 @@ import React, { useState, useEffect, useRef } from "react";
 import { 
   Folder, Video, Plus, Trash2, Sliders, Music, Sparkles, Layers, Play, Pause, 
   RefreshCw, ChevronRight, Check, X, ShieldAlert, Film, HelpCircle, HardDrive, 
-  Download, Volume2, VolumeX, Eye, AlertCircle, Loader2, Users, History
+  Download, Volume2, VolumeX, Eye, AlertCircle, Loader2, Users, History, FolderOpen
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -57,15 +57,6 @@ interface Account {
   tiktokUsername: string;
   tiktokDisplayName: string;
   tiktokAvatarUrl: string;
-  group: {
-    id: string;
-    name: string;
-    section: {
-      id: string;
-      name: string;
-      color: string;
-    };
-  };
 }
 
 interface BatchItem {
@@ -80,6 +71,9 @@ interface BatchItem {
     tiktokDisplayName: string;
     tiktokAvatarUrl: string;
   };
+  lyricalTemplate?: {
+    templateName: string;
+  } | null;
 }
 
 interface Batch {
@@ -108,13 +102,13 @@ export default function ClipMixerPage() {
   const [tracks, setTracks] = useState<Track[]>([]);
   const [selectedTrackId, setSelectedTrackId] = useState<string>("");
   const [templates, setTemplates] = useState<LyricalTemplate[]>([]);
-  const [selectedTemplateId, setSelectedTemplateId] = useState<string>("");
-  
-  const [accounts, setAccounts] = useState<Account[]>([]);
-  const [selectedAccountIds, setSelectedAccountIds] = useState<string[]>([]);
+  const [selectedTemplateIds, setSelectedTemplateIds] = useState<string[]>([]);
   
   const [targetDuration, setTargetDuration] = useState<number>(15);
-  const [videosPerAccount, setVideosPerAccount] = useState<number>(3);
+  
+  // Custom numeric scaling inputs
+  const [accountCountInput, setAccountCountInput] = useState<number>(5);
+  const [videosPerAccountInput, setVideosPerAccountInput] = useState<number>(3);
   const [muteAudio, setMuteAudio] = useState<boolean>(false);
   
   const [activeTab, setActiveTab] = useState<"folders" | "generator" | "batches">("folders");
@@ -130,13 +124,28 @@ export default function ClipMixerPage() {
   
   // Video preview modal
   const [previewVideoUrl, setPreviewVideoUrl] = useState<string | null>(null);
+
+  // Smart Download (Folderized ZIP) Modal States
+  const [showSmartDownload, setShowSmartDownload] = useState<boolean>(false);
+  const [smartAccounts, setSmartAccounts] = useState<number>(5);
+  const [smartVidsPerAccount, setSmartVidsPerAccount] = useState<number>(3);
+  const [smartDownloading, setSmartDownloading] = useState<boolean>(false);
+  const [smartDownloadProgress, setSmartDownloadProgress] = useState<string>("");
   
-  // Refresh toggles
+  // Loading status states
   const [isLoadingSections, setIsLoadingSections] = useState(false);
   const [isLoadingFolders, setIsLoadingFolders] = useState(false);
   const [isLoadingTracks, setIsLoadingTracks] = useState(false);
-  const [isLoadingAccounts, setIsLoadingAccounts] = useState(false);
   const [isLoadingBatches, setIsLoadingBatches] = useState(false);
+
+  // Helper to map static folder upload URLs to api upload stream router
+  const resolveUrl = (url: string | null | undefined): string => {
+    if (!url) return "";
+    if (url.startsWith("/uploads/")) {
+      return url.replace("/uploads/", "/api/uploads/");
+    }
+    return url;
+  };
 
   // Fetch sections
   const fetchSections = async () => {
@@ -144,7 +153,7 @@ export default function ClipMixerPage() {
     try {
       const res = await fetch("/api/managed/sections");
       if (!res.ok) throw new Error("Failed to fetch sections");
-      const data = await res.ok ? await res.json() : [];
+      const data = await res.json();
       setSections(data);
       if (data.length > 0 && !selectedSectionId) {
         setSelectedSectionId(data[0].id);
@@ -167,7 +176,6 @@ export default function ClipMixerPage() {
       const data = await res.json();
       setFolders(data);
       if (data.length > 0) {
-        // preserve selection if still exists, otherwise select first
         if (!data.some((f: ClipFolder) => f.id === selectedFolderId)) {
           setSelectedFolderId(data[0].id);
         }
@@ -206,7 +214,7 @@ export default function ClipMixerPage() {
   const fetchTemplates = async (trackId: string) => {
     if (!trackId) {
       setTemplates([]);
-      setSelectedTemplateId("");
+      setSelectedTemplateIds([]);
       return;
     }
     try {
@@ -215,30 +223,14 @@ export default function ClipMixerPage() {
       const data = await res.json();
       setTemplates(data);
       if (data.length > 0) {
-        setSelectedTemplateId(data[0].id);
+        setSelectedTemplateIds([data[0].id]);
         setMuteAudio(data[0].muteAudio || false);
       } else {
-        setSelectedTemplateId("");
+        setSelectedTemplateIds([]);
       }
     } catch (err) {
       console.error(err);
       toast.error("Failed to load styling templates");
-    }
-  };
-
-  // Fetch active accounts
-  const fetchAccounts = async () => {
-    setIsLoadingAccounts(true);
-    try {
-      const res = await fetch("/api/managed/genres/accounts");
-      if (!res.ok) throw new Error("Failed to fetch accounts");
-      const data = await res.json();
-      setAccounts(data);
-    } catch (err) {
-      console.error(err);
-      toast.error("Failed to load accounts");
-    } finally {
-      setIsLoadingAccounts(false);
     }
   };
 
@@ -290,7 +282,6 @@ export default function ClipMixerPage() {
   useEffect(() => {
     fetchSections();
     fetchTracks();
-    fetchAccounts();
     fetchBatches();
   }, []);
 
@@ -308,13 +299,21 @@ export default function ClipMixerPage() {
     }
   }, [selectedTrackId]);
 
-  // Template select trigger
-  const handleTemplateSelect = (tplId: string) => {
-    setSelectedTemplateId(tplId);
-    const selectedTpl = templates.find(t => t.id === tplId);
-    if (selectedTpl) {
-      setMuteAudio(selectedTpl.muteAudio || false);
-    }
+  // Multi-template Toggle Handler
+  const handleTemplateToggle = (tplId: string) => {
+    setSelectedTemplateIds(prev => {
+      const next = prev.includes(tplId)
+        ? prev.filter(id => id !== tplId)
+        : [...prev, tplId];
+
+      if (next.length > 0) {
+        const firstTpl = templates.find(t => t.id === next[0]);
+        if (firstTpl) {
+          setMuteAudio(firstTpl.muteAudio || false);
+        }
+      }
+      return next;
+    });
   };
 
   // Folder creation
@@ -436,18 +435,22 @@ export default function ClipMixerPage() {
     }
   };
 
-  // Trigger batch generation
+  // Trigger batch generation using numeric inputs (no checklist)
   const handleGenerateBatch = async () => {
     if (!selectedFolderId) {
       toast.error("Please select a Clip Folder first");
       return;
     }
-    if (!selectedTrackId || !selectedTemplateId) {
-      toast.error("Please select a Lyrical Track and Captions Template");
+    if (!selectedTrackId || selectedTemplateIds.length === 0) {
+      toast.error("Please select a Lyrical Track and at least one Captions Template");
       return;
     }
-    if (selectedAccountIds.length === 0) {
-      toast.error("Please select at least one TikTok account");
+    if (accountCountInput <= 0) {
+      toast.error("Account count must be at least 1");
+      return;
+    }
+    if (videosPerAccountInput <= 0) {
+      toast.error("Videos per account must be at least 1");
       return;
     }
 
@@ -463,11 +466,11 @@ export default function ClipMixerPage() {
       body: JSON.stringify({
         folderId: selectedFolderId,
         trackId: selectedTrackId,
-        lyricalTemplateId: selectedTemplateId,
+        lyricalTemplateIds: selectedTemplateIds,
         targetDuration,
         muteAudio,
-        accountIds: selectedAccountIds,
-        videosPerAccount,
+        accountCount: accountCountInput,
+        videosPerAccount: videosPerAccountInput,
       }),
     });
 
@@ -481,6 +484,11 @@ export default function ClipMixerPage() {
         const batchRes = await fetch(`/api/managed/clip-mixer/batches?batchId=${data.batchId}`);
         const batchData = await batchRes.json();
         setActiveBatch(batchData);
+        
+        // Default smart download parameters based on the generation inputs
+        setSmartAccounts(accountCountInput);
+        setSmartVidsPerAccount(videosPerAccountInput);
+
         setActiveTab("batches");
         fetchBatches();
         return "Clip Mixer batch rendering started!";
@@ -489,23 +497,55 @@ export default function ClipMixerPage() {
     });
   };
 
-  // Section accounts filter
-  const sectionAccounts = accounts.filter(
-    (acc) => acc.group.section.id === selectedSectionId
-  );
+  // Smart folderized ZIP generation and downloader
+  const handleSmartDownload = async (batchId: string) => {
+    const totalNeeded = smartAccounts * smartVidsPerAccount;
+    const renderedCount = activeBatch?.items?.filter(i => i.status === "RENDERED").length || 0;
+    
+    if (totalNeeded > renderedCount) {
+      toast.error(`Not enough videos! Need ${totalNeeded} (${smartAccounts}×${smartVidsPerAccount}) but only ${renderedCount} are completed.`);
+      return;
+    }
 
-  const toggleSelectAccount = (id: string) => {
-    setSelectedAccountIds(prev => 
-      prev.includes(id) ? prev.filter(a => a !== id) : [...prev, id]
-    );
-  };
+    setSmartDownloading(true);
+    setSmartDownloadProgress("Building archive folders...");
 
-  const handleSelectAllAccounts = () => {
-    setSelectedAccountIds(sectionAccounts.map(a => a.id));
-  };
+    try {
+      const res = await fetch("/api/managed/clip-mixer/batches/download", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          batchId,
+          accountCount: smartAccounts,
+          videosPerAccount: smartVidsPerAccount,
+        }),
+      });
 
-  const handleDeselectAllAccounts = () => {
-    setSelectedAccountIds([]);
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || "Failed to compile archive");
+      }
+
+      const data = await res.json();
+
+      if (data.status === "COMPLETED" && data.downloadUrl) {
+        const link = document.createElement("a");
+        link.href = `/api${data.downloadUrl}`;
+        link.download = data.downloadUrl.split("/").pop() || "smart_clip_download.tar.gz";
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        toast.success(`Smart ZIP download started: ${smartAccounts} accounts × ${smartVidsPerAccount} videos!`);
+      } else {
+        throw new Error("Archive generation failed — no download URL returned");
+      }
+    } catch (err: any) {
+      toast.error(err.message || "Smart ZIP compilation failed");
+    } finally {
+      setSmartDownloading(false);
+      setSmartDownloadProgress("");
+      setShowSmartDownload(false);
+    }
   };
 
   const currentFolder = folders.find(f => f.id === selectedFolderId);
@@ -721,20 +761,20 @@ export default function ClipMixerPage() {
                         <div key={clip.id} className="group bg-[#09090f] border border-white/5 rounded-2xl overflow-hidden relative shadow-inner">
                           <div className="aspect-[9/16] relative bg-black flex items-center justify-center">
                             <video
-                              src={clip.videoUrl}
+                              src={resolveUrl(clip.videoUrl)}
                               className="w-full h-full object-cover"
                               preload="metadata"
                             />
                             <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-all flex items-center justify-center gap-3">
                               <button
                                 onClick={() => setPreviewVideoUrl(clip.videoUrl)}
-                                className="w-10 h-10 rounded-full bg-white/10 text-white flex items-center justify-center border border-white/10 hover:bg-white/20 transition-all"
+                                className="w-10 h-10 rounded-full bg-white/10 text-white flex items-center justify-center border border-white/10 hover:bg-white/20 transition-all cursor-pointer"
                               >
                                 <Eye className="w-4 h-4" />
                               </button>
                               <button
                                 onClick={() => handleDeleteClip(clip.id)}
-                                className="w-10 h-10 rounded-full bg-red-500/10 text-red-400 flex items-center justify-center border border-red-500/10 hover:bg-red-500/20 transition-all"
+                                className="w-10 h-10 rounded-full bg-red-500/10 text-red-400 flex items-center justify-center border border-red-500/10 hover:bg-red-500/20 transition-all cursor-pointer"
                               >
                                 <Trash2 className="w-4 h-4" />
                               </button>
@@ -766,73 +806,79 @@ export default function ClipMixerPage() {
 
       {/* TAB: BATCH GENERATOR */}
       {activeTab === "generator" && (
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+        <div className="max-w-4xl mx-auto space-y-6">
           
-          {/* Main Controls */}
-          <div className="lg:col-span-2 space-y-6">
-            
-            {/* Folder & Audio Track Selection Card */}
-            <div className="bg-[#0c0c14] border border-white/5 rounded-3xl p-6 shadow-2xl space-y-6">
-              <h2 className="text-lg font-bold text-white flex items-center gap-2 border-b border-white/5 pb-3">
-                <Sliders className="w-4 h-4 text-purple-400" />
-                Step 1: Set Clip Folder & Audio Track
-              </h2>
+          {/* Main Controls Card */}
+          <div className="bg-[#0c0c14] border border-white/5 rounded-3xl p-6 shadow-2xl space-y-6">
+            <h2 className="text-lg font-bold text-white flex items-center gap-2 border-b border-white/5 pb-3">
+              <Sliders className="w-4 h-4 text-purple-400" />
+              Step 1: Set Clip Folder & Audio Track
+            </h2>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                
-                {/* Folders List */}
-                <div className="space-y-2">
-                  <label className="text-xs text-gray-400 font-bold uppercase tracking-wider">Source Clip Folder:</label>
-                  <select
-                    value={selectedFolderId}
-                    onChange={(e) => setSelectedFolderId(e.target.value)}
-                    className="w-full bg-[#0f0f18] border border-white/5 rounded-xl px-4 py-3 text-white font-semibold text-sm focus:outline-none focus:border-purple-500 transition-all cursor-pointer"
-                  >
-                    <option value="">-- Select Folder --</option>
-                    {folders.map((f) => (
-                      <option key={f.id} value={f.id}>
-                        {f.name} ({f.clips?.length || 0} clips uploaded)
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                {/* Track Selector */}
-                <div className="space-y-2">
-                  <label className="text-xs text-gray-400 font-bold uppercase tracking-wider">Audio Track (Whisper Synced):</label>
-                  <select
-                    value={selectedTrackId}
-                    onChange={(e) => setSelectedTrackId(e.target.value)}
-                    className="w-full bg-[#0f0f18] border border-white/5 rounded-xl px-4 py-3 text-white font-semibold text-sm focus:outline-none focus:border-purple-500 transition-all cursor-pointer"
-                  >
-                    <option value="">-- Select Track --</option>
-                    {tracks.map((t) => (
-                      <option key={t.id} value={t.id}>
-                        {t.title} - {t.artist} ({t.duration.toFixed(0)}s)
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              
+              {/* Folders List */}
+              <div className="space-y-2">
+                <label className="text-xs text-gray-400 font-bold uppercase tracking-wider">Source Clip Folder:</label>
+                <select
+                  value={selectedFolderId}
+                  onChange={(e) => setSelectedFolderId(e.target.value)}
+                  className="w-full bg-[#0f0f18] border border-white/5 rounded-xl px-4 py-3 text-white font-semibold text-sm focus:outline-none focus:border-purple-500 transition-all cursor-pointer"
+                >
+                  <option value="">-- Select Folder --</option>
+                  {folders.map((f) => (
+                    <option key={f.id} value={f.id}>
+                      {f.name} ({f.clips?.length || 0} clips uploaded)
+                    </option>
+                  ))}
+                </select>
               </div>
 
-              {/* Lyrical Presets Selector */}
-              {selectedTrackId && (
-                <div className="space-y-2 pt-2">
-                  <label className="text-xs text-gray-400 font-bold uppercase tracking-wider">Lyrics Overlay Style Presets:</label>
-                  {templates.length === 0 ? (
-                    <div className="p-4 rounded-xl bg-amber-500/5 border border-amber-500/25 text-amber-300 text-sm flex items-center gap-2">
-                      <AlertCircle className="w-4 h-4 flex-shrink-0" />
-                      <span>No styling presets exist for this track. Please create a Lyrical template on the Bulk Genres page first!</span>
-                    </div>
-                  ) : (
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                      {templates.map((tpl) => (
+              {/* Track Selector */}
+              <div className="space-y-2">
+                <label className="text-xs text-gray-400 font-bold uppercase tracking-wider">Audio Track (Whisper Synced):</label>
+                <select
+                  value={selectedTrackId}
+                  onChange={(e) => setSelectedTrackId(e.target.value)}
+                  className="w-full bg-[#0f0f18] border border-white/5 rounded-xl px-4 py-3 text-white font-semibold text-sm focus:outline-none focus:border-purple-500 transition-all cursor-pointer"
+                >
+                  <option value="">-- Select Track --</option>
+                  {tracks.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.title} - {t.artist} ({t.duration.toFixed(0)}s)
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+            </div>
+
+            {/* Lyrical Presets Selector (Select Multiple) */}
+            {selectedTrackId && (
+              <div className="space-y-2 pt-2">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs text-gray-400 font-bold uppercase tracking-wider">
+                    Lyrics Overlay Style Presets (Select Multiple to Cycle):
+                  </label>
+                  <span className="text-xs font-semibold text-purple-400">
+                    Selected: {selectedTemplateIds.length} preset(s)
+                  </span>
+                </div>
+                {templates.length === 0 ? (
+                  <div className="p-4 rounded-xl bg-amber-500/5 border border-amber-500/25 text-amber-300 text-sm flex items-center gap-2">
+                    <AlertCircle className="w-4 h-4 flex-shrink-0" />
+                    <span>No styling presets exist for this track. Please create a Lyrical template on the Bulk Genres page first!</span>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
+                    {templates.map((tpl) => {
+                      const selected = selectedTemplateIds.includes(tpl.id);
+                      return (
                         <div
                           key={tpl.id}
-                          onClick={() => handleTemplateSelect(tpl.id)}
-                          className={`p-3 rounded-xl border cursor-pointer transition-all flex items-center justify-between ${
-                            selectedTemplateId === tpl.id
+                          onClick={() => handleTemplateToggle(tpl.id)}
+                          className={`p-3.5 rounded-xl border cursor-pointer transition-all flex items-center justify-between ${
+                            selected
                               ? "bg-purple-500/10 border-purple-500/40 text-purple-300 shadow-md"
                               : "bg-[#09090f] border-white/5 text-gray-400 hover:text-white hover:border-white/10"
                           }`}
@@ -841,162 +887,127 @@ export default function ClipMixerPage() {
                             <p className="font-bold text-sm">{tpl.templateName}</p>
                             <p className="text-[10px] text-gray-500 font-mono mt-0.5">{tpl.fontFamily} - {tpl.fontSize}px</p>
                           </div>
-                          {selectedTemplateId === tpl.id && (
-                            <div className="w-5 h-5 rounded-full bg-purple-500 text-white flex items-center justify-center flex-shrink-0">
-                              <Check className="w-3 h-3" />
-                            </div>
-                          )}
+                          <div className={`w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0 border ${
+                            selected ? "bg-purple-500 border-purple-400 text-white" : "border-white/10"
+                          }`}>
+                            {selected && <Check className="w-3 h-3" />}
+                          </div>
                         </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-
-            {/* Video Specifications & Mixing Settings Card */}
-            <div className="bg-[#0c0c14] border border-white/5 rounded-3xl p-6 shadow-2xl space-y-6">
-              <h2 className="text-lg font-bold text-white flex items-center gap-2 border-b border-white/5 pb-3">
-                <Sliders className="w-4 h-4 text-purple-400" />
-                Step 2: Video Composition Details
-              </h2>
-
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-                
-                {/* Duration Slider */}
-                <div className="space-y-4">
-                  <div className="flex items-center justify-between">
-                    <label className="text-xs text-gray-400 font-bold uppercase tracking-wider">Target Video Duration:</label>
-                    <span className="text-sm font-bold text-amber-400">{targetDuration} seconds</span>
+                      );
+                    })}
                   </div>
-                  <input
-                    type="range"
-                    min="10"
-                    max="60"
-                    step="1"
-                    value={targetDuration}
-                    onChange={(e) => setTargetDuration(parseInt(e.target.value))}
-                    className="w-full h-1.5 bg-[#0f0f18] border border-white/5 rounded-lg appearance-none cursor-pointer accent-purple-500"
-                  />
-                  <p className="text-[10px] text-gray-500 leading-normal">
-                    Clips will merge randomly to match target duration. Random variance of up to ±2 seconds is applied to each output for TikTok uniqueness (e.g. {targetDuration - 2}-{targetDuration + 2}s).
-                  </p>
-                </div>
+                )}
+              </div>
+            )}
+          </div>
 
-                {/* Videos count per account */}
-                <div className="space-y-4">
-                  <label className="text-xs text-gray-400 font-bold uppercase tracking-wider block">Videos Per Selected Account:</label>
-                  <input
-                    type="number"
-                    min="1"
-                    max="20"
-                    value={videosPerAccount}
-                    onChange={(e) => setVideosPerAccount(Math.max(1, parseInt(e.target.value) || 1))}
-                    className="w-full bg-[#0f0f18] border border-white/5 rounded-xl px-4 py-3 text-white font-semibold text-sm focus:outline-none focus:border-purple-500 transition-all"
-                  />
-                  <p className="text-[10px] text-gray-500">
-                    Each account will receive a completely distinct, uniquely sliced randomized clip mashup.
-                  </p>
-                </div>
+          {/* Generator Scaling Specifications Card */}
+          <div className="bg-[#0c0c14] border border-white/5 rounded-3xl p-6 shadow-2xl space-y-6">
+            <h2 className="text-lg font-bold text-white flex items-center gap-2 border-b border-white/5 pb-3">
+              <Sliders className="w-4 h-4 text-purple-400" />
+              Step 2: Video Composition & Scaling Details
+            </h2>
 
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+              
+              {/* Duration Slider */}
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs text-gray-400 font-bold uppercase tracking-wider">Target Video Duration:</label>
+                  <span className="text-sm font-bold text-amber-400">{targetDuration} seconds</span>
+                </div>
+                <input
+                  type="range"
+                  min="10"
+                  max="60"
+                  step="1"
+                  value={targetDuration}
+                  onChange={(e) => setTargetDuration(parseInt(e.target.value))}
+                  className="w-full h-1.5 bg-[#0f0f18] border border-white/5 rounded-lg appearance-none cursor-pointer accent-purple-500"
+                />
+                <p className="text-[10px] text-gray-500 leading-normal">
+                  Clips will merge randomly to match target duration. Random variance of up to ±2 seconds is applied to each output for TikTok uniqueness (e.g. {targetDuration - 2}-{targetDuration + 2}s).
+                </p>
               </div>
 
               {/* Mute Audio Option */}
-              <div className="p-4 rounded-2xl bg-[#09090f] border border-white/5 flex items-center justify-between">
-                <div className="flex items-start gap-3">
-                  <div className={`p-2 rounded-xl border ${muteAudio ? "bg-red-500/10 border-red-500/20 text-red-400" : "bg-purple-500/10 border-purple-500/20 text-purple-400"}`}>
-                    {muteAudio ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
+              <div className="space-y-3">
+                <label className="text-xs text-gray-400 font-bold uppercase tracking-wider block">Mute Audio Track:</label>
+                <div className="p-4 rounded-xl bg-[#09090f] border border-white/5 flex items-center justify-between">
+                  <div className="flex items-start gap-3">
+                    <div className={`p-2 rounded-xl border ${muteAudio ? "bg-red-500/10 border-red-500/20 text-red-400" : "bg-purple-500/10 border-purple-500/20 text-purple-400"}`}>
+                      {muteAudio ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
+                    </div>
+                    <div>
+                      <p className="text-xs font-semibold text-white">Mute Music</p>
+                      <p className="text-[9px] text-gray-500 mt-0.5">Outputs silent audio (highly recommended for overlaying TikTok sounds).</p>
+                    </div>
                   </div>
-                  <div>
-                    <p className="text-sm font-semibold text-white">Mute Background Music</p>
-                    <p className="text-[10px] text-gray-500 mt-0.5">
-                      Outputs a silent audio track. Use this to overlay the music directly on the TikTok publishing app.
-                    </p>
-                  </div>
+                  <label className="relative inline-flex items-center cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={muteAudio}
+                      onChange={(e) => setMuteAudio(e.target.checked)}
+                      className="sr-only peer"
+                    />
+                    <div className="w-11 h-6 bg-gray-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-gray-300 after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-purple-600"></div>
+                  </label>
                 </div>
-                <label className="relative inline-flex items-center cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={muteAudio}
-                    onChange={(e) => setMuteAudio(e.target.checked)}
-                    className="sr-only peer"
-                  />
-                  <div className="w-11 h-6 bg-gray-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-gray-300 after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-purple-600"></div>
-                </label>
               </div>
 
             </div>
 
-          </div>
-
-          {/* Accounts checklist & trigger */}
-          <div className="lg:col-span-1 space-y-6">
-            <div className="bg-[#0c0c14] border border-white/5 rounded-3xl p-6 shadow-2xl flex flex-col h-full min-h-[450px]">
-              
-              <div className="flex items-center justify-between border-b border-white/5 pb-3 mb-4">
-                <h2 className="text-lg font-bold text-white flex items-center gap-2">
-                  <Users className="w-4 h-4 text-purple-400" />
-                  Accounts Checklist
-                </h2>
-                <div className="flex gap-2">
-                  <button onClick={handleSelectAllAccounts} className="text-[10px] text-purple-400 font-bold hover:underline cursor-pointer">All</button>
-                  <span className="text-[10px] text-gray-600">|</span>
-                  <button onClick={handleDeselectAllAccounts} className="text-[10px] text-purple-400 font-bold hover:underline cursor-pointer">None</button>
-                </div>
-              </div>
-
-              {/* Accounts list */}
-              <div className="flex-1 overflow-y-auto space-y-2 pr-1 max-h-[300px]">
-                {sectionAccounts.length === 0 ? (
-                  <p className="text-sm text-gray-500 italic text-center py-12">No accounts in selected section.</p>
-                ) : (
-                  sectionAccounts.map((acc) => {
-                    const selected = selectedAccountIds.includes(acc.id);
-                    return (
-                      <div
-                        key={acc.id}
-                        onClick={() => toggleSelectAccount(acc.id)}
-                        className={`flex items-center justify-between p-3 rounded-xl cursor-pointer border transition-all ${
-                          selected 
-                            ? "bg-purple-500/10 border-purple-500/30 text-purple-300 shadow-md" 
-                            : "bg-[#09090f] border-white/5 text-gray-400 hover:text-white"
-                        }`}
-                      >
-                        <div className="flex items-center gap-3 min-w-0">
-                          <img
-                            src={acc.tiktokAvatarUrl || "https://www.tiktok.com/favicon.ico"}
-                            alt={acc.tiktokUsername}
-                            className="w-6 h-6 rounded-full bg-gray-800 object-cover flex-shrink-0"
-                            onError={(e) => {
-                              (e.target as HTMLImageElement).src = "https://www.tiktok.com/favicon.ico";
-                            }}
-                          />
-                          <div className="min-w-0">
-                            <p className="text-sm font-semibold truncate">@{acc.tiktokUsername}</p>
-                            <p className="text-[10px] text-gray-500 truncate">{acc.tiktokDisplayName}</p>
-                          </div>
-                        </div>
-                        <div className={`w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0 border ${
-                          selected ? "bg-purple-500 border-purple-400 text-white" : "border-white/10"
-                        }`}>
-                          {selected && <Check className="w-3 h-3" />}
-                        </div>
-                      </div>
-                    );
-                  })
-                )}
-              </div>
-
-              <div className="mt-6 pt-4 border-t border-white/5 space-y-4">
-                <div className="flex justify-between text-sm">
-                  <span className="text-gray-400">Total videos:</span>
-                  <span className="font-bold text-white">{selectedAccountIds.length * videosPerAccount}</span>
-                </div>
+            {/* Bottom Scale Inputs (Numeric Accounts & Videos count) */}
+            <div className="pt-4 border-t border-white/5 space-y-6">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 
+                {/* Numeric accounts count */}
+                <div className="space-y-2">
+                  <label className="text-xs text-gray-400 font-bold uppercase tracking-wider">Number of Accounts (Folders):</label>
+                  <input
+                    type="number"
+                    min="1"
+                    max="50"
+                    value={accountCountInput}
+                    onChange={(e) => setAccountCountInput(Math.max(1, parseInt(e.target.value) || 1))}
+                    className="w-full bg-[#0f0f18] border border-white/5 rounded-xl px-4 py-3 text-white font-semibold text-sm focus:outline-none focus:border-purple-500 transition-all"
+                  />
+                  <p className="text-[10px] text-gray-500">
+                    Defines how many separate folders will be created inside the smart ZIP download.
+                  </p>
+                </div>
+
+                {/* Numeric videos per account */}
+                <div className="space-y-2">
+                  <label className="text-xs text-gray-400 font-bold uppercase tracking-wider">Number of Videos Per Account:</label>
+                  <input
+                    type="number"
+                    min="1"
+                    max="100"
+                    value={videosPerAccountInput}
+                    onChange={(e) => setVideosPerAccountInput(Math.max(1, parseInt(e.target.value) || 1))}
+                    className="w-full bg-[#0f0f18] border border-white/5 rounded-xl px-4 py-3 text-white font-semibold text-sm focus:outline-none focus:border-purple-500 transition-all"
+                  />
+                  <p className="text-[10px] text-gray-500">
+                    Each folder will contain this many randomized, completely unique video compositions.
+                  </p>
+                </div>
+
+              </div>
+
+              {/* Total calculations and action button */}
+              <div className="bg-[#09090f] border border-white/5 p-5 rounded-2xl flex flex-col md:flex-row md:items-center justify-between gap-4">
+                <div className="space-y-1">
+                  <p className="text-sm font-semibold text-white">Scaling Summary:</p>
+                  <p className="text-xs text-gray-400">
+                    Will compile a total of <span className="font-bold text-amber-400">{accountCountInput * videosPerAccountInput}</span> unique video compositions distributed across <span className="font-bold text-white">{accountCountInput}</span> virtual accounts ({videosPerAccountInput} videos each).
+                  </p>
+                </div>
+
                 <button
                   onClick={handleGenerateBatch}
-                  disabled={selectedAccountIds.length === 0 || !selectedFolderId || !selectedTrackId}
-                  className="w-full flex items-center justify-center gap-2 bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-500 hover:to-pink-500 text-white font-bold py-3 px-6 rounded-xl text-sm transition-all shadow-lg shadow-purple-600/20 disabled:from-purple-900/50 disabled:to-pink-900/50 disabled:text-gray-500 disabled:shadow-none cursor-pointer"
+                  disabled={!selectedFolderId || !selectedTrackId || selectedTemplateIds.length === 0}
+                  className="bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-500 hover:to-pink-500 disabled:opacity-30 disabled:from-purple-900 disabled:to-pink-900 text-white font-extrabold py-3 px-8 rounded-xl text-sm transition-all shadow-lg shadow-purple-600/20 flex items-center justify-center gap-2 cursor-pointer flex-shrink-0"
                 >
                   <Sparkles className="w-4 h-4" />
                   Generate Video Mixes
@@ -1004,6 +1015,7 @@ export default function ClipMixerPage() {
               </div>
 
             </div>
+
           </div>
 
         </div>
@@ -1032,7 +1044,13 @@ export default function ClipMixerPage() {
                 batches.map((b) => (
                   <div
                     key={b.id}
-                    onClick={() => setActiveBatch(b)}
+                    onClick={() => {
+                      setActiveBatch(b);
+                      // Set default smart download counts matching batch size
+                      setSmartAccounts(Math.ceil(b.totalVideos / 3));
+                      setSmartVidsPerAccount(3);
+                      setShowSmartDownload(false);
+                    }}
                     className={`p-3.5 rounded-xl cursor-pointer border transition-all text-sm relative ${
                       activeBatch?.id === b.id
                         ? "bg-purple-500/10 border-purple-500/30 text-purple-300 shadow-md"
@@ -1094,7 +1112,7 @@ export default function ClipMixerPage() {
                     <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mt-2 text-xs text-gray-400">
                       <span className="flex items-center gap-1"><Folder className="w-3.5 h-3.5" /> Folder: <strong className="text-white">{activeBatch.folder?.name}</strong></span>
                       <span className="flex items-center gap-1"><Music className="w-3.5 h-3.5" /> Track: <strong className="text-white">{activeBatch.track?.title}</strong></span>
-                      <span className="flex items-center gap-1"><Sparkles className="w-3.5 h-3.5" /> Layout: <strong className="text-white">{activeBatch.lyricalTemplate?.templateName}</strong></span>
+                      <span className="flex items-center gap-1"><Sparkles className="w-3.5 h-3.5" /> Layout: <strong className="text-white">{activeBatch.lyricalTemplate?.templateName || "Mixed layout"}</strong></span>
                     </div>
                   </div>
 
@@ -1119,15 +1137,92 @@ export default function ClipMixerPage() {
                   const percentage = total > 0 ? Math.round(((completed + failed) / total) * 100) : 0;
 
                   return (
-                    <div className="space-y-2 bg-[#09090f] border border-white/5 p-4 rounded-2xl">
-                      <div className="flex justify-between text-xs font-bold font-mono">
-                        <span className="text-gray-400">Render Progress: {percentage}%</span>
-                        <span className="text-purple-400">{completed} / {total} Completed ({failed} failed)</span>
+                    <div className="space-y-4">
+                      <div className="space-y-2 bg-[#09090f] border border-white/5 p-4 rounded-2xl">
+                        <div className="flex justify-between text-xs font-bold font-mono">
+                          <span className="text-gray-400">Render Progress: {percentage}%</span>
+                          <span className="text-purple-400">{completed} / {total} Completed ({failed} failed)</span>
+                        </div>
+                        <div className="w-full bg-gray-800 h-2.5 rounded-full overflow-hidden flex">
+                          <div className="bg-purple-500 h-full transition-all duration-500" style={{ width: `${total > 0 ? (completed / total) * 100 : 0}%` }} />
+                          <div className="bg-red-500 h-full transition-all duration-500" style={{ width: `${total > 0 ? (failed / total) * 100 : 0}%` }} />
+                        </div>
                       </div>
-                      <div className="w-full bg-gray-800 h-2.5 rounded-full overflow-hidden flex">
-                        <div className="bg-purple-500 h-full transition-all duration-500" style={{ width: `${total > 0 ? (completed / total) * 100 : 0}%` }} />
-                        <div className="bg-red-500 h-full transition-all duration-500" style={{ width: `${total > 0 ? (failed / total) * 100 : 0}%` }} />
-                      </div>
+
+                      {/* Smart Download ZIP Button Section */}
+                      {completed > 0 && (
+                        <div className="relative">
+                          <button
+                            onClick={() => setShowSmartDownload(!showSmartDownload)}
+                            className="bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-500 hover:to-pink-500 text-white font-extrabold py-3.5 px-6 rounded-2xl flex items-center justify-center gap-2 shadow-lg shadow-purple-600/10 cursor-pointer w-full text-sm transition-all"
+                          >
+                            <FolderOpen className="w-4 h-4" />
+                            Download Folderized Smart ZIP ({completed} videos rendered)
+                          </button>
+
+                          {showSmartDownload && (
+                            <div className="absolute top-[105%] left-0 right-0 z-20 bg-[#0e0e16] border border-white/10 rounded-2xl p-5 shadow-2xl space-y-4 animate-in fade-in slide-in-from-top-2 duration-200">
+                              <div className="flex justify-between items-center border-b border-white/5 pb-2">
+                                <h4 className="text-xs font-bold uppercase tracking-wider text-purple-400 flex items-center gap-1.5">
+                                  <FolderOpen className="w-4 h-4 text-purple-400" />
+                                  Folderized Zip Builder
+                                </h4>
+                                <button onClick={() => setShowSmartDownload(false)} className="text-gray-500 hover:text-white cursor-pointer">
+                                  <X className="w-4 h-4" />
+                                </button>
+                              </div>
+
+                              <p className="text-[10px] text-gray-500">
+                                Distributes completed video mixes into folders inside a single compressed tar.gz archive.
+                              </p>
+
+                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                                <div className="space-y-1">
+                                  <label className="text-[10px] text-gray-400 font-bold uppercase">Accounts (folders)</label>
+                                  <input
+                                    type="number" min={1} max={50}
+                                    value={smartAccounts}
+                                    onChange={e => setSmartAccounts(Math.max(1, parseInt(e.target.value) || 1))}
+                                    className="w-full bg-black/40 border border-white/10 rounded-xl px-3 py-2 text-white text-xs focus:outline-none focus:border-purple-500"
+                                  />
+                                </div>
+                                <div className="space-y-1">
+                                  <label className="text-[10px] text-gray-400 font-bold uppercase">Videos per account</label>
+                                  <input
+                                    type="number" min={1} max={100}
+                                    value={smartVidsPerAccount}
+                                    onChange={e => setSmartVidsPerAccount(Math.max(1, parseInt(e.target.value) || 1))}
+                                    className="w-full bg-black/40 border border-white/10 rounded-xl px-3 py-2 text-white text-xs focus:outline-none focus:border-purple-500"
+                                  />
+                                </div>
+                              </div>
+
+                              <div className="bg-purple-500/5 border border-purple-500/10 rounded-xl px-3 py-2 text-[10px] text-purple-300 flex justify-between">
+                                <span>Requested: <strong>{smartAccounts * smartVidsPerAccount}</strong> videos</span>
+                                <span>Available: <strong>{completed}</strong> videos</span>
+                              </div>
+
+                              <button
+                                onClick={() => handleSmartDownload(activeBatch.id)}
+                                disabled={smartDownloading || (smartAccounts * smartVidsPerAccount) > completed}
+                                className="w-full bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-500 hover:to-pink-500 disabled:opacity-30 disabled:from-purple-900 disabled:to-pink-900 text-white font-extrabold py-2.5 rounded-xl transition-all flex items-center justify-center gap-2 text-xs cursor-pointer"
+                              >
+                                {smartDownloading ? (
+                                  <>
+                                    <Loader2 className="w-4 h-4 animate-spin" />
+                                    {smartDownloadProgress}
+                                  </>
+                                ) : (
+                                  <>
+                                    <Download className="w-4 h-4" />
+                                    Compile & Download Archive
+                                  </>
+                                )}
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </div>
                   );
                 })()}
@@ -1150,7 +1245,9 @@ export default function ClipMixerPage() {
                           />
                           <div>
                             <p className="text-sm font-bold text-white">@{item.account?.tiktokUsername}</p>
-                            <p className="text-[10px] text-gray-500">{item.account?.tiktokDisplayName}</p>
+                            <p className="text-[10px] text-gray-500">
+                              Template: <strong className="text-purple-400">{item.lyricalTemplate?.templateName || "Primary"}</strong>
+                            </p>
                           </div>
                         </div>
 
@@ -1180,7 +1277,7 @@ export default function ClipMixerPage() {
                               Watch
                             </button>
                             <a
-                              href={item.renderedVideoUrl}
+                              href={resolveUrl(item.renderedVideoUrl)}
                               download={`render_${item.id}.mp4`}
                               className="flex items-center gap-1.5 bg-purple-500/15 hover:bg-purple-500/25 text-purple-300 font-bold py-1.5 px-3 rounded-lg text-xs transition-all border border-purple-500/20 cursor-pointer"
                             >
@@ -1213,16 +1310,16 @@ export default function ClipMixerPage() {
       {/* Video Preview Modal overlay */}
       {previewVideoUrl && (
         <div className="fixed inset-0 z-50 bg-black/90 backdrop-blur-md flex items-center justify-center p-4">
-          <div className="relative w-full max-w-sm aspect-[9/16] bg-[#0c0c14] border border-white/10 rounded-3xl overflow-hidden shadow-2xl flex flex-col">
+          <div className="relative w-full max-w-sm aspect-[9/16] bg-[#0c0c14] border border-white/10 rounded-3xl overflow-hidden shadow-2xl flex flex-col animate-in zoom-in duration-200">
             <button
               onClick={() => setPreviewVideoUrl(null)}
               className="absolute top-4 right-4 z-10 w-8 h-8 rounded-full bg-black/60 text-white flex items-center justify-center border border-white/10 hover:bg-black/80 transition-all cursor-pointer"
             >
               <X className="w-4 h-4" />
             </button>
-            <div className="flex-1 bg-black">
+            <div className="flex-1 bg-black flex justify-center items-center">
               <video
-                src={previewVideoUrl}
+                src={resolveUrl(previewVideoUrl)}
                 className="w-full h-full object-contain"
                 controls
                 autoPlay

@@ -38,6 +38,9 @@ export async function GET(req: NextRequest) {
                   tiktokAvatarUrl: true,
                 },
               },
+              lyricalTemplate: {
+                select: { templateName: true },
+              },
             },
             orderBy: { createdAt: "asc" },
           },
@@ -85,24 +88,19 @@ export async function POST(req: Request) {
     const {
       folderId,
       trackId,
-      lyricalTemplateId,
+      lyricalTemplateIds, // array of template IDs
       targetDuration = 15.0,
       muteAudio = false,
-      accountIds,
-      videosPerAccount = 1,
+      accountCount = 5,
+      videosPerAccount = 3,
     } = body;
 
-    if (!folderId || !trackId || !lyricalTemplateId) {
-      return NextResponse.json({ error: "Missing folderId, trackId, or lyricalTemplateId" }, { status: 400 });
+    if (!folderId || !trackId || !lyricalTemplateIds || !Array.isArray(lyricalTemplateIds) || lyricalTemplateIds.length === 0) {
+      return NextResponse.json({ error: "Missing folderId, trackId, or lyricalTemplateIds list" }, { status: 400 });
     }
 
-    if (!accountIds || !Array.isArray(accountIds) || accountIds.length === 0) {
-      return NextResponse.json({ error: "Please select at least one account" }, { status: 400 });
-    }
-
-    if (videosPerAccount <= 0) {
-      return NextResponse.json({ error: "Videos per account must be at least 1" }, { status: 400 });
-    }
+    const numAccounts = Math.max(1, parseInt(accountCount) || 1);
+    const vidsPerAccount = Math.max(1, parseInt(videosPerAccount) || 1);
 
     const folder = await prisma.clipFolder.findUnique({
       where: { id: folderId },
@@ -125,36 +123,58 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Track not found" }, { status: 404 });
     }
 
-    const template = await prisma.trackLyricalTemplate.findUnique({
-      where: { id: lyricalTemplateId },
+    // Fetch active accounts in this section
+    const sectionAccounts = await prisma.managedAccount.findMany({
+      where: {
+        isActive: true,
+        group: {
+          sectionId: folder.sectionId,
+        },
+      },
+      orderBy: { tiktokUsername: "asc" },
     });
 
-    if (!template) {
-      return NextResponse.json({ error: "Lyrical template not found" }, { status: 404 });
+    if (sectionAccounts.length === 0) {
+      // Fallback: fetch any active account in database
+      const fallbackAccount = await prisma.managedAccount.findFirst({
+        where: { isActive: true },
+      });
+      if (!fallbackAccount) {
+        return NextResponse.json({ error: "No active managed accounts found in the system." }, { status: 400 });
+      }
+      sectionAccounts.push(fallbackAccount);
     }
 
-    // Validate pre-rendered template overlay exists
-    let overlayUrl = template.overlayVideoUrl;
-    if (!overlayUrl) {
-      const sanitizedName = template.templateName.replace(/[^a-zA-Z0-9]/g, "_").toLowerCase();
-      overlayUrl = `/uploads/lyrical/overlays/track_${template.trackId}_${sanitizedName}.webm`;
-    }
-    const overlayPath = path.join(process.cwd(), "public", overlayUrl);
-    const readyPath = overlayPath + ".ready";
-    if (!fs.existsSync(overlayPath) || !fs.existsSync(readyPath)) {
-      return NextResponse.json({
-        error: `Cannot start batch: Template "${template.templateName}" is missing its pre-rendered overlay on disk. Please open the template in the Lyrical editor and click "Pre-render Overlay" first.`,
-      }, { status: 400 });
+    // Validate templates and overlays exist
+    for (const tplId of lyricalTemplateIds) {
+      const template = await prisma.trackLyricalTemplate.findUnique({
+        where: { id: tplId },
+      });
+      if (!template) {
+        return NextResponse.json({ error: `Lyrics template not found: ${tplId}` }, { status: 404 });
+      }
+      let overlayUrl = template.overlayVideoUrl;
+      if (!overlayUrl) {
+        const sanitizedName = template.templateName.replace(/[^a-zA-Z0-9]/g, "_").toLowerCase();
+        overlayUrl = `/uploads/lyrical/overlays/track_${template.trackId}_${sanitizedName}.webm`;
+      }
+      const overlayPath = path.join(process.cwd(), "public", overlayUrl);
+      const readyPath = overlayPath + ".ready";
+      if (!fs.existsSync(overlayPath) || !fs.existsSync(readyPath)) {
+        return NextResponse.json({
+          error: `Cannot start batch: Template "${template.templateName}" is missing its pre-rendered overlay. Please click "Pre-render Overlay" in Lyrical Studio first.`,
+        }, { status: 400 });
+      }
     }
 
-    const totalVideos = accountIds.length * videosPerAccount;
+    const totalVideos = numAccounts * vidsPerAccount;
 
     // Create batch in RENDERING status
     const batch = await prisma.clipMixerBatch.create({
       data: {
         folderId,
         trackId,
-        lyricalTemplateId,
+        lyricalTemplateId: lyricalTemplateIds[0], // primary template to satisfy DB constraint
         targetDuration: parseFloat(targetDuration) || 15.0,
         totalVideos,
         muteAudio,
@@ -162,17 +182,22 @@ export async function POST(req: Request) {
       },
     });
 
-    // Populate batch items
-    for (const accountId of accountIds) {
-      for (let i = 0; i < videosPerAccount; i++) {
-        await prisma.clipMixerItem.create({
-          data: {
-            batchId: batch.id,
-            accountId,
-            status: "PENDING",
-          },
-        });
-      }
+    // Populate batch items by cycling through sections, accounts, and templates
+    let templateCounter = 0;
+    for (let i = 0; i < totalVideos; i++) {
+      const virtualAccIdx = Math.floor(i / vidsPerAccount);
+      const account = sectionAccounts[virtualAccIdx % sectionAccounts.length];
+      const itemTemplateId = lyricalTemplateIds[templateCounter % lyricalTemplateIds.length];
+      templateCounter++;
+
+      await prisma.clipMixerItem.create({
+        data: {
+          batchId: batch.id,
+          accountId: account.id,
+          lyricalTemplateId: itemTemplateId,
+          status: "PENDING",
+        },
+      });
     }
 
     // Kick off rendering in the background
@@ -251,11 +276,11 @@ async function processClipMixerBatch(batchId: string) {
           include: { clips: true },
         },
         track: true,
-        lyricalTemplate: true,
         items: {
           include: {
             account: true,
           },
+          orderBy: { createdAt: "asc" },
         },
       },
     });
@@ -285,6 +310,16 @@ async function processClipMixerBatch(batchId: string) {
       });
 
       try {
+        // Fetch specific layout template for this item
+        const itemTemplateId = item.lyricalTemplateId || batch.lyricalTemplateId;
+        const template = await prisma.trackLyricalTemplate.findUnique({
+          where: { id: itemTemplateId },
+        });
+
+        if (!template) {
+          throw new Error(`Lyrics template styling preset not found for queue item ${item.id}`);
+        }
+
         const clips = [...batch.folder.clips];
         
         // Target duration computation with random variance (+/- 2 seconds)
@@ -347,14 +382,14 @@ async function processClipMixerBatch(batchId: string) {
         }
 
         // Overlay template VP8 WebM with alpha
-        let overlayUrl = batch.lyricalTemplate.overlayVideoUrl;
+        let overlayUrl = template.overlayVideoUrl;
         if (!overlayUrl) {
-          const sanitizedName = batch.lyricalTemplate.templateName.replace(/[^a-zA-Z0-9]/g, "_").toLowerCase();
-          overlayUrl = `/uploads/lyrical/overlays/track_${batch.lyricalTemplate.trackId}_${sanitizedName}.webm`;
+          const sanitizedName = template.templateName.replace(/[^a-zA-Z0-9]/g, "_").toLowerCase();
+          overlayUrl = `/uploads/lyrical/overlays/track_${template.trackId}_${sanitizedName}.webm`;
         }
         const overlayPath = path.join(process.cwd(), "public", overlayUrl);
         if (!fs.existsSync(overlayPath)) {
-          throw new Error(`Lyrics template overlay not found on disk at: ${overlayPath}`);
+          throw new Error(`Lyrics template overlay "${template.templateName}" not found on disk at: ${overlayPath}`);
         }
 
         const overlayIdx = slices.length;
@@ -404,7 +439,7 @@ async function processClipMixerBatch(batchId: string) {
           `"${localOutFile}"`,
         ].join(" ");
 
-        console.log(`[Clip Mixer Worker] Rendering Item ${item.id} with FFmpeg: ${cmd.substring(0, 600)}...`);
+        console.log(`[Clip Mixer Worker] Rendering Item ${item.id} (template: ${template.templateName}) with FFmpeg: ${cmd.substring(0, 600)}...`);
 
         await new Promise<void>((resolve, reject) => {
           const { exec: execCmd } = require("child_process");

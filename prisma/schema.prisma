@@ -591,6 +591,7 @@ model TrackLyricalTemplate {
 
   batchItems      GenreBatchItem[]
   clipMixerBatches ClipMixerBatch[]
+  clipMixerItems  ClipMixerItem[]
 
   @@unique([trackId, templateName])
 }
@@ -870,14 +871,16 @@ model ClipMixerBatch {
 }
 
 model ClipMixerItem {
-  id               String               @id @default(uuid())
-  batchId          String
-  batch            ClipMixerBatch       @relation(fields: [batchId], references: [id], onDelete: Cascade)
-  accountId        String
-  account          ManagedAccount       @relation(fields: [accountId], references: [id], onDelete: Cascade)
-  renderedVideoUrl String?
-  status           GenreBatchItemStatus @default(PENDING)
-  errorMessage     String?
-  createdAt        DateTime             @default(now())
-  updatedAt        DateTime             @updatedAt
+  id                String               @id @default(uuid())
+  batchId           String
+  batch             ClipMixerBatch       @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  accountId         String
+  account           ManagedAccount       @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  lyricalTemplateId String?
+  lyricalTemplate   TrackLyricalTemplate? @relation(fields: [lyricalTemplateId], references: [id], onDelete: SetNull)
+  renderedVideoUrl  String?
+  status            GenreBatchItemStatus @default(PENDING)
+  errorMessage      String?
+  createdAt         DateTime             @default(now())
+  updatedAt         DateTime             @updatedAt
 }
