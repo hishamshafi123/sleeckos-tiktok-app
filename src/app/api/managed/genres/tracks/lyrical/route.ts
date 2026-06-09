@@ -142,6 +142,7 @@ export async function PATCH(req: Request) {
       textAlign = "center",
       wordSpacing = "normal",
       letterSpacing = 0,
+      muteAudio = false,
     } = body;
 
     if (!trackId || !templateName) {
@@ -180,6 +181,7 @@ export async function PATCH(req: Request) {
       textAlign,
       wordSpacing,
       letterSpacing,
+      muteAudio,
       overlayVideoUrl: overlayRelativePath,
       previewImageUrl: previewRelativePath,
     };

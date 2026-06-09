@@ -479,6 +479,7 @@ export default function GenresDashboard() {
   const [lyricalTextAlign, setLyricalTextAlign] = useState<string>("center");
   const [lyricalWordSpacing, setLyricalWordSpacing] = useState<string>("normal");
   const [lyricalLetterSpacing, setLyricalLetterSpacing] = useState<number>(0);
+  const [lyricalMuteAudio, setLyricalMuteAudio] = useState<boolean>(false);
   const [mixupVisuals, setMixupVisuals] = useState<boolean>(true);
 
 
@@ -715,6 +716,7 @@ export default function GenresDashboard() {
           textAlign: lyricalTextAlign,
           wordSpacing: lyricalWordSpacing,
           letterSpacing: lyricalLetterSpacing,
+          muteAudio: lyricalMuteAudio,
         }),
       });
       if (res.ok) {
@@ -2239,6 +2241,7 @@ export default function GenresDashboard() {
                         <select
                           onChange={(e) => {
                             const val = e.target.value;
+                            setLyricalMuteAudio(false);
                             if (val === "neon-rainbow") {
                               setLyricalTemplateName("Neon Rainbow");
                               setLyricalFontFamily("Montserrat-Black");
@@ -2561,6 +2564,20 @@ export default function GenresDashboard() {
                               placeholder="Default (#ffffff)"
                             />
                           </div>
+                        </div>
+                      </div>
+
+                      {/* Mute Background Music Toggle */}
+                      <div className="space-y-2 bg-black/20 p-3 rounded-2xl border border-white/5 shadow-inner">
+                        <div className="flex items-center justify-between">
+                          <label className="block text-[9px] uppercase tracking-wider font-extrabold text-gray-500">Mute Background Music</label>
+                          <button
+                            type="button"
+                            onClick={() => setLyricalMuteAudio(!lyricalMuteAudio)}
+                            className={`relative w-9 h-5 rounded-full transition-all duration-300 ${lyricalMuteAudio ? "bg-amber-500" : "bg-gray-700"}`}
+                          >
+                            <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow-md transition-all duration-300 ${lyricalMuteAudio ? "left-[18px]" : "left-0.5"}`} />
+                          </button>
                         </div>
                       </div>
 
@@ -3172,6 +3189,7 @@ export default function GenresDashboard() {
                                   setLyricalTextAlign(tpl.textAlign || "center");
                                   setLyricalWordSpacing(tpl.wordSpacing || "normal");
                                   setLyricalLetterSpacing(tpl.letterSpacing || 0);
+                                  setLyricalMuteAudio(tpl.muteAudio || false);
                                   if (tpl.bgColor) {
                                     setSetupLyricalBgVideoUrl("");
                                   }

@@ -275,6 +275,7 @@ model AccountSection {
   createdAt            DateTime       @default(now())
   updatedAt            DateTime       @updatedAt
   groups               AccountGroup[]
+  clipFolders          ClipFolder[]
 }
 
 model AccountGroup {
@@ -355,6 +356,7 @@ model ManagedAccount {
   genreConfigs          AccountGenreConfig[]
   backgroundVideos      AccountBackgroundVideo[]
   genreBatchItems       GenreBatchItem[]
+  clipMixerItems        ClipMixerItem[]
 }
 
 enum PostStatus {
@@ -556,6 +558,7 @@ model Track {
   isLyrical           Boolean                @default(false)
   lyricalTranscription String?                // JSON array of word-level aligned timestamps
   lyricalTemplates    TrackLyricalTemplate[]
+  clipMixerBatches    ClipMixerBatch[]
 }
 
 model TrackLyricalTemplate {
@@ -582,10 +585,12 @@ model TrackLyricalTemplate {
   letterSpacing   Int              @default(0)            // Extra letter spacing in pixels
   overlayVideoUrl String?          // Local transparent .mov video overlay file URL
   previewImageUrl String?          // Local transparent preview PNG image file URL
+  muteAudio       Boolean          @default(false)  // Toggle to mute audio in composition
   createdAt       DateTime         @default(now())
   updatedAt       DateTime         @updatedAt
 
   batchItems      GenreBatchItem[]
+  clipMixerBatches ClipMixerBatch[]
 
   @@unique([trackId, templateName])
 }
@@ -649,6 +654,7 @@ model GenreBatchItem {
   backgroundVideoUrl  String
   renderedVideoUrl    String?
   driveFileId         String?
+  muteAudio           Boolean              @default(false)
   status              GenreBatchItemStatus @default(PENDING)
   errorMessage        String?
   createdAt           DateTime             @default(now())
@@ -821,4 +827,57 @@ model GoogleDriveConnection {
   googleTokenExpiresAt  DateTime?
   createdAt             DateTime  @default(now())
   updatedAt             DateTime  @updatedAt
+}
+
+model ClipFolder {
+  id           String          @id @default(uuid())
+  name         String
+  sectionId    String
+  section      AccountSection  @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+  clips        ClipVideo[]
+  mixerBatches ClipMixerBatch[]
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+
+  @@unique([sectionId, name])
+}
+
+model ClipVideo {
+  id        String     @id @default(uuid())
+  folderId  String
+  folder    ClipFolder @relation(fields: [folderId], references: [id], onDelete: Cascade)
+  videoUrl  String     // Public path to uploaded clip file
+  duration  Float      // Duration of the clip in seconds
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+}
+
+model ClipMixerBatch {
+  id                String           @id @default(uuid())
+  folderId          String
+  folder            ClipFolder       @relation(fields: [folderId], references: [id], onDelete: Cascade)
+  trackId           String
+  track             Track            @relation(fields: [trackId], references: [id], onDelete: Cascade)
+  lyricalTemplateId String
+  lyricalTemplate   TrackLyricalTemplate @relation(fields: [lyricalTemplateId], references: [id], onDelete: Cascade)
+  targetDuration    Float            @default(15.0)
+  totalVideos       Int              @default(5)
+  muteAudio         Boolean          @default(false)
+  status            GenreBatchStatus @default(DRAFT)
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+  items             ClipMixerItem[]
+}
+
+model ClipMixerItem {
+  id               String               @id @default(uuid())
+  batchId          String
+  batch            ClipMixerBatch       @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  accountId        String
+  account          ManagedAccount       @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  renderedVideoUrl String?
+  status           GenreBatchItemStatus @default(PENDING)
+  errorMessage     String?
+  createdAt        DateTime             @default(now())
+  updatedAt        DateTime             @updatedAt
 }

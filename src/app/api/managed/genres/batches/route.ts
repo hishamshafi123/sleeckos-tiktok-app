@@ -215,6 +215,7 @@ export async function POST(req: Request) {
               trackStart: 0.0,
               backgroundVideoUrl: randomBg.videoUrl,
               lyricalTemplateId: currentTemplate.id,
+              muteAudio: currentTemplate.muteAudio,
               status: "PENDING",
             },
           });
@@ -852,10 +853,14 @@ async function processBatchRendering(batchId: string) {
             // ═══════════════════════════════════════════════════════════════
             console.log(`[Batch Worker Lyrical] Solid bg template — using overlay as full video`);
 
+            const finalAudioInput = item.muteAudio
+              ? `-f lavfi -i anullsrc=channel_layout=stereo:sample_rate=44100`
+              : `-i "${audioPath}"`;
+
             cmd = [
               `ffmpeg -y`,
               `-i "${overlayPath}"`,
-              `-i "${audioPath}"`,
+              finalAudioInput,
               `-c:v libx264`,
               `-pix_fmt yuv420p`,
               `-preset superfast`,
@@ -877,7 +882,11 @@ async function processBatchRendering(batchId: string) {
             const inputs: string[] = [];
             inputs.push(`-stream_loop -1 -i "${bgPath}"`);
             inputs.push(`-c:v libvpx -i "${overlayPath}"`);
-            inputs.push(`-i "${audioPath}"`);
+            if (item.muteAudio) {
+              inputs.push(`-f lavfi -i anullsrc=channel_layout=stereo:sample_rate=44100`);
+            } else {
+              inputs.push(`-i "${audioPath}"`);
+            }
 
             let filterComplex = "";
 
@@ -1111,7 +1120,11 @@ async function processBatchRendering(batchId: string) {
 
             // ASS subtitles
             const audioIdx = currentInputIdx++;
-            inputs.push(`-i "${audioPath}"`);
+            if (item.muteAudio) {
+              inputs.push(`-f lavfi -i anullsrc=channel_layout=stereo:sample_rate=44100`);
+            } else {
+              inputs.push(`-i "${audioPath}"`);
+            }
             const escapedAss = assSubtitlePath.replace(/\\/g, "/").replace(/:/g, "\\\\:");
             filterComplex += `[${lastLabel}]ass='${escapedAss}'[v]`;
 
