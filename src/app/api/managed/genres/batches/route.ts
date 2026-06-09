@@ -130,33 +130,8 @@ export async function POST(req: Request) {
         }
       }
 
-      // ── Validate ALL selected templates have pre-rendered overlays on disk ──
-      const templatesToValidate = lyricalTemplateId === "mix_all" ? templatesPool : [template!];
-      const missingOverlays: string[] = [];
-
-      for (const tpl of templatesToValidate) {
-        let overlayUrl = tpl.overlayVideoUrl;
-        if (!overlayUrl) {
-          const sanitizedName = tpl.templateName.replace(/[^a-zA-Z0-9]/g, "_").toLowerCase();
-          overlayUrl = `/uploads/lyrical/overlays/track_${tpl.trackId}_${sanitizedName}.webm`;
-        }
-        const overlayPath = path.join(process.cwd(), "public", overlayUrl);
-        const readyPath = overlayPath + ".ready";
-        const exists = fs.existsSync(overlayPath);
-        const ready = fs.existsSync(readyPath);
-        let size = 0;
-        if (exists) { try { size = fs.statSync(overlayPath).size; } catch {} }
-
-        if (!exists || !ready || size < 1024) {
-          missingOverlays.push(`"${tpl.templateName}" (exists=${exists}, ready=${ready}, size=${(size/1024).toFixed(1)}KB)`);
-        }
-      }
-
-      if (missingOverlays.length > 0) {
-        return NextResponse.json({
-          error: `Cannot start batch: ${missingOverlays.length} template(s) missing pre-rendered overlay. Please open each template in the Track Editor and click "Pre-render Overlay" first.\n\nMissing: ${missingOverlays.join(", ")}`,
-        }, { status: 400 });
-      }
+      // Note: templates will be automatically pre-rendered by the worker if they don't exist.
+      console.log(`[Genres Batches API] Queueing lyrical batch: missing overlays will be auto-rendered in the background`);
 
       const totalPosts = accountIds.length * postsPerAccount;
 
@@ -814,16 +789,46 @@ async function processBatchRendering(batchId: string) {
             overlayUrl = `/uploads/lyrical/overlays/track_${item.lyricalTemplate.trackId}_${sanitizedName}.webm`;
           }
           const overlayPath = path.join(process.cwd(), "public", overlayUrl);
-          // Validate overlay: must exist + .ready sentinel + minimum 10KB
+          // Validate overlay: must exist + .ready sentinel + minimum 1KB
           const overlayReady = fs.existsSync(overlayPath + ".ready");
           const overlayExists = fs.existsSync(overlayPath);
           let overlaySize = 0;
           if (overlayExists) {
             try { overlaySize = fs.statSync(overlayPath).size; } catch {}
           }
-          const hasPreRenderedOverlay = overlayExists && overlayReady && overlaySize > 1024;
-          if (overlayExists && !hasPreRenderedOverlay) {
-            console.warn(`[Batch Worker] Overlay exists but invalid: ready=${overlayReady}, size=${overlaySize}. Falling back to ASS.`);
+          let hasPreRenderedOverlay = overlayExists && overlayReady && overlaySize > 1024;
+          if (!hasPreRenderedOverlay) {
+            console.log(`[Batch Worker] Pre-rendered overlay missing or invalid for template "${item.lyricalTemplate.templateName}". Auto-rendering it now...`);
+            try {
+              if (!item.track.lyricalTranscription) {
+                throw new Error(`Track "${item.track.title}" has no Whisper alignment data.`);
+              }
+              const words = JSON.parse(item.track.lyricalTranscription);
+              const duration = batch.videoLength || item.track.duration || 7.0;
+              const rendererConfig = {
+                fontFamily: item.lyricalTemplate.fontFamily,
+                fontSize: item.lyricalTemplate.fontSize,
+                activeColor: item.lyricalTemplate.activeColor,
+                strokeWidth: item.lyricalTemplate.strokeWidth,
+                strokeColor: item.lyricalTemplate.strokeColor,
+                positionY: item.lyricalTemplate.positionY,
+                colorFilter: item.lyricalTemplate.colorFilter,
+                vignette: item.lyricalTemplate.vignette,
+                particleFx: item.lyricalTemplate.particleFx,
+                animationMode: item.lyricalTemplate.animationMode as "highlight" | "word_builder",
+                bgColor: item.lyricalTemplate.bgColor,
+                textColor: item.lyricalTemplate.textColor,
+                textAlign: item.lyricalTemplate.textAlign,
+                wordSpacing: item.lyricalTemplate.wordSpacing,
+                letterSpacing: item.lyricalTemplate.letterSpacing,
+              };
+              const { renderCanvasOverlay } = await import("@/lib/ffmpeg-overlay-renderer");
+              await renderCanvasOverlay(words, rendererConfig, duration, overlayPath);
+              hasPreRenderedOverlay = true;
+              console.log(`[Batch Worker] Auto-rendered template overlay successfully for template "${item.lyricalTemplate.templateName}"`);
+            } catch (autoErr: any) {
+              console.error(`[Batch Worker] Failed to auto-render overlay for template "${item.lyricalTemplate.templateName}":`, autoErr);
+            }
           }
 
           const duration = batch.videoLength || item.track.duration || 7.0;

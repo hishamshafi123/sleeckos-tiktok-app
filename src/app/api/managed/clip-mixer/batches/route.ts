@@ -145,27 +145,8 @@ export async function POST(req: Request) {
       sectionAccounts.push(fallbackAccount);
     }
 
-    // Validate templates and overlays exist
-    for (const tplId of lyricalTemplateIds) {
-      const template = await prisma.trackLyricalTemplate.findUnique({
-        where: { id: tplId },
-      });
-      if (!template) {
-        return NextResponse.json({ error: `Lyrics template not found: ${tplId}` }, { status: 404 });
-      }
-      let overlayUrl = template.overlayVideoUrl;
-      if (!overlayUrl) {
-        const sanitizedName = template.templateName.replace(/[^a-zA-Z0-9]/g, "_").toLowerCase();
-        overlayUrl = `/uploads/lyrical/overlays/track_${template.trackId}_${sanitizedName}.webm`;
-      }
-      const overlayPath = path.join(process.cwd(), "public", overlayUrl);
-      const readyPath = overlayPath + ".ready";
-      if (!fs.existsSync(overlayPath) || !fs.existsSync(readyPath)) {
-        return NextResponse.json({
-          error: `Cannot start batch: Template "${template.templateName}" is missing its pre-rendered overlay. Please click "Pre-render Overlay" in Lyrical Studio first.`,
-        }, { status: 400 });
-      }
-    }
+    // Pre-rendered overlays will be generated automatically in the background by the sequential worker if missing.
+    console.log(`[Clip Mixer Batches POST] Queueing batch: missing overlays will be auto-rendered in the background`);
 
     const totalVideos = numAccounts * vidsPerAccount;
 
@@ -392,8 +373,45 @@ async function processClipMixerBatch(batchId: string) {
           overlayUrl = `/uploads/lyrical/overlays/track_${template.trackId}_${sanitizedName}.webm`;
         }
         const overlayPath = path.join(process.cwd(), "public", overlayUrl);
-        if (!fs.existsSync(overlayPath)) {
-          throw new Error(`Lyrics template overlay "${template.templateName}" not found on disk at: ${overlayPath}`);
+        const overlayReady = fs.existsSync(overlayPath + ".ready");
+        const overlayExists = fs.existsSync(overlayPath);
+        let overlaySize = 0;
+        if (overlayExists) {
+          try { overlaySize = fs.statSync(overlayPath).size; } catch {}
+        }
+        let hasPreRenderedOverlay = overlayExists && overlayReady && overlaySize > 1024;
+        if (!hasPreRenderedOverlay) {
+          console.log(`[Clip Mixer Worker] Pre-rendered overlay missing or invalid for template "${template.templateName}". Auto-rendering it now...`);
+          try {
+            if (!batch.track.lyricalTranscription) {
+              throw new Error(`Track "${batch.track.title}" has no Whisper alignment data.`);
+            }
+            const words = JSON.parse(batch.track.lyricalTranscription);
+            const duration = batch.track.duration || 10.0;
+            const rendererConfig = {
+              fontFamily: template.fontFamily,
+              fontSize: template.fontSize,
+              activeColor: template.activeColor,
+              strokeWidth: template.strokeWidth,
+              strokeColor: template.strokeColor,
+              positionY: template.positionY,
+              colorFilter: template.colorFilter,
+              vignette: template.vignette,
+              particleFx: template.particleFx,
+              animationMode: template.animationMode as "highlight" | "word_builder",
+              bgColor: template.bgColor,
+              textColor: template.textColor,
+              textAlign: template.textAlign,
+              wordSpacing: template.wordSpacing,
+              letterSpacing: template.letterSpacing,
+            };
+            const { renderCanvasOverlay } = await import("@/lib/ffmpeg-overlay-renderer");
+            await renderCanvasOverlay(words, rendererConfig, duration, overlayPath);
+            console.log(`[Clip Mixer Worker] Auto-rendered template overlay successfully for template "${template.templateName}"`);
+          } catch (autoErr: any) {
+            console.error(`[Clip Mixer Worker] Failed to auto-render overlay for template "${template.templateName}":`, autoErr);
+            throw new Error(`Lyrics template overlay "${template.templateName}" could not be auto-rendered: ${autoErr.message || autoErr}`);
+          }
         }
 
         const overlayIdx = slices.length;
