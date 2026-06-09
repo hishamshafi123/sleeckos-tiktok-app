@@ -881,7 +881,7 @@ async function processBatchRendering(batchId: string) {
 
             const inputs: string[] = [];
             inputs.push(`-stream_loop -1 -i "${bgPath}"`);
-            inputs.push(`-i "${overlayPath}"`);
+            inputs.push(`-c:v libvpx -i "${overlayPath}"`);
             if (item.muteAudio) {
               inputs.push(`-f lavfi -i anullsrc=channel_layout=stereo:sample_rate=44100`);
             } else {
