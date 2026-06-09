@@ -147,8 +147,8 @@ export async function POST(req: Request) {
         let size = 0;
         if (exists) { try { size = fs.statSync(overlayPath).size; } catch {} }
 
-        if (!exists || !ready || size < 10240) {
-          missingOverlays.push(`"${tpl.templateName}" (exists=${exists}, ready=${ready}, size=${(size/1024).toFixed(0)}KB)`);
+        if (!exists || !ready || size < 1024) {
+          missingOverlays.push(`"${tpl.templateName}" (exists=${exists}, ready=${ready}, size=${(size/1024).toFixed(1)}KB)`);
         }
       }
 
@@ -821,7 +821,7 @@ async function processBatchRendering(batchId: string) {
           if (overlayExists) {
             try { overlaySize = fs.statSync(overlayPath).size; } catch {}
           }
-          const hasPreRenderedOverlay = overlayExists && overlayReady && overlaySize > 10240;
+          const hasPreRenderedOverlay = overlayExists && overlayReady && overlaySize > 1024;
           if (overlayExists && !hasPreRenderedOverlay) {
             console.warn(`[Batch Worker] Overlay exists but invalid: ready=${overlayReady}, size=${overlaySize}. Falling back to ASS.`);
           }
@@ -881,7 +881,7 @@ async function processBatchRendering(batchId: string) {
 
             const inputs: string[] = [];
             inputs.push(`-stream_loop -1 -i "${bgPath}"`);
-            inputs.push(`-c:v libvpx -i "${overlayPath}"`);
+            inputs.push(`-i "${overlayPath}"`);
             if (item.muteAudio) {
               inputs.push(`-f lavfi -i anullsrc=channel_layout=stereo:sample_rate=44100`);
             } else {
