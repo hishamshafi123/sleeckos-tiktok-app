@@ -460,26 +460,28 @@ export default function ClipMixerPage() {
       return;
     }
 
-    const promise = fetch("/api/managed/clip-mixer/batches", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        folderId: selectedFolderId,
-        trackId: selectedTrackId,
-        lyricalTemplateIds: selectedTemplateIds,
-        targetDuration,
-        muteAudio,
-        accountCount: accountCountInput,
-        videosPerAccount: videosPerAccountInput,
-      }),
-    });
+    const startBatchRender = async () => {
+      const res = await fetch("/api/managed/clip-mixer/batches", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          folderId: selectedFolderId,
+          trackId: selectedTrackId,
+          lyricalTemplateIds: selectedTemplateIds,
+          targetDuration,
+          muteAudio,
+          accountCount: accountCountInput,
+          videosPerAccount: videosPerAccountInput,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to start composition");
+      return data;
+    };
 
-    toast.promise(promise, {
+    toast.promise(startBatchRender(), {
       loading: "Initializing batch composer queue...",
-      success: async (res) => {
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || "Failed to start composition");
-        
+      success: async (data) => {
         // Fetch active batch details and show panel
         const batchRes = await fetch(`/api/managed/clip-mixer/batches?batchId=${data.batchId}`);
         const batchData = await batchRes.json();
