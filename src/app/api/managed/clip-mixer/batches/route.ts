@@ -430,11 +430,8 @@ async function processClipMixerBatch(batchId: string) {
           lastVideoLabel = "v0";
         }
 
-        // Scale lyrics overlay video
-        filterComplex += `[${overlayIdx}:v]scale=720:1280[overlay_scaled];`;
-
         // Composite lyrics overlay onto clips chain using shortest=1 to resolve alpha overlaying
-        filterComplex += `[${lastVideoLabel}][overlay_scaled]overlay=0:0:shortest=1[v_final]`;
+        filterComplex += `[${lastVideoLabel}][${overlayIdx}:v]overlay=0:0:shortest=1[v_final]`;
 
         const cmd = [
           `ffmpeg -y`,
