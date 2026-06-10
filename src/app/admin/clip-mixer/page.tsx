@@ -608,12 +608,22 @@ export default function ClipMixerPage() {
         }),
       });
 
-      if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.error || "Failed to compile archive");
+      const text = await res.text();
+      let data: any;
+      try {
+        data = JSON.parse(text);
+      } catch (e) {
+        if (text.trim().startsWith("<")) {
+          const titleMatch = text.match(/<title>(.*?)<\/title>/i);
+          const title = titleMatch ? titleMatch[1] : "HTML Error Page";
+          throw new Error(`Server error (${res.status}): ${title}`);
+        }
+        throw new Error(`Server returned invalid response: ${text.substring(0, 100)}`);
       }
 
-      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || "Failed to compile archive");
+      }
 
       if (data.status === "COMPLETED" && data.downloadUrl) {
         setSmartDownloadProgress("Starting download...");

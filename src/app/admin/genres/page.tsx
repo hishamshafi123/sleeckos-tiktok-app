@@ -1782,12 +1782,22 @@ export default function GenresDashboard() {
         }),
       });
 
-      if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.error || "Failed to create archive");
+      const text = await res.text();
+      let data: any;
+      try {
+        data = JSON.parse(text);
+      } catch (e) {
+        if (text.trim().startsWith("<")) {
+          const titleMatch = text.match(/<title>(.*?)<\/title>/i);
+          const title = titleMatch ? titleMatch[1] : "HTML Error Page";
+          throw new Error(`Server error (${res.status}): ${title}`);
+        }
+        throw new Error(`Server returned invalid response: ${text.substring(0, 100)}`);
       }
 
-      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || "Failed to create archive");
+      }
 
       if (data.status === "COMPLETED" && data.downloadUrl) {
         setSmartDownloadProgress("Starting download...");
@@ -1853,31 +1863,33 @@ export default function GenresDashboard() {
         [batchId]: { progress: 0, totalSize: "Preparing...", loadedSize: "0%" }
       }));
 
-      const getErrorMessage = async (res: Response, fallback: string) => {
-        try {
-          const contentType = res.headers.get("content-type");
-          if (contentType && contentType.includes("application/json")) {
-            const err = await res.json();
-            return err.error || fallback;
-          }
-          return fallback;
-        } catch {
-          return fallback;
-        }
-      };
-
       let isPrepared = false;
       let statusData: any = null;
 
       // Poll the status every 2 seconds
       while (!isPrepared) {
         const res = await fetch(`/api/managed/genres/batches/download?batchId=${batchId}`);
+        const text = await res.text();
+
         if (!res.ok) {
-          const errMsg = await getErrorMessage(res, "Failed to prepare download");
+          let errMsg = "Failed to prepare download";
+          try {
+            const err = JSON.parse(text);
+            errMsg = err.error || errMsg;
+          } catch {
+            if (text.trim().startsWith("<")) {
+              const titleMatch = text.match(/<title>(.*?)<\/title>/i);
+              errMsg = `Server error (${res.status}): ${titleMatch ? titleMatch[1] : "HTML Error"}`;
+            }
+          }
           throw new Error(errMsg);
         }
 
-        statusData = await res.json();
+        try {
+          statusData = JSON.parse(text);
+        } catch {
+          throw new Error("Invalid server status response");
+        }
 
         if (statusData.status === "COMPLETED") {
           isPrepared = true;
@@ -1904,22 +1916,59 @@ export default function GenresDashboard() {
         setDownloads((prev) => ({
           ...prev,
           [batchId]: {
-            progress: 100,
-            totalSize: "Completed",
-            loadedSize: "Downloading file...",
+            progress: 0,
+            totalSize: "Downloading...",
+            loadedSize: "0%",
           }
         }));
 
-        // Trigger a high-performance native browser download
         const fileUrl = `/api${statusData.downloadUrl}`;
+        const fileRes = await fetch(fileUrl);
+        if (!fileRes.ok) {
+          throw new Error("Failed to download archive file");
+        }
+
+        const contentLength = fileRes.headers.get("content-length");
+        const totalBytes = contentLength ? parseInt(contentLength, 10) : (statusData.size || 0);
+
+        if (!fileRes.body) {
+          throw new Error("Response body is not readable");
+        }
+
+        const reader = fileRes.body.getReader();
+        let loadedBytes = 0;
+        const chunks: Uint8Array[] = [];
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (value) {
+            chunks.push(value);
+            loadedBytes += value.length;
+            const percent = totalBytes > 0 ? Math.round((loadedBytes / totalBytes) * 100) : 0;
+            setDownloads((prev) => ({
+              ...prev,
+              [batchId]: {
+                progress: percent,
+                totalSize: totalBytes > 0 ? `${(totalBytes / 1024 / 1024).toFixed(1)}MB` : "Unknown",
+                loadedSize: `${(loadedBytes / 1024 / 1024).toFixed(1)}MB`,
+              }
+            }));
+          }
+        }
+
+        const blob = new Blob(chunks as any, { type: "application/gzip" });
+        const blobUrl = URL.createObjectURL(blob);
+
         const link = document.createElement("a");
-        link.href = fileUrl;
+        link.href = blobUrl;
         link.download = statusData.downloadUrl.split("/").pop() || `genre_batch_${batchId.substring(0, 8)}.tar.gz`;
         document.body.appendChild(link);
         link.click();
         document.body.removeChild(link);
+        URL.revokeObjectURL(blobUrl);
 
-        toast.success("Download started!");
+        toast.success("Download completed successfully!");
       }
     } catch (err: any) {
       toast.error(err.message || "Failed to download");
