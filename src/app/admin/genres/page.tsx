@@ -1800,50 +1800,18 @@ export default function GenresDashboard() {
       }
 
       if (data.status === "COMPLETED" && data.downloadUrl) {
-        setSmartDownloadProgress("Starting download...");
-        const fileRes = await fetch(`/api${data.downloadUrl}`);
-        if (!fileRes.ok) {
-          throw new Error("Failed to download archive file");
-        }
-
-        const contentLength = fileRes.headers.get("content-length");
-        const totalBytes = contentLength ? parseInt(contentLength, 10) : (data.size || 0);
-
-        if (!fileRes.body) {
-          throw new Error("Response body is not readable");
-        }
-
-        const reader = fileRes.body.getReader();
-        let loadedBytes = 0;
-        const chunks: Uint8Array[] = [];
-
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          if (value) {
-            chunks.push(value);
-            loadedBytes += value.length;
-            if (totalBytes > 0) {
-              const percent = Math.round((loadedBytes / totalBytes) * 100);
-              setSmartDownloadProgress(`Down: ${percent}% (${(loadedBytes / 1024 / 1024).toFixed(1)}/${(totalBytes / 1024 / 1024).toFixed(1)}MB)`);
-            } else {
-              setSmartDownloadProgress(`Down: ${(loadedBytes / 1024 / 1024).toFixed(1)}MB`);
-            }
-          }
-        }
-
-        const blob = new Blob(chunks as any, { type: "application/x-tar" });
-        const blobUrl = URL.createObjectURL(blob);
-
+        setSmartDownloadProgress("Starting browser download...");
+        const fileUrl = `/api${data.downloadUrl}`;
         const link = document.createElement("a");
-        link.href = blobUrl;
+        link.href = fileUrl;
         link.download = data.downloadUrl.split("/").pop() || "smart_download.tar";
         document.body.appendChild(link);
         link.click();
         document.body.removeChild(link);
-        URL.revokeObjectURL(blobUrl);
 
-        toast.success(`Download started! ${smartAccounts} folders × ${smartVidsPerAccount} videos`);
+        toast.success(`Download started in browser! (${smartAccounts} folders × ${smartVidsPerAccount} videos)`);
+        // Let user see 100% complete state for 3s
+        await new Promise((resolve) => setTimeout(resolve, 3000));
       } else {
         throw new Error("Archive creation failed — no download URL returned");
       }
@@ -1916,59 +1884,23 @@ export default function GenresDashboard() {
         setDownloads((prev) => ({
           ...prev,
           [batchId]: {
-            progress: 0,
-            totalSize: "Downloading...",
-            loadedSize: "0%",
+            progress: 100,
+            totalSize: "Redirecting...",
+            loadedSize: "Starting browser download",
           }
         }));
 
         const fileUrl = `/api${statusData.downloadUrl}`;
-        const fileRes = await fetch(fileUrl);
-        if (!fileRes.ok) {
-          throw new Error("Failed to download archive file");
-        }
-
-        const contentLength = fileRes.headers.get("content-length");
-        const totalBytes = contentLength ? parseInt(contentLength, 10) : (statusData.size || 0);
-
-        if (!fileRes.body) {
-          throw new Error("Response body is not readable");
-        }
-
-        const reader = fileRes.body.getReader();
-        let loadedBytes = 0;
-        const chunks: Uint8Array[] = [];
-
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          if (value) {
-            chunks.push(value);
-            loadedBytes += value.length;
-            const percent = totalBytes > 0 ? Math.round((loadedBytes / totalBytes) * 100) : 0;
-            setDownloads((prev) => ({
-              ...prev,
-              [batchId]: {
-                progress: percent,
-                totalSize: totalBytes > 0 ? `${(totalBytes / 1024 / 1024).toFixed(1)}MB` : "Unknown",
-                loadedSize: `${(loadedBytes / 1024 / 1024).toFixed(1)}MB`,
-              }
-            }));
-          }
-        }
-
-        const blob = new Blob(chunks as any, { type: "application/x-tar" });
-        const blobUrl = URL.createObjectURL(blob);
-
         const link = document.createElement("a");
-        link.href = blobUrl;
+        link.href = fileUrl;
         link.download = statusData.downloadUrl.split("/").pop() || `genre_batch_${batchId.substring(0, 8)}.tar`;
         document.body.appendChild(link);
         link.click();
         document.body.removeChild(link);
-        URL.revokeObjectURL(blobUrl);
 
-        toast.success("Download completed successfully!");
+        toast.success("Download started in browser!");
+        // Let user see 100% complete state for 3s
+        await new Promise((resolve) => setTimeout(resolve, 3000));
       }
     } catch (err: any) {
       toast.error(err.message || "Failed to download");

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import fs from "fs";
 import path from "path";
+import { Readable } from "stream";
 
 export const dynamic = "force-dynamic";
 
@@ -59,20 +60,9 @@ export async function GET(
 
       const chunksize = end - start + 1;
       const fileStream = fs.createReadStream(absolutePath, { start, end });
+      const webStream = Readable.toWeb(fileStream);
 
-      // Convert Readable Stream to Web ReadableStream for App Router Compatibility
-      const webStream = new ReadableStream({
-        start(controller) {
-          fileStream.on("data", (chunk) => controller.enqueue(chunk));
-          fileStream.on("end", () => controller.close());
-          fileStream.on("error", (err) => controller.error(err));
-        },
-        cancel() {
-          fileStream.destroy();
-        },
-      });
-
-      return new NextResponse(webStream, {
+      return new NextResponse(webStream as any, {
         status: 206,
         headers: {
           "Content-Range": `bytes ${start}-${end}/${fileSize}`,
@@ -84,20 +74,10 @@ export async function GET(
       });
     }
 
-    // Default full stream
     const fileStream = fs.createReadStream(absolutePath);
-    const webStream = new ReadableStream({
-      start(controller) {
-        fileStream.on("data", (chunk) => controller.enqueue(chunk));
-        fileStream.on("end", () => controller.close());
-        fileStream.on("error", (err) => controller.error(err));
-      },
-      cancel() {
-        fileStream.destroy();
-      },
-    });
+    const webStream = Readable.toWeb(fileStream);
 
-    return new NextResponse(webStream, {
+    return new NextResponse(webStream as any, {
       status: 200,
       headers: {
         "Content-Length": fileSize.toString(),
