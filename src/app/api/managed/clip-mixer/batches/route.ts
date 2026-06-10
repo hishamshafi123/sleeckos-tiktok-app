@@ -495,7 +495,7 @@ async function processClipMixerBatch(batchId: string) {
         }
 
         const overlayIdx = slices.length;
-        inputs.push(`-c:v libvpx -i "${overlayPath}"`);
+        inputs.push(`-i "${overlayPath}"`);
 
         // Audio source mapping
         const audioIdx = overlayIdx + 1;

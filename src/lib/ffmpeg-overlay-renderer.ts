@@ -67,15 +67,15 @@ const FALLBACK_FONT_FILE = "Montserrat-Bold.ttf";
 // ─── ASS Helpers ─────────────────────────────────────────────────────────────
 
 function hexToASS(hex: string): string {
-  // ASS color: &HAABBGGRR
+  // ASS color: &HAABBGGRR&
   const clean = hex.replace("#", "");
   if (clean.length === 6) {
     const r = clean.substring(0, 2);
     const g = clean.substring(2, 4);
     const b = clean.substring(4, 6);
-    return "&H00" + b + g + r;
+    return "&H00" + b + g + r + "&";
   }
-  return "&H00FFFFFF";
+  return "&H00FFFFFF&";
 }
 
 function secondsToASS(s: number): string {
@@ -128,7 +128,7 @@ function generateASS(words: Word[], config: TemplateConfig): string {
   const posY = Math.round(HEIGHT * (config.positionY || 0.75));
 
   const activeColor = hexToASS(config.activeColor === "multi" ? "#FFFF00" : config.activeColor || "#FFFFFF");
-  const inactiveColor = config.textColor ? hexToASS(config.textColor) : "&H00888888";
+  const inactiveColor = config.textColor ? hexToASS(config.textColor) : "&H00888888&";
   const strokeColor = hexToASS(config.strokeColor || "#000000");
   const outline = Math.min(config.strokeWidth ?? 3, 6);
 
