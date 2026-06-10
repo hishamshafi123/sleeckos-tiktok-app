@@ -972,22 +972,48 @@ async function processBatchRendering(batchId: string) {
 
             console.log(`[Batch Worker Lyrical] FFmpeg cmd (solid bg): ${cmd.substring(0, 500)}...`);
 
-          } else if (hasPreRenderedOverlay) {
+          } else {
             // ═══════════════════════════════════════════════════════════════
-            // G1: CANVAS OVERLAY PATH (WYSIWYG)
-            // The WebM overlay contains: captions + vignette + particles + dark overlay
-            // FFmpeg only handles: bg scale → mirror/speed → color_filter → overlay → audio
+            // G1: DIRECT ASS SUBTITLE PATH (transparent lyrical templates)
+            // Burns ASS subtitles directly onto the background video.
+            // This avoids the WebM overlay pipeline entirely because
+            // FFmpeg 5.1 on Debian Bookworm does NOT support VP8/VP9 alpha.
+            // Pipeline: bg scale → mirror/speed → darken → color_filter → ASS → audio
             // ═══════════════════════════════════════════════════════════════
-            console.log(`[Batch Worker Lyrical] Using Canvas overlay (WYSIWYG path)`);
+            console.log(`[Batch Worker Lyrical] Using direct ASS subtitle burn (no WebM overlay needed)`);
+
+            if (!item.track.lyricalTranscription) {
+              throw new Error(`Cannot render: track ${item.track.title} has no Whisper transcription data.`);
+            }
+
+            // Generate high-quality ASS using the same renderer as the overlay pipeline
+            const { generateASS } = await import("@/lib/ffmpeg-overlay-renderer");
+            const tpl = item.lyricalTemplate!;
+            const words: { word: string; start: number; end: number }[] = JSON.parse(item.track.lyricalTranscription);
+            const assContent = generateASS(words, {
+              fontFamily: tpl.fontFamily,
+              fontSize: tpl.fontSize,
+              activeColor: tpl.activeColor,
+              strokeWidth: tpl.strokeWidth,
+              strokeColor: tpl.strokeColor,
+              positionY: tpl.positionY,
+              colorFilter: tpl.colorFilter,
+              vignette: tpl.vignette,
+              particleFx: tpl.particleFx,
+              animationMode: tpl.animationMode as "highlight" | "word_builder",
+              bgColor: tpl.bgColor,
+              textColor: tpl.textColor,
+              textAlign: tpl.textAlign,
+              wordSpacing: tpl.wordSpacing,
+              letterSpacing: tpl.letterSpacing,
+            });
+            const assSubtitlePath = `/tmp/lyrical_g1_${item.id}.ass`;
+            fs.writeFileSync(assSubtitlePath, assContent, "utf-8");
+            console.log(`[Batch Worker Lyrical] Generated ASS subtitle for direct burn (${words.length} words, ${(assContent.length / 1024).toFixed(1)}KB)`);
 
             const inputs: string[] = [];
             inputs.push(`-stream_loop -1 -i "${bgPath}"`);
-            inputs.push(`-i "${overlayPath}"`);
-            if (item.muteAudio) {
-              inputs.push(`-f lavfi -i anullsrc=channel_layout=stereo:sample_rate=44100`);
-            } else {
-              inputs.push(`-i "${audioPath}"`);
-            }
+            let currentInputIdx = 1;
 
             let filterComplex = "";
 
@@ -1030,17 +1056,50 @@ async function processBatchRendering(batchId: string) {
               }
             }
 
-            // 4. Overlay the Canvas WebM (contains all visual effects + captions)
-            // shortest=1 ensures the overlay doesn't extend past the background
-            // format=auto is CRITICAL: preserves yuva420p alpha from the WebM overlay
-            filterComplex += `[${lastLabel}][1:v]overlay=0:0:shortest=1:format=auto[v]`;
+            // 4. Vignette overlay
+            const vignette = item.lyricalTemplate?.vignette || "none";
+            if (vignette !== "none") {
+              const vigPath = path.join(process.cwd(), "public", "uploads", "effects", `${vignette}.png`);
+              if (fs.existsSync(vigPath)) {
+                const vigIdx = currentInputIdx++;
+                inputs.push(`-i "${vigPath}"`);
+                filterComplex += `[${lastLabel}][${vigIdx}:v]overlay=0:0[vignetted];`;
+                lastLabel = "vignetted";
+              }
+            }
+
+            // 5. Particle effects
+            const particleFx = item.lyricalTemplate?.particleFx || "none";
+            if (particleFx !== "none") {
+              const pPath = path.join(process.cwd(), "public", "uploads", "effects", particleFx);
+              if (fs.existsSync(pPath)) {
+                const pIdx = currentInputIdx++;
+                inputs.push(`-stream_loop -1 -i "${pPath}"`);
+                filterComplex += `[${pIdx}:v]colorkey=color=0x000000:similarity=0.15:blend=0.1[particles_keyed];`;
+                filterComplex += `[${lastLabel}][particles_keyed]overlay=0:0:format=auto[layered];`;
+                lastLabel = "layered";
+              }
+            }
+
+            // 6. Audio input
+            const audioIdx = currentInputIdx++;
+            if (item.muteAudio) {
+              inputs.push(`-f lavfi -i anullsrc=channel_layout=stereo:sample_rate=44100`);
+            } else {
+              inputs.push(`-i "${audioPath}"`);
+            }
+
+            // 7. Burn ASS subtitles directly onto the processed background
+            const fontsDir = path.join(process.cwd(), "public", "fonts");
+            const escapedAss = assSubtitlePath.replace(/\\/g, "/").replace(/:/g, "\\\\:");
+            filterComplex += `[${lastLabel}]ass='${escapedAss}':fontsdir='${fontsDir}'[v]`;
 
             cmd = [
               `ffmpeg -y`,
               ...inputs,
               `-filter_complex "${filterComplex}"`,
               `-map "[v]"`,
-              `-map 2:a`,
+              `-map ${audioIdx}:a`,
               `-c:v libx264`,
               `-pix_fmt yuv420p`,
               `-preset superfast`,
@@ -1251,8 +1310,9 @@ async function processBatchRendering(batchId: string) {
           await new Promise<void>((resolvePromise, rejectPromise) => {
             const { exec: execCmd } = require("child_process");
             execCmd(cmd, { timeout: 180000, maxBuffer: 1024 * 1024 * 10 }, (error: any, _stdout: any, stderr: any) => {
-              // Cleanup temp ASS file if it was created (G2 fallback path only)
+              // Cleanup temp ASS files (G1 direct burn + G2 fallback paths)
               try { fs.unlinkSync(`/tmp/lyrical_${item.id}.ass`); } catch {}
+              try { fs.unlinkSync(`/tmp/lyrical_g1_${item.id}.ass`); } catch {}
               if (error) {
                 console.error("[Batch Worker Lyrical] FFmpeg error:", stderr?.substring(0, 500));
                 rejectPromise(new Error(`FFmpeg composition failed: ${error.message}`));

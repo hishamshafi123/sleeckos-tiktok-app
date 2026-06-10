@@ -121,7 +121,7 @@ function chunkPhrases(words: Word[]): Word[][] {
 
 // ─── ASS File Generator ─────────────────────────────────────────────────────
 
-function generateASS(words: Word[], config: TemplateConfig): string {
+export function generateASS(words: Word[], config: TemplateConfig): string {
   const fontEntry = FONT_MAP[config.fontFamily] || FONT_MAP["Montserrat-Black"];
   const fontName = fontEntry.name;
   const fontSize = config.fontSize || 48;

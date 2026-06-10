@@ -522,73 +522,149 @@ async function processClipMixerBatch(batchId: string) {
           }
         }
 
-        const overlayIdx = slices.length;
-        inputs.push(`-i "${overlayPath}"`);
+        // For solid bg templates, the WebM overlay IS the full video (no alpha needed)
+        // For transparent templates, burn ASS subtitles directly onto concatenated clips
+        if (templateHasSolidBg) {
+          // ─── SOLID BG PATH: WebM overlay is the complete video ───
+          const overlayIdx = slices.length;
+          inputs.push(`-i "${overlayPath}"`);
 
-        // Audio source mapping
-        const audioIdx = overlayIdx + 1;
-        const audioPath = path.join(process.cwd(), "public", batch.track.fileUrl);
-
-        if (batch.muteAudio) {
-          inputs.push(`-f lavfi -i anullsrc=channel_layout=stereo:sample_rate=44100`);
-        } else {
-          if (!fs.existsSync(audioPath)) {
-            throw new Error(`Audio track file not found on disk at: ${audioPath}`);
-          }
-          inputs.push(`-i "${audioPath}"`);
-        }
-
-        // Build scaling/cropping & concat filter complex
-        let filterComplex = "";
-        for (let i = 0; i < slices.length; i++) {
-          // Normalizes clips: force vertical aspect, 720x1280, 30fps, sar=1, color space yuv420p
-          filterComplex += `[${i}:v]scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,setsar=1,fps=30,format=yuv420p[v${i}];`;
-        }
-
-        let lastVideoLabel = "";
-        if (slices.length > 1) {
-          for (let i = 0; i < slices.length; i++) {
-            filterComplex += `[v${i}]`;
-          }
-          filterComplex += `concat=n=${slices.length}:v=1:a=0[v_concated];`;
-          lastVideoLabel = "v_concated";
-        } else {
-          lastVideoLabel = "v0";
-        }
-
-        // Composite lyrics overlay onto clips chain
-        // format=auto is CRITICAL: it preserves the yuva420p alpha channel from the WebM overlay.
-        // Without it, FFmpeg defaults to yuv420p which strips alpha, making the transparent
-        // background render as solid black and hiding the video behind the lyrics.
-        filterComplex += `[${lastVideoLabel}][${overlayIdx}:v]overlay=0:0:shortest=1:format=auto[v_final]`;
-
-        const cmd = [
-          `ffmpeg -y`,
-          ...inputs,
-          `-filter_complex "${filterComplex}"`,
-          `-map "[v_final]"`,
-          `-map ${audioIdx}:a`,
-          `-c:v libx264`,
-          `-pix_fmt yuv420p`,
-          `-preset superfast`,
-          `-c:a aac -b:a 192k`,
-          `-t ${currentDuration.toFixed(3)}`, // trim to the final duration
-          `"${localOutFile}"`,
-        ].join(" ");
-
-        console.log(`[Clip Mixer Worker] Rendering Item ${item.id} (template: ${template.templateName}) with FFmpeg: ${cmd.substring(0, 600)}...`);
-
-        await new Promise<void>((resolve, reject) => {
-          const { exec: execCmd } = require("child_process");
-          execCmd(cmd, { timeout: 300000 }, (error: any, _stdout: any, stderr: any) => {
-            if (error) {
-              console.error(`[Clip Mixer Worker] FFmpeg failed for item ${item.id}:`, stderr?.substring(0, 1000));
-              reject(new Error(`FFmpeg processing failed: ${error.message}`));
-            } else {
-              resolve();
+          const audioIdx = overlayIdx + 1;
+          const audioPath = path.join(process.cwd(), "public", batch.track.fileUrl);
+          if (batch.muteAudio) {
+            inputs.push(`-f lavfi -i anullsrc=channel_layout=stereo:sample_rate=44100`);
+          } else {
+            if (!fs.existsSync(audioPath)) {
+              throw new Error(`Audio track file not found on disk at: ${audioPath}`);
             }
+            inputs.push(`-i "${audioPath}"`);
+          }
+
+          const cmd = [
+            `ffmpeg -y`,
+            ...inputs,
+            `-i "${overlayPath}"`,
+            `-c:v libx264`,
+            `-pix_fmt yuv420p`,
+            `-preset superfast`,
+            `-c:a aac -b:a 192k`,
+            `-t ${currentDuration.toFixed(3)}`,
+            `"${localOutFile}"`,
+          ].join(" ");
+
+          console.log(`[Clip Mixer Worker] Rendering Item ${item.id} (solid bg template: ${template.templateName}) with FFmpeg`);
+
+          await new Promise<void>((resolve, reject) => {
+            const { exec: execCmd } = require("child_process");
+            execCmd(cmd, { timeout: 300000 }, (error: any, _stdout: any, stderr: any) => {
+              if (error) {
+                console.error(`[Clip Mixer Worker] FFmpeg failed for item ${item.id}:`, stderr?.substring(0, 1000));
+                reject(new Error(`FFmpeg processing failed: ${error.message}`));
+              } else {
+                resolve();
+              }
+            });
           });
-        });
+
+        } else {
+          // ─── TRANSPARENT TEMPLATE: Direct ASS subtitle burn ───
+          // FFmpeg 5.1 on Debian does NOT support VP8/VP9 alpha channel,
+          // so we burn ASS subtitles directly onto the concatenated clips.
+          console.log(`[Clip Mixer Worker] Using direct ASS subtitle burn (no WebM overlay — alpha not supported)`);
+
+          if (!batch.track.lyricalTranscription) {
+            throw new Error(`Track "${batch.track.title}" has no Whisper alignment data.`);
+          }
+
+          // Generate ASS from the template config
+          const { generateASS } = await import("@/lib/ffmpeg-overlay-renderer");
+          const words = JSON.parse(batch.track.lyricalTranscription);
+          const assContent = generateASS(words, {
+            fontFamily: template.fontFamily,
+            fontSize: template.fontSize,
+            activeColor: template.activeColor,
+            strokeWidth: template.strokeWidth,
+            strokeColor: template.strokeColor,
+            positionY: template.positionY,
+            colorFilter: template.colorFilter,
+            vignette: template.vignette,
+            particleFx: template.particleFx,
+            animationMode: template.animationMode as "highlight" | "word_builder",
+            bgColor: template.bgColor,
+            textColor: template.textColor,
+            textAlign: template.textAlign,
+            wordSpacing: template.wordSpacing,
+            letterSpacing: template.letterSpacing,
+          });
+          const assPath = `/tmp/clip_mixer_${item.id}.ass`;
+          fs.writeFileSync(assPath, assContent, "utf-8");
+          console.log(`[Clip Mixer Worker] Generated ASS subtitle (${words.length} words, ${(assContent.length / 1024).toFixed(1)}KB)`);
+
+          // Audio input
+          const audioPath = path.join(process.cwd(), "public", batch.track.fileUrl);
+          if (batch.muteAudio) {
+            inputs.push(`-f lavfi -i anullsrc=channel_layout=stereo:sample_rate=44100`);
+          } else {
+            if (!fs.existsSync(audioPath)) {
+              throw new Error(`Audio track file not found on disk at: ${audioPath}`);
+            }
+            inputs.push(`-i "${audioPath}"`);
+          }
+          const audioIdx = slices.length; // audio is the input right after the clip slices
+
+          // Build scaling/cropping & concat filter complex
+          let filterComplex = "";
+          for (let i = 0; i < slices.length; i++) {
+            filterComplex += `[${i}:v]scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,setsar=1,fps=30,format=yuv420p[v${i}];`;
+          }
+
+          let lastVideoLabel = "";
+          if (slices.length > 1) {
+            for (let i = 0; i < slices.length; i++) {
+              filterComplex += `[v${i}]`;
+            }
+            filterComplex += `concat=n=${slices.length}:v=1:a=0[v_concated];`;
+            lastVideoLabel = "v_concated";
+          } else {
+            lastVideoLabel = "v0";
+          }
+
+          // Burn ASS subtitles directly onto the concatenated clips
+          const fontsDir = path.join(process.cwd(), "public", "fonts");
+          const escapedAss = assPath.replace(/\\/g, "/").replace(/:/g, "\\\\:");
+          filterComplex += `[${lastVideoLabel}]ass='${escapedAss}':fontsdir='${fontsDir}'[v_final]`;
+
+          const cmd = [
+            `ffmpeg -y`,
+            ...inputs,
+            `-filter_complex "${filterComplex}"`,
+            `-map "[v_final]"`,
+            `-map ${audioIdx}:a`,
+            `-c:v libx264`,
+            `-pix_fmt yuv420p`,
+            `-preset superfast`,
+            `-c:a aac -b:a 192k`,
+            `-t ${currentDuration.toFixed(3)}`,
+            `"${localOutFile}"`,
+          ].join(" ");
+
+          console.log(`[Clip Mixer Worker] Rendering Item ${item.id} (template: ${template.templateName}) with FFmpeg: ${cmd.substring(0, 600)}...`);
+
+          await new Promise<void>((resolve, reject) => {
+            const { exec: execCmd } = require("child_process");
+            execCmd(cmd, { timeout: 300000 }, (error: any, _stdout: any, stderr: any) => {
+              // Cleanup temp ASS file
+              try { fs.unlinkSync(assPath); } catch {}
+              if (error) {
+                console.error(`[Clip Mixer Worker] FFmpeg failed for item ${item.id}:`, stderr?.substring(0, 1000));
+                reject(new Error(`FFmpeg processing failed: ${error.message}`));
+              } else {
+                resolve();
+              }
+            });
+          });
+        }
+
 
         try {
           await prisma.clipMixerItem.update({
