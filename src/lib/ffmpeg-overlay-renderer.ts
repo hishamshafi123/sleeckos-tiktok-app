@@ -286,7 +286,10 @@ export async function renderCanvasOverlay(
     "-y",
     "-filter_complex_script", filterScript,
     "-map", "[out]",
-    "-c:v", "libvpx",
+    // CRITICAL: Must use VP9 (libvpx-vp9) for alpha transparency support.
+    // VP8 (libvpx) does NOT support alpha channel in Debian's FFmpeg 5.1,
+    // which caused overlays to render with an opaque black background.
+    "-c:v", hasSolidBg ? "libvpx" : "libvpx-vp9",
     "-f", "webm",
     "-pix_fmt", hasSolidBg ? "yuv420p" : "yuva420p",
     "-auto-alt-ref", "0",

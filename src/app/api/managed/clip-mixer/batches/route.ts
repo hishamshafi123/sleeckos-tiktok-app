@@ -446,7 +446,7 @@ async function processClipMixerBatch(batchId: string) {
           inputs.push(`-ss ${slice.start.toFixed(3)} -t ${slice.duration.toFixed(3)} -i "${slice.clipPath}"`);
         }
 
-        // Overlay template VP8 WebM with alpha
+        // Overlay template VP9 WebM with alpha
         let overlayUrl = template.overlayVideoUrl;
         if (!overlayUrl) {
           const sanitizedName = template.templateName.replace(/[^a-zA-Z0-9]/g, "_").toLowerCase();
@@ -460,6 +460,34 @@ async function processClipMixerBatch(batchId: string) {
           try { overlaySize = fs.statSync(overlayPath).size; } catch {}
         }
         let hasPreRenderedOverlay = overlayExists && overlayReady && overlaySize > 1024;
+
+        // Check if template needs transparency (no solid bg)
+        const templateHasSolidBg = !!template.bgColor &&
+          template.bgColor !== "none" &&
+          template.bgColor !== "transparent" &&
+          template.bgColor !== "null";
+
+        // Validate that transparent overlays use VP9 (VP8 doesn't support alpha).
+        // If the existing overlay was rendered with VP8, invalidate it for re-render.
+        if (hasPreRenderedOverlay && !templateHasSolidBg) {
+          try {
+            const { execSync } = require("child_process");
+            const codec = execSync(
+              `ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of csv=p=0 "${overlayPath}"`,
+              { timeout: 10000 }
+            ).toString().trim();
+            if (codec === "vp8") {
+              console.log(`[Clip Mixer Worker] Overlay for "${template.templateName}" uses VP8 (no alpha). Invalidating for VP9 re-render.`);
+              try { fs.unlinkSync(overlayPath + ".ready"); } catch {}
+              try { fs.unlinkSync(overlayPath); } catch {}
+              hasPreRenderedOverlay = false;
+            }
+          } catch (probeErr) {
+            console.warn(`[Clip Mixer Worker] Could not probe overlay codec, will re-render:`, probeErr);
+            hasPreRenderedOverlay = false;
+          }
+        }
+
         if (!hasPreRenderedOverlay) {
           console.log(`[Clip Mixer Worker] Pre-rendered overlay missing or invalid for template "${template.templateName}". Auto-rendering it now...`);
           try {

@@ -847,7 +847,7 @@ async function processBatchRendering(batchId: string) {
 
 
         if (item.lyricalTemplateId && item.lyricalTemplate) {
-          // Check for Canvas pre-rendered overlay (WebM VP8 with alpha)
+          // Check for Canvas pre-rendered overlay (WebM VP9 with alpha)
           let overlayUrl = item.lyricalTemplate.overlayVideoUrl;
           if (!overlayUrl) {
             const sanitizedName = item.lyricalTemplate.templateName.replace(/[^a-zA-Z0-9]/g, "_").toLowerCase();
@@ -862,6 +862,34 @@ async function processBatchRendering(batchId: string) {
             try { overlaySize = fs.statSync(overlayPath).size; } catch {}
           }
           let hasPreRenderedOverlay = overlayExists && overlayReady && overlaySize > 1024;
+
+          // Check if template needs transparency (no solid bg)
+          const templateHasSolidBg = !!item.lyricalTemplate.bgColor &&
+            item.lyricalTemplate.bgColor !== "none" &&
+            item.lyricalTemplate.bgColor !== "transparent" &&
+            item.lyricalTemplate.bgColor !== "null";
+
+          // Validate that transparent overlays use VP9 (VP8 doesn't support alpha).
+          // If the existing overlay was rendered with VP8, invalidate it for re-render.
+          if (hasPreRenderedOverlay && !templateHasSolidBg) {
+            try {
+              const { execSync } = require("child_process");
+              const codec = execSync(
+                `ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of csv=p=0 "${overlayPath}"`,
+                { timeout: 10000 }
+              ).toString().trim();
+              if (codec === "vp8") {
+                console.log(`[Batch Worker] Overlay for "${item.lyricalTemplate.templateName}" uses VP8 (no alpha). Invalidating for VP9 re-render.`);
+                try { fs.unlinkSync(overlayPath + ".ready"); } catch {}
+                try { fs.unlinkSync(overlayPath); } catch {}
+                hasPreRenderedOverlay = false;
+              }
+            } catch (probeErr) {
+              console.warn(`[Batch Worker] Could not probe overlay codec, will re-render:`, probeErr);
+              hasPreRenderedOverlay = false;
+            }
+          }
+
           if (!hasPreRenderedOverlay) {
             console.log(`[Batch Worker] Pre-rendered overlay missing or invalid for template "${item.lyricalTemplate.templateName}". Auto-rendering it now...`);
             try {
