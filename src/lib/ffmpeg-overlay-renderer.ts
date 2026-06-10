@@ -271,10 +271,10 @@ export async function renderCanvasOverlay(
   // Write filter script to file (avoids all command-line escaping issues)
   const filterScript = "/tmp/overlay_filter_" + ts + ".txt";
   // The filter graph: color source -> ass subtitles -> output
-  // For transparent: need format=yuva420p before ass
+  // For transparent: need format=rgba before ass, then convert to yuva420p
   const filterContent = hasSolidBg
     ? "color=c=" + colorVal + ":s=" + WIDTH + "x" + HEIGHT + ":d=" + duration + ":r=" + FPS + ",ass=" + assPath + ":fontsdir=" + fontsDir + " [out]"
-    : "color=c=" + colorVal + ":s=" + WIDTH + "x" + HEIGHT + ":d=" + duration + ":r=" + FPS + ",format=yuva420p,ass=" + assPath + ":fontsdir=" + fontsDir + ":alpha=1 [out]";
+    : "color=c=" + colorVal + ":s=" + WIDTH + "x" + HEIGHT + ":d=" + duration + ":r=" + FPS + ",format=rgba,ass=" + assPath + ":fontsdir=" + fontsDir + ",format=yuva420p [out]";
   fs.writeFileSync(filterScript, filterContent, "utf-8");
   console.log("[FFmpeg Renderer] Filter script: " + filterScript);
   console.log("[FFmpeg Renderer] Filter content: " + filterContent);
