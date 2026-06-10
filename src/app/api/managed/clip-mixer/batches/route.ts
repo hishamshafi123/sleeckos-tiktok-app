@@ -488,7 +488,7 @@ async function processClipMixerBatch(batchId: string) {
           }
         }
 
-        if (!hasPreRenderedOverlay) {
+        if (!hasPreRenderedOverlay && templateHasSolidBg) {
           console.log(`[Clip Mixer Worker] Pre-rendered overlay missing or invalid for template "${template.templateName}". Auto-rendering it now...`);
           try {
             if (!batch.track.lyricalTranscription) {

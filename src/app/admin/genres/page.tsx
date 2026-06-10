@@ -532,7 +532,47 @@ export default function GenresDashboard() {
       link.href = "https://fonts.googleapis.com/css2?family=Anton&family=Caveat:wght@700&family=Great+Vibes&family=Inter:wght@700&family=Lora:ital,wght@0,700;1,700&family=Montserrat:wght@700&family=Oswald:wght@700&family=Outfit:wght@700&family=Playfair+Display:ital,wght@0,700;1,700&display=swap";
       document.head.appendChild(link);
     }
+
+    // Restore wizardStep and activeBatchId on mount from localStorage
+    if (typeof window !== "undefined") {
+      const persistedStep = localStorage.getItem("lyrical_wizardStep");
+      if (persistedStep) {
+        setWizardStep(parseInt(persistedStep, 10));
+      }
+      const persistedBatchId = localStorage.getItem("lyrical_activeBatchId");
+      if (persistedBatchId) {
+        (async () => {
+          try {
+            const res = await fetch(`/api/managed/genres/batches?batchId=${persistedBatchId}`);
+            if (res.ok) {
+              const fullBatch = await res.json();
+              setActiveBatch(fullBatch);
+            }
+          } catch (err) {
+            console.error("Failed to load active batch from localStorage:", err);
+          }
+        })();
+      }
+    }
   }, []);
+
+  // Save wizardStep to localStorage when it changes
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      localStorage.setItem("lyrical_wizardStep", wizardStep.toString());
+    }
+  }, [wizardStep]);
+
+  // Save activeBatchId to localStorage when it changes
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      if (activeBatch) {
+        localStorage.setItem("lyrical_activeBatchId", activeBatch.id);
+      } else {
+        localStorage.removeItem("lyrical_activeBatchId");
+      }
+    }
+  }, [activeBatch]);
 
   // Synchronize background preview video with audio playback
   useEffect(() => {
@@ -1750,12 +1790,49 @@ export default function GenresDashboard() {
       const data = await res.json();
 
       if (data.status === "COMPLETED" && data.downloadUrl) {
+        setSmartDownloadProgress("Starting download...");
+        const fileRes = await fetch(`/api${data.downloadUrl}`);
+        if (!fileRes.ok) {
+          throw new Error("Failed to download archive file");
+        }
+
+        const contentLength = fileRes.headers.get("content-length");
+        const totalBytes = contentLength ? parseInt(contentLength, 10) : (data.size || 0);
+
+        if (!fileRes.body) {
+          throw new Error("Response body is not readable");
+        }
+
+        const reader = fileRes.body.getReader();
+        let loadedBytes = 0;
+        const chunks: Uint8Array[] = [];
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (value) {
+            chunks.push(value);
+            loadedBytes += value.length;
+            if (totalBytes > 0) {
+              const percent = Math.round((loadedBytes / totalBytes) * 100);
+              setSmartDownloadProgress(`Down: ${percent}% (${(loadedBytes / 1024 / 1024).toFixed(1)}/${(totalBytes / 1024 / 1024).toFixed(1)}MB)`);
+            } else {
+              setSmartDownloadProgress(`Down: ${(loadedBytes / 1024 / 1024).toFixed(1)}MB`);
+            }
+          }
+        }
+
+        const blob = new Blob(chunks as any, { type: "application/gzip" });
+        const blobUrl = URL.createObjectURL(blob);
+
         const link = document.createElement("a");
-        link.href = `/api${data.downloadUrl}`;
+        link.href = blobUrl;
         link.download = data.downloadUrl.split("/").pop() || "smart_download.tar.gz";
         document.body.appendChild(link);
         link.click();
         document.body.removeChild(link);
+        URL.revokeObjectURL(blobUrl);
+
         toast.success(`Download started! ${smartAccounts} folders × ${smartVidsPerAccount} videos`);
       } else {
         throw new Error("Archive creation failed — no download URL returned");

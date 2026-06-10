@@ -280,10 +280,53 @@ export default function ClipMixerPage() {
     return () => clearInterval(interval);
   }, [activeBatch]);
 
+  // Save active tab to localStorage
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      localStorage.setItem("clip_mixer_active_tab", activeTab);
+    }
+  }, [activeTab]);
+
+  // Save active batch ID to localStorage
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      if (activeBatch) {
+        localStorage.setItem("clip_mixer_active_batch_id", activeBatch.id);
+      } else {
+        localStorage.removeItem("clip_mixer_active_batch_id");
+      }
+    }
+  }, [activeBatch]);
+
   // Initial load
   useEffect(() => {
     fetchSections();
     fetchTracks();
+    
+    if (typeof window !== "undefined") {
+      const persistedTab = localStorage.getItem("clip_mixer_active_tab");
+      if (persistedTab) {
+        setActiveTab(persistedTab as any);
+      }
+      
+      const persistedBatchId = localStorage.getItem("clip_mixer_active_batch_id");
+      if (persistedBatchId) {
+        (async () => {
+          try {
+            const res = await fetch(`/api/managed/clip-mixer/batches?batchId=${persistedBatchId}`);
+            if (res.ok) {
+              const data = await res.json();
+              setActiveBatch(data);
+              setSmartAccounts(Math.ceil(data.totalVideos / 3));
+              setSmartVidsPerAccount(3);
+            }
+          } catch (err) {
+            console.error("Failed to load persisted active batch", err);
+          }
+        })();
+      }
+    }
+    
     fetchBatches();
   }, []);
 
@@ -573,13 +616,50 @@ export default function ClipMixerPage() {
       const data = await res.json();
 
       if (data.status === "COMPLETED" && data.downloadUrl) {
+        setSmartDownloadProgress("Starting download...");
+        const fileRes = await fetch(`/api${data.downloadUrl}`);
+        if (!fileRes.ok) {
+          throw new Error("Failed to download archive file");
+        }
+
+        const contentLength = fileRes.headers.get("content-length");
+        const totalBytes = contentLength ? parseInt(contentLength, 10) : (data.size || 0);
+
+        if (!fileRes.body) {
+          throw new Error("Response body is not readable");
+        }
+
+        const reader = fileRes.body.getReader();
+        let loadedBytes = 0;
+        const chunks: Uint8Array[] = [];
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (value) {
+            chunks.push(value);
+            loadedBytes += value.length;
+            if (totalBytes > 0) {
+              const percent = Math.round((loadedBytes / totalBytes) * 100);
+              setSmartDownloadProgress(`Down: ${percent}% (${(loadedBytes / 1024 / 1024).toFixed(1)}/${(totalBytes / 1024 / 1024).toFixed(1)}MB)`);
+            } else {
+              setSmartDownloadProgress(`Down: ${(loadedBytes / 1024 / 1024).toFixed(1)}MB`);
+            }
+          }
+        }
+
+        const blob = new Blob(chunks as any, { type: "application/gzip" });
+        const blobUrl = URL.createObjectURL(blob);
+
         const link = document.createElement("a");
-        link.href = `/api${data.downloadUrl}`;
+        link.href = blobUrl;
         link.download = data.downloadUrl.split("/").pop() || "smart_clip_download.tar.gz";
         document.body.appendChild(link);
         link.click();
         document.body.removeChild(link);
-        toast.success(`Smart ZIP download started: ${smartAccounts} accounts × ${smartVidsPerAccount} videos!`);
+        URL.revokeObjectURL(blobUrl);
+
+        toast.success(`Smart ZIP download completed: ${smartAccounts} accounts × ${smartVidsPerAccount} videos!`);
       } else {
         throw new Error("Archive generation failed — no download URL returned");
       }
@@ -1088,12 +1168,20 @@ export default function ClipMixerPage() {
                 batches.map((b) => (
                   <div
                     key={b.id}
-                    onClick={() => {
+                    onClick={async () => {
                       setActiveBatch(b);
-                      // Set default smart download counts matching batch size
                       setSmartAccounts(Math.ceil(b.totalVideos / 3));
                       setSmartVidsPerAccount(3);
                       setShowSmartDownload(false);
+                      try {
+                        const res = await fetch(`/api/managed/clip-mixer/batches?batchId=${b.id}`);
+                        if (res.ok) {
+                          const data = await res.json();
+                          setActiveBatch(data);
+                        }
+                      } catch (err) {
+                        console.error("Failed to fetch full batch details", err);
+                      }
                     }}
                     className={`p-3.5 rounded-xl cursor-pointer border transition-all text-sm relative ${
                       activeBatch?.id === b.id

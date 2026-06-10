@@ -890,7 +890,7 @@ async function processBatchRendering(batchId: string) {
             }
           }
 
-          if (!hasPreRenderedOverlay) {
+          if (!hasPreRenderedOverlay && templateHasSolidBg) {
             console.log(`[Batch Worker] Pre-rendered overlay missing or invalid for template "${item.lyricalTemplate.templateName}". Auto-rendering it now...`);
             try {
               if (!item.track.lyricalTranscription) {
