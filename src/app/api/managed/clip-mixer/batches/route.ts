@@ -357,10 +357,18 @@ async function processClipMixerBatch(batchId: string) {
         break;
       }
 
-      await prisma.clipMixerItem.update({
-        where: { id: item.id },
-        data: { status: "RENDERING" },
-      });
+      try {
+        await prisma.clipMixerItem.update({
+          where: { id: item.id },
+          data: { status: "RENDERING" },
+        });
+      } catch (err: any) {
+        if (err?.code === "P2025") {
+          console.log(`[Clip Mixer Worker] Item ${item.id} not found (likely batch was deleted). Aborting loop.`);
+          break;
+        }
+        throw err;
+      }
 
       try {
         // Fetch specific layout template for this item
@@ -551,31 +559,60 @@ async function processClipMixerBatch(batchId: string) {
           });
         });
 
-        await prisma.clipMixerItem.update({
-          where: { id: item.id },
-          data: {
-            status: "RENDERED",
-            renderedVideoUrl: `/uploads/clip-mixer-renders/render_${item.id}.mp4`,
-          },
-        });
+        try {
+          await prisma.clipMixerItem.update({
+            where: { id: item.id },
+            data: {
+              status: "RENDERED",
+              renderedVideoUrl: `/uploads/clip-mixer-renders/render_${item.id}.mp4`,
+            },
+          });
+        } catch (err: any) {
+          if (err?.code === "P2025") {
+            console.log(`[Clip Mixer Worker] Item ${item.id} not found (likely batch was deleted) when finishing rendering. Aborting loop.`);
+            break;
+          }
+          throw err;
+        }
         console.log(`[Clip Mixer Worker] Finished rendering item ${item.id}`);
 
       } catch (itemErr: any) {
+        if (itemErr?.code === "P2025") {
+          console.log(`[Clip Mixer Worker] Item ${item.id} not found (likely batch was deleted) during error handling. Aborting loop.`);
+          break;
+        }
         console.error(`[Clip Mixer Worker] Item ${item.id} processing error:`, itemErr);
-        await prisma.clipMixerItem.update({
-          where: { id: item.id },
-          data: {
-            status: "FAILED",
-            errorMessage: itemErr.message || String(itemErr),
-          },
-        });
+        try {
+          await prisma.clipMixerItem.update({
+            where: { id: item.id },
+            data: {
+              status: "FAILED",
+              errorMessage: itemErr.message || String(itemErr),
+            },
+          });
+        } catch (updateErr: any) {
+          if (updateErr?.code === "P2025") {
+            console.log(`[Clip Mixer Worker] Item ${item.id} not found (likely batch was deleted) when marking FAILED. Aborting loop.`);
+            break;
+          }
+          console.error(`[Clip Mixer Worker] Failed to update item status to FAILED:`, updateErr);
+        }
       }
     }
 
     // Determine final status of batch
-    const remainingItems = await prisma.clipMixerItem.findMany({
-      where: { batchId },
-    });
+    let remainingItems;
+    try {
+      remainingItems = await prisma.clipMixerItem.findMany({
+        where: { batchId },
+      });
+    } catch (err: any) {
+      if (err?.code === "P2025") {
+        console.log(`[Clip Mixer Worker] Items not found for batch ${batchId}. Aborting.`);
+        return;
+      }
+      throw err;
+    }
     const failedCount = remainingItems.filter((i) => i.status === "FAILED").length;
     const completedCount = remainingItems.filter((i) => i.status === "RENDERED" || i.status === "UPLOADED").length;
 
@@ -584,17 +621,37 @@ async function processClipMixerBatch(batchId: string) {
       finalStatus = "FAILED";
     }
 
-    await prisma.clipMixerBatch.update({
-      where: { id: batchId },
-      data: { status: finalStatus },
-    });
+    try {
+      await prisma.clipMixerBatch.update({
+        where: { id: batchId },
+        data: { status: finalStatus },
+      });
+    } catch (err: any) {
+      if (err?.code === "P2025") {
+        console.log(`[Clip Mixer Worker] Batch ${batchId} not found (likely deleted) when updating final status.`);
+        return;
+      }
+      throw err;
+    }
     console.log(`[Clip Mixer Worker] Finished batch ${batchId}. Status: ${finalStatus}`);
 
   } catch (err: any) {
+    if (err?.code === "P2025") {
+      console.log(`[Clip Mixer Worker] Batch ${batchId} not found (likely deleted) during worker execution.`);
+      return;
+    }
     console.error(`[Clip Mixer Worker] Critical batch failure ${batchId}:`, err);
-    await prisma.clipMixerBatch.update({
-      where: { id: batchId },
-      data: { status: "FAILED" },
-    });
+    try {
+      await prisma.clipMixerBatch.update({
+        where: { id: batchId },
+        data: { status: "FAILED" },
+      });
+    } catch (updateErr: any) {
+      if (updateErr?.code === "P2025") {
+        console.log(`[Clip Mixer Worker] Batch ${batchId} not found when trying to mark FAILED.`);
+        return;
+      }
+      console.error(`[Clip Mixer Worker] Failed to mark batch ${batchId} as FAILED:`, updateErr);
+    }
   }
 }

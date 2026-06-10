@@ -813,10 +813,18 @@ async function processBatchRendering(batchId: string) {
       console.log(`[Batch Worker] Processing item ${item.id} (${item.account.tiktokUsername})`);
 
       try {
-        await prisma.genreBatchItem.update({
-          where: { id: item.id },
-          data: { status: "RENDERING" },
-        });
+        try {
+          await prisma.genreBatchItem.update({
+            where: { id: item.id },
+            data: { status: "RENDERING" },
+          });
+        } catch (err: any) {
+          if (err?.code === "P2025") {
+            console.log(`[Batch Worker] Item ${item.id} not found (likely batch was deleted). Aborting loop.`);
+            break;
+          }
+          throw err;
+        }
 
         // Resolve absolute background video file path
         const bgPath = path.join(process.cwd(), "public", item.backgroundVideoUrl);
@@ -1263,17 +1271,28 @@ async function processBatchRendering(batchId: string) {
           });
         }
 
-        // Update DB item record to RENDERED with local URL path
-        await prisma.genreBatchItem.update({
-          where: { id: item.id },
-          data: {
-            status: "RENDERED",
-            renderedVideoUrl: `/uploads/renders/render_${item.id}.mp4`,
-          },
-        });
+        try {
+          await prisma.genreBatchItem.update({
+            where: { id: item.id },
+            data: {
+              status: "RENDERED",
+              renderedVideoUrl: `/uploads/renders/render_${item.id}.mp4`,
+            },
+          });
+        } catch (err: any) {
+          if (err?.code === "P2025") {
+            console.log(`[Batch Worker] Item ${item.id} not found (likely batch was deleted) when finishing rendering. Aborting loop.`);
+            break;
+          }
+          throw err;
+        }
 
         console.log(`[Batch Worker] Item ${item.id} successfully rendered locally!`);
       } catch (itemErr: any) {
+        if (itemErr?.code === "P2025") {
+          console.log(`[Batch Worker] Item ${item.id} not found (likely batch was deleted) during error handling. Aborting loop.`);
+          break;
+        }
         console.error(`[Batch Worker] Error rendering item ${item.id}:`, itemErr);
 
         // Cleanup temporary render clip on failure
@@ -1282,20 +1301,37 @@ async function processBatchRendering(batchId: string) {
           try { fs.unlinkSync(localOutFile); } catch {}
         }
 
-        await prisma.genreBatchItem.update({
-          where: { id: item.id },
-          data: {
-            status: "FAILED",
-            errorMessage: itemErr.message || String(itemErr),
-          },
-        });
+        try {
+          await prisma.genreBatchItem.update({
+            where: { id: item.id },
+            data: {
+              status: "FAILED",
+              errorMessage: itemErr.message || String(itemErr),
+            },
+          });
+        } catch (updateErr: any) {
+          if (updateErr?.code === "P2025") {
+            console.log(`[Batch Worker] Item ${item.id} not found (likely batch was deleted) when marking FAILED. Aborting loop.`);
+            break;
+          }
+          console.error(`[Batch Worker] Failed to update item status to FAILED:`, updateErr);
+        }
       }
     }
 
     // 3. Determine final status of the batch
-    const remainingItems = await prisma.genreBatchItem.findMany({
-      where: { batchId },
-    });
+    let remainingItems;
+    try {
+      remainingItems = await prisma.genreBatchItem.findMany({
+        where: { batchId },
+      });
+    } catch (err: any) {
+      if (err?.code === "P2025") {
+        console.log(`[Batch Worker] Items not found for batch ${batchId}. Aborting.`);
+        return;
+      }
+      throw err;
+    }
 
     const failedCount = remainingItems.filter(i => i.status === "FAILED").length;
     const completedCount = remainingItems.filter(i => i.status === "RENDERED" || i.status === "UPLOADED").length;
@@ -1305,17 +1341,37 @@ async function processBatchRendering(batchId: string) {
       finalStatus = "FAILED";
     }
 
-    await prisma.genreBatch.update({
-      where: { id: batchId },
-      data: { status: finalStatus },
-    });
+    try {
+      await prisma.genreBatch.update({
+        where: { id: batchId },
+        data: { status: finalStatus },
+      });
+    } catch (err: any) {
+      if (err?.code === "P2025") {
+        console.log(`[Batch Worker] Batch ${batchId} not found (likely deleted) when updating final status.`);
+        return;
+      }
+      throw err;
+    }
 
     console.log(`[Batch Worker] Finished processing batch ${batchId}. Final status: ${finalStatus}`);
-  } catch (batchErr) {
+  } catch (batchErr: any) {
+    if (batchErr?.code === "P2025") {
+      console.log(`[Batch Worker] Batch ${batchId} not found (likely deleted) during worker execution.`);
+      return;
+    }
     console.error(`[Batch Worker] Critical error in batch ${batchId} queue:`, batchErr);
-    await prisma.genreBatch.update({
-      where: { id: batchId },
-      data: { status: "FAILED" },
-    });
+    try {
+      await prisma.genreBatch.update({
+        where: { id: batchId },
+        data: { status: "FAILED" },
+      });
+    } catch (updateErr: any) {
+      if (updateErr?.code === "P2025") {
+        console.log(`[Batch Worker] Batch ${batchId} not found when trying to mark FAILED.`);
+        return;
+      }
+      console.error(`[Batch Worker] Failed to mark batch ${batchId} as FAILED:`, updateErr);
+    }
   }
 }

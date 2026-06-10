@@ -119,10 +119,18 @@ async function processMultiplierBatch(batchId: string) {
       console.log(`[Multiplier Worker] Rendering item ${item.id}: "${item.hookText.substring(0, 50)}..."`);
 
       try {
-        await prisma.multiplierItem.update({
-          where: { id: item.id },
-          data: { status: "RENDERING" },
-        });
+        try {
+          await prisma.multiplierItem.update({
+            where: { id: item.id },
+            data: { status: "RENDERING" },
+          });
+        } catch (err: any) {
+          if (err?.code === "P2025") {
+            console.log(`[Multiplier Worker] Item ${item.id} not found (likely batch was deleted). Aborting loop.`);
+            break;
+          }
+          throw err;
+        }
 
         const outputPath = path.join(rendersDir, `multi_${item.id}.mp4`);
 
@@ -201,16 +209,28 @@ async function processMultiplierBatch(batchId: string) {
           await composeMultiplierVideo({ ...composeOpts, hookText: asciiOnlyHook || "Untitled" });
         }
 
-        await prisma.multiplierItem.update({
-          where: { id: item.id },
-          data: {
-            status: "RENDERED",
-            renderedVideoUrl: `/uploads/multiplier/renders/multi_${item.id}.mp4`,
-          },
-        });
+        try {
+          await prisma.multiplierItem.update({
+            where: { id: item.id },
+            data: {
+              status: "RENDERED",
+              renderedVideoUrl: `/uploads/multiplier/renders/multi_${item.id}.mp4`,
+            },
+          });
+        } catch (err: any) {
+          if (err?.code === "P2025") {
+            console.log(`[Multiplier Worker] Item ${item.id} not found (likely batch was deleted) when finishing rendering. Aborting loop.`);
+            break;
+          }
+          throw err;
+        }
 
         console.log(`[Multiplier Worker] Item ${item.id} rendered successfully`);
       } catch (itemErr: any) {
+        if (itemErr?.code === "P2025") {
+          console.log(`[Multiplier Worker] Item ${item.id} not found (likely batch was deleted) during error handling. Aborting loop.`);
+          break;
+        }
         const errMsg = (itemErr.message || String(itemErr)).substring(0, 1000);
         console.error(`[Multiplier Worker] Error rendering item ${item.id}:`, errMsg);
 
@@ -220,20 +240,37 @@ async function processMultiplierBatch(batchId: string) {
           try { fs.unlinkSync(outputPath); } catch {}
         }
 
-        await prisma.multiplierItem.update({
-          where: { id: item.id },
-          data: {
-            status: "FAILED",
-            errorMessage: errMsg,
-          },
-        });
+        try {
+          await prisma.multiplierItem.update({
+            where: { id: item.id },
+            data: {
+              status: "FAILED",
+              errorMessage: errMsg,
+            },
+          });
+        } catch (updateErr: any) {
+          if (updateErr?.code === "P2025") {
+            console.log(`[Multiplier Worker] Item ${item.id} not found (likely batch was deleted) when marking FAILED. Aborting loop.`);
+            break;
+          }
+          console.error(`[Multiplier Worker] Failed to update item status to FAILED:`, updateErr);
+        }
       }
     }
 
     // Determine final status
-    const finalItems = await prisma.multiplierItem.findMany({
-      where: { batchId },
-    });
+    let finalItems;
+    try {
+      finalItems = await prisma.multiplierItem.findMany({
+        where: { batchId },
+      });
+    } catch (err: any) {
+      if (err?.code === "P2025") {
+        console.log(`[Multiplier Worker] Items not found for batch ${batchId}. Aborting.`);
+        return;
+      }
+      throw err;
+    }
 
     const failedCount = finalItems.filter((i) => i.status === "FAILED").length;
     const completedCount = finalItems.filter((i) => i.status === "RENDERED").length;
@@ -243,17 +280,37 @@ async function processMultiplierBatch(batchId: string) {
       finalStatus = "FAILED";
     }
 
-    await prisma.multiplierBatch.update({
-      where: { id: batchId },
-      data: { status: finalStatus },
-    });
+    try {
+      await prisma.multiplierBatch.update({
+        where: { id: batchId },
+        data: { status: finalStatus },
+      });
+    } catch (err: any) {
+      if (err?.code === "P2025") {
+        console.log(`[Multiplier Worker] Batch ${batchId} not found (likely deleted) when updating final status.`);
+        return;
+      }
+      throw err;
+    }
 
     console.log(`[Multiplier Worker] Batch ${batchId} finished. Status: ${finalStatus} (${completedCount} rendered, ${failedCount} failed)`);
-  } catch (batchErr) {
+  } catch (batchErr: any) {
+    if (batchErr?.code === "P2025") {
+      console.log(`[Multiplier Worker] Batch ${batchId} not found (likely deleted) during worker execution.`);
+      return;
+    }
     console.error(`[Multiplier Worker] Critical error in batch ${batchId}:`, batchErr);
-    await prisma.multiplierBatch.update({
-      where: { id: batchId },
-      data: { status: "FAILED", errorMessage: String(batchErr) },
-    });
+    try {
+      await prisma.multiplierBatch.update({
+        where: { id: batchId },
+        data: { status: "FAILED", errorMessage: String(batchErr) },
+      });
+    } catch (updateErr: any) {
+      if (updateErr?.code === "P2025") {
+        console.log(`[Multiplier Worker] Batch ${batchId} not found when trying to mark FAILED.`);
+        return;
+      }
+      console.error(`[Multiplier Worker] Failed to mark batch ${batchId} as FAILED:`, updateErr);
+    }
   }
 }
