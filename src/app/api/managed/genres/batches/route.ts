@@ -905,7 +905,10 @@ async function processBatchRendering(batchId: string) {
 
           // Check if this template uses a solid background color (e.g. Word Builder)
           // In this case the overlay WebM IS the full video — no background needed
-          const hasSolidBg = !!item.lyricalTemplate?.bgColor;
+          const hasSolidBg = !!item.lyricalTemplate?.bgColor &&
+            item.lyricalTemplate.bgColor !== "none" &&
+            item.lyricalTemplate.bgColor !== "transparent" &&
+            item.lyricalTemplate.bgColor !== "null";
 
           if (hasPreRenderedOverlay && hasSolidBg) {
             // ═══════════════════════════════════════════════════════════════

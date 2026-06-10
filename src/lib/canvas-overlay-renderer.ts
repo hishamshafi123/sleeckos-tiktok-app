@@ -616,7 +616,10 @@ export async function renderCanvasOverlay(
     // Spawn FFmpeg to receive PNG frames and encode to WebM VP8
     // When bgColor is set, the overlay is a FULL opaque video (no alpha needed)
     // When transparent, use yuva420p for alpha channel compositing
-    const hasSolidBg = !!config.bgColor;
+    const hasSolidBg = !!config.bgColor &&
+      config.bgColor !== "none" &&
+      config.bgColor !== "transparent" &&
+      config.bgColor !== "null";
     const ffmpegArgs = [
       "-y",
       "-f", "image2pipe",

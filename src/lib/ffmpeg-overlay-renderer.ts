@@ -263,7 +263,10 @@ export async function renderCanvasOverlay(
   }
 
   // Build FFmpeg command using a filtergraph script file to avoid escaping issues
-  const hasSolidBg = !!config.bgColor;
+  const hasSolidBg = !!config.bgColor &&
+    config.bgColor !== "none" &&
+    config.bgColor !== "transparent" &&
+    config.bgColor !== "null";
   const bgColor = hasSolidBg ? config.bgColor! : "black@0.0";
   // FFmpeg color source: use named or 0xRRGGBB format
   const colorVal = bgColor.startsWith("#") ? bgColor.replace("#", "0x") : bgColor;
