@@ -4,7 +4,7 @@ import { useState, useEffect, useRef } from "react";
 import { 
   Sparkles, Music, Sliders, Play, Pause, Trash2, Plus, 
   Upload, Film, CheckCircle2, AlertCircle, RefreshCw, ChevronRight, ChevronDown, Check, X, Lock, Tag, Folder, FolderOpen, Eye, Filter,
-  Loader2, ExternalLink, Download
+  Loader2, ExternalLink, Download, Edit3
 } from "lucide-react";
 import { toast as originalToast } from "sonner";
 
@@ -482,6 +482,12 @@ export default function GenresDashboard() {
   const [lyricalMuteAudio, setLyricalMuteAudio] = useState<boolean>(false);
   const [mixupVisuals, setMixupVisuals] = useState<boolean>(true);
 
+  // Lyrical transcription editor states
+  const [isLyricsEditorOpen, setIsLyricsEditorOpen] = useState(false);
+  const [lyricsEditingTrack, setLyricsEditingTrack] = useState<any | null>(null);
+  const [editingWords, setEditingWords] = useState<any[]>([]);
+  const [savingLyrics, setSavingLyrics] = useState(false);
+
 
 
   // Local video preview & manual upload states
@@ -686,6 +692,48 @@ export default function GenresDashboard() {
       toast.error(err.message || "Failed to designate lyrical track");
     } finally {
       setDesignatingLyrical(prev => ({ ...prev, [trackId]: false }));
+    }
+  };
+
+  const handleOpenLyricsEditor = (track: any) => {
+    setLyricsEditingTrack(track);
+    let words = [];
+    if (track.lyricalTranscription) {
+      try {
+        words = JSON.parse(track.lyricalTranscription);
+      } catch (e) {
+        console.error("Failed to parse lyrics:", e);
+      }
+    }
+    setEditingWords(words);
+    setIsLyricsEditorOpen(true);
+  };
+
+  const handleSaveLyrics = async () => {
+    if (!lyricsEditingTrack) return;
+    setSavingLyrics(true);
+    try {
+      const res = await fetch("/api/managed/genres/tracks", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: lyricsEditingTrack.id,
+          lyricalTranscription: JSON.stringify(editingWords)
+        }),
+      });
+      if (res.ok) {
+        toast.success("Lyrics transcription updated successfully!");
+        setIsLyricsEditorOpen(false);
+        setLyricsEditingTrack(null);
+        fetchTracks(); // refresh tracks list to update in-memory state
+      } else {
+        const data = await res.json();
+        toast.error(data.error || "Failed to save lyrics");
+      }
+    } catch (err: any) {
+      toast.error(err.message || "Failed to update lyrics");
+    } finally {
+      setSavingLyrics(false);
     }
   };
 
@@ -2230,6 +2278,17 @@ export default function GenresDashboard() {
                   }`}>
                     {selectedTrack.isLyrical ? "Whisper Aligned" : "Alignment Needed"}
                   </span>
+
+                  {selectedTrack.isLyrical && (
+                    <button
+                      type="button"
+                      onClick={() => handleOpenLyricsEditor(selectedTrack)}
+                      className="text-[10px] font-black uppercase tracking-widest px-3 py-1 rounded-full border bg-purple-500/10 hover:bg-purple-500/20 text-purple-400 hover:text-purple-300 border-purple-500/20 hover:border-purple-500/40 transition-all flex items-center gap-1.5 cursor-pointer"
+                    >
+                      <Edit3 className="w-3 h-3" />
+                      Edit Lyrics
+                    </button>
+                  )}
                 </div>
               </div>
 
@@ -6432,6 +6491,144 @@ export default function GenresDashboard() {
               >
                 Done
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Lyrics transcription editor modal */}
+      {isLyricsEditorOpen && lyricsEditingTrack && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md transition-all duration-300">
+          <div className="relative w-full max-w-4xl bg-[#0e0e16] border border-white/10 rounded-3xl overflow-hidden shadow-2xl shadow-purple-500/10 flex flex-col max-h-[85vh]">
+            {/* Modal Header */}
+            <div className="flex justify-between items-center px-6 py-4 border-b border-white/5 bg-black/20">
+              <div>
+                <h3 className="text-sm font-extrabold text-white flex items-center gap-2">
+                  <Edit3 className="w-4 h-4 text-purple-400" />
+                  Edit Lyrics Transcription
+                </h3>
+                <p className="text-[10px] text-gray-400 mt-1 uppercase tracking-wider font-semibold">
+                  Track: <strong className="text-amber-400">{lyricsEditingTrack.title}</strong> — {lyricsEditingTrack.artist}
+                </p>
+              </div>
+              <button
+                onClick={() => {
+                  setIsLyricsEditorOpen(false);
+                  setLyricsEditingTrack(null);
+                }}
+                className="p-1.5 rounded-full bg-white/5 hover:bg-white/10 text-gray-400 hover:text-white transition-all cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <div className="p-6 overflow-y-auto bg-black/40 flex-1">
+              <div className="bg-amber-500/5 border border-amber-500/10 rounded-2xl p-4 mb-5 flex items-start gap-3">
+                <AlertCircle className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
+                <div className="space-y-1">
+                  <p className="text-xs font-bold text-amber-400 uppercase tracking-wider">Spelling Correction Guide</p>
+                  <p className="text-[10px] text-gray-400 leading-relaxed">
+                    Whisper transcription aligns timestamps to individual words. Correct the spelling in each word box below. Do not change words unnecessarily to keep timings synchronized. Empty words will be removed upon saving.
+                  </p>
+                </div>
+              </div>
+
+              {editingWords.length === 0 ? (
+                <div className="text-center py-12 text-gray-500 text-sm italic">
+                  No transcription words found.
+                </div>
+              ) : (
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
+                  {editingWords.map((w, idx) => (
+                    <div key={idx} className="flex items-center gap-1.5 p-2 bg-white/5 border border-white/5 hover:border-white/10 rounded-xl transition-all">
+                      <span className="text-[9px] font-mono text-purple-400 font-bold min-w-[32px] bg-purple-500/5 px-1.5 py-0.5 rounded border border-purple-500/10 text-center">
+                        {w.start.toFixed(1)}s
+                      </span>
+                      <input
+                        type="text"
+                        value={w.word}
+                        onChange={(e) => {
+                          const newWords = [...editingWords];
+                          newWords[idx].word = e.target.value;
+                          setEditingWords(newWords);
+                        }}
+                        className="bg-black/40 border border-white/15 focus:border-purple-500 rounded-lg px-2 py-1 text-xs text-white focus:outline-none w-full font-bold transition-all"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditingWords(editingWords.filter((_, i) => i !== idx));
+                        }}
+                        className="text-gray-500 hover:text-red-400 p-1 rounded-lg hover:bg-red-500/5 transition-all shrink-0 cursor-pointer"
+                        title="Delete word"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Modal Footer */}
+            <div className="flex justify-between items-center px-6 py-4 border-t border-white/5 bg-black/20">
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const lower = editingWords.map(w => ({ ...w, word: w.word.toLowerCase() }));
+                    setEditingWords(lower);
+                    toast.success("Converted all words to lowercase");
+                  }}
+                  className="bg-white/5 hover:bg-white/10 text-gray-400 hover:text-white px-3 py-1.5 rounded-xl text-[10px] font-bold uppercase tracking-wider transition-all border border-white/5 cursor-pointer"
+                >
+                  All Lowercase
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const upper = editingWords.map(w => ({ ...w, word: w.word.toUpperCase() }));
+                    setEditingWords(upper);
+                    toast.success("Converted all words to UPPERCASE");
+                  }}
+                  className="bg-white/5 hover:bg-white/10 text-gray-400 hover:text-white px-3 py-1.5 rounded-xl text-[10px] font-bold uppercase tracking-wider transition-all border border-white/5 cursor-pointer"
+                >
+                  All Uppercase
+                </button>
+              </div>
+
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  disabled={savingLyrics}
+                  onClick={() => {
+                    setIsLyricsEditorOpen(false);
+                    setLyricsEditingTrack(null);
+                  }}
+                  className="px-5 py-2 bg-white/5 hover:bg-white/10 text-white font-bold rounded-xl text-xs transition-all border border-white/5 cursor-pointer disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={savingLyrics}
+                  onClick={handleSaveLyrics}
+                  className="px-5 py-2 bg-gradient-to-r from-purple-500 to-indigo-600 hover:from-purple-600 hover:to-indigo-700 text-white font-extrabold rounded-xl text-xs transition-all shadow-lg hover:shadow-purple-500/10 cursor-pointer disabled:opacity-50 flex items-center gap-2"
+                >
+                  {savingLyrics ? (
+                    <>
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      Saving...
+                    </>
+                  ) : (
+                    <>
+                      <Check className="w-3.5 h-3.5" />
+                      Save Lyrics
+                    </>
+                  )}
+                </button>
+              </div>
             </div>
           </div>
         </div>

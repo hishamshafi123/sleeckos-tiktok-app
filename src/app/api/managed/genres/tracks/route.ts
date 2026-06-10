@@ -146,7 +146,7 @@ export async function PATCH(req: Request) {
 
   try {
     const body = await req.json();
-    const { id, genre, musician, campaignOn } = body;
+    const { id, genre, musician, campaignOn, lyricalTranscription } = body;
 
     if (!id) {
       return NextResponse.json({ error: "Missing track ID" }, { status: 400 });
@@ -160,6 +160,9 @@ export async function PATCH(req: Request) {
     const updateData: any = {};
     if (genre !== undefined) updateData.genre = genre ? genre.trim() : null;
     if (musician !== undefined) updateData.musician = musician ? musician.trim() : null;
+    if (lyricalTranscription !== undefined) {
+      updateData.lyricalTranscription = lyricalTranscription;
+    }
     
     if (campaignOn !== undefined) {
       updateData.campaignOn = !!campaignOn;

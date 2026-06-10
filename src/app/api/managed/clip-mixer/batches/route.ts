@@ -526,24 +526,19 @@ async function processClipMixerBatch(batchId: string) {
         // For transparent templates, burn ASS subtitles directly onto concatenated clips
         if (templateHasSolidBg) {
           // ─── SOLID BG PATH: WebM overlay is the complete video ───
-          const overlayIdx = slices.length;
-          inputs.push(`-i "${overlayPath}"`);
-
-          const audioIdx = overlayIdx + 1;
           const audioPath = path.join(process.cwd(), "public", batch.track.fileUrl);
-          if (batch.muteAudio) {
-            inputs.push(`-f lavfi -i anullsrc=channel_layout=stereo:sample_rate=44100`);
-          } else {
-            if (!fs.existsSync(audioPath)) {
-              throw new Error(`Audio track file not found on disk at: ${audioPath}`);
-            }
-            inputs.push(`-i "${audioPath}"`);
+          const finalAudioInput = batch.muteAudio
+            ? `-f lavfi -i anullsrc=channel_layout=stereo:sample_rate=44100`
+            : `-i "${audioPath}"`;
+
+          if (!batch.muteAudio && !fs.existsSync(audioPath)) {
+            throw new Error(`Audio track file not found on disk at: ${audioPath}`);
           }
 
           const cmd = [
             `ffmpeg -y`,
-            ...inputs,
             `-i "${overlayPath}"`,
+            finalAudioInput,
             `-c:v libx264`,
             `-pix_fmt yuv420p`,
             `-preset superfast`,
