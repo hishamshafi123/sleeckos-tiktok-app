@@ -72,7 +72,7 @@ export async function POST(req: Request) {
 
     // Build archive inline
     const archivesDir = path.join(process.cwd(), "public", "uploads", "clip-mixer", "archives");
-    const archiveName = `smart_clip_${batchId.substring(0, 8)}_${numAccounts}x${vidsPerAccount}_${Date.now()}.tar.gz`;
+    const archiveName = `smart_clip_${batchId.substring(0, 8)}_${numAccounts}x${vidsPerAccount}_${Date.now()}.tar`;
     const archivePath = path.join(archivesDir, archiveName);
     tempDir = path.join(archivesDir, `tmp_smart_${Date.now()}`);
 
@@ -96,11 +96,11 @@ export async function POST(req: Request) {
       }
     }
 
-    console.log(`[Clip Mixer Smart Download] Copied ${idx} files into ${numAccounts} folders. Compressing...`);
+    console.log(`[Clip Mixer Smart Download] Copied ${idx} files into ${numAccounts} folders. Packaging...`);
 
     // tar
     await new Promise<void>((resolve, reject) => {
-      exec(`tar -czf "${archivePath}" -C "${tempDir}" .`, { maxBuffer: 200 * 1024 * 1024 }, (err, _, stderr) => {
+      exec(`tar -cf "${archivePath}" -C "${tempDir}" .`, { maxBuffer: 200 * 1024 * 1024 }, (err, _, stderr) => {
         if (err) {
           console.error("[Clip Mixer Smart Download] tar error:", stderr);
           reject(new Error(`tar failed: ${stderr}`));

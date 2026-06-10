@@ -968,12 +968,12 @@ export default function MultiplierPage() {
           }
         }
 
-        const blob = new Blob(chunks as any, { type: "application/gzip" });
+        const blob = new Blob(chunks as any, { type: "application/x-tar" });
         const blobUrl = URL.createObjectURL(blob);
 
         const link = document.createElement("a");
         link.href = blobUrl;
-        link.download = statusData.downloadUrl.split("/").pop() || `multiplier_${batchId.substring(0, 8)}.tar.gz`;
+        link.download = statusData.downloadUrl.split("/").pop() || `multiplier_${batchId.substring(0, 8)}.tar`;
         document.body.appendChild(link);
         link.click();
         document.body.removeChild(link);

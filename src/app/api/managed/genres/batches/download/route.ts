@@ -51,7 +51,7 @@ export async function GET(req: Request) {
 
     const archivesDir = path.join(process.cwd(), "public", "uploads", "genres", "archives");
     const statusPath = path.join(archivesDir, `status_${batchId}.json`);
-    const archiveName = `genre_${batchId}_archive.tar.gz`;
+    const archiveName = `genre_${batchId}_archive.tar`;
     const archivePath = path.join(archivesDir, archiveName);
 
     let startPrep = false;
@@ -126,7 +126,7 @@ async function prepareGenreArchiveInBackground(batchId: string, renderedCount: n
   const publicDir = path.join(process.cwd(), "public");
 
   const statusPath = path.join(archivesDir, `status_${batchId}.json`);
-  const archiveName = `genre_${batchId}_archive.tar.gz`;
+  const archiveName = `genre_${batchId}_archive.tar`;
   const archivePath = path.join(archivesDir, archiveName);
   const linkDir = path.join(tempDir, `dl_${batchId}`);
 
@@ -235,12 +235,12 @@ async function prepareGenreArchiveInBackground(batchId: string, renderedCount: n
       });
     }
 
-    await updateStatus({ status: "PREPARING", progress: 60, message: "Compressing into tar.gz archive..." });
+    await updateStatus({ status: "PREPARING", progress: 60, message: "Packaging into tar archive..." });
 
     // 4. Run native tar compilation
     await new Promise<void>((resolve, reject) => {
       exec(
-        `tar -czf "${archivePath}" -C "${linkDir}" .`,
+        `tar -cf "${archivePath}" -C "${linkDir}" .`,
         { maxBuffer: 100 * 1024 * 1024 },
         (error, _stdout, stderr) => {
           // Clean up temporary files
@@ -361,7 +361,7 @@ export async function POST(req: Request) {
 
     // ── Build archive inline ────────────────────────────────────────────────
     const archivesDir = path.join(process.cwd(), "public", "uploads", "genres", "archives");
-    const archiveName = `smart_${batchId.substring(0, 8)}_${numAccounts}x${vidsPerAccount}_${Date.now()}.tar.gz`;
+    const archiveName = `smart_${batchId.substring(0, 8)}_${numAccounts}x${vidsPerAccount}_${Date.now()}.tar`;
     const archivePath = path.join(archivesDir, archiveName);
     tempDir = path.join(archivesDir, `tmp_smart_${Date.now()}`);
 
@@ -388,11 +388,11 @@ export async function POST(req: Request) {
       }
     }
 
-    console.log(`[Smart Download] Copied ${idx} files into ${numAccounts} folders. Compressing...`);
+    console.log(`[Smart Download] Copied ${idx} files into ${numAccounts} folders. Packaging...`);
 
     // 3. tar
     await new Promise<void>((resolve, reject) => {
-      exec(`tar -czf "${archivePath}" -C "${tempDir}" .`, { maxBuffer: 200 * 1024 * 1024 }, (err, _, stderr) => {
+      exec(`tar -cf "${archivePath}" -C "${tempDir}" .`, { maxBuffer: 200 * 1024 * 1024 }, (err, _, stderr) => {
         if (err) {
           console.error("[Smart Download] tar error:", stderr);
           reject(new Error(`tar failed: ${stderr}`));

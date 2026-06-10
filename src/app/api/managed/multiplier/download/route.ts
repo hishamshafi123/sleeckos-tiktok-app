@@ -43,7 +43,7 @@ export async function GET(req: Request) {
 
     const archivesDir = path.join(process.cwd(), "public", "uploads", "multiplier", "archives");
     const statusPath = path.join(archivesDir, `status_${batchId}.json`);
-    const archiveName = `multiplier_${batchId}_archive.tar.gz`;
+    const archiveName = `multiplier_${batchId}_archive.tar`;
     const archivePath = path.join(archivesDir, archiveName);
 
     let startPrep = false;
@@ -118,7 +118,7 @@ async function prepareArchiveInBackground(batchId: string, renderedCount: number
   const publicDir = path.join(process.cwd(), "public");
 
   const statusPath = path.join(archivesDir, `status_${batchId}.json`);
-  const archiveName = `multiplier_${batchId}_archive.tar.gz`;
+  const archiveName = `multiplier_${batchId}_archive.tar`;
   const archivePath = path.join(archivesDir, archiveName);
   const linkDir = path.join(tempDir, `dl_${batchId}`);
 
@@ -216,12 +216,12 @@ async function prepareArchiveInBackground(batchId: string, renderedCount: number
       });
     }
 
-    await updateStatus({ status: "PREPARING", progress: 60, message: "Compressing into tar.gz archive..." });
+    await updateStatus({ status: "PREPARING", progress: 60, message: "Packaging into tar archive..." });
 
     // 4. Run native tar compilation
     await new Promise<void>((resolve, reject) => {
       exec(
-        `tar -czf "${archivePath}" -C "${linkDir}" .`,
+        `tar -cf "${archivePath}" -C "${linkDir}" .`,
         { maxBuffer: 100 * 1024 * 1024 },
         (error, _stdout, stderr) => {
           // Clean up temporary files

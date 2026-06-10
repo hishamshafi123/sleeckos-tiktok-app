@@ -658,12 +658,12 @@ export default function ClipMixerPage() {
           }
         }
 
-        const blob = new Blob(chunks as any, { type: "application/gzip" });
+        const blob = new Blob(chunks as any, { type: "application/x-tar" });
         const blobUrl = URL.createObjectURL(blob);
 
         const link = document.createElement("a");
         link.href = blobUrl;
-        link.download = data.downloadUrl.split("/").pop() || "smart_clip_download.tar.gz";
+        link.download = data.downloadUrl.split("/").pop() || "smart_clip_download.tar";
         document.body.appendChild(link);
         link.click();
         document.body.removeChild(link);
