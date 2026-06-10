@@ -274,7 +274,7 @@ export async function renderCanvasOverlay(
   // For transparent: need format=yuva420p before ass
   const filterContent = hasSolidBg
     ? "color=c=" + colorVal + ":s=" + WIDTH + "x" + HEIGHT + ":d=" + duration + ":r=" + FPS + ",ass=" + assPath + ":fontsdir=" + fontsDir + " [out]"
-    : "color=c=" + colorVal + ":s=" + WIDTH + "x" + HEIGHT + ":d=" + duration + ":r=" + FPS + ",format=yuva420p,ass=" + assPath + ":fontsdir=" + fontsDir + " [out]";
+    : "color=c=" + colorVal + ":s=" + WIDTH + "x" + HEIGHT + ":d=" + duration + ":r=" + FPS + ",format=yuva420p,ass=" + assPath + ":fontsdir=" + fontsDir + ":alpha=1 [out]";
   fs.writeFileSync(filterScript, filterContent, "utf-8");
   console.log("[FFmpeg Renderer] Filter script: " + filterScript);
   console.log("[FFmpeg Renderer] Filter content: " + filterContent);
