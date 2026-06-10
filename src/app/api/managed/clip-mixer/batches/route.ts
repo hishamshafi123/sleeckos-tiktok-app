@@ -528,8 +528,11 @@ async function processClipMixerBatch(batchId: string) {
           lastVideoLabel = "v0";
         }
 
-        // Composite lyrics overlay onto clips chain using shortest=1 to resolve alpha overlaying
-        filterComplex += `[${lastVideoLabel}][${overlayIdx}:v]overlay=0:0:shortest=1[v_final]`;
+        // Composite lyrics overlay onto clips chain
+        // format=auto is CRITICAL: it preserves the yuva420p alpha channel from the WebM overlay.
+        // Without it, FFmpeg defaults to yuv420p which strips alpha, making the transparent
+        // background render as solid black and hiding the video behind the lyrics.
+        filterComplex += `[${lastVideoLabel}][${overlayIdx}:v]overlay=0:0:shortest=1:format=auto[v_final]`;
 
         const cmd = [
           `ffmpeg -y`,
