@@ -480,6 +480,7 @@ export default function GenresDashboard() {
   const [lyricalWordSpacing, setLyricalWordSpacing] = useState<string>("normal");
   const [lyricalLetterSpacing, setLyricalLetterSpacing] = useState<number>(0);
   const [lyricalMuteAudio, setLyricalMuteAudio] = useState<boolean>(false);
+  const [lyricalAspectRatio, setLyricalAspectRatio] = useState<"9:16" | "1:1">("9:16");
   const [mixupVisuals, setMixupVisuals] = useState<boolean>(true);
 
   // Lyrical transcription editor states
@@ -805,6 +806,7 @@ export default function GenresDashboard() {
           wordSpacing: lyricalWordSpacing,
           letterSpacing: lyricalLetterSpacing,
           muteAudio: lyricalMuteAudio,
+          aspectRatio: lyricalAspectRatio,
         }),
       });
       if (res.ok) {
@@ -2487,8 +2489,8 @@ export default function GenresDashboard() {
                         </select>
                       </div>
 
-                      {/* Name / Font */}
-                      <div className="grid grid-cols-2 gap-3">
+                      {/* Name / Font / Aspect Ratio */}
+                      <div className="grid grid-cols-3 gap-3">
                         <div className="space-y-1">
                           <label className="block text-[9px] uppercase tracking-wider font-extrabold text-gray-500">Template Name</label>
                           <input
@@ -2513,6 +2515,17 @@ export default function GenresDashboard() {
                             <option value="Inter-Regular">Inter Regular</option>
                             <option value="Inter-Light">Inter Light</option>
                             <option value="Caveat-Bold">Caveat Bold</option>
+                          </select>
+                        </div>
+                        <div className="space-y-1">
+                          <label className="block text-[9px] uppercase tracking-wider font-extrabold text-gray-500">Aspect Ratio</label>
+                          <select
+                            value={lyricalAspectRatio}
+                            onChange={(e) => setLyricalAspectRatio(e.target.value as "9:16" | "1:1")}
+                            className="w-full bg-black/45 border border-white/10 hover:border-white/20 rounded-2xl px-3 py-2 text-xs text-gray-300 focus:outline-none transition-all duration-300 cursor-pointer"
+                          >
+                            <option value="9:16">Vertical (9:16)</option>
+                            <option value="1:1">Square (1:1)</option>
                           </select>
                         </div>
                       </div>
@@ -3348,6 +3361,7 @@ export default function GenresDashboard() {
                                   setLyricalWordSpacing(tpl.wordSpacing || "normal");
                                   setLyricalLetterSpacing(tpl.letterSpacing || 0);
                                   setLyricalMuteAudio(tpl.muteAudio || false);
+                                  setLyricalAspectRatio(tpl.aspectRatio || "9:16");
                                   if (tpl.bgColor) {
                                     setSetupLyricalBgVideoUrl("");
                                   }

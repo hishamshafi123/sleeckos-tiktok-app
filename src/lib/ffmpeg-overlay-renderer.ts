@@ -36,6 +36,7 @@ interface TemplateConfig {
   textAlign?: string;
   wordSpacing?: string;
   letterSpacing?: number;
+  aspectRatio?: string;
 }
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -125,7 +126,9 @@ export function generateASS(words: Word[], config: TemplateConfig): string {
   const fontEntry = FONT_MAP[config.fontFamily] || FONT_MAP["Montserrat-Black"];
   const fontName = fontEntry.name;
   const fontSize = config.fontSize || 48;
-  const posY = Math.round(HEIGHT * (config.positionY || 0.75));
+  const width = config.aspectRatio === "1:1" ? 720 : 720;
+  const height = config.aspectRatio === "1:1" ? 720 : 1280;
+  const posY = Math.round(height * (config.positionY || 0.75));
 
   const activeColor = hexToASS(config.activeColor === "multi" ? "#FFFF00" : config.activeColor || "#FFFFFF");
   const inactiveColor = config.textColor ? hexToASS(config.textColor) : "&H00888888&";
@@ -143,8 +146,8 @@ export function generateASS(words: Word[], config: TemplateConfig): string {
   lines.push("WrapStyle: 0");
   lines.push("ScaledBorderAndShadow: yes");
   lines.push("YCbCr Matrix: None");
-  lines.push("PlayResX: " + WIDTH);
-  lines.push("PlayResY: " + HEIGHT);
+  lines.push("PlayResX: " + width);
+  lines.push("PlayResY: " + height);
   lines.push("");
   lines.push("[V4+ Styles]");
   lines.push("Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding");
@@ -162,7 +165,7 @@ export function generateASS(words: Word[], config: TemplateConfig): string {
   })();
 
   const alignTag = config.textAlign === "left" ? "\\an4" : config.textAlign === "right" ? "\\an6" : "\\an5";
-  const alignX = config.textAlign === "left" ? 50 : config.textAlign === "right" ? 670 : 360;
+  const alignX = config.textAlign === "left" ? 50 : config.textAlign === "right" ? (width - 50) : (width / 2);
 
   if (config.animationMode === "word_builder") {
     const phrases = chunkPhrases(words);
@@ -271,13 +274,16 @@ export async function renderCanvasOverlay(
   // FFmpeg color source: use named or 0xRRGGBB format
   const colorVal = bgColor.startsWith("#") ? bgColor.replace("#", "0x") : bgColor;
 
+  const width = config.aspectRatio === "1:1" ? 720 : 720;
+  const height = config.aspectRatio === "1:1" ? 720 : 1280;
+
   // Write filter script to file (avoids all command-line escaping issues)
   const filterScript = "/tmp/overlay_filter_" + ts + ".txt";
   // The filter graph: color source -> ass subtitles -> output
   // For transparent: need format=rgba before ass, then convert to yuva420p
   const filterContent = hasSolidBg
-    ? "color=c=" + colorVal + ":s=" + WIDTH + "x" + HEIGHT + ":d=" + duration + ":r=" + FPS + ",ass=" + assPath + ":fontsdir=" + fontsDir + " [out]"
-    : "color=c=" + colorVal + ":s=" + WIDTH + "x" + HEIGHT + ":d=" + duration + ":r=" + FPS + ",format=rgba,ass=" + assPath + ":fontsdir=" + fontsDir + ",format=yuva420p [out]";
+    ? "color=c=" + colorVal + ":s=" + width + "x" + height + ":d=" + duration + ":r=" + FPS + ",ass=" + assPath + ":fontsdir=" + fontsDir + " [out]"
+    : "color=c=" + colorVal + ":s=" + width + "x" + height + ":d=" + duration + ":r=" + FPS + ",format=rgba,ass=" + assPath + ":fontsdir=" + fontsDir + ",format=yuva420p [out]";
   fs.writeFileSync(filterScript, filterContent, "utf-8");
   console.log("[FFmpeg Renderer] Filter script: " + filterScript);
   console.log("[FFmpeg Renderer] Filter content: " + filterContent);

@@ -1,7 +1,7 @@
 export const dynamic = "force-dynamic";
 import { NextRequest, NextResponse } from "next/server";
 import { getSession } from "@/lib/session";
-import { getMultiplierDriveClient } from "../status/route";
+import { getMultiplierDriveClient } from "../drive-helper";
 
 // GET /api/managed/multiplier/google/folders?q=search — List/search Drive folders
 export async function GET(req: NextRequest) {

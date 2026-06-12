@@ -583,6 +583,7 @@ model TrackLyricalTemplate {
   textAlign       String           @default("center")     // "left" | "center" | "right"
   wordSpacing     String           @default("normal")     // "normal" | "wide" | "extra_wide"
   letterSpacing   Int              @default(0)            // Extra letter spacing in pixels
+  aspectRatio     String           @default("9:16")
   overlayVideoUrl String?          // Local transparent .mov video overlay file URL
   previewImageUrl String?          // Local transparent preview PNG image file URL
   muteAudio       Boolean          @default(false)  // Toggle to mute audio in composition
@@ -831,16 +832,19 @@ model GoogleDriveConnection {
 }
 
 model ClipFolder {
-  id           String          @id @default(uuid())
-  name         String
-  sectionId    String
-  section      AccountSection  @relation(fields: [sectionId], references: [id], onDelete: Cascade)
-  clips        ClipVideo[]
-  mixerBatches ClipMixerBatch[]
-  createdAt    DateTime        @default(now())
-  updatedAt    DateTime        @updatedAt
+  id             String           @id @default(uuid())
+  name           String
+  sectionId      String
+  section        AccountSection   @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+  clips          ClipVideo[]
+  mixerBatches   ClipMixerBatch[]
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
 
-  @@unique([sectionId, name])
+  parentId       String?
+  parent         ClipFolder?      @relation("SubFolders", fields: [parentId], references: [id], onDelete: Cascade)
+  subFolders     ClipFolder[]     @relation("SubFolders")
+  clipMixerItems ClipMixerItem[]  @relation("ItemFolder")
 }
 
 model ClipVideo {
@@ -881,6 +885,8 @@ model ClipMixerItem {
   renderedVideoUrl  String?
   status            GenreBatchItemStatus @default(PENDING)
   errorMessage      String?
+  folderId          String?
+  folder            ClipFolder?          @relation("ItemFolder", fields: [folderId], references: [id], onDelete: SetNull)
   createdAt         DateTime             @default(now())
   updatedAt         DateTime             @updatedAt
 }

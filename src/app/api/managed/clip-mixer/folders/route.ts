@@ -83,30 +83,30 @@ export async function POST(req: Request) {
     // Case 1: JSON payload for creating folders
     if (contentType.includes("application/json")) {
       const body = await req.json();
-      const { action, sectionId, name } = body;
+      const { action, sectionId, name, parentId } = body;
 
       if (action === "CREATE_FOLDER") {
         if (!sectionId || !name) {
           return NextResponse.json({ error: "Missing sectionId or name" }, { status: 400 });
         }
 
-        const existing = await prisma.clipFolder.findUnique({
+        const existing = await prisma.clipFolder.findFirst({
           where: {
-            sectionId_name: {
-              sectionId,
-              name: name.trim(),
-            },
+            sectionId,
+            name: name.trim(),
+            parentId: parentId || null,
           },
         });
 
         if (existing) {
-          return NextResponse.json({ error: "Folder with this name already exists in this section" }, { status: 400 });
+          return NextResponse.json({ error: "Folder with this name already exists in this folder" }, { status: 400 });
         }
 
         const folder = await prisma.clipFolder.create({
           data: {
             sectionId,
             name: name.trim(),
+            parentId: parentId || null,
           },
         });
 
@@ -175,6 +175,111 @@ export async function POST(req: Request) {
   } catch (err) {
     console.error("[Clip Mixer Folders POST] Error:", err);
     return NextResponse.json({ error: "Failed to process request" }, { status: 500 });
+  }
+}
+
+// PATCH /api/managed/clip-mixer/folders — Rename or move a folder
+export async function PATCH(req: Request) {
+  const session = await getSession();
+  if (!session || session.role !== "ADMIN") {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  try {
+    const body = await req.json();
+    const { action, folderId, name, parentId } = body;
+
+    if (!folderId) {
+      return NextResponse.json({ error: "Missing folderId" }, { status: 400 });
+    }
+
+    if (action === "RENAME_FOLDER") {
+      if (!name || !name.trim()) {
+        return NextResponse.json({ error: "Missing name" }, { status: 400 });
+      }
+
+      // Check if folder exists
+      const folder = await prisma.clipFolder.findUnique({ where: { id: folderId } });
+      if (!folder) {
+        return NextResponse.json({ error: "Folder not found" }, { status: 404 });
+      }
+
+      // Check name uniqueness in same parent
+      const existing = await prisma.clipFolder.findFirst({
+        where: {
+          sectionId: folder.sectionId,
+          name: name.trim(),
+          parentId: folder.parentId,
+          id: { not: folderId },
+        },
+      });
+
+      if (existing) {
+        return NextResponse.json({ error: "Another folder with this name already exists in the same folder" }, { status: 400 });
+      }
+
+      const updated = await prisma.clipFolder.update({
+        where: { id: folderId },
+        data: { name: name.trim() },
+      });
+
+      return NextResponse.json(updated);
+    }
+
+    if (action === "MOVE_FOLDER") {
+      const targetParentId = parentId === "" || parentId === "root" || parentId === null ? null : parentId;
+      
+      if (targetParentId === folderId) {
+        return NextResponse.json({ error: "Cannot move folder into itself" }, { status: 400 });
+      }
+
+      // Check if folder exists
+      const folder = await prisma.clipFolder.findUnique({ where: { id: folderId } });
+      if (!folder) {
+        return NextResponse.json({ error: "Folder not found" }, { status: 404 });
+      }
+
+      // Prevent moving a folder into its own descendants to avoid loops
+      if (targetParentId) {
+        let currentParentId: string | null = targetParentId;
+        while (currentParentId) {
+          if (currentParentId === folderId) {
+            return NextResponse.json({ error: "Cannot move a folder into its own subfolder" }, { status: 400 });
+          }
+          const parentFolder: { parentId: string | null } | null = await prisma.clipFolder.findUnique({
+            where: { id: currentParentId },
+            select: { parentId: true },
+          });
+          currentParentId = parentFolder?.parentId || null;
+        }
+      }
+
+      // Check name uniqueness in new parent
+      const existing = await prisma.clipFolder.findFirst({
+        where: {
+          sectionId: folder.sectionId,
+          name: folder.name,
+          parentId: targetParentId,
+          id: { not: folderId },
+        },
+      });
+
+      if (existing) {
+        return NextResponse.json({ error: "A folder with the same name already exists in the destination folder" }, { status: 400 });
+      }
+
+      const updated = await prisma.clipFolder.update({
+        where: { id: folderId },
+        data: { parentId: targetParentId },
+      });
+
+      return NextResponse.json(updated);
+    }
+
+    return NextResponse.json({ error: "Invalid action" }, { status: 400 });
+  } catch (err: any) {
+    console.error("[Clip Folder PATCH] Error:", err);
+    return NextResponse.json({ error: err.message || "Failed to update folder" }, { status: 500 });
   }
 }
 

@@ -4,7 +4,7 @@ import prisma from "@/lib/db";
 import { getSession } from "@/lib/session";
 import fs from "fs";
 import path from "path";
-import { getMultiplierDriveClient } from "../google/status/route";
+import { getMultiplierDriveClient } from "../google/drive-helper";
 
 // Global export queue — serialize exports to prevent rate limiting
 let exportQueue: string[] = [];

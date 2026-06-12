@@ -41,6 +41,9 @@ export async function GET(req: NextRequest) {
               lyricalTemplate: {
                 select: { templateName: true },
               },
+              folder: {
+                select: { name: true },
+              },
             },
             orderBy: { createdAt: "asc" },
           },
@@ -87,6 +90,7 @@ export async function POST(req: Request) {
     const body = await req.json();
     const {
       folderId,
+      folderIds, // array of folder IDs
       trackId,
       lyricalTemplateIds, // array of template IDs
       targetDuration = 15.0,
@@ -95,24 +99,25 @@ export async function POST(req: Request) {
       videosPerAccount = 3,
     } = body;
 
-    if (!folderId || !trackId || !lyricalTemplateIds || !Array.isArray(lyricalTemplateIds) || lyricalTemplateIds.length === 0) {
-      return NextResponse.json({ error: "Missing folderId, trackId, or lyricalTemplateIds list" }, { status: 400 });
+    let selectedFolderIds = folderIds;
+    if (!selectedFolderIds && folderId) {
+      selectedFolderIds = [folderId];
+    }
+
+    if (!selectedFolderIds || !Array.isArray(selectedFolderIds) || selectedFolderIds.length === 0) {
+      return NextResponse.json({ error: "Missing folderIds or folderId list" }, { status: 400 });
     }
 
     const numAccounts = Math.max(1, parseInt(accountCount) || 1);
     const vidsPerAccount = Math.max(1, parseInt(videosPerAccount) || 1);
 
     const folder = await prisma.clipFolder.findUnique({
-      where: { id: folderId },
+      where: { id: selectedFolderIds[0] },
       include: { clips: true },
     });
 
     if (!folder) {
       return NextResponse.json({ error: "Clip folder not found" }, { status: 404 });
-    }
-
-    if (folder.clips.length === 0) {
-      return NextResponse.json({ error: "No clips found in the selected folder. Please upload clips first!" }, { status: 400 });
     }
 
     const track = await prisma.track.findUnique({
@@ -153,7 +158,7 @@ export async function POST(req: Request) {
     // Create batch in RENDERING status
     const batch = await prisma.clipMixerBatch.create({
       data: {
-        folderId,
+        folderId: selectedFolderIds[0],
         trackId,
         lyricalTemplateId: lyricalTemplateIds[0], // primary template to satisfy DB constraint
         targetDuration: parseFloat(targetDuration) || 15.0,
@@ -163,12 +168,13 @@ export async function POST(req: Request) {
       },
     });
 
-    // Populate batch items by cycling through sections, accounts, and templates
+    // Populate batch items by cycling through sections, accounts, templates and selected folders
     let templateCounter = 0;
     for (let i = 0; i < totalVideos; i++) {
       const virtualAccIdx = Math.floor(i / vidsPerAccount);
       const account = sectionAccounts[virtualAccIdx % sectionAccounts.length];
       const itemTemplateId = lyricalTemplateIds[templateCounter % lyricalTemplateIds.length];
+      const itemFolderId = selectedFolderIds[i % selectedFolderIds.length];
       templateCounter++;
 
       await prisma.clipMixerItem.create({
@@ -176,6 +182,7 @@ export async function POST(req: Request) {
           batchId: batch.id,
           accountId: account.id,
           lyricalTemplateId: itemTemplateId,
+          folderId: itemFolderId,
           status: "PENDING",
         },
       });
@@ -345,6 +352,7 @@ async function processClipMixerBatch(batchId: string) {
     }
 
     // Process each item sequentially
+    const usedCombinations = new Set<string>();
     for (const item of batch.items) {
       if (item.status === "RENDERED" || item.status === "UPLOADED") continue;
 
@@ -381,7 +389,17 @@ async function processClipMixerBatch(batchId: string) {
           throw new Error(`Lyrics template styling preset not found for queue item ${item.id}`);
         }
 
-        const clips = [...batch.folder.clips];
+        const itemFolderId = item.folderId || batch.folderId;
+        const itemFolder = await prisma.clipFolder.findUnique({
+          where: { id: itemFolderId },
+          include: { clips: true },
+        });
+
+        if (!itemFolder || itemFolder.clips.length === 0) {
+          throw new Error("No clips found in the folder assigned to this video.");
+        }
+
+        const clips = [...itemFolder.clips];
         
         // Target duration computation with random variance (+/- 2 seconds)
         const variance = Math.random() * 4.0 - 2.0;
@@ -390,46 +408,60 @@ async function processClipMixerBatch(batchId: string) {
         T = Math.min(T, batch.track.duration);
         if (T < 5.0) T = 5.0; // clamp minimum video duration
 
-        const slices: { clipPath: string; start: number; duration: number }[] = [];
+        const width = template.aspectRatio === "1:1" ? 720 : 720;
+        const height = template.aspectRatio === "1:1" ? 720 : 1280;
+
+        let slices: { clipPath: string; start: number; duration: number; id: string }[] = [];
         let currentDuration = 0;
+        let attempts = 0;
+        let clipComboKey = "";
 
-        // Shuffle the clips array to ensure randomized picking order
-        const shuffledClips = [...clips].sort(() => Math.random() - 0.5);
+        do {
+          slices = [];
+          currentDuration = 0;
+          const shuffledClips = [...clips].sort(() => Math.random() - 0.5);
 
-        for (const clip of shuffledClips) {
-          if (currentDuration >= T) {
-            break;
-          }
+          for (const clip of shuffledClips) {
+            if (currentDuration >= T) {
+              break;
+            }
 
-          const remaining = T - currentDuration;
+            const remaining = T - currentDuration;
 
-          let sliceDuration = Math.random() * 2.0 + 3.0; // random chunk duration between 3.0s and 5.0s
-          if (sliceDuration > clip.duration) {
-            sliceDuration = clip.duration;
-          }
-          if (sliceDuration > remaining) {
-            sliceDuration = remaining;
-          }
-
-          if (remaining <= 5.0) {
-            if (clip.duration >= remaining) {
-              sliceDuration = remaining;
-            } else {
+            let sliceDuration = Math.random() * 2.0 + 3.0; // random chunk duration between 3.0s and 5.0s
+            if (sliceDuration > clip.duration) {
               sliceDuration = clip.duration;
             }
+            if (sliceDuration > remaining) {
+              sliceDuration = remaining;
+            }
+
+            if (remaining <= 5.0) {
+              if (clip.duration >= remaining) {
+                sliceDuration = remaining;
+              } else {
+                sliceDuration = clip.duration;
+              }
+            }
+
+            const maxStart = Math.max(0, clip.duration - sliceDuration);
+            const start = Math.random() * maxStart;
+
+            slices.push({
+              id: clip.id,
+              clipPath: path.join(process.cwd(), "public", clip.videoUrl),
+              start,
+              duration: sliceDuration,
+            });
+
+            currentDuration += sliceDuration;
           }
 
-          const maxStart = Math.max(0, clip.duration - sliceDuration);
-          const start = Math.random() * maxStart;
+          clipComboKey = slices.map(s => s.id).sort().join(",");
+          attempts++;
+        } while (usedCombinations.has(clipComboKey) && attempts < 50 && clips.length >= Math.ceil(T / 4.0));
 
-          slices.push({
-            clipPath: path.join(process.cwd(), "public", clip.videoUrl),
-            start,
-            duration: sliceDuration,
-          });
-
-          currentDuration += sliceDuration;
-        }
+        usedCombinations.add(clipComboKey);
 
         if (slices.length === 0) {
           throw new Error("Could not construct random clip slices for composition.");
@@ -610,7 +642,7 @@ async function processClipMixerBatch(batchId: string) {
           // Build scaling/cropping & concat filter complex
           let filterComplex = "";
           for (let i = 0; i < slices.length; i++) {
-            filterComplex += `[${i}:v]scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,setsar=1,fps=30,format=yuv420p[v${i}];`;
+            filterComplex += `[${i}:v]scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height},setsar=1,fps=30,format=yuv420p[v${i}];`;
           }
 
           let lastVideoLabel = "";

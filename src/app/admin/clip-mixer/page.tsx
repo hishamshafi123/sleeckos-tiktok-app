@@ -4,7 +4,8 @@ import React, { useState, useEffect, useRef } from "react";
 import { 
   Folder, Video, Plus, Trash2, Sliders, Music, Sparkles, Layers, Play, Pause, 
   RefreshCw, ChevronRight, Check, X, ShieldAlert, Film, HelpCircle, HardDrive, 
-  Download, Volume2, VolumeX, Eye, AlertCircle, Loader2, Users, History, FolderOpen
+  Download, Volume2, VolumeX, Eye, AlertCircle, Loader2, Users, History, FolderOpen,
+  Edit3, Move
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -20,6 +21,7 @@ interface ClipFolder {
   id: string;
   name: string;
   sectionId: string;
+  parentId?: string | null;
   clips: ClipVideo[];
   _count?: {
     clips: number;
@@ -97,7 +99,19 @@ export default function ClipMixerPage() {
   const [selectedSectionId, setSelectedSectionId] = useState<string>("");
   const [folders, setFolders] = useState<ClipFolder[]>([]);
   const [selectedFolderId, setSelectedFolderId] = useState<string>("");
+  const [selectedFolderIds, setSelectedFolderIds] = useState<string[]>([]);
   const [newFolderName, setNewFolderName] = useState<string>("");
+  
+  // Subfolder & renaming & moving state declarations
+  const [parentIdForNewSubfolder, setParentIdForNewSubfolder] = useState<string | null>(null);
+  const [newSubfolderName, setNewSubfolderName] = useState<string>("");
+  const [isCreateSubfolderModalOpen, setIsCreateSubfolderModalOpen] = useState<boolean>(false);
+  const [isRenameModalOpen, setIsRenameModalOpen] = useState<boolean>(false);
+  const [folderToRename, setFolderToRename] = useState<ClipFolder | null>(null);
+  const [renamedFolderText, setRenamedFolderText] = useState<string>("");
+  const [isMoveModalOpen, setIsMoveModalOpen] = useState<boolean>(false);
+  const [folderToMove, setFolderToMove] = useState<ClipFolder | null>(null);
+  const [targetParentIdForMove, setTargetParentIdForMove] = useState<string | null>(null);
   
   const [tracks, setTracks] = useState<Track[]>([]);
   const [selectedTrackId, setSelectedTrackId] = useState<string>("");
@@ -181,8 +195,16 @@ export default function ClipMixerPage() {
         if (!data.some((f: ClipFolder) => f.id === selectedFolderId)) {
           setSelectedFolderId(data[0].id);
         }
+        // Initialize checked list if empty or filter out invalid folder IDs
+        setSelectedFolderIds(prev => {
+          if (prev.length === 0) {
+            return [data[0].id];
+          }
+          return prev.filter(id => data.some((f: ClipFolder) => f.id === id));
+        });
       } else {
         setSelectedFolderId("");
+        setSelectedFolderIds([]);
       }
     } catch (err) {
       console.error(err);
@@ -361,6 +383,151 @@ export default function ClipMixerPage() {
     });
   };
 
+  // Helper to build recursive folder tree
+  const buildFolderTree = (flatFolders: ClipFolder[]) => {
+    const map: Record<string, ClipFolder & { children: any[] }> = {};
+    const roots: (ClipFolder & { children: any[] })[] = [];
+
+    flatFolders.forEach(f => {
+      map[f.id] = { ...f, children: [] };
+    });
+
+    flatFolders.forEach(f => {
+      const parentId = (f as any).parentId;
+      if (parentId && map[parentId]) {
+        map[parentId].children.push(map[f.id]);
+      } else {
+        roots.push(map[f.id]);
+      }
+    });
+
+    return roots;
+  };
+
+  // Helper to get folder path (e.g. Root > Subfolder)
+  const getFolderPath = (folder: ClipFolder, allFolders: ClipFolder[]): string => {
+    const pathList: string[] = [folder.name];
+    let current = folder;
+    while ((current as any).parentId) {
+      const parent = allFolders.find(f => f.id === (current as any).parentId);
+      if (!parent) break;
+      pathList.unshift(parent.name);
+      current = parent;
+    }
+    return pathList.join(" > ");
+  };
+
+  // Helper to calculate P(N, K) permutations
+  const calculatePossibleVideos = (numClips: number, duration: number): number => {
+    if (numClips <= 0) return 0;
+    const K = Math.max(1, Math.round(duration / 4.0));
+    if (numClips < K) return 0;
+
+    let permutations = 1;
+    for (let i = 0; i < K; i++) {
+      permutations *= (numClips - i);
+      if (permutations > 1000000000) return 1000000000;
+    }
+    return permutations;
+  };
+
+  // Helper to check if child is descendant of parent
+  const isDescendantOf = (childId: string, parentId: string, allFolders: ClipFolder[]): boolean => {
+    let current = allFolders.find(f => f.id === childId);
+    while (current && (current as any).parentId) {
+      if ((current as any).parentId === parentId) return true;
+      current = allFolders.find(f => f.id === (current as any).parentId);
+    }
+    return false;
+  };
+
+  // Create subfolder handler
+  const handleCreateSubfolder = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newSubfolderName.trim() || !selectedSectionId || !parentIdForNewSubfolder) return;
+
+    try {
+      const res = await fetch("/api/managed/clip-mixer/folders", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "CREATE_FOLDER",
+          sectionId: selectedSectionId,
+          name: newSubfolderName.trim(),
+          parentId: parentIdForNewSubfolder,
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to create subfolder");
+
+      toast.success("Subfolder created successfully!");
+      setNewSubfolderName("");
+      setIsCreateSubfolderModalOpen(false);
+      setParentIdForNewSubfolder(null);
+      fetchFolders(selectedSectionId);
+      setSelectedFolderId(data.id);
+    } catch (err: any) {
+      toast.error(err.message || "Failed to create subfolder");
+    }
+  };
+
+  // Rename folder handler
+  const handleRenameFolder = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!folderToRename || !renamedFolderText.trim()) return;
+
+    try {
+      const res = await fetch("/api/managed/clip-mixer/folders", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "RENAME_FOLDER",
+          folderId: folderToRename.id,
+          name: renamedFolderText.trim(),
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to rename folder");
+
+      toast.success("Folder renamed successfully!");
+      setIsRenameModalOpen(false);
+      setFolderToRename(null);
+      fetchFolders(selectedSectionId);
+    } catch (err: any) {
+      toast.error(err.message || "Failed to rename folder");
+    }
+  };
+
+  // Move folder handler
+  const handleMoveFolder = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!folderToMove) return;
+
+    try {
+      const res = await fetch("/api/managed/clip-mixer/folders", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "MOVE_FOLDER",
+          folderId: folderToMove.id,
+          parentId: targetParentIdForMove === "root" ? null : targetParentIdForMove,
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to move folder");
+
+      toast.success("Folder moved successfully!");
+      setIsMoveModalOpen(false);
+      setFolderToMove(null);
+      fetchFolders(selectedSectionId);
+    } catch (err: any) {
+      toast.error(err.message || "Failed to move folder");
+    }
+  };
+
   // Folder creation
   const handleCreateFolder = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -520,10 +687,10 @@ export default function ClipMixerPage() {
     }
   };
 
-  // Trigger batch generation using numeric inputs (no checklist)
+  // Trigger batch generation using checked list of folders
   const handleGenerateBatch = async () => {
-    if (!selectedFolderId) {
-      toast.error("Please select a Clip Folder first");
+    if (selectedFolderIds.length === 0) {
+      toast.error("Please select at least one Clip Folder / Subfolder");
       return;
     }
     if (!selectedTrackId || selectedTemplateIds.length === 0) {
@@ -539,9 +706,15 @@ export default function ClipMixerPage() {
       return;
     }
 
-    const currentFolder = folders.find(f => f.id === selectedFolderId);
-    if (!currentFolder || !currentFolder.clips || currentFolder.clips.length === 0) {
-      toast.error("Selected folder is empty. Please upload clips first!");
+    // Verify folders contain clips
+    const emptyFolders = selectedFolderIds.filter(fid => {
+      const f = folders.find(x => x.id === fid);
+      return !f || !f.clips || f.clips.length === 0;
+    });
+
+    if (emptyFolders.length > 0) {
+      const names = emptyFolders.map(fid => folders.find(x => x.id === fid)?.name || fid).join(", ");
+      toast.error(`The following selected folders have no clips uploaded: ${names}. Please upload clips first!`);
       return;
     }
 
@@ -550,7 +723,7 @@ export default function ClipMixerPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          folderId: selectedFolderId,
+          folderIds: selectedFolderIds, // Multi-select folder IDs array
           trackId: selectedTrackId,
           lyricalTemplateIds: selectedTemplateIds,
           targetDuration,
@@ -647,6 +820,118 @@ export default function ClipMixerPage() {
       setSmartDownloadProgress("");
       setShowSmartDownload(false);
     }
+  };
+
+  const renderFolderRow = (folder: ClipFolder & { children: any[] }, depth = 0) => {
+    const isSelected = selectedFolderId === folder.id;
+    return (
+      <div key={folder.id} className="space-y-1">
+        <div
+          onClick={() => setSelectedFolderId(folder.id)}
+          style={{ paddingLeft: `${depth * 16 + 12}px` }}
+          className={`flex items-center justify-between p-3 rounded-xl cursor-pointer border transition-all text-sm group ${
+            isSelected
+              ? "bg-purple-500/10 border-purple-500/30 text-purple-300"
+              : "bg-[#09090f] border-[#ffffff08] text-gray-400 hover:text-white hover:bg-white/5"
+          }`}
+        >
+          <div className="flex items-center gap-2 truncate min-w-0 flex-1">
+            <Folder className={`w-4 h-4 flex-shrink-0 ${isSelected ? "text-purple-400" : "text-gray-600"}`} />
+            <span className="font-semibold truncate">{folder.name}</span>
+          </div>
+          <div className="flex items-center gap-1.5 flex-shrink-0">
+            <span className="text-xs bg-[#0f0f18] border border-white/5 text-gray-500 px-2 py-0.5 rounded-full font-bold">
+              {folder.clips?.length || 0}
+            </span>
+            <div className="opacity-0 group-hover:opacity-100 flex items-center gap-1 transition-opacity">
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setParentIdForNewSubfolder(folder.id);
+                  setNewSubfolderName("");
+                  setIsCreateSubfolderModalOpen(true);
+                }}
+                title="Add Subfolder"
+                className="text-gray-400 hover:text-purple-400 transition-all p-1 hover:bg-white/5 rounded"
+              >
+                <Plus className="w-3.5 h-3.5" />
+              </button>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setFolderToRename(folder);
+                  setRenamedFolderText(folder.name);
+                  setIsRenameModalOpen(true);
+                }}
+                title="Rename Folder"
+                className="text-gray-400 hover:text-amber-400 transition-all p-1 hover:bg-white/5 rounded"
+              >
+                <Edit3 className="w-3.5 h-3.5" />
+              </button>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setFolderToMove(folder);
+                  setTargetParentIdForMove(folder.parentId || "root");
+                  setIsMoveModalOpen(true);
+                }}
+                title="Move Folder"
+                className="text-gray-400 hover:text-blue-400 transition-all p-1 hover:bg-white/5 rounded"
+              >
+                <Move className="w-3.5 h-3.5" />
+              </button>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleDeleteFolder(folder.id);
+                }}
+                title="Delete Folder"
+                className="text-gray-400 hover:text-red-400 transition-all p-1 hover:bg-white/5 rounded"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          </div>
+        </div>
+        {folder.children && folder.children.map(child => renderFolderRow(child, depth + 1))}
+      </div>
+    );
+  };
+
+  const renderFolderChecklistRow = (folder: ClipFolder & { children: any[] }, depth = 0) => {
+    const isChecked = selectedFolderIds.includes(folder.id);
+    const numClips = folder.clips?.length || 0;
+    const possibleVideos = calculatePossibleVideos(numClips, targetDuration);
+
+    const toggleCheck = (id: string) => {
+      setSelectedFolderIds(prev => 
+        prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]
+      );
+    };
+
+    return (
+      <div key={folder.id} className="space-y-1">
+        <div 
+          onClick={() => toggleCheck(folder.id)}
+          style={{ paddingLeft: `${depth * 16 + 8}px` }}
+          className="flex items-center gap-3 py-1.5 px-2.5 rounded-lg hover:bg-white/5 cursor-pointer transition-all"
+        >
+          <input
+            type="checkbox"
+            checked={isChecked}
+            onChange={() => {}} // event bubbles, click handler on div handles it
+            className="rounded border-white/10 text-purple-600 focus:ring-purple-500 bg-black/40 h-4 w-4 cursor-pointer"
+          />
+          <div className="flex-1 flex items-center justify-between text-sm min-w-0">
+            <span className="font-semibold text-gray-300 truncate">{folder.name}</span>
+            <span className="text-[10px] text-gray-500 font-mono ml-2 flex-shrink-0">
+              {numClips} clips {possibleVideos > 0 ? `(~${possibleVideos.toLocaleString()} unique vids)` : "(need more clips)"}
+            </span>
+          </div>
+        </div>
+        {folder.children && folder.children.map(child => renderFolderChecklistRow(child, depth + 1))}
+      </div>
+    );
   };
 
   const currentFolder = folders.find(f => f.id === selectedFolderId);
@@ -763,36 +1048,7 @@ export default function ClipMixerPage() {
               ) : folders.length === 0 ? (
                 <p className="text-sm text-gray-500 py-4 italic text-center">No folders in section</p>
               ) : (
-                folders.map((folder) => (
-                  <div
-                    key={folder.id}
-                    onClick={() => setSelectedFolderId(folder.id)}
-                    className={`flex items-center justify-between p-3 rounded-xl cursor-pointer border transition-all text-sm ${
-                      selectedFolderId === folder.id
-                        ? "bg-purple-500/10 border-purple-500/30 text-purple-300"
-                        : "bg-[#09090f] border-white/5 text-gray-400 hover:text-white hover:bg-white/5"
-                    }`}
-                  >
-                    <div className="flex items-center gap-2 truncate">
-                      <Folder className={`w-4 h-4 ${selectedFolderId === folder.id ? "text-purple-400" : "text-gray-600"}`} />
-                      <span className="font-semibold truncate">{folder.name}</span>
-                    </div>
-                    <div className="flex items-center gap-2 flex-shrink-0">
-                      <span className="text-xs bg-[#0f0f18] border border-white/5 text-gray-500 px-2 py-0.5 rounded-full font-bold">
-                        {folder.clips?.length || 0}
-                      </span>
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleDeleteFolder(folder.id);
-                        }}
-                        className="text-gray-600 hover:text-red-400 transition-all p-1 hover:bg-white/5 rounded-lg"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-                  </div>
-                ))
+                buildFolderTree(folders).map(root => renderFolderRow(root))
               )}
             </div>
           </div>
@@ -918,21 +1174,19 @@ export default function ClipMixerPage() {
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               
-              {/* Folders List */}
+              {/* Folders Checklist */}
               <div className="space-y-2">
-                <label className="text-xs text-gray-400 font-bold uppercase tracking-wider">Source Clip Folder:</label>
-                <select
-                  value={selectedFolderId}
-                  onChange={(e) => setSelectedFolderId(e.target.value)}
-                  className="w-full bg-[#0f0f18] border border-white/5 rounded-xl px-4 py-3 text-white font-semibold text-sm focus:outline-none focus:border-purple-500 transition-all cursor-pointer"
-                >
-                  <option value="">-- Select Folder --</option>
-                  {folders.map((f) => (
-                    <option key={f.id} value={f.id}>
-                      {f.name} ({f.clips?.length || 0} clips uploaded)
-                    </option>
-                  ))}
-                </select>
+                <div className="flex justify-between items-center">
+                  <label className="text-xs text-gray-400 font-bold uppercase tracking-wider">Source Clip Folders (Checked list):</label>
+                  <span className="text-xs font-semibold text-purple-400">Checked: {selectedFolderIds.length} folder(s)</span>
+                </div>
+                <div className="bg-[#09090f] border border-white/5 rounded-xl p-3 max-h-[160px] overflow-y-auto space-y-1.5 shadow-inner">
+                  {folders.length === 0 ? (
+                    <p className="text-xs text-gray-500 italic">No folders available in section.</p>
+                  ) : (
+                    buildFolderTree(folders).map(root => renderFolderChecklistRow(root))
+                  )}
+                </div>
               </div>
 
               {/* Track Selector */}
@@ -1100,20 +1354,55 @@ export default function ClipMixerPage() {
               <div className="bg-[#09090f] border border-white/5 p-5 rounded-2xl flex flex-col md:flex-row md:items-center justify-between gap-4">
                 <div className="space-y-1">
                   <p className="text-sm font-semibold text-white">Scaling Summary:</p>
-                  <p className="text-xs text-gray-400">
+                  <p className="text-xs text-gray-400 leading-normal">
                     Will compile a total of <span className="font-bold text-amber-400">{accountCountInput * videosPerAccountInput}</span> unique video compositions distributed across <span className="font-bold text-white">{accountCountInput}</span> virtual accounts ({videosPerAccountInput} videos each).
+                  </p>
+                  <p className="text-[10px] text-purple-400 mt-1 font-mono">
+                    Checked {selectedFolderIds.length} folder(s) containing a total of {
+                      folders.filter(f => selectedFolderIds.includes(f.id)).reduce((sum, f) => sum + (f.clips?.length || 0), 0)
+                    } clips. Total unique combinations: {
+                      folders.filter(f => selectedFolderIds.includes(f.id)).reduce((sum, f) => sum + calculatePossibleVideos(f.clips?.length || 0, targetDuration), 0).toLocaleString()
+                    } videos.
                   </p>
                 </div>
 
                 <button
                   onClick={handleGenerateBatch}
-                  disabled={!selectedFolderId || !selectedTrackId || selectedTemplateIds.length === 0}
+                  disabled={selectedFolderIds.length === 0 || !selectedTrackId || selectedTemplateIds.length === 0}
                   className="bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-500 hover:to-pink-500 disabled:opacity-30 disabled:from-purple-900 disabled:to-pink-900 text-white font-extrabold py-3 px-8 rounded-xl text-sm transition-all shadow-lg shadow-purple-600/20 flex items-center justify-center gap-2 cursor-pointer flex-shrink-0"
                 >
                   <Sparkles className="w-4 h-4" />
                   Generate Video Mixes
                 </button>
               </div>
+
+              {(() => {
+                const totalVideos = accountCountInput * videosPerAccountInput;
+                const numFolders = selectedFolderIds.length || 1;
+                const folderShare = Math.ceil(totalVideos / numFolders);
+
+                const lowFolders = folders.filter(f => {
+                  if (!selectedFolderIds.includes(f.id)) return false;
+                  const numClips = f.clips?.length || 0;
+                  const possible = calculatePossibleVideos(numClips, targetDuration);
+                  return possible < folderShare;
+                });
+
+                if (lowFolders.length > 0) {
+                  return (
+                    <div className="p-3 bg-red-950/20 border border-red-500/25 rounded-2xl text-xs text-red-400 flex items-start gap-2.5">
+                      <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5 text-red-500" />
+                      <div>
+                        <p className="font-bold text-red-300">Clip permutation limit warning:</p>
+                        <p className="mt-0.5 text-[11px] leading-relaxed">
+                          The folder(s) <strong className="text-red-200">{lowFolders.map(f => f.name).join(", ")}</strong> do not have enough clips to guarantee {folderShare} unique video compositions each. Upload more clips or reduce the number of videos per account to prevent rendering collisions.
+                        </p>
+                      </div>
+                    </div>
+                  );
+                }
+                return null;
+              })()}
 
             </div>
 
@@ -1368,9 +1657,14 @@ export default function ClipMixerPage() {
                           />
                           <div>
                             <p className="text-sm font-bold text-white">@{item.account?.tiktokUsername}</p>
-                            <p className="text-[10px] text-gray-500">
-                              Template: <strong className="text-purple-400">{item.lyricalTemplate?.templateName || "Primary"}</strong>
-                            </p>
+                            <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 mt-0.5 text-[10px] text-gray-500">
+                              <span>Template: <strong className="text-purple-400">{item.lyricalTemplate?.templateName || "Primary"}</strong></span>
+                              <span className="text-gray-700">•</span>
+                              <span className="flex items-center gap-1">
+                                <Folder className="w-3 h-3 text-purple-500/60" />
+                                <strong className="text-gray-400">{(item as any).folder?.name || "Root"}</strong>
+                              </span>
+                            </div>
                           </div>
                         </div>
 
@@ -1466,6 +1760,184 @@ export default function ClipMixerPage() {
                 loop
               />
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Create Subfolder Modal */}
+      {isCreateSubfolderModalOpen && parentIdForNewSubfolder && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-[#0c0c14] border border-white/10 rounded-3xl p-6 max-w-md w-full space-y-4 shadow-2xl animate-in zoom-in duration-200">
+            <div className="flex justify-between items-center border-b border-white/5 pb-2">
+              <h3 className="text-lg font-bold text-white flex items-center gap-2">
+                <Plus className="w-5 h-5 text-purple-400" />
+                Add Subfolder
+              </h3>
+              <button 
+                onClick={() => {
+                  setIsCreateSubfolderModalOpen(false);
+                  setParentIdForNewSubfolder(null);
+                }} 
+                className="text-gray-500 hover:text-white cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            
+            <p className="text-xs text-gray-400">
+              Creating a subfolder inside <strong className="text-purple-300">{folders.find(f => f.id === parentIdForNewSubfolder)?.name}</strong>.
+            </p>
+
+            <form onSubmit={handleCreateSubfolder} className="space-y-4">
+              <input
+                type="text"
+                value={newSubfolderName}
+                onChange={(e) => setNewSubfolderName(e.target.value)}
+                placeholder="Subfolder name..."
+                required
+                className="w-full bg-[#0f0f18] border border-white/5 rounded-xl px-4 py-2 text-white placeholder-gray-500 focus:outline-none focus:border-purple-500/35 transition-all text-sm"
+              />
+              <div className="flex justify-end gap-3 pt-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsCreateSubfolderModalOpen(false);
+                    setParentIdForNewSubfolder(null);
+                  }}
+                  className="bg-white/5 hover:bg-white/10 text-white font-bold py-2 px-4 rounded-xl text-sm transition-all cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={!newSubfolderName.trim()}
+                  className="bg-purple-600 hover:bg-purple-700 disabled:opacity-40 text-white font-bold py-2 px-5 rounded-xl text-sm transition-all cursor-pointer shadow-md shadow-purple-600/10"
+                >
+                  Create
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Rename Folder Modal */}
+      {isRenameModalOpen && folderToRename && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-[#0c0c14] border border-white/10 rounded-3xl p-6 max-w-md w-full space-y-4 shadow-2xl animate-in zoom-in duration-200">
+            <div className="flex justify-between items-center border-b border-white/5 pb-2">
+              <h3 className="text-lg font-bold text-white flex items-center gap-2">
+                <Edit3 className="w-5 h-5 text-amber-400" />
+                Rename Folder
+              </h3>
+              <button 
+                onClick={() => {
+                  setIsRenameModalOpen(false);
+                  setFolderToRename(null);
+                }} 
+                className="text-gray-500 hover:text-white cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            
+            <form onSubmit={handleRenameFolder} className="space-y-4">
+              <input
+                type="text"
+                value={renamedFolderText}
+                onChange={(e) => setRenamedFolderText(e.target.value)}
+                placeholder="New name..."
+                required
+                className="w-full bg-[#0f0f18] border border-white/5 rounded-xl px-4 py-2 text-white placeholder-gray-500 focus:outline-none focus:border-purple-500/35 transition-all text-sm"
+              />
+              <div className="flex justify-end gap-3 pt-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsRenameModalOpen(false);
+                    setFolderToRename(null);
+                  }}
+                  className="bg-white/5 hover:bg-white/10 text-white font-bold py-2 px-4 rounded-xl text-sm transition-all cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={!renamedFolderText.trim() || renamedFolderText.trim() === folderToRename.name}
+                  className="bg-amber-500 hover:bg-amber-600 disabled:opacity-40 text-black font-bold py-2 px-5 rounded-xl text-sm transition-all cursor-pointer"
+                >
+                  Rename
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Move Folder Modal */}
+      {isMoveModalOpen && folderToMove && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-[#0c0c14] border border-white/10 rounded-3xl p-6 max-w-md w-full space-y-4 shadow-2xl animate-in zoom-in duration-200">
+            <div className="flex justify-between items-center border-b border-white/5 pb-2">
+              <h3 className="text-lg font-bold text-white flex items-center gap-2">
+                <Move className="w-5 h-5 text-blue-400" />
+                Move Folder
+              </h3>
+              <button 
+                onClick={() => {
+                  setIsMoveModalOpen(false);
+                  setFolderToMove(null);
+                }} 
+                className="text-gray-500 hover:text-white cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            
+            <p className="text-xs text-gray-400">
+              Select destination folder for <strong className="text-blue-300">{folderToMove.name}</strong>:
+            </p>
+
+            <form onSubmit={handleMoveFolder} className="space-y-4">
+              <select
+                value={targetParentIdForMove || "root"}
+                onChange={(e) => setTargetParentIdForMove(e.target.value)}
+                className="w-full bg-[#0f0f18] border border-white/5 rounded-xl px-4 py-2.5 text-white font-semibold text-sm focus:outline-none focus:border-purple-500 transition-all cursor-pointer"
+              >
+                <option value="root">-- Root (No Parent) --</option>
+                {folders
+                  .filter(f => {
+                    // Prevent cycle or self-assignment
+                    if (f.id === folderToMove.id) return false;
+                    return !isDescendantOf(f.id, folderToMove.id, folders);
+                  })
+                  .map(f => (
+                    <option key={f.id} value={f.id}>
+                      {getFolderPath(f, folders)}
+                    </option>
+                  ))
+                }
+              </select>
+
+              <div className="flex justify-end gap-3 pt-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsMoveModalOpen(false);
+                    setFolderToMove(null);
+                  }}
+                  className="bg-white/5 hover:bg-white/10 text-white font-bold py-2 px-4 rounded-xl text-sm transition-all cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-5 rounded-xl text-sm transition-all cursor-pointer"
+                >
+                  Move
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

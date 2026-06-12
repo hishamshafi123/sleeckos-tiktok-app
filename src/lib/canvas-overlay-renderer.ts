@@ -40,6 +40,7 @@ interface TemplateConfig {
   textAlign?: string;
   wordSpacing?: string;
   letterSpacing?: number;
+  aspectRatio?: string;
 }
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -114,6 +115,8 @@ function generateOverlayHTML(
   words: Word[],
   config: TemplateConfig,
   fontsDir: string,
+  width: number,
+  height: number,
 ): string {
   const chunks = chunkWords(words);
   const fontEntry = FONT_CSS_MAP[config.fontFamily] || FONT_CSS_MAP["Montserrat-Black"];
@@ -304,16 +307,16 @@ function generateOverlayHTML(
   * { margin: 0; padding: 0; box-sizing: border-box; }
   
   body {
-    width: ${WIDTH}px;
-    height: ${HEIGHT}px;
+    width: ${width}px;
+    height: ${height}px;
     overflow: hidden;
     background: ${bgColor ? bgColor : "transparent"};
   }
 
   #container {
     position: relative;
-    width: ${WIDTH}px;
-    height: ${HEIGHT}px;
+    width: ${width}px;
+    height: ${height}px;
     overflow: hidden;
   }
 
@@ -385,7 +388,7 @@ function generateOverlayHTML(
     0% { transform: translateY(0) translateX(0); opacity: 0; }
     10% { opacity: 1; }
     90% { opacity: 1; }
-    100% { transform: translateY(-${HEIGHT}px) translateX(30px); opacity: 0; }
+    100% { transform: translateY(-${height}px) translateX(30px); opacity: 0; }
   }
 
   @keyframes floatFireflies {
@@ -397,7 +400,7 @@ function generateOverlayHTML(
 
   @keyframes fallSnow {
     0% { transform: translateY(0) translateX(0); opacity: 1; }
-    100% { transform: translateY(${HEIGHT + 20}px) translateX(30px); opacity: 0.7; }
+    100% { transform: translateY(${height + 20}px) translateX(30px); opacity: 0.7; }
   }
 
   @keyframes twinkleSparkle {
@@ -572,8 +575,11 @@ export async function renderCanvasOverlay(
   try { fs.unlinkSync(tmpPath); } catch {}
   try { fs.unlinkSync(outputPath); } catch {}
 
+  const width = config.aspectRatio === "1:1" ? 720 : 720;
+  const height = config.aspectRatio === "1:1" ? 720 : 1280;
+
   // Generate the HTML
-  const html = generateOverlayHTML(words, config, fontsDir);
+  const html = generateOverlayHTML(words, config, fontsDir, width, height);
   const htmlPath = path.join("/tmp", `overlay_${Date.now()}.html`);
   fs.writeFileSync(htmlPath, html, "utf-8");
 
@@ -596,7 +602,7 @@ export async function renderCanvasOverlay(
       "--disable-background-networking",
       "--single-process",
       "--no-zygote",
-      `--window-size=${WIDTH},${HEIGHT}`,
+      `--window-size=${width},${height}`,
     ],
   });
 
@@ -604,7 +610,7 @@ export async function renderCanvasOverlay(
 
   try {
     const page = await browser.newPage();
-    await page.setViewport({ width: WIDTH, height: HEIGHT, deviceScaleFactor: 1 });
+    await page.setViewport({ width: width, height: height, deviceScaleFactor: 1 });
     
     // Load the HTML file (file:// protocol for font loading)
     await page.goto(`file://${htmlPath}`, { waitUntil: "networkidle0", timeout: 15000 });
@@ -670,7 +676,7 @@ export async function renderCanvasOverlay(
         const screenshot = await page.screenshot({
           type: "png",
           omitBackground: true,
-          clip: { x: 0, y: 0, width: WIDTH, height: HEIGHT },
+          clip: { x: 0, y: 0, width: width, height: height },
         });
 
         // Write PNG frame to FFmpeg stdin
@@ -762,7 +768,10 @@ export async function renderPreviewFrame(
 
   console.log(`[Browser Renderer] Generating preview frame: ${outputPngPath}`);
 
-  const html = generateOverlayHTML(words, config, fontsDir);
+  const width = config.aspectRatio === "1:1" ? 720 : 720;
+  const height = config.aspectRatio === "1:1" ? 720 : 1280;
+
+  const html = generateOverlayHTML(words, config, fontsDir, width, height);
   const htmlPath = path.join("/tmp", `preview_${Date.now()}.html`);
   fs.writeFileSync(htmlPath, html, "utf-8");
 
@@ -784,7 +793,7 @@ export async function renderPreviewFrame(
 
   try {
     const page = await browser.newPage();
-    await page.setViewport({ width: WIDTH, height: HEIGHT, deviceScaleFactor: 1 });
+    await page.setViewport({ width: width, height: height, deviceScaleFactor: 1 });
     await page.goto(`file://${htmlPath}`, { waitUntil: "networkidle0", timeout: 15000 });
     await page.evaluate(() => document.fonts.ready);
 
@@ -806,7 +815,7 @@ export async function renderPreviewFrame(
     const screenshot = await page.screenshot({
       type: "png",
       path: outputPngPath,
-      clip: { x: 0, y: 0, width: WIDTH, height: HEIGHT },
+      clip: { x: 0, y: 0, width: width, height: height },
     });
 
     console.log(`[Browser Renderer] Preview frame saved: ${outputPngPath}`);

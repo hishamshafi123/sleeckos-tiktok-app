@@ -40,6 +40,11 @@ export async function POST(req: Request) {
           where: {
             status: "RENDERED"
           },
+          include: {
+            folder: {
+              select: { name: true }
+            }
+          },
           orderBy: { createdAt: "asc" },
         },
       },
@@ -49,14 +54,20 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "No rendered videos available for this batch" }, { status: 400 });
     }
 
-    // Map rendered items to real files
+    // Map rendered items to real files and folder name
     const publicDir = path.join(process.cwd(), "public");
-    const available: { absPath: string; name: string }[] = [];
+    const available: { absPath: string; name: string; folderName: string }[] = [];
     for (const item of batch.items) {
       if (!item.renderedVideoUrl) continue;
       const absPath = path.join(publicDir, item.renderedVideoUrl);
       if (fs.existsSync(absPath)) {
-        available.push({ absPath, name: `video_${item.id.substring(0, 8)}.mp4` });
+        const fName = item.folder?.name || "root";
+        const sanitizedFolderName = fName.replace(/[^a-zA-Z0-9_-]/g, "_");
+        available.push({
+          absPath,
+          name: `video_${item.id.substring(0, 8)}.mp4`,
+          folderName: sanitizedFolderName,
+        });
       }
     }
 
@@ -64,10 +75,20 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "No video files found on disk" }, { status: 400 });
     }
 
-    if (available.length < totalNeeded) {
-      return NextResponse.json({
-        error: `Not enough videos. Need ${totalNeeded} (${numAccounts}×${vidsPerAccount}) but only ${available.length} available.`
-      }, { status: 400 });
+    // Group available items by folderName
+    const byFolder: Record<string, typeof available> = {};
+    for (const item of available) {
+      if (!byFolder[item.folderName]) byFolder[item.folderName] = [];
+      byFolder[item.folderName].push(item);
+    }
+
+    // Validate that each represented subfolder has enough videos
+    for (const [folderName, filesList] of Object.entries(byFolder)) {
+      if (filesList.length < totalNeeded) {
+        return NextResponse.json({
+          error: `Not enough videos for subfolder "${folderName}". Need ${totalNeeded} (${numAccounts}×${vidsPerAccount}) but only ${filesList.length} available.`
+        }, { status: 400 });
+      }
     }
 
     // Build archive inline
@@ -79,24 +100,31 @@ export async function POST(req: Request) {
     fs.mkdirSync(archivesDir, { recursive: true });
     fs.mkdirSync(tempDir, { recursive: true });
 
-    // Shuffle
-    const shuffled = [...available].sort(() => Math.random() - 0.5);
+    // Distribute into folders grouped by subfolders
+    let totalCopied = 0;
+    for (const [folderName, filesList] of Object.entries(byFolder)) {
+      const folderSubdir = path.join(tempDir, folderName);
+      fs.mkdirSync(folderSubdir, { recursive: true });
 
-    // Distribute into folders
-    let idx = 0;
-    for (let a = 0; a < numAccounts; a++) {
-      const folderName = `Account_${a + 1}`;
-      const dir = path.join(tempDir, folderName);
-      fs.mkdirSync(dir, { recursive: true });
+      // Shuffle files list per folder to ensure randomness
+      const shuffled = [...filesList].sort(() => Math.random() - 0.5);
 
-      for (let v = 0; v < vidsPerAccount; v++) {
-        if (idx >= shuffled.length) break;
-        fs.copyFileSync(shuffled[idx].absPath, path.join(dir, `${String(v + 1).padStart(2, "0")}_${shuffled[idx].name}`));
-        idx++;
+      let idx = 0;
+      for (let a = 0; a < numAccounts; a++) {
+        const accountDirName = `Account_${a + 1}`;
+        const dir = path.join(folderSubdir, accountDirName);
+        fs.mkdirSync(dir, { recursive: true });
+
+        for (let v = 0; v < vidsPerAccount; v++) {
+          if (idx >= shuffled.length) break;
+          fs.copyFileSync(shuffled[idx].absPath, path.join(dir, `${String(v + 1).padStart(2, "0")}_${shuffled[idx].name}`));
+          idx++;
+          totalCopied++;
+        }
       }
     }
 
-    console.log(`[Clip Mixer Smart Download] Copied ${idx} files into ${numAccounts} folders. Packaging...`);
+    console.log(`[Clip Mixer Smart Download] Copied ${totalCopied} files into subfolder structures. Packaging...`);
 
     // tar
     await new Promise<void>((resolve, reject) => {
