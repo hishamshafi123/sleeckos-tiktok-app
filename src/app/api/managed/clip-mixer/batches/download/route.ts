@@ -82,15 +82,6 @@ export async function POST(req: Request) {
       byFolder[item.folderName].push(item);
     }
 
-    // Validate that each represented subfolder has enough videos
-    for (const [folderName, filesList] of Object.entries(byFolder)) {
-      if (filesList.length < totalNeeded) {
-        return NextResponse.json({
-          error: `Not enough videos for subfolder "${folderName}". Need ${totalNeeded} (${numAccounts}×${vidsPerAccount}) but only ${filesList.length} available.`
-        }, { status: 400 });
-      }
-    }
-
     // Build archive inline
     const archivesDir = path.join(process.cwd(), "public", "uploads", "clip-mixer", "archives");
     const archiveName = `smart_clip_${batchId.substring(0, 8)}_${numAccounts}x${vidsPerAccount}_${Date.now()}.tar`;
@@ -116,8 +107,8 @@ export async function POST(req: Request) {
         fs.mkdirSync(dir, { recursive: true });
 
         for (let v = 0; v < vidsPerAccount; v++) {
-          if (idx >= shuffled.length) break;
-          fs.copyFileSync(shuffled[idx].absPath, path.join(dir, `${String(v + 1).padStart(2, "0")}_${shuffled[idx].name}`));
+          const fileToCopy = shuffled[idx % shuffled.length];
+          fs.copyFileSync(fileToCopy.absPath, path.join(dir, `${String(v + 1).padStart(2, "0")}_${fileToCopy.name}`));
           idx++;
           totalCopied++;
         }

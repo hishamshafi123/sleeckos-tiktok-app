@@ -353,12 +353,6 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "No video files found on disk" }, { status: 400 });
     }
 
-    if (available.length < totalNeeded) {
-      return NextResponse.json({
-        error: `Not enough videos. Need ${totalNeeded} (${numAccounts}×${vidsPerAccount}) but only ${available.length} available.`
-      }, { status: 400 });
-    }
-
     // ── Build archive inline ────────────────────────────────────────────────
     const archivesDir = path.join(process.cwd(), "public", "uploads", "genres", "archives");
     const archiveName = `smart_${batchId.substring(0, 8)}_${numAccounts}x${vidsPerAccount}_${Date.now()}.tar`;
@@ -382,8 +376,8 @@ export async function POST(req: Request) {
       fs.mkdirSync(dir, { recursive: true });
 
       for (let v = 0; v < vidsPerAccount; v++) {
-        if (idx >= shuffled.length) break;
-        fs.copyFileSync(shuffled[idx].absPath, path.join(dir, `${String(v + 1).padStart(2, "0")}_${shuffled[idx].name}`));
+        const fileToCopy = shuffled[idx % shuffled.length];
+        fs.copyFileSync(fileToCopy.absPath, path.join(dir, `${String(v + 1).padStart(2, "0")}_${fileToCopy.name}`));
         idx++;
       }
     }
