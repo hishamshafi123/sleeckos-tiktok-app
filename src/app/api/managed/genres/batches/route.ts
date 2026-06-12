@@ -46,6 +46,12 @@ export async function GET(req: Request) {
                   artist: true,
                 },
               },
+              lyricalTemplate: {
+                select: {
+                  templateName: true,
+                  aspectRatio: true,
+                },
+              },
             },
             orderBy: { createdAt: "asc" },
           },
@@ -914,6 +920,7 @@ async function processBatchRendering(batchId: string) {
                 textAlign: item.lyricalTemplate.textAlign,
                 wordSpacing: item.lyricalTemplate.wordSpacing,
                 letterSpacing: item.lyricalTemplate.letterSpacing,
+                aspectRatio: item.lyricalTemplate.aspectRatio,
               };
               const { renderCanvasOverlay } = await import("@/lib/ffmpeg-overlay-renderer");
               await renderCanvasOverlay(words, rendererConfig, duration, overlayPath);
@@ -1006,6 +1013,7 @@ async function processBatchRendering(batchId: string) {
               textAlign: tpl.textAlign,
               wordSpacing: tpl.wordSpacing,
               letterSpacing: tpl.letterSpacing,
+              aspectRatio: tpl.aspectRatio,
             });
             const assSubtitlePath = `/tmp/lyrical_g1_${item.id}.ass`;
             fs.writeFileSync(assSubtitlePath, assContent, "utf-8");
@@ -1018,7 +1026,9 @@ async function processBatchRendering(batchId: string) {
             let filterComplex = "";
 
             // 1. Scale background
-            filterComplex += `[0:v]scale=720:1280:force_original_aspect_ratio=disable,setsar=1[scaled_bg];`;
+            const width = tpl.aspectRatio === "1:1" ? 720 : 720;
+            const height = tpl.aspectRatio === "1:1" ? 720 : 1280;
+            filterComplex += `[0:v]scale=${width}:${height}:force_original_aspect_ratio=disable,setsar=1[scaled_bg];`;
             let lastLabel = "scaled_bg";
 
             // 2. Background transforms (mirror, speed)

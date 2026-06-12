@@ -209,6 +209,10 @@ interface BatchItem {
     title: string;
     artist: string;
   } | null;
+  lyricalTemplate?: {
+    templateName: string;
+    aspectRatio: string;
+  } | null;
 }
 
 // Helper to recursively group accounts by Niche (Section) -> Group -> Account
@@ -493,6 +497,7 @@ export default function GenresDashboard() {
 
   // Local video preview & manual upload states
   const [previewVideoUrl, setPreviewVideoUrl] = useState<string | null>(null);
+  const [previewAspectRatio, setPreviewAspectRatio] = useState<string>("9:16");
   const [isPreviewModalOpen, setIsPreviewModalOpen] = useState(false);
   const [uploadingItems, setUploadingItems] = useState<Record<string, boolean>>({});
   const [retryingItemIds, setRetryingItemIds] = useState<Record<string, boolean>>({});
@@ -2952,7 +2957,7 @@ export default function GenresDashboard() {
                     {/* Interactive Phone mockup */}
                     <div 
                       onClick={() => togglePlayTrack(selectedTrack)}
-                      className="relative aspect-[9/16] w-full max-w-[200px] bg-[#07070d] border border-white/15 rounded-[36px] overflow-hidden shadow-2xl flex flex-col justify-between group cursor-pointer hover:border-purple-500/30 transition-all duration-300"
+                      className={`relative ${lyricalAspectRatio === "1:1" ? "aspect-square" : "aspect-[9/16]"} w-full max-w-[200px] bg-[#07070d] border border-white/15 ${lyricalAspectRatio === "1:1" ? "rounded-[24px]" : "rounded-[36px]"} overflow-hidden shadow-2xl flex flex-col justify-between group cursor-pointer hover:border-purple-500/30 transition-all duration-300`}
                     >
                       {/* Background layer */}
                       {lyricalBgColor ? (
@@ -3453,7 +3458,7 @@ export default function GenresDashboard() {
                             <span className="text-[9px] text-purple-400 bg-purple-500/10 px-2 py-0.5 rounded uppercase font-bold">{activeTpl.templateName}</span>
                           </div>
                           
-                          <div className="relative aspect-[9/16] w-full max-w-[140px] mx-auto bg-black border border-white/10 rounded-2xl overflow-hidden shadow-2xl flex items-center justify-center group">
+                          <div className={`relative ${activeTpl.aspectRatio === "1:1" ? "aspect-square" : "aspect-[9/16]"} w-full max-w-[140px] mx-auto bg-black border border-white/10 rounded-2xl overflow-hidden shadow-2xl flex items-center justify-center group`}>
                             {/* Preview Image loaded dynamically from Backend */}
                             <img 
                               src={resolveUrl(activeTpl.previewImageUrl)} 
@@ -6068,6 +6073,7 @@ export default function GenresDashboard() {
                             <button
                               onClick={() => {
                                 setPreviewVideoUrl(item.renderedVideoUrl || null);
+                                setPreviewAspectRatio(item.lyricalTemplate?.aspectRatio || "9:16");
                                 setIsPreviewModalOpen(true);
                               }}
                               className="flex items-center gap-1 px-3 py-1.5 bg-purple-500/15 hover:bg-purple-500 text-purple-400 hover:text-black border border-purple-500/20 hover:border-purple-500 rounded-xl text-xs font-extrabold transition-all duration-300"
@@ -6539,7 +6545,7 @@ export default function GenresDashboard() {
             {/* Video Player Area */}
             <div className="p-4 bg-black/40 flex justify-center items-center">
               {previewVideoUrl ? (
-                <div className="w-full aspect-[9/16] max-h-[60vh] rounded-2xl overflow-hidden bg-black border border-white/5 relative shadow-inner">
+                <div className={`w-full ${previewAspectRatio === "1:1" ? "aspect-square" : "aspect-[9/16]"} max-h-[60vh] rounded-2xl overflow-hidden bg-black border border-white/5 relative shadow-inner`}>
                   <video 
                     src={resolveUrl(previewVideoUrl)} 
                     controls 

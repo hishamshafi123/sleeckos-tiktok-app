@@ -27,7 +27,7 @@ export async function GET(req: NextRequest) {
             select: { title: true, artist: true },
           },
           lyricalTemplate: {
-            select: { templateName: true },
+            select: { templateName: true, aspectRatio: true },
           },
           items: {
             include: {
@@ -39,7 +39,7 @@ export async function GET(req: NextRequest) {
                 },
               },
               lyricalTemplate: {
-                select: { templateName: true },
+                select: { templateName: true, aspectRatio: true },
               },
               folder: {
                 select: { name: true },
@@ -544,6 +544,7 @@ async function processClipMixerBatch(batchId: string) {
               textAlign: template.textAlign,
               wordSpacing: template.wordSpacing,
               letterSpacing: template.letterSpacing,
+              aspectRatio: template.aspectRatio,
             };
             const { renderCanvasOverlay } = await import("@/lib/ffmpeg-overlay-renderer");
             await renderCanvasOverlay(words, rendererConfig, duration, overlayPath);
@@ -622,6 +623,7 @@ async function processClipMixerBatch(batchId: string) {
             textAlign: template.textAlign,
             wordSpacing: template.wordSpacing,
             letterSpacing: template.letterSpacing,
+            aspectRatio: template.aspectRatio,
           });
           const assPath = `/tmp/clip_mixer_${item.id}.ass`;
           fs.writeFileSync(assPath, assContent, "utf-8");

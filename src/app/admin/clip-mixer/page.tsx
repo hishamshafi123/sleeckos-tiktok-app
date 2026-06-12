@@ -75,6 +75,7 @@ interface BatchItem {
   };
   lyricalTemplate?: {
     templateName: string;
+    aspectRatio?: string;
   } | null;
 }
 
@@ -90,7 +91,7 @@ interface Batch {
   createdAt: string;
   folder?: { name: string };
   track?: { title: string; artist: string };
-  lyricalTemplate?: { templateName: string };
+  lyricalTemplate?: { templateName: string; aspectRatio?: string };
   items?: BatchItem[];
 }
 
@@ -140,6 +141,7 @@ export default function ClipMixerPage() {
   
   // Video preview modal
   const [previewVideoUrl, setPreviewVideoUrl] = useState<string | null>(null);
+  const [previewAspectRatio, setPreviewAspectRatio] = useState<string>("9:16");
 
   // Smart Download (Folderized ZIP) Modal States
   const [showSmartDownload, setShowSmartDownload] = useState<boolean>(false);
@@ -1124,7 +1126,10 @@ export default function ClipMixerPage() {
                             />
                             <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-all flex items-center justify-center gap-3">
                               <button
-                                onClick={() => setPreviewVideoUrl(clip.videoUrl)}
+                                onClick={() => {
+                                  setPreviewVideoUrl(clip.videoUrl);
+                                  setPreviewAspectRatio("9:16");
+                                }}
                                 className="w-10 h-10 rounded-full bg-white/10 text-white flex items-center justify-center border border-white/10 hover:bg-white/20 transition-all cursor-pointer"
                               >
                                 <Eye className="w-4 h-4" />
@@ -1689,7 +1694,10 @@ export default function ClipMixerPage() {
                             {item.status === "RENDERED" && item.renderedVideoUrl && (
                               <>
                                 <button
-                                  onClick={() => setPreviewVideoUrl(item.renderedVideoUrl)}
+                                  onClick={() => {
+                                    setPreviewVideoUrl(item.renderedVideoUrl);
+                                    setPreviewAspectRatio(item.lyricalTemplate?.aspectRatio || activeBatch?.lyricalTemplate?.aspectRatio || "9:16");
+                                  }}
                                   className="flex items-center gap-1.5 bg-white/5 hover:bg-white/10 text-white font-bold py-1.5 px-3 rounded-lg text-xs transition-all border border-white/5 cursor-pointer"
                                 >
                                   <Eye className="w-3.5 h-3.5" />
@@ -1744,7 +1752,7 @@ export default function ClipMixerPage() {
       {/* Video Preview Modal overlay */}
       {previewVideoUrl && (
         <div className="fixed inset-0 z-50 bg-black/90 backdrop-blur-md flex items-center justify-center p-4">
-          <div className="relative w-full max-w-sm aspect-[9/16] bg-[#0c0c14] border border-white/10 rounded-3xl overflow-hidden shadow-2xl flex flex-col animate-in zoom-in duration-200">
+          <div className={`relative w-full max-w-sm ${previewAspectRatio === "1:1" ? "aspect-square" : "aspect-[9/16]"} bg-[#0c0c14] border border-white/10 rounded-3xl overflow-hidden shadow-2xl flex flex-col animate-in zoom-in duration-200`}>
             <button
               onClick={() => setPreviewVideoUrl(null)}
               className="absolute top-4 right-4 z-10 w-8 h-8 rounded-full bg-black/60 text-white flex items-center justify-center border border-white/10 hover:bg-black/80 transition-all cursor-pointer"
