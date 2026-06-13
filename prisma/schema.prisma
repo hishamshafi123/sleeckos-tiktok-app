@@ -866,6 +866,7 @@ model ClipMixerBatch {
   lyricalTemplateId String
   lyricalTemplate   TrackLyricalTemplate @relation(fields: [lyricalTemplateId], references: [id], onDelete: Cascade)
   targetDuration    Float            @default(15.0)
+  trackStart        Float            @default(0.0)
   totalVideos       Int              @default(5)
   muteAudio         Boolean          @default(false)
   status            GenreBatchStatus @default(DRAFT)

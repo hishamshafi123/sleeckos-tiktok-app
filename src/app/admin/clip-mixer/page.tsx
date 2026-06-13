@@ -5,7 +5,7 @@ import {
   Folder, Video, Plus, Trash2, Sliders, Music, Sparkles, Layers, Play, Pause, 
   RefreshCw, ChevronRight, Check, X, ShieldAlert, Film, HelpCircle, HardDrive, 
   Download, Volume2, VolumeX, Eye, AlertCircle, Loader2, Users, History, FolderOpen,
-  Edit3, Move
+  Edit3, Move, Clock
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -85,6 +85,7 @@ interface Batch {
   trackId: string;
   lyricalTemplateId: string;
   targetDuration: number;
+  trackStart?: number;
   totalVideos: number;
   muteAudio: boolean;
   status: "DRAFT" | "QUOTES_GENERATING" | "QUOTES_REVIEW" | "RENDERING" | "COMPLETED" | "FAILED";
@@ -120,6 +121,23 @@ export default function ClipMixerPage() {
   const [selectedTemplateIds, setSelectedTemplateIds] = useState<string[]>([]);
   
   const [targetDuration, setTargetDuration] = useState<number>(15);
+  const [trackStart, setTrackStart] = useState<number>(0);
+
+  // Auto-clamp trackStart offset when track or targetDuration changes
+  useEffect(() => {
+    const selectedTrack = tracks.find(t => t.id === selectedTrackId);
+    if (selectedTrack) {
+      const maxOffset = Math.max(0, selectedTrack.duration - targetDuration);
+      setTrackStart(prev => {
+        if (prev > maxOffset) {
+          return Math.max(0, parseFloat(maxOffset.toFixed(1)));
+        }
+        return prev;
+      });
+    } else {
+      setTrackStart(0);
+    }
+  }, [selectedTrackId, targetDuration, tracks]);
   
   // Custom numeric scaling inputs
   const [accountCountInput, setAccountCountInput] = useState<number>(5);
@@ -729,6 +747,7 @@ export default function ClipMixerPage() {
           trackId: selectedTrackId,
           lyricalTemplateIds: selectedTemplateIds,
           targetDuration,
+          trackStart,
           muteAudio,
           accountCount: accountCountInput,
           videosPerAccount: videosPerAccountInput,
@@ -1290,6 +1309,28 @@ export default function ClipMixerPage() {
                 </p>
               </div>
 
+              {/* Music Start Offset Slider */}
+              {selectedTrackId && (
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs text-gray-400 font-bold uppercase tracking-wider">Music Start Offset (Trim):</label>
+                    <span className="text-sm font-bold text-purple-400">{trackStart.toFixed(1)}s</span>
+                  </div>
+                  <input
+                    type="range"
+                    min="0"
+                    max={Math.max(0, (tracks.find(t => t.id === selectedTrackId)?.duration || 0) - targetDuration)}
+                    step="0.5"
+                    value={trackStart}
+                    onChange={(e) => setTrackStart(parseFloat(e.target.value))}
+                    className="w-full h-1.5 bg-[#0f0f18] border border-white/5 rounded-lg appearance-none cursor-pointer accent-purple-500"
+                  />
+                  <p className="text-[10px] text-gray-500 leading-normal">
+                    Select where the music starts. The output video and lyrical overlays will start from {trackStart.toFixed(1)}s of the selected song.
+                  </p>
+                </div>
+              )}
+
               {/* Mute Audio Option */}
               <div className="space-y-3">
                 <label className="text-xs text-gray-400 font-bold uppercase tracking-wider block">Mute Audio Track:</label>
@@ -1515,6 +1556,9 @@ export default function ClipMixerPage() {
                     <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mt-2 text-xs text-gray-400">
                       <span className="flex items-center gap-1"><Folder className="w-3.5 h-3.5" /> Folder: <strong className="text-white">{activeBatch.folder?.name}</strong></span>
                       <span className="flex items-center gap-1"><Music className="w-3.5 h-3.5" /> Track: <strong className="text-white">{activeBatch.track?.title}</strong></span>
+                      {activeBatch.trackStart !== undefined && activeBatch.trackStart > 0 && (
+                        <span className="flex items-center gap-1"><Clock className="w-3.5 h-3.5" /> Offset: <strong className="text-white">{activeBatch.trackStart.toFixed(1)}s</strong></span>
+                      )}
                       <span className="flex items-center gap-1"><Sparkles className="w-3.5 h-3.5" /> Layout: <strong className="text-white">{activeBatch.lyricalTemplate?.templateName || "Mixed layout"}</strong></span>
                     </div>
                   </div>

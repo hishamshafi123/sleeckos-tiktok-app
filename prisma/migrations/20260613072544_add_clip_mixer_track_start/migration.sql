@@ -1,0 +1,2 @@
+-- AlterTable
+ALTER TABLE "ClipMixerBatch" ADD COLUMN     "trackStart" DOUBLE PRECISION NOT NULL DEFAULT 0.0;

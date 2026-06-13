@@ -97,6 +97,7 @@ export async function POST(req: Request) {
       muteAudio = false,
       accountCount = 5,
       videosPerAccount = 3,
+      trackStart = 0.0,
     } = body;
 
     let selectedFolderIds = folderIds;
@@ -162,6 +163,7 @@ export async function POST(req: Request) {
         trackId,
         lyricalTemplateId: lyricalTemplateIds[0], // primary template to satisfy DB constraint
         targetDuration: parseFloat(targetDuration) || 15.0,
+        trackStart: parseFloat(trackStart) || 0.0,
         totalVideos,
         muteAudio,
         status: "RENDERING",
@@ -560,9 +562,11 @@ async function processClipMixerBatch(batchId: string) {
         if (templateHasSolidBg) {
           // ─── SOLID BG PATH: WebM overlay is the complete video ───
           const audioPath = path.join(process.cwd(), "public", batch.track.fileUrl);
+          const trackStartOffset = Math.max(0, batch.trackStart || 0);
+          const ssOpt = trackStartOffset > 0 ? `-ss ${trackStartOffset.toFixed(3)}` : "";
           const finalAudioInput = batch.muteAudio
             ? `-f lavfi -i anullsrc=channel_layout=stereo:sample_rate=44100`
-            : `-i "${audioPath}"`;
+            : `${ssOpt} -i "${audioPath}"`;
 
           if (!batch.muteAudio && !fs.existsSync(audioPath)) {
             throw new Error(`Audio track file not found on disk at: ${audioPath}`);
@@ -570,7 +574,7 @@ async function processClipMixerBatch(batchId: string) {
 
           const cmd = [
             `ffmpeg -y`,
-            `-i "${overlayPath}"`,
+            trackStartOffset > 0 ? `-ss ${trackStartOffset.toFixed(3)} -i "${overlayPath}"` : `-i "${overlayPath}"`,
             finalAudioInput,
             `-c:v libx264`,
             `-pix_fmt yuv420p`,
@@ -607,7 +611,18 @@ async function processClipMixerBatch(batchId: string) {
           // Generate ASS from the template config
           const { generateASS } = await import("@/lib/ffmpeg-overlay-renderer");
           const words = JSON.parse(batch.track.lyricalTranscription);
-          const assContent = generateASS(words, {
+
+          // Shift word timings based on trackStart
+          const trackStartOffset = Math.max(0, batch.trackStart || 0);
+          const shiftedWords = words
+            .map((w: any) => {
+              const start = Math.max(0, w.start - trackStartOffset);
+              const end = w.end - trackStartOffset;
+              return { ...w, start, end };
+            })
+            .filter((w: any) => w.end > 0);
+
+          const assContent = generateASS(shiftedWords, {
             fontFamily: template.fontFamily,
             fontSize: template.fontSize,
             activeColor: template.activeColor,
@@ -627,7 +642,7 @@ async function processClipMixerBatch(batchId: string) {
           });
           const assPath = `/tmp/clip_mixer_${item.id}.ass`;
           fs.writeFileSync(assPath, assContent, "utf-8");
-          console.log(`[Clip Mixer Worker] Generated ASS subtitle (${words.length} words, ${(assContent.length / 1024).toFixed(1)}KB)`);
+          console.log(`[Clip Mixer Worker] Generated ASS subtitle (${shiftedWords.length} words shifted by ${trackStartOffset}s, ${(assContent.length / 1024).toFixed(1)}KB)`);
 
           // Audio input
           const audioPath = path.join(process.cwd(), "public", batch.track.fileUrl);
@@ -637,7 +652,11 @@ async function processClipMixerBatch(batchId: string) {
             if (!fs.existsSync(audioPath)) {
               throw new Error(`Audio track file not found on disk at: ${audioPath}`);
             }
-            inputs.push(`-i "${audioPath}"`);
+            if (trackStartOffset > 0) {
+              inputs.push(`-ss ${trackStartOffset.toFixed(3)} -i "${audioPath}"`);
+            } else {
+              inputs.push(`-i "${audioPath}"`);
+            }
           }
           const audioIdx = slices.length; // audio is the input right after the clip slices
 
