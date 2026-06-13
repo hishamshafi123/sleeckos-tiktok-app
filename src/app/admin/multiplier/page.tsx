@@ -981,6 +981,18 @@ export default function MultiplierPage() {
     } catch (err: any) { toast.error(err.message || "Failed to delete batch"); }
   };
 
+  const handleDeleteAllBatches = async () => {
+    if (!confirm("Are you absolutely sure you want to delete ALL multiplier batches and all their rendered videos? This action cannot be undone.")) return;
+    try {
+      const res = await fetch("/api/managed/multiplier?batchId=all", { method: "DELETE" });
+      if (!res.ok) {
+        const errMsg = await getErrorMessage(res, "Delete all failed");
+        throw new Error(errMsg);
+      }
+      toast.success("All batches deleted"); fetchBatches();
+    } catch (err: any) { toast.error(err.message || "Failed to delete all batches"); }
+  };
+
   // ─── Status Helpers ────────────────────────────────────────────────────────
 
   const statusColor = (status: string) => {
@@ -2042,9 +2054,20 @@ export default function MultiplierPage() {
       <div className="space-y-4">
         <div className="flex items-center justify-between">
           <h2 className="text-lg font-semibold text-white">Batch History</h2>
-          <button onClick={fetchBatches} className="p-2 rounded-lg hover:bg-white/5 text-gray-500 hover:text-white transition-all">
-            <RefreshCw className="w-4 h-4" />
-          </button>
+          <div className="flex items-center gap-2">
+            {batches.length > 0 && (
+              <button
+                onClick={handleDeleteAllBatches}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/10 text-xs font-semibold transition-all"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                Delete All Batches
+              </button>
+            )}
+            <button onClick={fetchBatches} className="p-2 rounded-lg hover:bg-white/5 text-gray-500 hover:text-white transition-all">
+              <RefreshCw className="w-4 h-4" />
+            </button>
+          </div>
         </div>
 
         {loading ? (

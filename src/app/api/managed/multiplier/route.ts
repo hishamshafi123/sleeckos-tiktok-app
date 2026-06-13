@@ -176,6 +176,38 @@ export async function DELETE(req: Request) {
   }
 
   try {
+    const uploadsDir = path.join(process.cwd(), "public");
+
+    if (batchId === "all") {
+      const batches = await prisma.multiplierBatch.findMany({
+        include: { items: true },
+      });
+
+      for (const batch of batches) {
+        // Delete source video
+        const sourcePath = path.join(uploadsDir, batch.sourceVideoUrl);
+        if (fs.existsSync(sourcePath)) {
+          try { fs.unlinkSync(sourcePath); } catch {}
+        }
+
+        // Delete rendered videos
+        for (const item of batch.items) {
+          if (item.renderedVideoUrl) {
+            const renderPath = path.join(uploadsDir, item.renderedVideoUrl);
+            if (fs.existsSync(renderPath)) {
+              try { fs.unlinkSync(renderPath); } catch {}
+            }
+          }
+        }
+      }
+
+      // Delete all batches from DB (cascade deletes items)
+      await prisma.multiplierBatch.deleteMany();
+
+      console.log(`[Multiplier API] Deleted all batches`);
+      return NextResponse.json({ success: true });
+    }
+
     const batch = await prisma.multiplierBatch.findUnique({
       where: { id: batchId },
       include: { items: true },
@@ -184,9 +216,6 @@ export async function DELETE(req: Request) {
     if (!batch) {
       return NextResponse.json({ error: "Batch not found" }, { status: 404 });
     }
-
-    // Clean up files
-    const uploadsDir = path.join(process.cwd(), "public");
 
     // Delete source video
     const sourcePath = path.join(uploadsDir, batch.sourceVideoUrl);
