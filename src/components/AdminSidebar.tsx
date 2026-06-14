@@ -1,7 +1,7 @@
 "use client";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { LayoutDashboard, Shield, Users, Megaphone, FileText, AlertTriangle, ScrollText, LogOut, MonitorPlay, BarChart3, Clock, History, Sparkles, Layers, Film } from "lucide-react";
+import { LayoutDashboard, Shield, Users, Megaphone, FileText, AlertTriangle, ScrollText, LogOut, MonitorPlay, BarChart3, Clock, History, Sparkles, Layers, Film, UserCog } from "lucide-react";
 import { toast } from "sonner";
 
 const NAV = [
@@ -12,6 +12,7 @@ const NAV = [
   { href: "/admin/applications", label: "Applications", icon: FileText },
   { href: "/admin/disputes", label: "Disputes", icon: AlertTriangle },
   { href: "/admin/audit-log", label: "Audit Log", icon: ScrollText },
+  { href: "/admin/team", label: "Team", icon: UserCog },
 ];
 
 const ACCOUNTS_NAV = [

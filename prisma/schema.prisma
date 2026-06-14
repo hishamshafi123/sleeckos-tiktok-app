@@ -68,6 +68,7 @@ enum DeliverableStatus {
 model User {
   id           String     @id @default(uuid())
   email        String     @unique
+  name         String?
   passwordHash String?
   role         UserRole   @default(CREATOR)
   status       UserStatus @default(PENDING)
