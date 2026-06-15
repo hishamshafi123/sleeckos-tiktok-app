@@ -17,32 +17,31 @@ export async function POST(req: Request) {
 
   try {
     const body = await req.json();
-    const { batchId, accountCount, videosPerAccount } = body;
+    const { batchId } = body;
 
-    if (!batchId || !accountCount || !videosPerAccount) {
+    if (!batchId) {
       return NextResponse.json(
-        { error: "Missing required fields: batchId, accountCount, videosPerAccount" },
+        { error: "Missing required fields: batchId" },
         { status: 400 }
       );
     }
 
-    const numAccounts = Math.max(1, Math.min(50, parseInt(accountCount) || 1));
-    const vidsPerAccount = Math.max(1, Math.min(100, parseInt(videosPerAccount) || 1));
-    const totalNeeded = numAccounts * vidsPerAccount;
+    console.log(`[Clip Mixer Smart Download] Request: batch=${batchId}`);
 
-    console.log(`[Clip Mixer Smart Download] Request: batch=${batchId}, ${numAccounts} accounts × ${vidsPerAccount} videos = ${totalNeeded} total`);
-
-    // Fetch rendered items
+    // Fetch rendered or uploaded items
     const batch = await prisma.clipMixerBatch.findUnique({
       where: { id: batchId },
       include: {
         items: {
           where: {
-            status: "RENDERED"
+            status: { in: ["RENDERED", "UPLOADED"] }
           },
           include: {
             folder: {
               select: { name: true }
+            },
+            account: {
+              select: { id: true, tiktokUsername: true }
             }
           },
           orderBy: { createdAt: "asc" },
@@ -51,12 +50,33 @@ export async function POST(req: Request) {
     });
 
     if (!batch || batch.items.length === 0) {
-      return NextResponse.json({ error: "No rendered videos available for this batch" }, { status: 400 });
+      return NextResponse.json({ error: "No rendered or uploaded videos available for this batch" }, { status: 400 });
     }
+
+    // Map unique account IDs present in the items to sequential names (e.g. Account_1, Account_2, ...)
+    const uniqueAccountsMap = new Map<string, { id: string; tiktokUsername: string }>();
+    for (const item of batch.items) {
+      const username = item.account?.tiktokUsername || "unknown";
+      if (!uniqueAccountsMap.has(item.accountId)) {
+        uniqueAccountsMap.set(item.accountId, {
+          id: item.accountId,
+          tiktokUsername: username,
+        });
+      }
+    }
+
+    const uniqueAccountsList = Array.from(uniqueAccountsMap.values()).sort((a, b) => 
+      a.tiktokUsername.localeCompare(b.tiktokUsername)
+    );
+
+    const accountFolderMap = new Map<string, string>();
+    uniqueAccountsList.forEach((acc, index) => {
+      accountFolderMap.set(acc.id, `Account_${index + 1}`);
+    });
 
     // Map rendered items to real files and folder name
     const publicDir = path.join(process.cwd(), "public");
-    const available: { absPath: string; name: string; folderName: string }[] = [];
+    const available: { absPath: string; name: string; folderName: string; accountId: string }[] = [];
     for (const item of batch.items) {
       if (!item.renderedVideoUrl) continue;
       const absPath = path.join(publicDir, item.renderedVideoUrl);
@@ -67,6 +87,7 @@ export async function POST(req: Request) {
           absPath,
           name: `video_${item.id.substring(0, 8)}.mp4`,
           folderName: sanitizedFolderName,
+          accountId: item.accountId,
         });
       }
     }
@@ -75,47 +96,26 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "No video files found on disk" }, { status: 400 });
     }
 
-    // Group available items by folderName
-    const byFolder: Record<string, typeof available> = {};
-    for (const item of available) {
-      if (!byFolder[item.folderName]) byFolder[item.folderName] = [];
-      byFolder[item.folderName].push(item);
-    }
-
     // Build archive inline
     const archivesDir = path.join(process.cwd(), "public", "uploads", "clip-mixer", "archives");
-    const archiveName = `smart_clip_${batchId.substring(0, 8)}_${numAccounts}x${vidsPerAccount}_${Date.now()}.tar`;
+    const archiveName = `smart_clip_${batchId.substring(0, 8)}_${Date.now()}.tar`;
     const archivePath = path.join(archivesDir, archiveName);
     tempDir = path.join(archivesDir, `tmp_smart_${Date.now()}`);
 
     fs.mkdirSync(archivesDir, { recursive: true });
     fs.mkdirSync(tempDir, { recursive: true });
 
-    // Distribute into folders grouped by subfolders
+    // Copy files exactly to their assigned directories: tempDir/Account_X/folderName/name
     let totalCopied = 0;
-    for (const [folderName, filesList] of Object.entries(byFolder)) {
-      const folderSubdir = path.join(tempDir, folderName);
-      fs.mkdirSync(folderSubdir, { recursive: true });
-
-      // Shuffle files list per folder to ensure randomness
-      const shuffled = [...filesList].sort(() => Math.random() - 0.5);
-
-      let idx = 0;
-      for (let a = 0; a < numAccounts; a++) {
-        const accountDirName = `Account_${a + 1}`;
-        const dir = path.join(folderSubdir, accountDirName);
-        fs.mkdirSync(dir, { recursive: true });
-
-        for (let v = 0; v < vidsPerAccount; v++) {
-          const fileToCopy = shuffled[idx % shuffled.length];
-          fs.copyFileSync(fileToCopy.absPath, path.join(dir, `${String(v + 1).padStart(2, "0")}_${fileToCopy.name}`));
-          idx++;
-          totalCopied++;
-        }
-      }
+    for (const fileItem of available) {
+      const accountFolder = accountFolderMap.get(fileItem.accountId) || "Account_1";
+      const targetDir = path.join(tempDir, accountFolder, fileItem.folderName);
+      fs.mkdirSync(targetDir, { recursive: true });
+      fs.copyFileSync(fileItem.absPath, path.join(targetDir, fileItem.name));
+      totalCopied++;
     }
 
-    console.log(`[Clip Mixer Smart Download] Copied ${totalCopied} files into subfolder structures. Packaging...`);
+    console.log(`[Clip Mixer Smart Download] Copied ${totalCopied} files into account/folder structures. Packaging...`);
 
     // tar
     await new Promise<void>((resolve, reject) => {
@@ -146,7 +146,7 @@ export async function POST(req: Request) {
       status: "COMPLETED",
       downloadUrl,
       size,
-      message: `${numAccounts} folders × ${vidsPerAccount} videos`,
+      message: `${uniqueAccountsList.length} accounts, ${totalCopied} videos`,
     });
   } catch (err: any) {
     console.error("[Clip Mixer Smart Download] ❌ Error:", err);

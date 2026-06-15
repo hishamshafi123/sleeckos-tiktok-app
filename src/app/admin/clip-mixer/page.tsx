@@ -163,8 +163,6 @@ export default function ClipMixerPage() {
 
   // Smart Download (Folderized ZIP) Modal States
   const [showSmartDownload, setShowSmartDownload] = useState<boolean>(false);
-  const [smartAccounts, setSmartAccounts] = useState<number>(5);
-  const [smartVidsPerAccount, setSmartVidsPerAccount] = useState<number>(3);
   const [smartDownloading, setSmartDownloading] = useState<boolean>(false);
   const [smartDownloadProgress, setSmartDownloadProgress] = useState<string>("");
   
@@ -359,8 +357,6 @@ export default function ClipMixerPage() {
             if (res.ok) {
               const data = await res.json();
               setActiveBatch(data);
-              setSmartAccounts(Math.ceil(data.totalVideos / 3));
-              setSmartVidsPerAccount(3);
             }
           } catch (err) {
             console.error("Failed to load persisted active batch", err);
@@ -766,10 +762,6 @@ export default function ClipMixerPage() {
         const batchData = await batchRes.json();
         setActiveBatch(batchData);
         
-        // Default smart download parameters based on the generation inputs
-        setSmartAccounts(accountCountInput);
-        setSmartVidsPerAccount(videosPerAccountInput);
-
         setActiveTab("batches");
         fetchBatches();
         return "Clip Mixer batch rendering started!";
@@ -780,11 +772,10 @@ export default function ClipMixerPage() {
 
   // Smart folderized ZIP generation and downloader
   const handleSmartDownload = async (batchId: string) => {
-    const totalNeeded = smartAccounts * smartVidsPerAccount;
-    const renderedCount = activeBatch?.items?.filter(i => i.status === "RENDERED").length || 0;
+    const renderedCount = activeBatch?.items?.filter(i => i.status === "RENDERED" || i.status === "UPLOADED").length || 0;
     
-    if (totalNeeded > renderedCount) {
-      toast.error(`Not enough videos! Need ${totalNeeded} (${smartAccounts}×${smartVidsPerAccount}) but only ${renderedCount} are completed.`);
+    if (renderedCount === 0) {
+      toast.error("No completed videos available to download.");
       return;
     }
 
@@ -797,8 +788,6 @@ export default function ClipMixerPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           batchId,
-          accountCount: smartAccounts,
-          videosPerAccount: smartVidsPerAccount,
         }),
       });
 
@@ -828,7 +817,7 @@ export default function ClipMixerPage() {
         link.click();
         document.body.removeChild(link);
 
-        toast.success(`Smart download started in browser: ${smartAccounts} accounts × ${smartVidsPerAccount} videos!`);
+        toast.success(`Smart download started in browser: ${data.message || "Archive compiled successfully!"}`);
         // Let user see 100% complete state for 3s
         await new Promise((resolve) => setTimeout(resolve, 3000));
       } else {
@@ -1482,8 +1471,6 @@ export default function ClipMixerPage() {
                     key={b.id}
                     onClick={async () => {
                       setActiveBatch(b);
-                      setSmartAccounts(Math.ceil(b.totalVideos / 3));
-                      setSmartVidsPerAccount(3);
                       setShowSmartDownload(false);
                       try {
                         const res = await fetch(`/api/managed/clip-mixer/batches?batchId=${b.id}`);
@@ -1620,38 +1607,17 @@ export default function ClipMixerPage() {
                               </div>
 
                               <p className="text-[10px] text-gray-500">
-                                Distributes completed video mixes into folders inside a single compressed tar.gz archive.
+                                This will compile a ZIP archive containing all successfully rendered videos in this batch, structured exactly by their assigned accounts and clip folders.
                               </p>
 
-                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                                <div className="space-y-1">
-                                  <label className="text-[10px] text-gray-400 font-bold uppercase">Accounts (folders)</label>
-                                  <input
-                                    type="number" min={1} max={50}
-                                    value={smartAccounts}
-                                    onChange={e => setSmartAccounts(Math.max(1, parseInt(e.target.value) || 1))}
-                                    className="w-full bg-black/40 border border-white/10 rounded-xl px-3 py-2 text-white text-xs focus:outline-none focus:border-purple-500"
-                                  />
-                                </div>
-                                <div className="space-y-1">
-                                  <label className="text-[10px] text-gray-400 font-bold uppercase">Videos per account</label>
-                                  <input
-                                    type="number" min={1} max={100}
-                                    value={smartVidsPerAccount}
-                                    onChange={e => setSmartVidsPerAccount(Math.max(1, parseInt(e.target.value) || 1))}
-                                    className="w-full bg-black/40 border border-white/10 rounded-xl px-3 py-2 text-white text-xs focus:outline-none focus:border-purple-500"
-                                  />
-                                </div>
-                              </div>
-
                               <div className="bg-purple-500/5 border border-purple-500/10 rounded-xl px-3 py-2 text-[10px] text-purple-300 flex justify-between">
-                                <span>Requested: <strong>{smartAccounts * smartVidsPerAccount}</strong> videos</span>
-                                <span>Available: <strong>{completed}</strong> videos</span>
+                                <span>Total videos: <strong>{total}</strong></span>
+                                <span>Available to download: <strong>{completed}</strong></span>
                               </div>
 
                               <button
                                 onClick={() => handleSmartDownload(activeBatch.id)}
-                                disabled={smartDownloading || (smartAccounts * smartVidsPerAccount) > completed}
+                                disabled={smartDownloading || completed === 0}
                                 className="w-full bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-500 hover:to-pink-500 disabled:opacity-30 disabled:from-purple-900 disabled:to-pink-900 text-white font-extrabold py-2.5 rounded-xl transition-all flex items-center justify-center gap-2 text-xs cursor-pointer"
                               >
                                 {smartDownloading ? (
