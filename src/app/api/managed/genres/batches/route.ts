@@ -302,7 +302,7 @@ export async function POST(req: Request) {
         // Create item records
         for (let i = 0; i < quotes.length; i++) {
           const q = quotes[i];
-          const randomBg = bgs[Math.floor(Math.random() * bgs.length)];
+          const randomBg = bgs[i % bgs.length];
 
           await prisma.genreBatchItem.create({
             data: {
