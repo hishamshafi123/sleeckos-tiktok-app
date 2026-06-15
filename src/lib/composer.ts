@@ -355,6 +355,7 @@ export async function composeVideo(options: ComposeOptions): Promise<string> {
   let filterComplex = "";
   let textFilePath = "";
   let svgFilePath = "";
+  const lineTextFiles: string[] = [];
 
   if (curveText) {
     // True curved text along an SVG path
@@ -546,7 +547,13 @@ export async function composeVideo(options: ComposeOptions): Promise<string> {
       const line = lines[i];
       const lineY = Math.round(textY + i * lineHeight);
       const nextLabel = i === lines.length - 1 ? "[v]" : `[t${i}]`;
-      const escapedLineText = escapeFfmpegDrawtext(line);
+
+      // Write each line literally to a temporary file to bypass all FFmpeg escaping limitations
+      const lineFile = path.join(tempDir, `line_${i}_${Math.random().toString(36).substring(2, 9)}.txt`);
+      fs.writeFileSync(lineFile, line, "utf8");
+      lineTextFiles.push(lineFile);
+
+      const escapedLineFilePath = lineFile.replace(/\\/g, "/").replace(/'/g, "'\\''");
 
       let drawShadowStr = "";
       if (shadowColor && shadowColor.toLowerCase() !== "none") {
@@ -557,7 +564,7 @@ export async function composeVideo(options: ComposeOptions): Promise<string> {
       const alphaStr = `:alpha='if(lt(t\\,0.5)\\,t/0.5\\,if(gt(t\\,${videoLength}-0.5)\\,(${videoLength}-t)/0.5\\,1))'`;
 
       drawtextFilters.push(
-        `${lastLabel}drawtext=fontfile='${escapedFontPath}':text="${escapedLineText}":fontcolor=${drawFontColor}:fontsize=${fontSize}:x='max(${stripX + paddingX}\\,${stripX}+(${stripW}-text_w)/2)':y=${lineY}${drawShadowStr}${alphaStr}:expansion=none${nextLabel}`
+        `${lastLabel}drawtext=fontfile='${escapedFontPath}':textfile='${escapedLineFilePath}':fontcolor=${drawFontColor}:fontsize=${fontSize}:x='max(${stripX + paddingX}\\,${stripX}+(${stripW}-text_w)/2)':y=${lineY}${drawShadowStr}${alphaStr}:expansion=none${nextLabel}`
       );
       lastLabel = nextLabel;
     }
@@ -623,6 +630,11 @@ export async function composeVideo(options: ComposeOptions): Promise<string> {
       try {
         if (!curveText && textFilePath && fs.existsSync(textFilePath)) {
           fs.unlinkSync(textFilePath);
+        }
+        for (const lineFile of lineTextFiles) {
+          if (fs.existsSync(lineFile)) {
+            fs.unlinkSync(lineFile);
+          }
         }
       } catch (err) {
         console.error("[Composer] Failed to cleanup temp text file", err);
