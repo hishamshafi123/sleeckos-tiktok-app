@@ -496,10 +496,12 @@ async function processClipMixerBatch(batchId: string) {
         let hasPreRenderedOverlay = overlayExists && overlayReady && overlaySize > 1024;
 
         // Check if template needs transparency (no solid bg)
+        const bgOpacity = typeof template.bgOpacity === "number" ? template.bgOpacity : 1.0;
         const templateHasSolidBg = !!template.bgColor &&
           template.bgColor !== "none" &&
           template.bgColor !== "transparent" &&
-          template.bgColor !== "null";
+          template.bgColor !== "null" &&
+          bgOpacity >= 0.99;
 
         // Validate that transparent overlays use VP9 (VP8 doesn't support alpha).
         // If the existing overlay was rendered with VP8, invalidate it for re-render.
@@ -547,6 +549,8 @@ async function processClipMixerBatch(batchId: string) {
               wordSpacing: template.wordSpacing,
               letterSpacing: template.letterSpacing,
               aspectRatio: template.aspectRatio,
+              bgOpacity: template.bgOpacity,
+              lofiFactor: template.lofiFactor,
             };
             const { renderCanvasOverlay } = await import("@/lib/ffmpeg-overlay-renderer");
             await renderCanvasOverlay(words, rendererConfig, duration, overlayPath);
@@ -639,6 +643,8 @@ async function processClipMixerBatch(batchId: string) {
             wordSpacing: template.wordSpacing,
             letterSpacing: template.letterSpacing,
             aspectRatio: template.aspectRatio,
+            bgOpacity: template.bgOpacity,
+            lofiFactor: template.lofiFactor,
           });
           const assPath = `/tmp/clip_mixer_${item.id}.ass`;
           fs.writeFileSync(assPath, assContent, "utf-8");
@@ -677,10 +683,33 @@ async function processClipMixerBatch(batchId: string) {
             lastVideoLabel = "v0";
           }
 
+          // Custom Background Color Overlay
+          let finalVideoInputLabel = lastVideoLabel;
+          const bgOpacityVal = typeof template.bgOpacity === "number" ? template.bgOpacity : 1.0;
+          const hasColorOverlay = !!template.bgColor &&
+            template.bgColor !== "none" &&
+            template.bgColor !== "transparent" &&
+            template.bgColor !== "null" &&
+            bgOpacityVal > 0;
+
+          if (hasColorOverlay && template.bgColor) {
+            const colorHex = template.bgColor.startsWith("#") ? template.bgColor.slice(1) : template.bgColor;
+            const formattedColor = colorHex.startsWith("0x") ? colorHex : "0x" + colorHex;
+            filterComplex += `color=c=${formattedColor}@${bgOpacityVal}:s=${width}x${height}:d=${currentDuration.toFixed(3)}:r=30[color_overlay];[${lastVideoLabel}][color_overlay]overlay=shortest=1[colored_bg];`;
+            finalVideoInputLabel = "colored_bg";
+          }
+
           // Burn ASS subtitles directly onto the concatenated clips
           const fontsDir = path.join(process.cwd(), "public", "fonts");
           const escapedAss = assPath.replace(/\\/g, "/").replace(/:/g, "\\\\:");
-          filterComplex += `[${lastVideoLabel}]ass='${escapedAss}':fontsdir='${fontsDir}'[v_final]`;
+          
+          const lofiFactor = template.lofiFactor ?? 1;
+          if (lofiFactor > 1) {
+            filterComplex += `[${finalVideoInputLabel}]ass='${escapedAss}':fontsdir='${fontsDir}'[v_before_lofi];`;
+            filterComplex += `[v_before_lofi]scale=w=iw/${lofiFactor}:h=ih/${lofiFactor},scale=w=iw:h=ih:flags=neighbor[v_final]`;
+          } else {
+            filterComplex += `[${finalVideoInputLabel}]ass='${escapedAss}':fontsdir='${fontsDir}'[v_final]`;
+          }
 
           const cmd = [
             `ffmpeg -y`,

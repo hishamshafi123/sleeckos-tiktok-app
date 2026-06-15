@@ -37,6 +37,8 @@ interface TemplateConfig {
   wordSpacing?: string;
   letterSpacing?: number;
   aspectRatio?: string;
+  bgOpacity?: number;
+  lofiFactor?: number;
 }
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -266,13 +268,29 @@ export async function renderCanvasOverlay(
   }
 
   // Build FFmpeg command using a filtergraph script file to avoid escaping issues
+  const bgOpacity = typeof config.bgOpacity === "number" ? config.bgOpacity : 1.0;
   const hasSolidBg = !!config.bgColor &&
     config.bgColor !== "none" &&
     config.bgColor !== "transparent" &&
-    config.bgColor !== "null";
-  const bgColor = hasSolidBg ? config.bgColor! : "black@0.0";
-  // FFmpeg color source: use named or 0xRRGGBB format
-  const colorVal = bgColor.startsWith("#") ? bgColor.replace("#", "0x") : bgColor;
+    config.bgColor !== "null" &&
+    bgOpacity >= 0.99;
+
+  const colorVal = (() => {
+    if (!!config.bgColor &&
+        config.bgColor !== "none" &&
+        config.bgColor !== "transparent" &&
+        config.bgColor !== "null") {
+      const hex = config.bgColor.startsWith("#") ? config.bgColor.slice(1) : config.bgColor;
+      const fmt = hex.startsWith("0x") ? hex : "0x" + hex;
+      return `${fmt}@${bgOpacity}`;
+    }
+    return "black@0.0";
+  })();
+
+  const lofiFactor = config.lofiFactor || 1;
+  const lofiFilter = lofiFactor > 1
+    ? `,scale=w=iw/${lofiFactor}:h=ih/${lofiFactor},scale=w=iw:h=ih:flags=neighbor`
+    : "";
 
   const width = config.aspectRatio === "1:1" ? 720 : 720;
   const height = config.aspectRatio === "1:1" ? 720 : 1280;
@@ -282,8 +300,8 @@ export async function renderCanvasOverlay(
   // The filter graph: color source -> ass subtitles -> output
   // For transparent: need format=rgba before ass, then convert to yuva420p
   const filterContent = hasSolidBg
-    ? "color=c=" + colorVal + ":s=" + width + "x" + height + ":d=" + duration + ":r=" + FPS + ",ass=" + assPath + ":fontsdir=" + fontsDir + " [out]"
-    : "color=c=" + colorVal + ":s=" + width + "x" + height + ":d=" + duration + ":r=" + FPS + ",format=rgba,ass=" + assPath + ":fontsdir=" + fontsDir + ",format=yuva420p [out]";
+    ? "color=c=" + colorVal + ":s=" + width + "x" + height + ":d=" + duration + ":r=" + FPS + ",ass=" + assPath + ":fontsdir=" + fontsDir + lofiFilter + " [out]"
+    : "color=c=" + colorVal + ":s=" + width + "x" + height + ":d=" + duration + ":r=" + FPS + ",format=rgba,ass=" + assPath + ":fontsdir=" + fontsDir + lofiFilter + ",format=yuva420p [out]";
   fs.writeFileSync(filterScript, filterContent, "utf-8");
   console.log("[FFmpeg Renderer] Filter script: " + filterScript);
   console.log("[FFmpeg Renderer] Filter content: " + filterContent);

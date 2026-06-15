@@ -270,6 +270,9 @@ export async function GET(req: NextRequest) {
             textAlign: template.textAlign,
             wordSpacing: template.wordSpacing,
             letterSpacing: template.letterSpacing,
+            aspectRatio: template.aspectRatio,
+            bgOpacity: template.bgOpacity,
+            lofiFactor: template.lofiFactor,
           };
 
           const { renderCanvasOverlay } = await import("@/lib/ffmpeg-overlay-renderer");

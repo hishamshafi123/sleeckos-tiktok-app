@@ -921,6 +921,8 @@ async function processBatchRendering(batchId: string) {
                 wordSpacing: item.lyricalTemplate.wordSpacing,
                 letterSpacing: item.lyricalTemplate.letterSpacing,
                 aspectRatio: item.lyricalTemplate.aspectRatio,
+                bgOpacity: item.lyricalTemplate.bgOpacity,
+                lofiFactor: item.lyricalTemplate.lofiFactor,
               };
               const { renderCanvasOverlay } = await import("@/lib/ffmpeg-overlay-renderer");
               await renderCanvasOverlay(words, rendererConfig, duration, overlayPath);
@@ -948,10 +950,12 @@ async function processBatchRendering(batchId: string) {
 
           // Check if this template uses a solid background color (e.g. Word Builder)
           // In this case the overlay WebM IS the full video — no background needed
+          const bgOpacity = typeof item.lyricalTemplate?.bgOpacity === "number" ? item.lyricalTemplate.bgOpacity : 1.0;
           const hasSolidBg = !!item.lyricalTemplate?.bgColor &&
             item.lyricalTemplate.bgColor !== "none" &&
             item.lyricalTemplate.bgColor !== "transparent" &&
-            item.lyricalTemplate.bgColor !== "null";
+            item.lyricalTemplate.bgColor !== "null" &&
+            bgOpacity >= 0.99;
 
           if (hasPreRenderedOverlay && hasSolidBg) {
             // ═══════════════════════════════════════════════════════════════
@@ -1014,6 +1018,8 @@ async function processBatchRendering(batchId: string) {
               wordSpacing: tpl.wordSpacing,
               letterSpacing: tpl.letterSpacing,
               aspectRatio: tpl.aspectRatio,
+              bgOpacity: tpl.bgOpacity,
+              lofiFactor: tpl.lofiFactor,
             });
             const assSubtitlePath = `/tmp/lyrical_g1_${item.id}.ass`;
             fs.writeFileSync(assSubtitlePath, assContent, "utf-8");
@@ -1091,6 +1097,19 @@ async function processBatchRendering(batchId: string) {
               }
             }
 
+            // 5b. Custom Background Color Overlay
+            const hasColorOverlay = !!tpl.bgColor &&
+              tpl.bgColor !== "none" &&
+              tpl.bgColor !== "transparent" &&
+              tpl.bgColor !== "null" &&
+              bgOpacity > 0.0;
+            if (hasColorOverlay && tpl.bgColor) {
+              const colorHex = tpl.bgColor.startsWith("#") ? tpl.bgColor.slice(1) : tpl.bgColor;
+              const formattedColor = colorHex.startsWith("0x") ? colorHex : "0x" + colorHex;
+              filterComplex += `color=c=${formattedColor}@${bgOpacity}:s=${width}x${height}:d=${duration}:r=15[color_overlay];[${lastLabel}][color_overlay]overlay=shortest=1[colored_bg];`;
+              lastLabel = "colored_bg";
+            }
+
             // 6. Audio input
             const audioIdx = currentInputIdx++;
             if (item.muteAudio) {
@@ -1102,7 +1121,14 @@ async function processBatchRendering(batchId: string) {
             // 7. Burn ASS subtitles directly onto the processed background
             const fontsDir = path.join(process.cwd(), "public", "fonts");
             const escapedAss = assSubtitlePath.replace(/\\/g, "/").replace(/:/g, "\\\\:");
-            filterComplex += `[${lastLabel}]ass='${escapedAss}':fontsdir='${fontsDir}'[v]`;
+            
+            const lofiFactor = tpl.lofiFactor ?? 1;
+            if (lofiFactor > 1) {
+              filterComplex += `[${lastLabel}]ass='${escapedAss}':fontsdir='${fontsDir}'[v_before_lofi];`;
+              filterComplex += `[v_before_lofi]scale=w=iw/${lofiFactor}:h=ih/${lofiFactor},scale=w=iw:h=ih:flags=neighbor[v]`;
+            } else {
+              filterComplex += `[${lastLabel}]ass='${escapedAss}':fontsdir='${fontsDir}'[v]`;
+            }
 
             cmd = [
               `ffmpeg -y`,

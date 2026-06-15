@@ -588,6 +588,8 @@ model TrackLyricalTemplate {
   overlayVideoUrl String?          // Local transparent .mov video overlay file URL
   previewImageUrl String?          // Local transparent preview PNG image file URL
   muteAudio       Boolean          @default(false)  // Toggle to mute audio in composition
+  bgOpacity       Float            @default(1.0)
+  lofiFactor      Int              @default(1)
   createdAt       DateTime         @default(now())
   updatedAt       DateTime         @updatedAt
 

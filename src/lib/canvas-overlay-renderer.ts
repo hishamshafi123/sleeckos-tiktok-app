@@ -41,6 +41,8 @@ interface TemplateConfig {
   wordSpacing?: string;
   letterSpacing?: number;
   aspectRatio?: string;
+  bgOpacity?: number;
+  lofiFactor?: number;
 }
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -310,7 +312,17 @@ function generateOverlayHTML(
     width: ${width}px;
     height: ${height}px;
     overflow: hidden;
-    background: ${bgColor ? bgColor : "transparent"};
+    background: ${(() => {
+      if (!bgColor) return "transparent";
+      const clean = bgColor.replace("#", "");
+      if (clean.length === 6) {
+        const r = parseInt(clean.substring(0, 2), 16);
+        const g = parseInt(clean.substring(2, 4), 16);
+        const b = parseInt(clean.substring(4, 6), 16);
+        return `rgba(${r}, ${g}, ${b}, ${config.bgOpacity ?? 1.0})`;
+      }
+      return bgColor;
+    })()};
   }
 
   #container {

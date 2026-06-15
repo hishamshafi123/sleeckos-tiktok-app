@@ -485,6 +485,8 @@ export default function GenresDashboard() {
   const [lyricalLetterSpacing, setLyricalLetterSpacing] = useState<number>(0);
   const [lyricalMuteAudio, setLyricalMuteAudio] = useState<boolean>(false);
   const [lyricalAspectRatio, setLyricalAspectRatio] = useState<"9:16" | "1:1">("9:16");
+  const [lyricalBgOpacity, setLyricalBgOpacity] = useState<number>(1.0);
+  const [lyricalLofiFactor, setLyricalLofiFactor] = useState<number>(1);
   const [mixupVisuals, setMixupVisuals] = useState<boolean>(true);
 
   // Lyrical transcription editor states
@@ -812,6 +814,8 @@ export default function GenresDashboard() {
           letterSpacing: lyricalLetterSpacing,
           muteAudio: lyricalMuteAudio,
           aspectRatio: lyricalAspectRatio,
+          bgOpacity: lyricalBgOpacity,
+          lofiFactor: lyricalLofiFactor,
         }),
       });
       if (res.ok) {
@@ -2473,6 +2477,8 @@ export default function GenresDashboard() {
                               setLyricalPositionY(0.40);
                               setLyricalAnimationMode("word_builder");
                               setLyricalBgColor("#F5A623");
+                              setLyricalBgOpacity(1.0);
+                              setLyricalLofiFactor(1);
                               setLyricalTextColor("#000000");
                               setSetupLyricalColorFilter("none");
                               setSetupLyricalVignette("none");
@@ -2481,6 +2487,26 @@ export default function GenresDashboard() {
                               setLyricalTextAlign("left");
                               setLyricalWordSpacing("extra_wide");
                               setLyricalLetterSpacing(0);
+                            } else if (val === "brat-style") {
+                              setLyricalTemplateName("Brat Style");
+                              setLyricalFontFamily("Montserrat-Black");
+                              setLyricalFontSize(76);
+                              setLyricalActiveColor("#000000");
+                              setLyricalStrokeWidth(0);
+                              setLyricalStrokeColor("#000000");
+                              setLyricalPositionY(0.40);
+                              setLyricalAnimationMode("word_builder");
+                              setLyricalBgColor("#8ace00");
+                              setLyricalBgOpacity(1.0);
+                              setLyricalLofiFactor(8);
+                              setLyricalTextColor("#000000");
+                              setSetupLyricalColorFilter("none");
+                              setSetupLyricalVignette("none");
+                              setSetupLyricalParticleFx("none");
+                              setSetupLyricalBgVideoUrl("");
+                              setLyricalTextAlign("left");
+                              setLyricalWordSpacing("wide");
+                              setLyricalLetterSpacing(-2);
                             }
                           }}
                           className="w-full bg-black/45 border border-white/10 hover:border-white/20 rounded-2xl px-3 py-2.5 text-xs text-gray-300 focus:outline-none transition-all duration-300 cursor-pointer"
@@ -2491,6 +2517,7 @@ export default function GenresDashboard() {
                           <option value="electric-green">Electric Green (Outfit Active)</option>
                           <option value="hot-pink">Hot Pink (Vibrant Neon Pink)</option>
                           <option value="word-builder-yellow">⚡ Minimalist Word Builder (Yellow & Black)</option>
+                          <option value="brat-style">💚 Brat Style (Charli XCX - Pixelated Slime Green)</option>
                         </select>
                       </div>
 
@@ -2757,16 +2784,17 @@ export default function GenresDashboard() {
                         </div>
                       </div>
 
-                      {/* Solid Background Color Toggle */}
-                      <div className="space-y-2 bg-black/20 p-3 rounded-2xl border border-white/5 shadow-inner">
+                      {/* Background Color & Opacity Card */}
+                      <div className="space-y-3 bg-black/20 p-3 rounded-2xl border border-white/5 shadow-inner">
                         <div className="flex items-center justify-between">
-                          <label className="block text-[9px] uppercase tracking-wider font-extrabold text-gray-500">Solid Background Color</label>
+                          <label className="block text-[9px] uppercase tracking-wider font-extrabold text-gray-500">Background Color</label>
                           <button
+                            type="button"
                             onClick={() => {
                               if (lyricalBgColor) {
                                 setLyricalBgColor(null);
                               } else {
-                                setLyricalBgColor("#F5A623");
+                                setLyricalBgColor("#8ace00"); // default to Brat green!
                               }
                             }}
                             className={`relative w-9 h-5 rounded-full transition-all duration-300 ${lyricalBgColor ? "bg-amber-500" : "bg-gray-700"}`}
@@ -2775,32 +2803,75 @@ export default function GenresDashboard() {
                           </button>
                         </div>
                         {lyricalBgColor && (
-                          <div className="flex items-center gap-2 mt-1">
-                            <input
-                              type="color"
-                              value={lyricalBgColor}
-                              onChange={(e) => setLyricalBgColor(e.target.value)}
-                              className="w-8 h-8 rounded-xl border border-white/10 cursor-pointer bg-transparent"
-                            />
-                            <input
-                              type="text"
-                              value={lyricalBgColor}
-                              onChange={(e) => {
-                                const val = e.target.value;
-                                if (/^#[0-9a-fA-F]{0,6}$/.test(val)) setLyricalBgColor(val);
-                              }}
-                              className="flex-1 bg-black/45 border border-white/10 hover:border-white/20 rounded-xl px-3 py-1.5 text-xs text-gray-300 font-mono focus:outline-none transition-all duration-300"
-                              placeholder="#F5A623"
-                            />
-                          </div>
+                          <>
+                            <div className="flex items-center gap-2 mt-1">
+                              <input
+                                type="color"
+                                value={lyricalBgColor}
+                                onChange={(e) => setLyricalBgColor(e.target.value)}
+                                className="w-8 h-8 rounded-xl border border-white/10 cursor-pointer bg-transparent"
+                              />
+                              <input
+                                type="text"
+                                value={lyricalBgColor}
+                                onChange={(e) => {
+                                  const val = e.target.value;
+                                  if (/^#[0-9a-fA-F]{0,6}$/.test(val)) setLyricalBgColor(val);
+                                }}
+                                className="flex-1 bg-black/45 border border-white/10 hover:border-white/20 rounded-xl px-3 py-1.5 text-xs text-gray-300 font-mono focus:outline-none transition-all duration-300"
+                                placeholder="#8ace00"
+                              />
+                            </div>
+                            <div className="space-y-1 mt-2">
+                              <div className="flex justify-between text-[9px] text-gray-500 uppercase font-extrabold">
+                                <span>Opacity</span>
+                                <span>{Math.round(lyricalBgOpacity * 100)}%</span>
+                              </div>
+                              <input
+                                type="range"
+                                min="0.0"
+                                max="1.0"
+                                step="0.05"
+                                value={lyricalBgOpacity}
+                                onChange={(e) => setLyricalBgOpacity(parseFloat(e.target.value))}
+                                className="w-full h-1 bg-gray-800 rounded-lg appearance-none cursor-pointer accent-purple-500"
+                              />
+                            </div>
+                          </>
                         )}
-                        {lyricalBgColor && (
-                          <p className="text-[8px] text-gray-600 mt-1">Video background will be replaced with this solid color</p>
-                        )}
+                        <p className="text-[8px] text-gray-600 mt-1">
+                          {lyricalBgColor 
+                            ? `Color overlay applied with ${Math.round(lyricalBgOpacity * 100)}% opacity`
+                            : "Transparent background (using background video loops/clips)"
+                          }
+                        </p>
+                      </div>
+
+                      {/* Lo-Fi Pixelation Factor */}
+                      <div className="space-y-2 bg-black/20 p-3 rounded-2xl border border-white/5 shadow-inner">
+                        <div className="flex justify-between items-center">
+                          <label className="block text-[9px] uppercase tracking-wider font-extrabold text-gray-500">Lo-Fi Pixelation</label>
+                          <span className="text-xs text-amber-400 font-extrabold font-mono">{lyricalLofiFactor}x</span>
+                        </div>
+                        <input
+                          type="range"
+                          min="1"
+                          max="20"
+                          step="1"
+                          value={lyricalLofiFactor}
+                          onChange={(e) => setLyricalLofiFactor(parseInt(e.target.value, 10))}
+                          className="w-full h-1 bg-gray-800 rounded-lg appearance-none cursor-pointer accent-purple-500"
+                        />
+                        <p className="text-[8px] text-gray-600">
+                          {lyricalLofiFactor > 1 
+                            ? `Scale down by ${lyricalLofiFactor}x and upscale with nearest-neighbor (pixelated look)`
+                            : "No pixelation (sharp high-res text)"
+                          }
+                        </p>
                       </div>
 
                       {/* Mirror, Speed, BG Video — hidden when solid bg is active */}
-                      {!lyricalBgColor && (
+                      {(!lyricalBgColor || lyricalBgOpacity < 1.0) && (
                       <div className="space-y-3 bg-black/20 p-3 rounded-2xl border border-white/5 shadow-inner">
                         <div className="space-y-1">
                           <label className="block text-[9px] uppercase tracking-wider font-extrabold text-gray-500">Preview BG Loop</label>
@@ -2960,13 +3031,7 @@ export default function GenresDashboard() {
                       className={`relative ${lyricalAspectRatio === "1:1" ? "aspect-square" : "aspect-[9/16]"} w-full max-w-[200px] bg-[#07070d] border border-white/15 ${lyricalAspectRatio === "1:1" ? "rounded-[24px]" : "rounded-[36px]"} overflow-hidden shadow-2xl flex flex-col justify-between group cursor-pointer hover:border-purple-500/30 transition-all duration-300`}
                     >
                       {/* Background layer */}
-                      {lyricalBgColor ? (
-                        /* Solid color background for Word Builder mode */
-                        <div 
-                          className="absolute inset-0 z-0 select-none" 
-                          style={{ background: lyricalBgColor }}
-                        />
-                      ) : setupLyricalBgVideoUrl ? (
+                      {setupLyricalBgVideoUrl ? (
                         <>
                           <video
                             ref={previewVideoRef}
@@ -2991,6 +3056,17 @@ export default function GenresDashboard() {
                           <div className="absolute top-[20%] left-[20%] w-[100px] h-[100px] bg-purple-600/10 rounded-full blur-[40px] animate-pulse z-0" />
                           <div className="absolute bottom-[20%] right-[20%] w-[100px] h-[100px] bg-indigo-500/10 rounded-full blur-[40px] animate-pulse z-0" />
                         </>
+                      )}
+
+                      {/* Custom Background Color & Opacity Overlay */}
+                      {lyricalBgColor && (
+                        <div 
+                          className="absolute inset-0 z-0 select-none" 
+                          style={{ 
+                            backgroundColor: lyricalBgColor,
+                            opacity: lyricalBgOpacity 
+                          }}
+                        />
                       )}
 
                       {/* Vignette Overlay */}
@@ -3361,13 +3437,15 @@ export default function GenresDashboard() {
                                   setSetupLyricalBgSpeed(tpl.bgSpeed || 1.0);
                                   setLyricalAnimationMode(tpl.animationMode || "highlight");
                                   setLyricalBgColor(tpl.bgColor || null);
+                                  setLyricalBgOpacity(tpl.bgOpacity ?? 1.0);
+                                  setLyricalLofiFactor(tpl.lofiFactor ?? 1);
                                   setLyricalTextColor(tpl.textColor || null);
                                   setLyricalTextAlign(tpl.textAlign || "center");
                                   setLyricalWordSpacing(tpl.wordSpacing || "normal");
                                   setLyricalLetterSpacing(tpl.letterSpacing || 0);
                                   setLyricalMuteAudio(tpl.muteAudio || false);
                                   setLyricalAspectRatio(tpl.aspectRatio || "9:16");
-                                  if (tpl.bgColor) {
+                                  if (tpl.bgColor && (tpl.bgOpacity ?? 1.0) >= 0.99) {
                                     setSetupLyricalBgVideoUrl("");
                                   }
                                 }}

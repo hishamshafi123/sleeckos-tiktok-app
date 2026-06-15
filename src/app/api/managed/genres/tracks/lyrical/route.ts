@@ -144,6 +144,8 @@ export async function PATCH(req: Request) {
       letterSpacing = 0,
       muteAudio = false,
       aspectRatio = "9:16",
+      bgOpacity = 1.0,
+      lofiFactor = 1,
     } = body;
 
     if (!trackId || !templateName) {
@@ -184,6 +186,8 @@ export async function PATCH(req: Request) {
       letterSpacing,
       muteAudio,
       aspectRatio,
+      bgOpacity,
+      lofiFactor,
       overlayVideoUrl: overlayRelativePath,
       previewImageUrl: previewRelativePath,
     };
@@ -230,7 +234,9 @@ export async function PATCH(req: Request) {
       textAlign,
       wordSpacing,
       letterSpacing,
-      aspectRatio
+      aspectRatio,
+      bgOpacity,
+      lofiFactor
     };
     try {
       const { renderPreviewFrame } = await import("@/lib/canvas-overlay-renderer");
@@ -335,6 +341,8 @@ export async function PUT(req: Request) {
       wordSpacing: template.wordSpacing,
       letterSpacing: template.letterSpacing,
       aspectRatio: template.aspectRatio,
+      bgOpacity: template.bgOpacity,
+      lofiFactor: template.lofiFactor,
     };
 
     console.log(`[Lyrical API] Re-rendering overlay for template '${template.templateName}' (${templateId})...`);

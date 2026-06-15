@@ -1,0 +1,3 @@
+-- AlterTable
+ALTER TABLE "TrackLyricalTemplate" ADD COLUMN     "bgOpacity" DOUBLE PRECISION NOT NULL DEFAULT 1.0,
+ADD COLUMN     "lofiFactor" INTEGER NOT NULL DEFAULT 1;
