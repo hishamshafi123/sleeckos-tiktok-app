@@ -97,7 +97,7 @@ export async function POST(req: Request) {
     // ACTION 0.5: CREATE_LYRICAL_BATCH
     // ─────────────────────────────────────────────────────────────────────────
     if (action === "CREATE_LYRICAL_BATCH") {
-      const { accountIds, postsPerAccount, trackId, trackIds, trackStart = 0.0, lyricalTemplateId, lyricalTemplateIds, mixupVisuals } = body;
+      const { accountIds, postsPerAccount, trackId, trackIds, trackStart = 0.0, trackEnd, lyricalTemplateId, lyricalTemplateIds, mixupVisuals } = body;
 
       if (!accountIds || !Array.isArray(accountIds) || accountIds.length === 0) {
         return NextResponse.json({ error: "Please select at least one TikTok account" }, { status: 400 });
@@ -243,6 +243,7 @@ export async function POST(req: Request) {
               quoteAuthor: track.artist,
               trackId: track.id,
               trackStart: parseFloat(trackStart) || 0.0,
+              trackEnd: trackEnd ? parseFloat(trackEnd) : null,
               backgroundVideoUrl: randomBg.videoUrl,
               lyricalTemplateId: currentTemplate.id,
               muteAudio: currentTemplate.muteAudio,
@@ -984,7 +985,8 @@ async function processBatchRendering(batchId: string) {
           }
 
           const trackStartOffset = Math.max(0, item.trackStart || 0);
-          const duration = Math.max(1.0, (batch.videoLength || item.track.duration || 7.0) - trackStartOffset);
+          const trackEndOffset = item.trackEnd || item.track.duration;
+          const duration = Math.max(1.0, trackEndOffset - trackStartOffset);
           const audioPath = path.join(process.cwd(), "public", item.track.fileUrl);
 
           // Read background transforms from template
@@ -1053,12 +1055,12 @@ async function processBatchRendering(batchId: string) {
             const tpl = item.lyricalTemplate!;
             const words: { word: string; start: number; end: number }[] = JSON.parse(item.track.lyricalTranscription);
             
-            // Shift word timings based on trackStartOffset
+            // Shift word timings based on trackStartOffset and trackEndOffset
             const shiftedWords = words
-              .filter((w: any) => w.end > trackStartOffset)
+              .filter((w: any) => w.end > trackStartOffset && w.start < trackEndOffset)
               .map((w: any) => {
                 const start = Math.max(0, w.start - trackStartOffset);
-                const end = w.end - trackStartOffset;
+                const end = Math.min(duration, w.end - trackStartOffset);
                 return { ...w, start, end };
               });
 

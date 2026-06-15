@@ -835,6 +835,7 @@ def create_lyrical_video(input_path, background_path, output_path, **kwargs):
     print("=" * 80)
     
     track_start = float(kwargs.get("track_start", 0.0))
+    track_end = float(kwargs.get("track_end", 0.0))
     
     # Verify input exists
     if not os.path.exists(input_path):
@@ -861,8 +862,8 @@ def create_lyrical_video(input_path, background_path, output_path, **kwargs):
         
     print(f"[+] Input recognized: {'AUDIO' if is_input_audio else 'VIDEO'} | Duration: {audio_duration:.2f} seconds")
     
-    if track_start > 0.0:
-        audio_duration = max(0.0, audio_duration - track_start)
+    effective_end = track_end if track_end > track_start else audio_duration
+    audio_duration = max(1.0, effective_end - track_start)
     
     # Determine aspect ratio dimensions
     aspect_ratio = kwargs.get("aspect_ratio", "9:16")
@@ -910,14 +911,14 @@ def create_lyrical_video(input_path, background_path, output_path, **kwargs):
         
     print(f"[+] Loaded {len(words)} aligned words successfully.")
 
-    if track_start > 0.0:
-        print(f"[*] Trimming audio/subtitles: shifting word timings by -{track_start:.2f} seconds.")
+    if track_start > 0.0 or track_end > 0.0:
+        print(f"[*] Trimming audio/subtitles: bounds [{track_start:.2f}s, {effective_end:.2f}s]")
         shifted_words = []
         for w in words:
-            if w["end"] > track_start:
+            if w["end"] > track_start and w["start"] < effective_end:
                 w_copy = w.copy()
                 w_copy["start"] = max(0.0, w["start"] - track_start)
-                w_copy["end"] = w["end"] - track_start
+                w_copy["end"] = min(audio_duration, w["end"] - track_start)
                 shifted_words.append(w_copy)
         words = shifted_words
     
@@ -1095,8 +1096,8 @@ def create_lyrical_video(input_path, background_path, output_path, **kwargs):
     if kwargs.get("only_overlay"):
         print("[*] Pre-Rendered Transparent Overlay Mode activated.")
         audio_clip = AudioFileClip(input_path)
-        if track_start > 0.0:
-            audio_clip = subclip_compat(audio_clip, track_start)
+        if track_start > 0.0 or track_end > 0.0:
+            audio_clip = subclip_compat(audio_clip, track_start, effective_end if track_end > 0.0 else None)
         
         # Composite transparent overlays together directly
         final_clip = CompositeVideoClip(caption_overlays, size=(bg_width, bg_height))
@@ -1151,8 +1152,8 @@ def create_lyrical_video(input_path, background_path, output_path, **kwargs):
             bg_clip = ImageClip(rgb_arr).with_duration(audio_duration).with_mask(mask_clip)
             
         audio_clip = AudioFileClip(input_path)
-        if track_start > 0.0:
-            audio_clip = subclip_compat(audio_clip, track_start)
+        if track_start > 0.0 or track_end > 0.0:
+            audio_clip = subclip_compat(audio_clip, track_start, effective_end if track_end > 0.0 else None)
         try:
             bg_clip = bg_clip.set_audio(audio_clip)
         except AttributeError:
@@ -1182,16 +1183,16 @@ def create_lyrical_video(input_path, background_path, output_path, **kwargs):
             bg_clip = crop_to_fill_video_clip(bg_clip, bg_width, bg_height)
         
         audio_clip = AudioFileClip(input_path)
-        if track_start > 0.0:
-            audio_clip = subclip_compat(audio_clip, track_start)
+        if track_start > 0.0 or track_end > 0.0:
+            audio_clip = subclip_compat(audio_clip, track_start, effective_end if track_end > 0.0 else None)
         try:
             bg_clip = bg_clip.set_audio(audio_clip)
         except AttributeError:
             bg_clip = bg_clip.with_audio(audio_clip)
     else:
         bg_clip = VideoFileClip(background_path)
-        if track_start > 0.0:
-            bg_clip = subclip_compat(bg_clip, track_start)
+        if track_start > 0.0 or track_end > 0.0:
+            bg_clip = subclip_compat(bg_clip, track_start, effective_end if track_end > 0.0 else None)
         if bg_clip.w != bg_width or bg_clip.h != bg_height:
             bg_clip = crop_to_fill_video_clip(bg_clip, bg_width, bg_height)
             
@@ -1265,6 +1266,7 @@ if __name__ == "__main__":
     parser.add_argument("--lofi-factor", type=int, default=1, help="Lofi pixelation scaling factor.")
     parser.add_argument("--aspect-ratio", default="9:16", choices=["9:16", "1:1", "16:9"], help="Layout aspect ratio.")
     parser.add_argument("--track-start", type=float, default=0.0, help="Music start offset (trim) in seconds. Default: 0.0")
+    parser.add_argument("--track-end", type=float, default=0.0, help="Music end offset (trim) in seconds. Default: 0.0")
     
     args = parser.parse_args()
     
@@ -1295,7 +1297,8 @@ if __name__ == "__main__":
             bg_opacity=args.bg_opacity,
             lofi_factor=args.lofi_factor,
             aspect_ratio=args.aspect_ratio,
-            track_start=args.track_start
+            track_start=args.track_start,
+            track_end=args.track_end
         )
     except Exception as err:
         print(f"\n[!] Video Composition Failed: {err}", file=sys.stderr)

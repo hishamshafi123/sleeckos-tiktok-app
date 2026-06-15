@@ -363,6 +363,7 @@ interface BatchItem {
   driveFileId: string | null;
   renderedVideoUrl?: string | null;
   trackStart?: number;
+  trackEnd?: number | null;
   account?: {
     tiktokUsername: string;
     tiktokAvatarUrl: string;
@@ -631,6 +632,7 @@ export default function GenresDashboard() {
   const [selectedLyricalTrackId, setSelectedLyricalTrackId] = useState<string>("");
   const [selectedLyricalTrackIds, setSelectedLyricalTrackIds] = useState<string[]>([]);
   const [lyricalTrackStart, setLyricalTrackStart] = useState<number>(0);
+  const [lyricalTrackEnd, setLyricalTrackEnd] = useState<number>(0);
   const [selectedLyricalTemplateId, setSelectedLyricalTemplateId] = useState<string>("");
   const [selectedLyricalTemplateIds, setSelectedLyricalTemplateIds] = useState<string[]>([]);
   const [selectedPreviewTemplateId, setSelectedPreviewTemplateId] = useState<string | null>(null);
@@ -748,19 +750,26 @@ export default function GenresDashboard() {
     }
   }, [activeBatch]);
 
-  // Auto-clamp lyricalTrackStart offset when selectedLyricalTrackId changes
+  // Auto-clamp lyricalTrackStart and lyricalTrackEnd when selectedLyricalTrackId changes
   useEffect(() => {
     if (selectedLyricalTrackId) {
       const track = tracks.find(t => t.id === selectedLyricalTrackId);
       if (track) {
         setLyricalTrackStart(prev => {
-          const maxOffset = Math.max(0, track.duration - 7);
+          const maxOffset = Math.max(0, track.duration - 5);
           return Math.min(prev, maxOffset);
+        });
+        setLyricalTrackEnd(prev => {
+          if (prev <= 0 || prev > track.duration) {
+            return track.duration;
+          }
+          return Math.max(5, Math.min(prev, track.duration));
         });
         return;
       }
     }
     setLyricalTrackStart(0);
+    setLyricalTrackEnd(0);
   }, [selectedLyricalTrackId, tracks]);
 
   // Synchronize background preview video with audio playback
@@ -1658,6 +1667,7 @@ export default function GenresDashboard() {
           postsPerAccount: postsPerAccount,
           trackIds: selectedLyricalTrackIds,
           trackStart: lyricalTrackStart,
+          trackEnd: lyricalTrackEnd,
           lyricalTemplateId: selectedLyricalTemplateId,
           lyricalTemplateIds: selectedLyricalTemplateIds,
           mixupVisuals: mixupVisuals,
@@ -5855,27 +5865,51 @@ export default function GenresDashboard() {
                         )}
                       </div>
 
-                      {/* Music Start Offset Slider */}
+                      {/* Music Trim Sliders */}
                       {selectedLyricalTrackId && (
-                        <div className="space-y-3 bg-[#141423]/30 p-4 rounded-2xl border border-white/5">
-                          <div className="flex items-center justify-between">
-                            <label className="text-xs text-gray-400 font-bold uppercase tracking-wider">Music Start Offset (Trim):</label>
-                            <span className="text-sm font-bold text-purple-400">{lyricalTrackStart.toFixed(1)}s</span>
+                        <div className="space-y-4 bg-[#141423]/30 p-4 rounded-2xl border border-white/5">
+                          {/* Start Trim Slider */}
+                          <div className="space-y-1.5">
+                            <div className="flex items-center justify-between">
+                              <label className="text-xs text-gray-400 font-bold uppercase tracking-wider">Music Start Trim:</label>
+                              <span className="text-sm font-bold text-purple-400">{lyricalTrackStart.toFixed(1)}s</span>
+                            </div>
+                            <input
+                              type="range"
+                              min="0"
+                              max={(() => {
+                                const track = tracks.find(t => t.id === selectedLyricalTrackId);
+                                return Math.max(0, lyricalTrackEnd - 5);
+                              })()}
+                              step="0.5"
+                              value={lyricalTrackStart}
+                              onChange={(e) => setLyricalTrackStart(parseFloat(e.target.value))}
+                              className="w-full h-1.5 bg-[#0f0f18] border border-white/5 rounded-lg appearance-none cursor-pointer accent-purple-500"
+                            />
                           </div>
-                          <input
-                            type="range"
-                            min="0"
-                            max={(() => {
-                              const track = tracks.find(t => t.id === selectedLyricalTrackId);
-                              return track ? Math.max(0, track.duration - 7) : 30;
-                            })()}
-                            step="0.5"
-                            value={lyricalTrackStart}
-                            onChange={(e) => setLyricalTrackStart(parseFloat(e.target.value))}
-                            className="w-full h-1.5 bg-[#0f0f18] border border-white/5 rounded-lg appearance-none cursor-pointer accent-purple-500"
-                          />
+
+                          {/* End Trim Slider */}
+                          <div className="space-y-1.5">
+                            <div className="flex items-center justify-between">
+                              <label className="text-xs text-gray-400 font-bold uppercase tracking-wider">Music End Trim:</label>
+                              <span className="text-sm font-bold text-pink-400">{lyricalTrackEnd.toFixed(1)}s</span>
+                            </div>
+                            <input
+                              type="range"
+                              min={Math.min(lyricalTrackStart + 5, lyricalTrackEnd)}
+                              max={(() => {
+                                const track = tracks.find(t => t.id === selectedLyricalTrackId);
+                                return track ? track.duration : 30;
+                              })()}
+                              step="0.5"
+                              value={lyricalTrackEnd}
+                              onChange={(e) => setLyricalTrackEnd(parseFloat(e.target.value))}
+                              className="w-full h-1.5 bg-[#0f0f18] border border-white/5 rounded-lg appearance-none cursor-pointer accent-pink-500"
+                            />
+                          </div>
+
                           <p className="text-[10px] text-gray-500 leading-normal">
-                            Select where the music starts. The output video and lyrical overlays will start from {lyricalTrackStart.toFixed(1)}s of the selected song.
+                            Select start and end trim offsets. The output video and lyrical overlays will play between {lyricalTrackStart.toFixed(1)}s and {lyricalTrackEnd.toFixed(1)}s (Duration: {(lyricalTrackEnd - lyricalTrackStart).toFixed(1)}s).
                           </p>
                         </div>
                       )}
@@ -6458,7 +6492,9 @@ export default function GenresDashboard() {
                         <div className="text-right text-xs mr-2">
                           <p className="text-gray-500 font-semibold text-white">
                             {item.track?.title || "No track"}
-                            {item.trackStart !== undefined && item.trackStart > 0 && ` (${item.trackStart.toFixed(1)}s trim)`}
+                            {item.trackStart !== undefined && (item.trackStart > 0 || (item.trackEnd !== undefined && item.trackEnd !== null)) && (
+                              ` (${item.trackStart.toFixed(1)}s - ${item.trackEnd ? item.trackEnd.toFixed(1) + "s" : "end"} trim)`
+                            )}
                           </p>
                           <p className="text-[10px] text-gray-600 font-semibold uppercase tracking-wider">Audio clip</p>
                         </div>

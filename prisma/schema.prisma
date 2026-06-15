@@ -658,6 +658,7 @@ model GenreBatchItem {
   trackId             String
   track               Track                @relation(fields: [trackId], references: [id], onDelete: Cascade)
   trackStart          Float
+  trackEnd            Float?
   backgroundVideoUrl  String
   renderedVideoUrl    String?
   driveFileId         String?
