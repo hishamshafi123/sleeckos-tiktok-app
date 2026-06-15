@@ -97,7 +97,7 @@ export async function POST(req: Request) {
     // ACTION 0.5: CREATE_LYRICAL_BATCH
     // ─────────────────────────────────────────────────────────────────────────
     if (action === "CREATE_LYRICAL_BATCH") {
-      const { accountIds, postsPerAccount, trackId, trackIds, lyricalTemplateId, lyricalTemplateIds, mixupVisuals } = body;
+      const { accountIds, postsPerAccount, trackId, trackIds, trackStart = 0.0, lyricalTemplateId, lyricalTemplateIds, mixupVisuals } = body;
 
       if (!accountIds || !Array.isArray(accountIds) || accountIds.length === 0) {
         return NextResponse.json({ error: "Please select at least one TikTok account" }, { status: 400 });
@@ -242,7 +242,7 @@ export async function POST(req: Request) {
               quoteText: serializedMetadata,
               quoteAuthor: track.artist,
               trackId: track.id,
-              trackStart: 0.0,
+              trackStart: parseFloat(trackStart) || 0.0,
               backgroundVideoUrl: randomBg.videoUrl,
               lyricalTemplateId: currentTemplate.id,
               muteAudio: currentTemplate.muteAudio,
@@ -983,7 +983,8 @@ async function processBatchRendering(batchId: string) {
             }
           }
 
-          const duration = batch.videoLength || item.track.duration || 7.0;
+          const trackStartOffset = Math.max(0, item.trackStart || 0);
+          const duration = Math.max(1.0, (batch.videoLength || item.track.duration || 7.0) - trackStartOffset);
           const audioPath = path.join(process.cwd(), "public", item.track.fileUrl);
 
           // Read background transforms from template
@@ -1017,17 +1018,17 @@ async function processBatchRendering(batchId: string) {
 
             const finalAudioInput = item.muteAudio
               ? `-f lavfi -i anullsrc=channel_layout=stereo:sample_rate=44100`
-              : `-i "${audioPath}"`;
+              : (trackStartOffset > 0 ? `-ss ${trackStartOffset.toFixed(3)} -i "${audioPath}"` : `-i "${audioPath}"`);
 
             cmd = [
               `ffmpeg -y`,
-              `-i "${overlayPath}"`,
+              trackStartOffset > 0 ? `-ss ${trackStartOffset.toFixed(3)} -i "${overlayPath}"` : `-i "${overlayPath}"`,
               finalAudioInput,
               `-c:v libx264`,
               `-pix_fmt yuv420p`,
               `-preset superfast`,
               `-c:a aac -b:a 192k`,
-              `-t ${duration}`,
+              `-t ${duration.toFixed(3)}`,
               `"${localOutFile}"`,
             ].join(" ");
 
@@ -1051,7 +1052,17 @@ async function processBatchRendering(batchId: string) {
             const { generateASS } = await import("@/lib/ffmpeg-overlay-renderer");
             const tpl = item.lyricalTemplate!;
             const words: { word: string; start: number; end: number }[] = JSON.parse(item.track.lyricalTranscription);
-            const assContent = generateASS(words, {
+            
+            // Shift word timings based on trackStartOffset
+            const shiftedWords = words
+              .filter((w: any) => w.end > trackStartOffset)
+              .map((w: any) => {
+                const start = Math.max(0, w.start - trackStartOffset);
+                const end = w.end - trackStartOffset;
+                return { ...w, start, end };
+              });
+
+            const assContent = generateASS(shiftedWords, {
               fontFamily: tpl.fontFamily,
               fontSize: tpl.fontSize,
               activeColor: tpl.activeColor,
@@ -1166,7 +1177,11 @@ async function processBatchRendering(batchId: string) {
             if (item.muteAudio) {
               inputs.push(`-f lavfi -i anullsrc=channel_layout=stereo:sample_rate=44100`);
             } else {
-              inputs.push(`-i "${audioPath}"`);
+              if (trackStartOffset > 0) {
+                inputs.push(`-ss ${trackStartOffset.toFixed(3)} -i "${audioPath}"`);
+              } else {
+                inputs.push(`-i "${audioPath}"`);
+              }
             }
 
             // 7. Burn ASS subtitles directly onto the processed background
@@ -1191,7 +1206,7 @@ async function processBatchRendering(batchId: string) {
               `-pix_fmt yuv420p`,
               `-preset superfast`,
               `-c:a aac -b:a 192k`,
-              `-t ${duration}`,
+              `-t ${duration.toFixed(3)}`,
               `"${localOutFile}"`,
             ].join(" ");
 

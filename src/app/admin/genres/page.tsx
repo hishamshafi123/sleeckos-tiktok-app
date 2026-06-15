@@ -362,6 +362,7 @@ interface BatchItem {
   backgroundVideoUrl: string;
   driveFileId: string | null;
   renderedVideoUrl?: string | null;
+  trackStart?: number;
   account?: {
     tiktokUsername: string;
     tiktokAvatarUrl: string;
@@ -629,6 +630,7 @@ export default function GenresDashboard() {
   const [loadingTemplatesTrackId, setLoadingTemplatesTrackId] = useState<string | null>(null);
   const [selectedLyricalTrackId, setSelectedLyricalTrackId] = useState<string>("");
   const [selectedLyricalTrackIds, setSelectedLyricalTrackIds] = useState<string[]>([]);
+  const [lyricalTrackStart, setLyricalTrackStart] = useState<number>(0);
   const [selectedLyricalTemplateId, setSelectedLyricalTemplateId] = useState<string>("");
   const [selectedLyricalTemplateIds, setSelectedLyricalTemplateIds] = useState<string[]>([]);
   const [selectedPreviewTemplateId, setSelectedPreviewTemplateId] = useState<string | null>(null);
@@ -745,6 +747,21 @@ export default function GenresDashboard() {
       }
     }
   }, [activeBatch]);
+
+  // Auto-clamp lyricalTrackStart offset when selectedLyricalTrackId changes
+  useEffect(() => {
+    if (selectedLyricalTrackId) {
+      const track = tracks.find(t => t.id === selectedLyricalTrackId);
+      if (track) {
+        setLyricalTrackStart(prev => {
+          const maxOffset = Math.max(0, track.duration - 7);
+          return Math.min(prev, maxOffset);
+        });
+        return;
+      }
+    }
+    setLyricalTrackStart(0);
+  }, [selectedLyricalTrackId, tracks]);
 
   // Synchronize background preview video with audio playback
   useEffect(() => {
@@ -1640,6 +1657,7 @@ export default function GenresDashboard() {
           accountIds: selectedBatchAccountIds,
           postsPerAccount: postsPerAccount,
           trackIds: selectedLyricalTrackIds,
+          trackStart: lyricalTrackStart,
           lyricalTemplateId: selectedLyricalTemplateId,
           lyricalTemplateIds: selectedLyricalTemplateIds,
           mixupVisuals: mixupVisuals,
@@ -5837,6 +5855,31 @@ export default function GenresDashboard() {
                         )}
                       </div>
 
+                      {/* Music Start Offset Slider */}
+                      {selectedLyricalTrackId && (
+                        <div className="space-y-3 bg-[#141423]/30 p-4 rounded-2xl border border-white/5">
+                          <div className="flex items-center justify-between">
+                            <label className="text-xs text-gray-400 font-bold uppercase tracking-wider">Music Start Offset (Trim):</label>
+                            <span className="text-sm font-bold text-purple-400">{lyricalTrackStart.toFixed(1)}s</span>
+                          </div>
+                          <input
+                            type="range"
+                            min="0"
+                            max={(() => {
+                              const track = tracks.find(t => t.id === selectedLyricalTrackId);
+                              return track ? Math.max(0, track.duration - 7) : 30;
+                            })()}
+                            step="0.5"
+                            value={lyricalTrackStart}
+                            onChange={(e) => setLyricalTrackStart(parseFloat(e.target.value))}
+                            className="w-full h-1.5 bg-[#0f0f18] border border-white/5 rounded-lg appearance-none cursor-pointer accent-purple-500"
+                          />
+                          <p className="text-[10px] text-gray-500 leading-normal">
+                            Select where the music starts. The output video and lyrical overlays will start from {lyricalTrackStart.toFixed(1)}s of the selected song.
+                          </p>
+                        </div>
+                      )}
+
                       {selectedLyricalTrackId && (
                         <div className="space-y-2">
                           <label className="block text-xs uppercase tracking-wider font-bold text-gray-400">2. Select Caption Styling Template</label>
@@ -6413,7 +6456,10 @@ export default function GenresDashboard() {
                           )}
                         </button>
                         <div className="text-right text-xs mr-2">
-                          <p className="text-gray-500 font-semibold">{item.track?.title || "No track"}</p>
+                          <p className="text-gray-500 font-semibold text-white">
+                            {item.track?.title || "No track"}
+                            {item.trackStart !== undefined && item.trackStart > 0 && ` (${item.trackStart.toFixed(1)}s trim)`}
+                          </p>
                           <p className="text-[10px] text-gray-600 font-semibold uppercase tracking-wider">Audio clip</p>
                         </div>
 
