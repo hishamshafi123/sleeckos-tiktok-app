@@ -34,7 +34,7 @@ interface TemplateConfig {
   colorFilter: string;
   vignette: string;
   particleFx: string;
-  animationMode?: "highlight" | "word_builder";
+  animationMode?: "highlight" | "word_builder" | "brat";
   bgColor?: string | null;
   textColor?: string | null;
   textAlign?: string;
@@ -43,6 +43,7 @@ interface TemplateConfig {
   aspectRatio?: string;
   bgOpacity?: number;
   lofiFactor?: number;
+  textMargin?: number;
 }
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -281,8 +282,9 @@ function generateOverlayHTML(
 
   // Serialize chunks to JSON for the page script
   const isWordBuilder = config.animationMode === "word_builder";
-  const phrases = isWordBuilder ? chunkPhrases(words) : [];
-  const chunksJSON = isWordBuilder ? JSON.stringify(phrases) : JSON.stringify(chunks);
+  const isBrat = config.animationMode === "brat";
+  const phrases = (isWordBuilder || isBrat) ? chunkPhrases(words) : [];
+  const chunksJSON = (isWordBuilder || isBrat) ? JSON.stringify(phrases) : JSON.stringify(chunks);
   const activeColor = config.activeColor;
   const multiColorsJSON = JSON.stringify(MULTI_COLORS);
   const textColor = config.textColor || "#ffffff";
@@ -444,7 +446,7 @@ function generateOverlayHTML(
     const textColor = "${textColor}";
 
     function getWordColor(idx, isActive) {
-      if (animationMode === "word_builder") return textColor;
+      if (animationMode === "word_builder" || animationMode === "brat") return textColor;
       if (!isActive) return "#ffffff";
       if (activeColorConfig === "multi") return multiColors[idx % multiColors.length];
       return activeColorConfig;
@@ -453,6 +455,177 @@ function generateOverlayHTML(
     // Exposed to Puppeteer — sets the current time and re-renders captions
     window.setTime = function(t) {
       const container = document.getElementById("wordsContainer");
+
+      if (animationMode === "brat") {
+        let currentPhrase = null;
+        for (const phrase of chunks) {
+          if (phrase.length === 0) continue;
+          const phraseStart = phrase[0].start;
+          const phraseEnd = phrase[phrase.length - 1].end;
+          if (t >= phraseStart - 0.05 && t <= phraseEnd + 0.3) {
+            currentPhrase = phrase;
+            break;
+          }
+        }
+
+        if (!currentPhrase) {
+          container.innerHTML = "";
+          return;
+        }
+
+        const visibleWords = currentPhrase.filter(w => t >= w.start - 0.05);
+        if (visibleWords.length === 0) {
+          container.innerHTML = "";
+          return;
+        }
+
+        const visibleTexts = visibleWords.map(w => w.word);
+
+        const canvas = window.__layoutCanvas || (window.__layoutCanvas = document.createElement("canvas"));
+        const ctx = canvas.getContext("2d");
+        const cssFont = window.getComputedStyle(container).fontFamily;
+
+        function measureText(text, size) {
+          ctx.font = "800 " + size + "px " + cssFont;
+          return ctx.measureText(text).width;
+        }
+
+        const margin = ${config.textMargin ?? 50};
+        const containerWidth = ${width};
+        const containerHeight = ${height};
+        const targetWidth = containerWidth - 2 * margin;
+        const targetHeight = containerHeight * 0.6;
+
+        function getWrappedLines(words, size) {
+          const lines = [];
+          let currentLine = [];
+          const spaceWidth = measureText(" ", size);
+          let currentWidth = 0;
+
+          for (const wordText of words) {
+            const wordWidth = measureText(wordText, size);
+            if (currentLine.length === 0) {
+              currentLine.push(wordText);
+              currentWidth = wordWidth;
+            } else {
+              const newWidth = currentWidth + spaceWidth + wordWidth;
+              if (newWidth <= targetWidth) {
+                currentLine.push(wordText);
+                currentWidth = newWidth;
+              } else {
+                lines.push(currentLine);
+                currentLine = [wordText];
+                currentWidth = wordWidth;
+              }
+            }
+          }
+          if (currentLine.length > 0) {
+            lines.push(currentLine);
+          }
+          return lines;
+        }
+
+        function getOptimalFontSize(words) {
+          let low = 20;
+          let high = ${config.fontSize};
+          let bestSize = 20;
+
+          function checkFit(size) {
+            const lines = getWrappedLines(words, size);
+            const lineHeight = size * 1.15;
+            const totalHeight = lineHeight * lines.length + 10 * (lines.length - 1);
+
+            for (const w of words) {
+              if (measureText(w, size) > targetWidth) return false;
+            }
+            return totalHeight <= targetHeight;
+          }
+
+          while (low <= high) {
+            const mid = Math.floor((low + high) / 2);
+            if (checkFit(mid)) {
+              bestSize = mid;
+              low = mid + 1;
+            } else {
+              high = mid - 1;
+            }
+          }
+          return bestSize;
+        }
+
+        const bestFontSize = getOptimalFontSize(visibleTexts);
+        const lines = getWrappedLines(visibleTexts, bestFontSize);
+
+        const startX = margin;
+        const startY = Math.round(containerHeight * 0.2);
+        const spaceWidth = measureText(" ", bestFontSize);
+        const lineHeight = bestFontSize * 1.15;
+        const lineSpacing = 10;
+
+        let currentY = startY;
+        const wordPositions = [];
+
+        for (let i = 0; i < lines.length; i++) {
+          const lineWords = lines[i];
+          if (lineWords.length === 0) continue;
+
+          const isLastLine = (i === lines.length - 1);
+          let sumWordW = 0;
+          const wordWidths = lineWords.map(w => {
+            const w_w = measureText(w, bestFontSize);
+            sumWordW += w_w;
+            return w_w;
+          });
+
+          const normalGapW = (lineWords.length - 1) * spaceWidth;
+          const naturalWidth = sumWordW + normalGapW;
+
+          const isFullEnough = (naturalWidth / targetWidth) > 0.85;
+          const shouldLeftAlign = (isLastLine && !isFullEnough) || lineWords.length === 1;
+
+          if (shouldLeftAlign) {
+            let currX = startX;
+            for (let j = 0; j < lineWords.length; j++) {
+              wordPositions.push({
+                text: lineWords[j],
+                x: Math.round(currX),
+                y: Math.round(currentY),
+                fontSize: bestFontSize
+              });
+              currX += wordWidths[j] + spaceWidth;
+            }
+          } else {
+            const availableSpace = targetWidth - sumWordW;
+            const gap = lineWords.length > 1 ? (availableSpace / (lineWords.length - 1)) : 0;
+            let currX = startX;
+
+            for (let j = 0; j < lineWords.length; j++) {
+              wordPositions.push({
+                text: lineWords[j],
+                x: Math.round(currX),
+                y: Math.round(currentY),
+                fontSize: bestFontSize
+              });
+              currX += wordWidths[j] + gap;
+            }
+          }
+
+          currentY += lineHeight + lineSpacing;
+        }
+
+        let html = "";
+        for (let i = 0; i < wordPositions.length; i++) {
+          const item = wordPositions[i];
+          html += '<span class="word" style="position: absolute; left: ' + item.x + 'px; top: ' + item.y + 'px; font-size: ' + item.fontSize + 'px; color: ' + textColor + '; text-transform: lowercase; font-weight: 900; letter-spacing: -0.025em; -webkit-text-stroke: 0px;">' + item.text.toLowerCase() + '</span>';
+        }
+        
+        container.style.display = "block";
+        container.style.position = "static";
+        container.style.transform = "none";
+        
+        container.innerHTML = html;
+        return;
+      }
 
       if (animationMode === "word_builder") {
         // ── WORD BUILDER MODE: Progressive append with hard-cut between phrases ──

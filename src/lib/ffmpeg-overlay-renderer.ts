@@ -30,7 +30,7 @@ interface TemplateConfig {
   colorFilter: string;
   vignette: string;
   particleFx: string;
-  animationMode?: "highlight" | "word_builder";
+  animationMode?: "highlight" | "word_builder" | "brat";
   bgColor?: string | null;
   textColor?: string | null;
   textAlign?: string;
@@ -39,6 +39,7 @@ interface TemplateConfig {
   aspectRatio?: string;
   bgOpacity?: number;
   lofiFactor?: number;
+  textMargin?: number;
 }
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -122,6 +123,166 @@ function chunkPhrases(words: Word[]): Word[][] {
   return phrases;
 }
 
+// ─── Dynamic Layout Sizing and Positioning Engine for Brat Subtitles ─────────
+
+function estimateTextWidth(text: string, fontSize: number, fontFamily: string): number {
+  let width = 0;
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i];
+    let factor = 0.53; // baseline factor
+    if (char >= 'A' && char <= 'Z') factor = 0.68;
+    else if (char >= 'a' && char <= 'z') factor = 0.50;
+    else if (char >= '0' && char <= '9') factor = 0.53;
+    else if (char === ' ' || char === '\xa0') factor = 0.28;
+    else if (char === 'i' || char === 'l' || char === 't' || char === 'I' || char === '!') factor = 0.23;
+    else if (char === 'w' || char === 'm' || char === 'W' || char === 'M') factor = 0.82;
+    
+    if (fontFamily.includes("Black") || fontFamily.includes("Bold") || fontFamily.includes("Anton")) {
+      factor *= 1.1;
+    }
+    width += factor * fontSize;
+  }
+  return width;
+}
+
+function getWrappedLines(words: string[], fontSize: number, fontFamily: string, maxWidth: number): string[][] {
+  const lines: string[][] = [];
+  let currentLine: string[] = [];
+  const spaceWidth = estimateTextWidth(" ", fontSize, fontFamily);
+  let currentWidth = 0;
+
+  for (const wordText of words) {
+    const wordWidth = estimateTextWidth(wordText, fontSize, fontFamily);
+    if (currentLine.length === 0) {
+      currentLine.push(wordText);
+      currentWidth = wordWidth;
+    } else {
+      const newWidth = currentWidth + spaceWidth + wordWidth;
+      if (newWidth <= maxWidth) {
+        currentLine.push(wordText);
+        currentWidth = newWidth;
+      } else {
+        lines.push(currentLine);
+        currentLine = [wordText];
+        currentWidth = wordWidth;
+      }
+    }
+  }
+  if (currentLine.length > 0) {
+    lines.push(currentLine);
+  }
+  return lines;
+}
+
+function getOptimalFontSize(words: string[], maxWidth: number, maxHeight: number, fontFamily: string, baseFontSize: number): number {
+  const minFont = 20;
+  const maxFont = baseFontSize; // Max size is starting size
+  
+  function checkFit(size: number): boolean {
+    const lines = getWrappedLines(words, size, fontFamily, maxWidth);
+    const lineHeight = size * 1.15;
+    const totalHeight = lineHeight * lines.length + 10 * (lines.length - 1);
+    
+    // Check if any word width itself exceeds maxWidth
+    for (const w of words) {
+      if (estimateTextWidth(w, size, fontFamily) > maxWidth) {
+        return false;
+      }
+    }
+    return totalHeight <= maxHeight;
+  }
+  
+  let low = minFont;
+  let high = maxFont;
+  let bestSize = minFont;
+  
+  while (low <= high) {
+    const mid = Math.floor((low + high) / 2);
+    if (checkFit(mid)) {
+      bestSize = mid;
+      low = mid + 1;
+    } else {
+      high = mid - 1;
+    }
+  }
+  return bestSize;
+}
+
+function calculateWordPositions(
+  lines: string[][],
+  fontSize: number,
+  canvasWidth: number,
+  canvasHeight: number,
+  margin: number,
+  fontFamily: string
+) {
+  const targetWidth = canvasWidth - 2 * margin;
+  const startX = margin;
+  const startY = Math.round(canvasHeight * 0.2);
+  const spaceWidth = estimateTextWidth(" ", fontSize, fontFamily);
+  const lineHeight = fontSize * 1.15;
+  const lineSpacing = 10;
+  
+  let currentY = startY;
+  const wordPositions: { text: string; x: number; y: number; fontSize: number }[] = [];
+  
+  for (let i = 0; i < lines.length; i++) {
+    const lineWords = lines[i];
+    if (lineWords.length === 0) continue;
+    
+    const isLastLine = (i === lines.length - 1);
+    
+    // Calculate natural width with normal spaces
+    let sumWordW = 0;
+    const wordWidths = lineWords.map(w => {
+      const w_w = estimateTextWidth(w, fontSize, fontFamily);
+      sumWordW += w_w;
+      return w_w;
+    });
+    
+    const normalGapW = (lineWords.length - 1) * spaceWidth;
+    const naturalWidth = sumWordW + normalGapW;
+    
+    // Threshold: if natural width > 85% of target width, justify it even if last line
+    const isFullEnough = (naturalWidth / targetWidth) > 0.85;
+    const shouldLeftAlign = (isLastLine && !isFullEnough) || lineWords.length === 1;
+    
+    if (shouldLeftAlign) {
+      let currX = startX;
+      for (let j = 0; j < lineWords.length; j++) {
+        const w = lineWords[j];
+        wordPositions.push({
+          text: w,
+          x: Math.round(currX),
+          y: Math.round(currentY),
+          fontSize
+        });
+        currX += wordWidths[j] + spaceWidth;
+      }
+    } else {
+      // Justified alignment
+      const availableSpace = targetWidth - sumWordW;
+      const gap = lineWords.length > 1 ? (availableSpace / (lineWords.length - 1)) : 0;
+      let currX = startX;
+      
+      for (let j = 0; j < lineWords.length; j++) {
+        const w = lineWords[j];
+        wordPositions.push({
+          text: w,
+          x: Math.round(currX),
+          y: Math.round(currentY),
+          fontSize
+        });
+        currX += wordWidths[j] + gap;
+      }
+    }
+    
+    currentY += lineHeight + lineSpacing;
+  }
+  
+  return wordPositions;
+}
+
 // ─── ASS File Generator ─────────────────────────────────────────────────────
 
 export function generateASS(words: Word[], config: TemplateConfig): string {
@@ -169,7 +330,36 @@ export function generateASS(words: Word[], config: TemplateConfig): string {
   const alignTag = config.textAlign === "left" ? "\\an4" : config.textAlign === "right" ? "\\an6" : "\\an5";
   const alignX = config.textAlign === "left" ? 50 : config.textAlign === "right" ? (width - 50) : (width / 2);
 
-  if (config.animationMode === "word_builder") {
+  if (config.animationMode === "brat") {
+    const phrases = chunkPhrases(words);
+    const margin = config.textMargin ?? 50;
+    const textColorHex = config.textColor || "#000000";
+    const textASSColor = hexToASS(textColorHex);
+
+    for (const phrase of phrases) {
+      const phraseEnd = phrase[phrase.length - 1].end + 0.3;
+      for (let i = 0; i < phrase.length; i++) {
+        const word = phrase[i];
+        const nextStart = (i + 1 < phrase.length) ? phrase[i + 1].start : phraseEnd;
+
+        // 1. Get currently visible words
+        const currentWords = phrase.slice(0, i + 1);
+        const currentWordsText = currentWords.map(w => w.word);
+
+        // 2. Compute font size & positions
+        const bestSize = getOptimalFontSize(currentWordsText, width - 2 * margin, height * 0.6, fontName, fontSize);
+        const wrappedLines = getWrappedLines(currentWordsText, bestSize, fontName, width - 2 * margin);
+        const wordPositions = calculateWordPositions(wrappedLines, bestSize, width, height, margin, fontName);
+
+        // 3. For this time segment, output a dialogue line for each word!
+        for (let j = 0; j < wordPositions.length; j++) {
+          const item = wordPositions[j];
+          const text = "{\\an7\\pos(" + item.x + "," + item.y + ")\\fs" + item.fontSize + "\\fn" + fontName + "\\bord" + outline + "\\3c" + strokeColor + "\\c" + textASSColor + "}" + item.text.toLowerCase();
+          lines.push("Dialogue: 0," + secondsToASS(word.start) + "," + secondsToASS(nextStart) + ",Default,,0,0,0,," + text);
+        }
+      }
+    }
+  } else if (config.animationMode === "word_builder") {
     const phrases = chunkPhrases(words);
     for (const phrase of phrases) {
       const phraseEnd = phrase[phrase.length - 1].end + 0.3;

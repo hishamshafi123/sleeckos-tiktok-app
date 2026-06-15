@@ -146,6 +146,7 @@ export async function PATCH(req: Request) {
       aspectRatio = "9:16",
       bgOpacity = 1.0,
       lofiFactor = 1,
+      textMargin = 50,
     } = body;
 
     if (!trackId || !templateName) {
@@ -186,8 +187,9 @@ export async function PATCH(req: Request) {
       letterSpacing,
       muteAudio,
       aspectRatio,
-      bgOpacity,
-      lofiFactor,
+      bgOpacity: parseFloat(bgOpacity) || 1.0,
+      lofiFactor: parseInt(lofiFactor, 10) || 1,
+      textMargin: parseInt(textMargin, 10) || 50,
       overlayVideoUrl: overlayRelativePath,
       previewImageUrl: previewRelativePath,
     };
@@ -228,7 +230,7 @@ export async function PATCH(req: Request) {
       colorFilter,
       vignette,
       particleFx,
-      animationMode: animationMode as "highlight" | "word_builder",
+      animationMode: animationMode as "highlight" | "word_builder" | "brat",
       bgColor,
       textColor,
       textAlign,
@@ -236,7 +238,8 @@ export async function PATCH(req: Request) {
       letterSpacing,
       aspectRatio,
       bgOpacity,
-      lofiFactor
+      lofiFactor,
+      textMargin: parseInt(textMargin, 10) || 50,
     };
     try {
       const { renderPreviewFrame } = await import("@/lib/canvas-overlay-renderer");
@@ -334,7 +337,7 @@ export async function PUT(req: Request) {
       colorFilter: template.colorFilter,
       vignette: template.vignette,
       particleFx: template.particleFx,
-      animationMode: template.animationMode as "highlight" | "word_builder",
+      animationMode: template.animationMode as "highlight" | "word_builder" | "brat",
       bgColor: template.bgColor,
       textColor: template.textColor,
       textAlign: template.textAlign,
@@ -343,6 +346,7 @@ export async function PUT(req: Request) {
       aspectRatio: template.aspectRatio,
       bgOpacity: template.bgOpacity,
       lofiFactor: template.lofiFactor,
+      textMargin: template.textMargin,
     };
 
     console.log(`[Lyrical API] Re-rendering overlay for template '${template.templateName}' (${templateId})...`);

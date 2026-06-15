@@ -120,7 +120,7 @@ async function main() {
       // Escape single quotes in transcription JSON
       const escapedTranscription = template.track.lyricalTranscription.replace(/'/g, "'\\''");
 
-      const cmd = [
+      const cmdParts = [
         `./venv/bin/python3 "scripts/lyrical_composer.py"`,
         `-i "${trackAudioAbs}"`,
         `-o "${overlayAbs}"`,
@@ -134,7 +134,21 @@ async function main() {
         `--stroke-color "${template.strokeColor}"`,
         `--position-y ${template.positionY}`,
         `--fps 60`,
-      ].join(" ");
+        `--animation-mode "${template.animationMode}"`,
+        `--text-margin ${template.textMargin}`,
+        `--bg-opacity ${template.bgOpacity}`,
+        `--lofi-factor ${template.lofiFactor}`,
+        `--aspect-ratio "${template.aspectRatio}"`
+      ];
+
+      if (template.textColor) {
+        cmdParts.push(`--text-color "${template.textColor}"`);
+      }
+      if (template.bgColor) {
+        cmdParts.push(`--bg-color "${template.bgColor}"`);
+      }
+
+      const cmd = cmdParts.join(" ");
 
       try {
         console.log(`[*] Spawning Python Pre-renderer:`);

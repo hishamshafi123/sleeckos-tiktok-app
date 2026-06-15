@@ -542,7 +542,7 @@ async function processClipMixerBatch(batchId: string) {
               colorFilter: template.colorFilter,
               vignette: template.vignette,
               particleFx: template.particleFx,
-              animationMode: template.animationMode as "highlight" | "word_builder",
+              animationMode: template.animationMode as "highlight" | "word_builder" | "brat",
               bgColor: template.bgColor,
               textColor: template.textColor,
               textAlign: template.textAlign,
@@ -551,6 +551,7 @@ async function processClipMixerBatch(batchId: string) {
               aspectRatio: template.aspectRatio,
               bgOpacity: template.bgOpacity,
               lofiFactor: template.lofiFactor,
+              textMargin: template.textMargin,
             };
             const { renderCanvasOverlay } = await import("@/lib/ffmpeg-overlay-renderer");
             await renderCanvasOverlay(words, rendererConfig, duration, overlayPath);
@@ -636,7 +637,7 @@ async function processClipMixerBatch(batchId: string) {
             colorFilter: template.colorFilter,
             vignette: template.vignette,
             particleFx: template.particleFx,
-            animationMode: template.animationMode as "highlight" | "word_builder",
+            animationMode: template.animationMode as "highlight" | "word_builder" | "brat",
             bgColor: template.bgColor,
             textColor: template.textColor,
             textAlign: template.textAlign,
@@ -645,6 +646,7 @@ async function processClipMixerBatch(batchId: string) {
             aspectRatio: template.aspectRatio,
             bgOpacity: template.bgOpacity,
             lofiFactor: template.lofiFactor,
+            textMargin: template.textMargin,
           });
           const assPath = `/tmp/clip_mixer_${item.id}.ass`;
           fs.writeFileSync(assPath, assContent, "utf-8");

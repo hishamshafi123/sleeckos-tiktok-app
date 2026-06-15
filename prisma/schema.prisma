@@ -590,6 +590,7 @@ model TrackLyricalTemplate {
   muteAudio       Boolean          @default(false)  // Toggle to mute audio in composition
   bgOpacity       Float            @default(1.0)
   lofiFactor      Int              @default(1)
+  textMargin      Int              @default(50)
   createdAt       DateTime         @default(now())
   updatedAt       DateTime         @updatedAt
 
@@ -616,6 +617,7 @@ model AccountGenreConfig {
   curveText      Boolean        @default(false)
   curvature      Int            @default(30)
   positionY      Int            @default(50)
+  textMargin     Int            @default(50)
   createdAt      DateTime       @default(now())
   updatedAt      DateTime       @updatedAt
 

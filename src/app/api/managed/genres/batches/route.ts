@@ -97,7 +97,7 @@ export async function POST(req: Request) {
     // ACTION 0.5: CREATE_LYRICAL_BATCH
     // ─────────────────────────────────────────────────────────────────────────
     if (action === "CREATE_LYRICAL_BATCH") {
-      const { accountIds, postsPerAccount, trackId, lyricalTemplateId, mixupVisuals } = body;
+      const { accountIds, postsPerAccount, trackId, trackIds, lyricalTemplateId, lyricalTemplateIds, mixupVisuals } = body;
 
       if (!accountIds || !Array.isArray(accountIds) || accountIds.length === 0) {
         return NextResponse.json({ error: "Please select at least one TikTok account" }, { status: 400 });
@@ -105,50 +105,59 @@ export async function POST(req: Request) {
       if (!postsPerAccount || postsPerAccount <= 0) {
         return NextResponse.json({ error: "Please specify number of posts per account" }, { status: 400 });
       }
-      if (!trackId || !lyricalTemplateId) {
-        return NextResponse.json({ error: "Please select a Lyrical track and styling template" }, { status: 400 });
+
+      // Support both single and multiple track inputs
+      const selectedTrackIds: string[] = trackIds && Array.isArray(trackIds)
+        ? trackIds
+        : (trackId ? [trackId] : []);
+
+      const hasTemplateSelection = lyricalTemplateId || (lyricalTemplateIds && Array.isArray(lyricalTemplateIds) && lyricalTemplateIds.length > 0);
+      if (selectedTrackIds.length === 0 || !hasTemplateSelection) {
+        return NextResponse.json({ error: "Please select Lyrical track(s) and styling template(s)" }, { status: 400 });
       }
 
-      const track = await prisma.track.findUnique({
-        where: { id: trackId },
+      // Fetch all selected tracks
+      const tracks = await prisma.track.findMany({
+        where: { id: { in: selectedTrackIds } },
       });
 
-      if (!track) {
-        return NextResponse.json({ error: "Lyrical track not found" }, { status: 404 });
+      if (tracks.length === 0) {
+        return NextResponse.json({ error: "No selected Lyrical tracks found" }, { status: 404 });
       }
 
-      let template = null;
-      let templatesPool: any[] = [];
-
-      if (lyricalTemplateId === "mix_all") {
-        templatesPool = await prisma.trackLyricalTemplate.findMany({
-          where: { trackId },
-        });
-        if (templatesPool.length === 0) {
-          return NextResponse.json({ error: "No pre-rendered caption templates found for this track. Please pre-render at least one template first!" }, { status: 400 });
-        }
-      } else {
-        template = await prisma.trackLyricalTemplate.findUnique({
-          where: { id: lyricalTemplateId },
-        });
-        if (!template) {
-          return NextResponse.json({ error: "Caption styling template not found" }, { status: 404 });
+      // Determine template styling mapping
+      let templateNames: string[] = [];
+      if (lyricalTemplateId !== "mix_all") {
+        if (lyricalTemplateIds && Array.isArray(lyricalTemplateIds) && lyricalTemplateIds.length > 0) {
+          const referenceTemplates = await prisma.trackLyricalTemplate.findMany({
+            where: { id: { in: lyricalTemplateIds } },
+          });
+          templateNames = referenceTemplates.map(t => t.templateName);
+        } else if (lyricalTemplateId) {
+          const referenceTemplate = await prisma.trackLyricalTemplate.findUnique({
+            where: { id: lyricalTemplateId },
+          });
+          if (!referenceTemplate) {
+            return NextResponse.json({ error: "Selected caption template not found" }, { status: 404 });
+          }
+          templateNames = [referenceTemplate.templateName];
         }
       }
 
       // Note: templates will be automatically pre-rendered by the worker if they don't exist.
-      console.log(`[Genres Batches API] Queueing lyrical batch: missing overlays will be auto-rendered in the background`);
+      console.log(`[Genres Batches API] Queueing lyrical batch with ${tracks.length} tracks`);
 
       const totalPosts = accountIds.length * postsPerAccount;
 
       // Create a Lyrical Batch directly in RENDERING status
+      // We set the videoLength using the first track's duration as a reference
       const batch = await prisma.genreBatch.create({
         data: {
           genre: "lyrical",
           status: "RENDERING",
           totalPosts,
           postsPerAccount,
-          videoLength: track.duration,
+          videoLength: tracks[0].duration,
         },
       });
 
@@ -174,10 +183,50 @@ export async function POST(req: Request) {
         for (let i = 0; i < postsPerAccount; i++) {
           const randomBg = bgs[i % bgs.length];
 
-          // Cycle through templates sequentially from the pool or use the single selected template
-          const currentTemplate = lyricalTemplateId === "mix_all"
-            ? templatesPool[mutationCounter % templatesPool.length]
-            : template;
+          // Cycle through tracks sequentially
+          const track = tracks[mutationCounter % tracks.length];
+
+          // Find templates for the current track
+          const trackTemplates = await prisma.trackLyricalTemplate.findMany({
+            where: { trackId: track.id },
+          });
+
+          if (trackTemplates.length === 0) {
+            console.warn(`[Batches API] Track ${track.title} has no templates, creating default style`);
+            // Create a default style template automatically so composition doesn't fail
+            const newTpl = await prisma.trackLyricalTemplate.create({
+              data: {
+                trackId: track.id,
+                templateName: "Default Style",
+                fontFamily: "Montserrat-Black",
+                fontSize: 48,
+                activeColor: "multi",
+                strokeWidth: 5,
+                strokeColor: "#000000",
+                positionY: 0.75,
+                animationMode: "highlight",
+                textMargin: 50,
+              }
+            });
+            trackTemplates.push(newTpl);
+          }
+
+          // Resolve template to use
+          let currentTemplate = trackTemplates[0];
+          if (lyricalTemplateId === "mix_all") {
+            currentTemplate = trackTemplates[mutationCounter % trackTemplates.length];
+          } else if (templateNames.length > 0) {
+            // Cycle through selected template names
+            const targetTemplateName = templateNames[mutationCounter % templateNames.length];
+            const matchingTpl = trackTemplates.find(t => t.templateName === targetTemplateName);
+            if (matchingTpl) {
+              currentTemplate = matchingTpl;
+            } else {
+              // Fallback to any matching template from selected names on this track, otherwise first template
+              const fallbackMatchingTpl = trackTemplates.find(t => templateNames.includes(t.templateName));
+              currentTemplate = fallbackMatchingTpl || trackTemplates[0];
+            }
+          }
 
           mutationCounter++;
 
@@ -914,7 +963,7 @@ async function processBatchRendering(batchId: string) {
                 colorFilter: item.lyricalTemplate.colorFilter,
                 vignette: item.lyricalTemplate.vignette,
                 particleFx: item.lyricalTemplate.particleFx,
-                animationMode: item.lyricalTemplate.animationMode as "highlight" | "word_builder",
+                animationMode: item.lyricalTemplate.animationMode as "highlight" | "word_builder" | "brat",
                 bgColor: item.lyricalTemplate.bgColor,
                 textColor: item.lyricalTemplate.textColor,
                 textAlign: item.lyricalTemplate.textAlign,
@@ -923,6 +972,7 @@ async function processBatchRendering(batchId: string) {
                 aspectRatio: item.lyricalTemplate.aspectRatio,
                 bgOpacity: item.lyricalTemplate.bgOpacity,
                 lofiFactor: item.lyricalTemplate.lofiFactor,
+                textMargin: item.lyricalTemplate.textMargin,
               };
               const { renderCanvasOverlay } = await import("@/lib/ffmpeg-overlay-renderer");
               await renderCanvasOverlay(words, rendererConfig, duration, overlayPath);
@@ -1011,7 +1061,7 @@ async function processBatchRendering(batchId: string) {
               colorFilter: tpl.colorFilter,
               vignette: tpl.vignette,
               particleFx: tpl.particleFx,
-              animationMode: tpl.animationMode as "highlight" | "word_builder",
+              animationMode: tpl.animationMode as "highlight" | "word_builder" | "brat",
               bgColor: tpl.bgColor,
               textColor: tpl.textColor,
               textAlign: tpl.textAlign,
@@ -1020,6 +1070,7 @@ async function processBatchRendering(batchId: string) {
               aspectRatio: tpl.aspectRatio,
               bgOpacity: tpl.bgOpacity,
               lofiFactor: tpl.lofiFactor,
+              textMargin: tpl.textMargin,
             });
             const assSubtitlePath = `/tmp/lyrical_g1_${item.id}.ass`;
             fs.writeFileSync(assSubtitlePath, assContent, "utf-8");
@@ -1034,7 +1085,7 @@ async function processBatchRendering(batchId: string) {
             // 1. Scale background
             const width = tpl.aspectRatio === "1:1" ? 720 : 720;
             const height = tpl.aspectRatio === "1:1" ? 720 : 1280;
-            filterComplex += `[0:v]scale=${width}:${height}:force_original_aspect_ratio=disable,setsar=1[scaled_bg];`;
+            filterComplex += `[0:v]scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height},setsar=1[scaled_bg];`;
             let lastLabel = "scaled_bg";
 
             // 2. Background transforms (mirror, speed)

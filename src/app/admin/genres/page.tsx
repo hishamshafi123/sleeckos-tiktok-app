@@ -114,6 +114,167 @@ const InlineFolderLinker = ({ accountId, onLinked }: { accountId: string; onLink
   );
 };
 
+function computeBratLayout(
+  words: { word: string; start: number; end: number }[],
+  fontFamily: string,
+  baseFontSize: number,
+  canvasWidth: number,
+  canvasHeight: number,
+  margin: number
+) {
+  if (typeof window === "undefined") return [];
+  let canvas = (window as any).__previewLayoutCanvas;
+  if (!canvas) {
+    canvas = document.createElement("canvas");
+    (window as any).__previewLayoutCanvas = canvas;
+  }
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return [];
+
+  const fontMap: Record<string, string> = {
+    "Montserrat-Black": "Montserrat",
+    "Outfit-Bold": "Outfit",
+    "Anton": "Anton",
+    "Inter-Bold": "Inter",
+    "Inter-Light": "Inter",
+    "Inter-Regular": "Inter",
+    "Caveat-Bold": "Caveat",
+    "Oswald-Bold": "Oswald",
+    "PlayfairDisplay-Bold": "Playfair Display",
+    "GreatVibes-Regular": "Great Vibes",
+    "Lora-Bold": "Lora",
+  };
+  const fontName = fontMap[fontFamily] || "Montserrat";
+
+  function measureText(text: string, size: number): number {
+    ctx.font = `800 ${size}px ${fontName}, sans-serif`;
+    return ctx.measureText(text).width;
+  }
+
+  const targetWidth = canvasWidth - 2 * margin;
+  const targetHeight = canvasHeight * 0.6;
+
+  function getWrappedLines(wordTexts: string[], size: number): string[][] {
+    const lines: string[][] = [];
+    let currentLine: string[] = [];
+    const spaceWidth = measureText(" ", size);
+    let currentWidth = 0;
+
+    for (const w of wordTexts) {
+      const wordWidth = measureText(w, size);
+      if (currentLine.length === 0) {
+        currentLine.push(w);
+        currentWidth = wordWidth;
+      } else {
+        const newWidth = currentWidth + spaceWidth + wordWidth;
+        if (newWidth <= targetWidth) {
+          currentLine.push(w);
+          currentWidth = newWidth;
+        } else {
+          lines.push(currentLine);
+          currentLine = [w];
+          currentWidth = wordWidth;
+        }
+      }
+    }
+    if (currentLine.length > 0) {
+      lines.push(currentLine);
+    }
+    return lines;
+  }
+
+  function getOptimalFontSize(wordTexts: string[]): number {
+    let low = 20;
+    let high = baseFontSize;
+    let bestSize = 20;
+
+    function checkFit(size: number): boolean {
+      const lines = getWrappedLines(wordTexts, size);
+      const lineHeight = size * 1.15;
+      const totalHeight = lineHeight * lines.length + 10 * (lines.length - 1);
+
+      for (const w of wordTexts) {
+        if (measureText(w, size) > targetWidth) return false;
+      }
+      return totalHeight <= targetHeight;
+    }
+
+    while (low <= high) {
+      const mid = Math.floor((low + high) / 2);
+      if (checkFit(mid)) {
+        bestSize = mid;
+        low = mid + 1;
+      } else {
+        high = mid - 1;
+      }
+    }
+    return bestSize;
+  }
+
+  const wordTexts = words.map(w => w.word);
+  const bestFontSize = getOptimalFontSize(wordTexts);
+  const lines = getWrappedLines(wordTexts, bestFontSize);
+
+  const startX = margin;
+  const startY = Math.round(canvasHeight * 0.2);
+  const spaceWidth = measureText(" ", bestFontSize);
+  const lineHeight = bestFontSize * 1.15;
+  const lineSpacing = 10;
+
+  let currentY = startY;
+  const wordPositions: { word: string; x: number; y: number; fontSize: number }[] = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    const lineWords = lines[i];
+    if (lineWords.length === 0) continue;
+
+    const isLastLine = (i === lines.length - 1);
+    let sumWordW = 0;
+    const wordWidths = lineWords.map(w => {
+      const w_w = measureText(w, bestFontSize);
+      sumWordW += w_w;
+      return w_w;
+    });
+
+    const normalGapW = (lineWords.length - 1) * spaceWidth;
+    const naturalWidth = sumWordW + normalGapW;
+
+    const isFullEnough = (naturalWidth / targetWidth) > 0.85;
+    const shouldLeftAlign = (isLastLine && !isFullEnough) || lineWords.length === 1;
+
+    if (shouldLeftAlign) {
+      let currX = startX;
+      for (let j = 0; j < lineWords.length; j++) {
+        wordPositions.push({
+          word: lineWords[j],
+          x: Math.round(currX),
+          y: Math.round(currentY),
+          fontSize: bestFontSize
+        });
+        currX += wordWidths[j] + spaceWidth;
+      }
+    } else {
+      const availableSpace = targetWidth - sumWordW;
+      const gap = lineWords.length > 1 ? (availableSpace / (lineWords.length - 1)) : 0;
+      let currX = startX;
+
+      for (let j = 0; j < lineWords.length; j++) {
+        wordPositions.push({
+          word: lineWords[j],
+          x: Math.round(currX),
+          y: Math.round(currentY),
+          fontSize: bestFontSize
+        });
+        currX += wordWidths[j] + gap;
+      }
+    }
+
+    currentY += lineHeight + lineSpacing;
+  }
+
+  return wordPositions;
+}
+
 // Tabs Enum
 type TabType = "tracks" | "accounts" | "batches";
 
@@ -467,7 +628,9 @@ export default function GenresDashboard() {
   const [lyricalTemplates, setLyricalTemplates] = useState<any[]>([]);
   const [loadingTemplatesTrackId, setLoadingTemplatesTrackId] = useState<string | null>(null);
   const [selectedLyricalTrackId, setSelectedLyricalTrackId] = useState<string>("");
+  const [selectedLyricalTrackIds, setSelectedLyricalTrackIds] = useState<string[]>([]);
   const [selectedLyricalTemplateId, setSelectedLyricalTemplateId] = useState<string>("");
+  const [selectedLyricalTemplateIds, setSelectedLyricalTemplateIds] = useState<string[]>([]);
   const [selectedPreviewTemplateId, setSelectedPreviewTemplateId] = useState<string | null>(null);
   const [lyricalPlaybackTime, setLyricalPlaybackTime] = useState<number>(0);
   const [setupLyricalBgVideoUrl, setSetupLyricalBgVideoUrl] = useState<string>("");
@@ -487,6 +650,7 @@ export default function GenresDashboard() {
   const [lyricalAspectRatio, setLyricalAspectRatio] = useState<"9:16" | "1:1">("9:16");
   const [lyricalBgOpacity, setLyricalBgOpacity] = useState<number>(1.0);
   const [lyricalLofiFactor, setLyricalLofiFactor] = useState<number>(1);
+  const [lyricalTextMargin, setLyricalTextMargin] = useState<number>(50);
   const [mixupVisuals, setMixupVisuals] = useState<boolean>(true);
 
   // Lyrical transcription editor states
@@ -816,6 +980,7 @@ export default function GenresDashboard() {
           aspectRatio: lyricalAspectRatio,
           bgOpacity: lyricalBgOpacity,
           lofiFactor: lyricalLofiFactor,
+          textMargin: lyricalTextMargin,
         }),
       });
       if (res.ok) {
@@ -1410,13 +1575,58 @@ export default function GenresDashboard() {
     }
   };
 
+  const handleToggleTrack = (trackId: string) => {
+    let nextIds: string[] = [];
+    if (selectedLyricalTrackIds.includes(trackId)) {
+      nextIds = selectedLyricalTrackIds.filter(id => id !== trackId);
+    } else {
+      nextIds = [...selectedLyricalTrackIds, trackId];
+    }
+    setSelectedLyricalTrackIds(nextIds);
+
+    if (nextIds.length > 0) {
+      const firstId = nextIds[0];
+      setSelectedLyricalTrackId(firstId);
+      fetchLyricalTemplates(firstId);
+    } else {
+      setSelectedLyricalTrackId("");
+      setSelectedLyricalTemplateId("");
+      setSelectedLyricalTemplateIds([]);
+      setLyricalTemplates([]);
+    }
+  };
+
+  const handleToggleLyricalTemplate = (templateId: string) => {
+    // If mix_all is active, clear it and start multi-select
+    const wasMixAll = selectedLyricalTemplateId === "mix_all";
+    let nextIds: string[] = [];
+    
+    if (wasMixAll) {
+      nextIds = [templateId];
+      setSelectedLyricalTemplateId(templateId);
+    } else {
+      if (selectedLyricalTemplateIds.includes(templateId)) {
+        nextIds = selectedLyricalTemplateIds.filter(id => id !== templateId);
+      } else {
+        nextIds = [...selectedLyricalTemplateIds, templateId];
+      }
+      
+      if (nextIds.length > 0) {
+        setSelectedLyricalTemplateId(nextIds[0]); // preview the first selected template
+      } else {
+        setSelectedLyricalTemplateId("");
+      }
+    }
+    setSelectedLyricalTemplateIds(nextIds);
+  };
+
   const handleStartLyricalGeneration = async () => {
     if (selectedBatchAccountIds.length === 0) {
       toast.error("Please select at least one TikTok account");
       return;
     }
-    if (!selectedLyricalTrackId || !selectedLyricalTemplateId) {
-      toast.error("Please select a Lyrical Track and Styling Template");
+    if (selectedLyricalTrackIds.length === 0 || (selectedLyricalTemplateId !== "mix_all" && selectedLyricalTemplateIds.length === 0)) {
+      toast.error("Please select at least one Lyrical Track and a Styling Template");
       return;
     }
 
@@ -1429,8 +1639,9 @@ export default function GenresDashboard() {
           action: "CREATE_LYRICAL_BATCH",
           accountIds: selectedBatchAccountIds,
           postsPerAccount: postsPerAccount,
-          trackId: selectedLyricalTrackId,
+          trackIds: selectedLyricalTrackIds,
           lyricalTemplateId: selectedLyricalTemplateId,
+          lyricalTemplateIds: selectedLyricalTemplateIds,
           mixupVisuals: mixupVisuals,
         }),
       });
@@ -2495,10 +2706,11 @@ export default function GenresDashboard() {
                               setLyricalStrokeWidth(0);
                               setLyricalStrokeColor("#000000");
                               setLyricalPositionY(0.40);
-                              setLyricalAnimationMode("word_builder");
+                              setLyricalAnimationMode("brat");
                               setLyricalBgColor("#8ace00");
                               setLyricalBgOpacity(1.0);
                               setLyricalLofiFactor(8);
+                              setLyricalTextMargin(50);
                               setLyricalTextColor("#000000");
                               setSetupLyricalColorFilter("none");
                               setSetupLyricalVignette("none");
@@ -2867,6 +3079,26 @@ export default function GenresDashboard() {
                             ? `Scale down by ${lyricalLofiFactor}x and upscale with nearest-neighbor (pixelated look)`
                             : "No pixelation (sharp high-res text)"
                           }
+                        </p>
+                      </div>
+
+                      {/* Text Frame Margin */}
+                      <div className="space-y-2 bg-black/20 p-3 rounded-2xl border border-white/5 shadow-inner">
+                        <div className="flex justify-between items-center">
+                          <label className="block text-[9px] uppercase tracking-wider font-extrabold text-gray-500">Text Frame Margin</label>
+                          <span className="text-xs text-amber-400 font-extrabold font-mono">{lyricalTextMargin}px</span>
+                        </div>
+                        <input
+                          type="range"
+                          min="10"
+                          max="200"
+                          step="5"
+                          value={lyricalTextMargin}
+                          onChange={(e) => setLyricalTextMargin(parseInt(e.target.value, 10))}
+                          className="w-full h-1 bg-gray-800 rounded-lg appearance-none cursor-pointer accent-purple-500"
+                        />
+                        <p className="text-[8px] text-gray-600">
+                          Configure text horizontal padding/margins from frame edges.
                         </p>
                       </div>
 
@@ -3271,7 +3503,40 @@ export default function GenresDashboard() {
                         })();
                         const gapY = lyricalAnimationMode === "word_builder" ? "8px" : "2px";
                         
-                        return lyricalAnimationMode === "word_builder" ? (
+                        return lyricalAnimationMode === "brat" ? (
+                          /* ── BRAT STYLE MODE: Dynamic Font Sizing & Position ── */
+                          <div className="absolute inset-0 z-10 select-none pointer-events-none">
+                            {(() => {
+                              const layoutWords = computeBratLayout(
+                                wordBuilderVisibleWords,
+                                lyricalFontFamily,
+                                lyricalFontSize,
+                                720,
+                                1280,
+                                lyricalTextMargin
+                              );
+                              return layoutWords.map((w: any, idx: number) => (
+                                <span
+                                  key={idx}
+                                  className="absolute uppercase"
+                                  style={{
+                                    left: `${w.x * 0.23}px`,
+                                    top: `${w.y * 0.23}px`,
+                                    fontSize: `${w.fontSize * 0.23}px`,
+                                    fontFamily: cssFontFamily,
+                                    color: lyricalTextColor || "#000000",
+                                    letterSpacing: `${lyricalLetterSpacing * 0.23}px`,
+                                    textTransform: "lowercase" as const,
+                                    lineHeight: 1.0,
+                                    fontWeight: 900
+                                  }}
+                                >
+                                  {w.word.toLowerCase()}
+                                </span>
+                              ));
+                            })()}
+                          </div>
+                        ) : lyricalAnimationMode === "word_builder" ? (
                           /* ── WORD BUILDER MODE: Progressive word append ── */
                           <div 
                             className={`absolute left-0 right-0 px-4 transform -translate-y-1/2 transition-all duration-150 z-10 select-none pointer-events-none ${textAlignClass}`}
@@ -3439,6 +3704,7 @@ export default function GenresDashboard() {
                                   setLyricalBgColor(tpl.bgColor || null);
                                   setLyricalBgOpacity(tpl.bgOpacity ?? 1.0);
                                   setLyricalLofiFactor(tpl.lofiFactor ?? 1);
+                                  setLyricalTextMargin(tpl.textMargin ?? 50);
                                   setLyricalTextColor(tpl.textColor || null);
                                   setLyricalTextAlign(tpl.textAlign || "center");
                                   setLyricalWordSpacing(tpl.wordSpacing || "normal");
@@ -5537,24 +5803,35 @@ export default function GenresDashboard() {
                     {/* Selectors Column */}
                     <div className="space-y-4">
                       <div className="space-y-2">
-                        <label className="block text-xs uppercase tracking-wider font-bold text-gray-400">1. Select Aligned Lyrical Track</label>
-                        <select
-                          value={selectedLyricalTrackId}
-                          onChange={(e) => {
-                            const trackId = e.target.value;
-                            setSelectedLyricalTrackId(trackId);
-                            setSelectedLyricalTemplateId("");
-                            if (trackId) {
-                              fetchLyricalTemplates(trackId);
-                            }
-                          }}
-                          className="w-full bg-[#141423] border border-white/5 rounded-2xl px-4 py-3.5 text-sm font-bold text-white focus:outline-none focus:border-purple-500/30"
-                        >
-                          <option value="">-- Choose Lyrical Music Track --</option>
-                          {tracks.filter(t => t.isLyrical).map(t => (
-                            <option key={t.id} value={t.id}>{t.title} — {t.artist}</option>
-                          ))}
-                        </select>
+                        <label className="block text-xs uppercase tracking-wider font-bold text-gray-400">1. Select Aligned Lyrical Tracks</label>
+                        <div className="grid grid-cols-1 gap-2 max-h-[200px] overflow-y-auto pr-1">
+                          {tracks.filter(t => t.isLyrical).map((t) => {
+                            const isSelected = selectedLyricalTrackIds.includes(t.id);
+                            return (
+                              <div
+                                key={t.id}
+                                onClick={() => handleToggleTrack(t.id)}
+                                className={`p-3 rounded-2xl border text-left cursor-pointer transition-all flex items-center justify-between gap-3 ${
+                                  isSelected
+                                    ? "bg-purple-500/10 border-purple-500/40 text-white shadow-lg shadow-purple-500/5"
+                                    : "bg-[#141423]/40 border-white/5 text-gray-400 hover:border-white/10"
+                                }`}
+                              >
+                                <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                                  <div className={`w-4 h-4 rounded-md border flex items-center justify-center flex-shrink-0 ${
+                                    isSelected ? "bg-purple-500 border-purple-500 text-white" : "border-white/10 bg-black/40"
+                                  }`}>
+                                    {isSelected && <Check className="w-2.5 h-2.5 stroke-[4]" />}
+                                  </div>
+                                  <div className="truncate">
+                                    <p className="text-xs font-bold text-white leading-tight truncate">{t.title}</p>
+                                    <p className="text-[10px] text-gray-500 font-semibold uppercase tracking-wider mt-0.5 truncate">{t.artist} — {Math.round(t.duration)}s</p>
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
                         {tracks.filter(t => t.isLyrical).length === 0 && (
                           <p className="text-[10px] text-red-400 font-semibold uppercase tracking-wider mt-1">No lyrical tracks available. Designate one in the Tracks Library tab first.</p>
                         )}
@@ -5576,7 +5853,10 @@ export default function GenresDashboard() {
                                         <div className="grid grid-cols-1 gap-2.5 max-h-[220px] overflow-y-auto pr-1">
                               {/* Special card for mixing all templates */}
                               <div
-                                onClick={() => setSelectedLyricalTemplateId("mix_all")}
+                                onClick={() => {
+                                  setSelectedLyricalTemplateId("mix_all");
+                                  setSelectedLyricalTemplateIds([]);
+                                }}
                                 className={`p-3.5 rounded-2xl border text-left cursor-pointer transition-all flex items-center justify-between gap-2 ${
                                   selectedLyricalTemplateId === "mix_all"
                                     ? "bg-purple-500/10 border-purple-500/40 text-white shadow-lg shadow-purple-500/5"
@@ -5594,27 +5874,30 @@ export default function GenresDashboard() {
                                 </div>
                               </div>
 
-                              {lyricalTemplates.map((tpl) => (
-                                <div
-                                  key={tpl.id}
-                                  onClick={() => setSelectedLyricalTemplateId(tpl.id)}
-                                  className={`p-3.5 rounded-2xl border text-left cursor-pointer transition-all flex items-center justify-between ${
-                                    selectedLyricalTemplateId === tpl.id
-                                      ? "bg-purple-500/15 border-purple-500/40 text-white shadow-lg shadow-purple-500/5"
-                                      : "bg-[#141423]/40 border-white/5 text-gray-400 hover:border-white/10"
-                                  }`}
-                                >
-                                  <div>
-                                    <p className="text-xs font-bold text-white leading-tight">{tpl.templateName}</p>
-                                    <p className="text-[10px] text-gray-500 font-semibold uppercase tracking-wider mt-1">Font: {tpl.fontFamily} | Size: {tpl.fontSize}px</p>
+                              {lyricalTemplates.map((tpl) => {
+                                const isSelected = selectedLyricalTemplateIds.includes(tpl.id);
+                                return (
+                                  <div
+                                    key={tpl.id}
+                                    onClick={() => handleToggleLyricalTemplate(tpl.id)}
+                                    className={`p-3.5 rounded-2xl border text-left cursor-pointer transition-all flex items-center justify-between ${
+                                      isSelected
+                                        ? "bg-purple-500/15 border-purple-500/40 text-white shadow-lg shadow-purple-500/5"
+                                        : "bg-[#141423]/40 border-white/5 text-gray-400 hover:border-white/10"
+                                    }`}
+                                  >
+                                    <div>
+                                      <p className="text-xs font-bold text-white leading-tight">{tpl.templateName}</p>
+                                      <p className="text-[10px] text-gray-500 font-semibold uppercase tracking-wider mt-1">Font: {tpl.fontFamily} | Size: {tpl.fontSize}px</p>
+                                    </div>
+                                    <div className={`w-4 h-4 rounded-md border flex items-center justify-center flex-shrink-0 ${
+                                      isSelected ? "bg-purple-500 border-purple-500 text-white" : "border-white/10"
+                                    }`}>
+                                      {isSelected && <Check className="w-2.5 h-2.5 stroke-[4]" />}
+                                    </div>
                                   </div>
-                                  <div className={`w-4 h-4 rounded-full border flex items-center justify-center flex-shrink-0 ${
-                                    selectedLyricalTemplateId === tpl.id ? "bg-purple-500 border-purple-500 text-white" : "border-white/10"
-                                  }`}>
-                                    {selectedLyricalTemplateId === tpl.id && <Check className="w-2.5 h-2.5 stroke-[4]" />}
-                                  </div>
-                                </div>
-                              ))}
+                                );
+                              })}
                             </div>
                           )}
                         </div>
@@ -5653,7 +5936,7 @@ export default function GenresDashboard() {
                         return (
                           <div className="space-y-2 text-center bg-[#0c0c14] p-3 rounded-2xl border border-white/5">
                             <span className="text-[10px] uppercase tracking-wider font-extrabold text-gray-500 block">Typography Preview: {activeTpl.templateName}</span>
-                            <div className="relative aspect-[9/16] w-full max-w-[150px] mx-auto bg-black border border-white/10 rounded-3xl overflow-hidden shadow-2xl flex items-center justify-center group">
+                            <div className={`relative ${activeTpl.aspectRatio === "1:1" ? "aspect-square" : "aspect-[9/16]"} w-full max-w-[150px] mx-auto bg-black border border-white/10 rounded-3xl overflow-hidden shadow-2xl flex items-center justify-center group`}>
                               <img
                                 src={resolveUrl(activeTpl.previewImageUrl)}
                                 className="w-full h-full object-cover select-none"
@@ -5695,7 +5978,7 @@ export default function GenresDashboard() {
                   <div className="pt-6 border-t border-white/5">
                     <button
                       onClick={handleStartLyricalGeneration}
-                      disabled={generatingQuotes || selectedBatchAccountIds.length === 0 || !selectedLyricalTrackId || !selectedLyricalTemplateId}
+                      disabled={generatingQuotes || selectedBatchAccountIds.length === 0 || selectedLyricalTrackIds.length === 0 || (selectedLyricalTemplateId !== "mix_all" && selectedLyricalTemplateIds.length === 0)}
                       className="bg-purple-500 hover:bg-purple-600 text-white font-extrabold py-4 px-8 rounded-2xl shadow-lg transition-all duration-300 flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed text-base"
                     >
                       {generatingQuotes ? (
@@ -5710,7 +5993,7 @@ export default function GenresDashboard() {
                         </>
                       )}
                     </button>
-                    {selectedBatchAccountIds.length > 0 && selectedLyricalTrackId && selectedLyricalTemplateId && (
+                    {selectedBatchAccountIds.length > 0 && selectedLyricalTrackIds.length > 0 && (selectedLyricalTemplateId === "mix_all" || selectedLyricalTemplateIds.length > 0) && (
                       <p className="text-[10px] text-purple-400 font-semibold uppercase tracking-wider mt-2.5">
                         Will generate {selectedBatchAccountIds.length * postsPerAccount} lyrical videos at ultra-fast 1-second overlay merge per video!
                       </p>

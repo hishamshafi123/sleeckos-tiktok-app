@@ -104,6 +104,53 @@ def resize_video_clip(clip, width, height):
         print(f"[*] Warning: Resize failed: {e}. Keeping original size.")
     return clip
 
+def crop_to_fill_video_clip(clip, width, height):
+    """Resizes and crops a MoviePy clip to cover (fill) the target size without stretching."""
+    try:
+        # Calculate scale factor to cover the target box (cover aspect fit)
+        scale_w = width / clip.w
+        scale_h = height / clip.h
+        scale_factor = max(scale_w, scale_h)
+        
+        new_w = int(clip.w * scale_factor)
+        new_h = int(clip.h * scale_factor)
+        
+        # Resize first
+        if hasattr(clip, "resize"):
+            resized_clip = clip.resize(newsize=(new_w, new_h))
+        elif hasattr(clip, "resized"):
+            resized_clip = clip.resized(newsize=(new_w, new_h))
+        else:
+            resized_clip = clip
+            
+        # Center crop to cover width and height
+        x1 = (new_w - width) // 2
+        y1 = (new_h - height) // 2
+        x2 = x1 + width
+        y2 = y1 + height
+        
+        # Try multiple crop options for multi-version compatibility
+        try:
+            from moviepy.video.fx.all import crop
+            return crop(resized_clip, x1=x1, y1=y1, x2=x2, y2=y2)
+        except ImportError:
+            try:
+                from moviepy.video.fx.crop import crop
+                return crop(resized_clip, x1=x1, y1=y1, x2=x2, y2=y2)
+            except ImportError:
+                try:
+                    from moviepy.video.fx import crop
+                    return crop(resized_clip, x1=x1, y1=y1, x2=x2, y2=y2)
+                except ImportError:
+                    if hasattr(resized_clip, "crop"):
+                        return resized_clip.crop(x1=x1, y1=y1, x2=x2, y2=y2)
+                    elif hasattr(resized_clip, "cropped"):
+                        return resized_clip.cropped(x1=x1, y1=y1, x2=x2, y2=y2)
+    except Exception as e:
+        print(f"[*] Warning: Crop to fill failed: {e}. Falling back to standard resize.")
+        return resize_video_clip(clip, width, height)
+    return clip
+
 def ensure_font(font_path_or_name):
     """
     Checks if a custom font is present or system fallbacks.
@@ -278,6 +325,24 @@ def chunk_words(word_list, max_words=3, max_silence_gap=1.5):
         
     return chunks
 
+def chunk_phrases(words, max_silence_gap=1.5, max_words=12):
+    """
+    Groups words into phrase-level segments for Brat/Word Builder progressive animation.
+    Terminates phrase on silence gaps greater than max_silence_gap or when reaching max_words.
+    """
+    phrases = []
+    current = []
+    last_end = 0
+    for w in words:
+        if current and (w['start'] - last_end > max_silence_gap or len(current) >= max_words):
+            phrases.append(current)
+            current = []
+        current.append(w)
+        last_end = w['end']
+    if current:
+        phrases.append(current)
+    return phrases
+
 # ==============================================================================
 # 4. RENDERING & ANIMATION LAYER (Pillow + MoviePy)
 # ==============================================================================
@@ -384,80 +449,370 @@ def render_chunk_image(words, active_index, width, height, font_path, font_size,
         
     return image
 
-def build_lyrical_overlay_clips(chunks, width, height, font_path, font_size, active_color, stroke_width, stroke_color, y_position):
+def get_text_width(text, font):
+    """Measures horizontal text width in pixels using PIL ImageFont."""
+    try:
+        # For modern Pillow (>= 9.2.0)
+        bbox = font.getbbox(text)
+        return bbox[2] - bbox[0]
+    except Exception:
+        # Fallback for older Pillow
+        return font.getsize(text)[0]
+
+def estimate_space_width(font):
+    return get_text_width(" ", font)
+
+def get_wrapped_lines_py(words, font, max_width):
+    lines = []
+    current_line = []
+    space_width = estimate_space_width(font)
+    current_width = 0
+    
+    for word_text in words:
+        word_width = get_text_width(word_text, font)
+        if not current_line:
+            current_line.append(word_text)
+            current_width = word_width
+        else:
+            new_width = current_width + space_width + word_width
+            if new_width <= max_width:
+                current_line.append(word_text)
+                current_width = new_width
+            else:
+                lines.append(current_line)
+                current_line = [word_text]
+                current_width = word_width
+    if current_line:
+        lines.append(current_line)
+    return lines
+
+def get_optimal_font_size_py(words, max_width, max_height, font_path, base_font_size):
+    min_font = 20
+    max_font = base_font_size
+    best_size = min_font
+    
+    low = min_font
+    high = max_font
+    
+    while low <= high:
+        mid = (low + high) // 2
+        try:
+            font = ImageFont.truetype(font_path, mid)
+        except Exception:
+            font = ImageFont.load_default()
+            
+        # Check fit
+        lines = get_wrapped_lines_py(words, font, max_width)
+        line_height = mid * 1.15
+        total_height = line_height * len(lines) + 10 * (len(lines) - 1)
+        
+        fits = True
+        # Check if any word width itself exceeds max_width
+        for w in words:
+            if get_text_width(w, font) > max_width:
+                fits = False
+                break
+                
+        if fits and total_height <= max_height:
+            best_size = mid
+            low = mid + 1
+        else:
+            high = mid - 1
+            
+    return best_size
+
+def calculate_word_positions_py(lines, font, fontSize, canvas_width, canvas_height, margin):
+    target_width = canvas_width - 2 * margin
+    start_x = margin
+    start_y = int(canvas_height * 0.2)
+    space_width = get_text_width(" ", font)
+    line_height = fontSize * 1.15
+    line_spacing = 10
+    
+    current_y = start_y
+    word_positions = []
+    
+    for i, line_words in enumerate(lines):
+        if not line_words:
+            continue
+            
+        is_last_line = (i == len(lines) - 1)
+        
+        # Calculate natural width with normal spaces
+        sum_word_w = 0
+        word_widths = []
+        for w in line_words:
+            w_w = get_text_width(w, font)
+            sum_word_w += w_w
+            word_widths.append(w_w)
+            
+        normal_gap_w = (len(line_words) - 1) * space_width
+        natural_width = sum_word_w + normal_gap_w
+        
+        # Threshold: if natural width > 85% of target width, justify it even if last line
+        is_full_enough = (natural_width / target_width) > 0.85
+        should_left_align = (is_last_line and not is_full_enough) or len(line_words) == 1
+        
+        if should_left_align:
+            curr_x = start_x
+            for j, w in enumerate(line_words):
+                word_positions.append({
+                    "text": w,
+                    "x": int(curr_x),
+                    "y": int(current_y),
+                    "font_size": fontSize
+                })
+                curr_x += word_widths[j] + space_width
+        else:
+            # Justified alignment
+            available_space = target_width - sum_word_w
+            gap = (available_space / (len(line_words) - 1)) if len(line_words) > 1 else 0
+            curr_x = start_x
+            for j, w in enumerate(line_words):
+                word_positions.append({
+                    "text": w,
+                    "x": int(curr_x),
+                    "y": int(current_y),
+                    "font_size": fontSize
+                })
+                curr_x += word_widths[j] + gap
+                
+        current_y += line_height + line_spacing
+        
+    return word_positions
+
+def render_brat_image(words, width, height, font_path, font_size, text_color, stroke_width, stroke_color, text_margin, bg_color, bg_opacity):
+    # Determine text color (default black if none)
+    if not text_color:
+        txt_rgba = (0, 0, 0, 255)
+    else:
+        txt_rgba = parse_hex_color(text_color)
+        
+    # Determine background color
+    if bg_color and bg_color.lower() not in ["none", "transparent", "null"]:
+        r, g, b, _ = parse_hex_color(bg_color)
+        bg_alpha = int(bg_opacity * 255)
+        bg_fill = (r, g, b, bg_alpha)
+    else:
+        bg_fill = (0, 0, 0, 0)
+        
+    # Create canvas
+    image = Image.new("RGBA", (width, height), bg_fill)
+    draw = ImageDraw.Draw(image)
+    
+    # Word text list
+    word_texts = [w['word'] for w in words]
+    
+    # Find optimal font size
+    max_width = width - 2 * text_margin
+    max_height = height * 0.6
+    best_size = get_optimal_font_size_py(word_texts, max_width, max_height, font_path, font_size)
+    
+    # Load optimal font
+    try:
+        font = ImageFont.truetype(font_path, best_size)
+    except Exception as e:
+        print(f"[-] Font load error in Brat mode: {e}. Falling back to default.")
+        font = ImageFont.load_default()
+        
+    # Wrap lines
+    lines = get_wrapped_lines_py(word_texts, font, max_width)
+    
+    # Calculate positions
+    word_positions = calculate_word_positions_py(lines, font, best_size, width, height, text_margin)
+    
+    # Draw words
+    for item in word_positions:
+        # Lowercase per Brat style specification
+        txt = item['text'].lower()
+        draw_x = item['x']
+        draw_y = item['y']
+        
+        draw.text(
+            (draw_x, draw_y),
+            txt,
+            font=font,
+            fill=txt_rgba,
+            stroke_width=stroke_width,
+            stroke_fill=stroke_color
+        )
+        
+    return image
+
+def build_lyrical_overlay_clips(chunks, width, height, font_path, font_size, active_color, stroke_width, stroke_color, y_position, **kwargs):
     """
     Processes all word chunks to build a list of transparent, timed ImageClips
-    representing active and inactive caption states.
+    representing active and inactive caption states. Supports multiple animation modes.
     """
-    print("[*] Generating kinetic subtitle clips layer...")
+    animation_mode = kwargs.get("animation_mode", "highlight")
+    text_color = kwargs.get("text_color", None)
+    text_margin = kwargs.get("text_margin", 50)
+    bg_color = kwargs.get("bg_color", None)
+    bg_opacity = kwargs.get("bg_opacity", 1.0)
+    lofi_factor = kwargs.get("lofi_factor", 1)
+
+    print(f"[*] Generating subtitle clips layer (Mode: '{animation_mode}', Lofi: {lofi_factor}, Margin: {text_margin})...")
     overlay_clips = []
     total_intervals = 0
-    
-    for chunk_idx, chunk in enumerate(chunks):
-        chunk_start = chunk[0]['start']
-        chunk_end = chunk[-1]['end']
-        
-        # Gather all key event boundaries inside the chunk duration
-        events = [chunk_start, chunk_end]
-        for w in chunk:
-            events.append(w['start'])
-            events.append(w['end'])
+
+    if animation_mode in ["brat", "word_builder"]:
+        for phrase_idx, phrase in enumerate(chunks):
+            phrase_start = phrase[0]['start']
+            phrase_end = phrase[-1]['end'] + 0.3
             
-        # Sort and unique events list
-        events = sorted(list(set(events)))
-        
-        # Render continuous non-overlapping intervals
-        for i in range(len(events) - 1):
-            t0 = events[i]
-            t1 = events[i+1]
-            duration = t1 - t0
-            
-            if duration <= 0.005:
-                continue
+            for i in range(len(phrase)):
+                word = phrase[i]
+                t0 = word['start']
+                t1 = phrase[i+1]['start'] if (i + 1 < len(phrase)) else phrase_end
+                duration = t1 - t0
                 
-            # Determine which word is currently spoken (active) at midpoint
-            t_mid = (t0 + t1) / 2
-            active_word_idx = -1
-            
-            for word_idx, w in enumerate(chunk):
-                if w['start'] <= t_mid <= w['end']:
-                    active_word_idx = word_idx
-                    break
+                if duration <= 0.005:
+                    continue
                     
-            # Render PIL frame for this specific active state
-            pil_img = render_chunk_image(
-                words=chunk,
-                active_index=active_word_idx,
-                width=width,
-                height=height,
-                font_path=font_path,
-                font_size=font_size,
-                active_color=active_color,
-                stroke_width=stroke_width,
-                stroke_color=stroke_color,
-                y_position=y_position
-            )
-            
-            # Convert to RGB + Alpha masks for MoviePy compatibility (bypassing ImageMagick)
-            img_np = np.array(pil_img)
-            rgb_arr = img_np[:, :, :3]
-            alpha_arr = img_np[:, :, 3] / 255.0  # Normalized to 0.0 - 1.0
-            
-            # Create mask & main clip (MoviePy v1.x vs v2.x multi-version compatibility)
-            try:
-                # MoviePy v1.x
-                mask_clip = ImageClip(alpha_arr, ismask=True).set_duration(duration)
-                clip = ImageClip(rgb_arr).set_duration(duration).set_mask(mask_clip)
-                clip = clip.set_start(t0)
-            except TypeError:
-                # MoviePy v2.x — ismask removed, set_X() renamed to with_X()
-                mask_clip = ImageClip(alpha_arr, is_mask=True).with_duration(duration)
-                clip = ImageClip(rgb_arr).with_duration(duration).with_mask(mask_clip)
-                clip = clip.with_start(t0)
-            
-            overlay_clips.append(clip)
-            total_intervals += 1
-            
+                if animation_mode == "brat":
+                    # Render cumulative words up to current index i
+                    pil_img = render_brat_image(
+                        words=phrase[0 : i+1],
+                        width=width,
+                        height=height,
+                        font_path=font_path,
+                        font_size=font_size,
+                        text_color=text_color,
+                        stroke_width=stroke_width,
+                        stroke_color=stroke_color,
+                        text_margin=text_margin,
+                        bg_color=bg_color,
+                        bg_opacity=bg_opacity
+                    )
+                else:  # word_builder
+                    # Render standard chunk image with phrase[0 : i+1] visible and word index i active
+                    # Also respect solid background if configured
+                    if bg_color and bg_color.lower() not in ["none", "transparent", "null"]:
+                        r, g, b, _ = parse_hex_color(bg_color)
+                        bg_alpha = int(bg_opacity * 255)
+                        bg_fill = (r, g, b, bg_alpha)
+                    else:
+                        bg_fill = (0, 0, 0, 0)
+                        
+                    # Standard chunk render but with progressive slice
+                    pil_img_trans = render_chunk_image(
+                        words=phrase[0 : i+1],
+                        active_index=i,
+                        width=width,
+                        height=height,
+                        font_path=font_path,
+                        font_size=font_size,
+                        active_color=active_color,
+                        stroke_width=stroke_width,
+                        stroke_color=stroke_color,
+                        y_position=y_position
+                    )
+                    
+                    if bg_fill != (0, 0, 0, 0):
+                        pil_img = Image.new("RGBA", (width, height), bg_fill)
+                        pil_img.alpha_composite(pil_img_trans)
+                    else:
+                        pil_img = pil_img_trans
+                
+                if lofi_factor > 1:
+                    small_w = max(1, width // lofi_factor)
+                    small_h = max(1, height // lofi_factor)
+                    pil_img = pil_img.resize((small_w, small_h), Image.NEAREST).resize((width, height), Image.NEAREST)
+
+                # Convert to RGB + Alpha masks
+                img_np = np.array(pil_img)
+                rgb_arr = img_np[:, :, :3]
+                alpha_arr = img_np[:, :, 3] / 255.0
+
+                try:
+                    # MoviePy v1.x
+                    mask_clip = ImageClip(alpha_arr, ismask=True).set_duration(duration)
+                    clip = ImageClip(rgb_arr).set_duration(duration).set_mask(mask_clip)
+                    clip = clip.set_start(t0)
+                except TypeError:
+                    # MoviePy v2.x
+                    mask_clip = ImageClip(alpha_arr, is_mask=True).with_duration(duration)
+                    clip = ImageClip(rgb_arr).with_duration(duration).with_mask(mask_clip)
+                    clip = clip.with_start(t0)
+
+                overlay_clips.append(clip)
+                total_intervals += 1
+    else:
+        # Standard highlight mode
+        for chunk_idx, chunk in enumerate(chunks):
+            chunk_start = chunk[0]['start']
+            chunk_end = chunk[-1]['end']
+
+            events = [chunk_start, chunk_end]
+            for w in chunk:
+                events.append(w['start'])
+                events.append(w['end'])
+
+            events = sorted(list(set(events)))
+
+            for i in range(len(events) - 1):
+                t0 = events[i]
+                t1 = events[i+1]
+                duration = t1 - t0
+
+                if duration <= 0.005:
+                    continue
+
+                t_mid = (t0 + t1) / 2
+                active_word_idx = -1
+                for word_idx, w in enumerate(chunk):
+                    if w['start'] <= t_mid <= w['end']:
+                        active_word_idx = word_idx
+                        break
+
+                # Solid background support
+                if bg_color and bg_color.lower() not in ["none", "transparent", "null"]:
+                    r, g, b, _ = parse_hex_color(bg_color)
+                    bg_alpha = int(bg_opacity * 255)
+                    bg_fill = (r, g, b, bg_alpha)
+                else:
+                    bg_fill = (0, 0, 0, 0)
+
+                pil_img_trans = render_chunk_image(
+                    words=chunk,
+                    active_index=active_word_idx,
+                    width=width,
+                    height=height,
+                    font_path=font_path,
+                    font_size=font_size,
+                    active_color=active_color,
+                    stroke_width=stroke_width,
+                    stroke_color=stroke_color,
+                    y_position=y_position
+                )
+
+                if bg_fill != (0, 0, 0, 0):
+                    pil_img = Image.new("RGBA", (width, height), bg_fill)
+                    pil_img.alpha_composite(pil_img_trans)
+                else:
+                    pil_img = pil_img_trans
+
+                if lofi_factor > 1:
+                    small_w = max(1, width // lofi_factor)
+                    small_h = max(1, height // lofi_factor)
+                    pil_img = pil_img.resize((small_w, small_h), Image.NEAREST).resize((width, height), Image.NEAREST)
+
+                img_np = np.array(pil_img)
+                rgb_arr = img_np[:, :, :3]
+                alpha_arr = img_np[:, :, 3] / 255.0
+
+                try:
+                    mask_clip = ImageClip(alpha_arr, ismask=True).set_duration(duration)
+                    clip = ImageClip(rgb_arr).set_duration(duration).set_mask(mask_clip)
+                    clip = clip.set_start(t0)
+                except TypeError:
+                    mask_clip = ImageClip(alpha_arr, is_mask=True).with_duration(duration)
+                    clip = ImageClip(rgb_arr).with_duration(duration).with_mask(mask_clip)
+                    clip = clip.with_start(t0)
+
+                overlay_clips.append(clip)
+                total_intervals += 1
+
     print(f"[+] Kinetic overlay building complete! Generated {total_intervals} caption sub-clips.")
     return overlay_clips
 
@@ -498,11 +853,22 @@ def create_lyrical_video(input_path, background_path, output_path, **kwargs):
         
     print(f"[+] Input recognized: {'AUDIO' if is_input_audio else 'VIDEO'} | Duration: {audio_duration:.2f} seconds")
     
-    # Default 720p 9:16 layout limits
-    bg_width, bg_height = 720, 1280
+    # Determine aspect ratio dimensions
+    aspect_ratio = kwargs.get("aspect_ratio", "9:16")
+    if aspect_ratio == "1:1":
+        bg_width, bg_height = 720, 720
+    elif aspect_ratio == "16:9":
+        bg_width, bg_height = 1280, 720
+    else:  # default 9:16
+        bg_width, bg_height = 720, 1280
+        
+    print(f"[+] Aspect Ratio: {aspect_ratio} | Dimensions: {bg_width}x{bg_height}")
+    
+    # Check if solid background color canvas is used
+    use_solid_bg_as_canvas = (kwargs.get("bg_color") and kwargs.get("bg_color").lower() not in ["none", "transparent", "null"])
     
     # Determine background video
-    if not kwargs.get("only_overlay") and not kwargs.get("preview_frame"):
+    if not kwargs.get("only_overlay") and not kwargs.get("preview_frame") and not use_solid_bg_as_canvas:
         if is_input_audio:
             if not background_path:
                 raise ValueError("A background image/video must be provided when the input is an audio file.")
@@ -576,10 +942,16 @@ def create_lyrical_video(input_path, background_path, output_path, **kwargs):
     pos_y_ratio = kwargs.get("position_y", 0.75)
     target_y = int(bg_height * pos_y_ratio)
     
-    # 2. Step: Chunk words
+    animation_mode = kwargs.get("animation_mode", "highlight")
+    
+    # 2. Step: Chunk words based on animation mode
     max_chunk_words = kwargs.get("max_chunk_words", 3)
     max_silence = kwargs.get("max_silence", 1.5)
-    chunks = chunk_words(words, max_words=max_chunk_words, max_silence_gap=max_silence)
+    
+    if animation_mode in ["brat", "word_builder"]:
+        chunks = chunk_phrases(words, max_silence_gap=max_silence, max_words=12)
+    else:
+        chunks = chunk_words(words, max_words=max_chunk_words, max_silence_gap=max_silence)
     
     # ──────────────────────────────────────────────────────────────────────────
     # MODE A: INSTANT PREVIEW FRAME MODE
@@ -592,39 +964,90 @@ def create_lyrical_video(input_path, background_path, output_path, **kwargs):
         # Render the first chunk with the first word active
         if chunks:
             test_chunk = chunks[0]
-            preview_img = render_chunk_image(
-                words=test_chunk,
-                active_index=0,
-                width=bg_width,
-                height=bg_height,
-                font_path=resolved_font_path,
-                font_size=font_size,
-                active_color=test_chunk[0].get("active_color", active_colors_rgba[0]),
-                stroke_width=stroke_width,
-                stroke_color=stroke_color,
-                y_position=target_y
-            )
+            if animation_mode == "brat":
+                preview_img = render_brat_image(
+                    words=[test_chunk[0]],
+                    width=bg_width,
+                    height=bg_height,
+                    font_path=resolved_font_path,
+                    font_size=font_size,
+                    text_color=kwargs.get("text_color"),
+                    stroke_width=stroke_width,
+                    stroke_color=stroke_color,
+                    text_margin=kwargs.get("text_margin", 50),
+                    bg_color=kwargs.get("bg_color"),
+                    bg_opacity=kwargs.get("bg_opacity", 1.0)
+                )
+            else:
+                preview_img_trans = render_chunk_image(
+                    words=test_chunk,
+                    active_index=0,
+                    width=bg_width,
+                    height=bg_height,
+                    font_path=resolved_font_path,
+                    font_size=font_size,
+                    active_color=test_chunk[0].get("active_color", active_colors_rgba[0]),
+                    stroke_width=stroke_width,
+                    stroke_color=stroke_color,
+                    y_position=target_y
+                )
+                if use_solid_bg_as_canvas:
+                    r, g, b, _ = parse_hex_color(kwargs.get("bg_color"))
+                    bg_alpha = int(kwargs.get("bg_opacity", 1.0) * 255)
+                    preview_img = Image.new("RGBA", (bg_width, bg_height), (r, g, b, bg_alpha))
+                    preview_img.alpha_composite(preview_img_trans)
+                else:
+                    preview_img = preview_img_trans
         else:
-            dummy_words = [{"word": "Sleeckos", "start": 0.0, "end": 1.0}, {"word": "Lyrical", "start": 1.0, "end": 2.0}]
-            preview_img = render_chunk_image(
-                words=dummy_words,
-                active_index=0,
-                width=bg_width,
-                height=bg_height,
-                font_path=resolved_font_path,
-                font_size=font_size,
-                active_color=active_colors_rgba[0],
-                stroke_width=stroke_width,
-                stroke_color=stroke_color,
-                y_position=target_y
-            )
+            dummy_words = [{"word": "sleeckos", "start": 0.0, "end": 1.0}]
+            if animation_mode == "brat":
+                preview_img = render_brat_image(
+                    words=dummy_words,
+                    width=bg_width,
+                    height=bg_height,
+                    font_path=resolved_font_path,
+                    font_size=font_size,
+                    text_color=kwargs.get("text_color"),
+                    stroke_width=stroke_width,
+                    stroke_color=stroke_color,
+                    text_margin=kwargs.get("text_margin", 50),
+                    bg_color=kwargs.get("bg_color"),
+                    bg_opacity=kwargs.get("bg_opacity", 1.0)
+                )
+            else:
+                dummy_words.append({"word": "Lyrical", "start": 1.0, "end": 2.0})
+                preview_img_trans = render_chunk_image(
+                    words=dummy_words,
+                    active_index=0,
+                    width=bg_width,
+                    height=bg_height,
+                    font_path=resolved_font_path,
+                    font_size=font_size,
+                    active_color=active_colors_rgba[0],
+                    stroke_width=stroke_width,
+                    stroke_color=stroke_color,
+                    y_position=target_y
+                )
+                if use_solid_bg_as_canvas:
+                    r, g, b, _ = parse_hex_color(kwargs.get("bg_color"))
+                    bg_alpha = int(kwargs.get("bg_opacity", 1.0) * 255)
+                    preview_img = Image.new("RGBA", (bg_width, bg_height), (r, g, b, bg_alpha))
+                    preview_img.alpha_composite(preview_img_trans)
+                else:
+                    preview_img = preview_img_trans
+            
+        lofi_factor = kwargs.get("lofi_factor", 1)
+        if lofi_factor > 1:
+            small_w = max(1, bg_width // lofi_factor)
+            small_h = max(1, bg_height // lofi_factor)
+            preview_img = preview_img.resize((small_w, small_h), Image.NEAREST).resize((bg_width, bg_height), Image.NEAREST)
             
         preview_img.save(preview_frame_path, "PNG")
         print(f"[+] Preview frame successfully generated and saved at: {preview_frame_path}")
         print("=" * 80)
         return
         
-    print(f"[+] Grouped text into {len(chunks)} kinetic subtitle word chunks.")
+    print(f"[+] Grouped text into {len(chunks)} kinetic subtitle segments.")
     
     # 3. Render Caption Overlay Clips
     caption_overlays = build_lyrical_overlay_clips(
@@ -636,7 +1059,8 @@ def create_lyrical_video(input_path, background_path, output_path, **kwargs):
         active_color=active_color,
         stroke_width=stroke_width,
         stroke_color=stroke_color,
-        y_position=target_y
+        y_position=target_y,
+        **kwargs
     )
     
     fps = kwargs.get("fps", 60)
@@ -685,7 +1109,30 @@ def create_lyrical_video(input_path, background_path, output_path, **kwargs):
     # MODE C: STANDALONE DIRECT RENDER (Standard Video + Audio + Subtitles)
     # ──────────────────────────────────────────────────────────────────────────
     print("[*] Standalone Direct Composition mode selected. Loading backgrounds...")
-    if is_input_audio:
+    
+    if use_solid_bg_as_canvas:
+        r, g, b, _ = parse_hex_color(kwargs.get("bg_color"))
+        bg_alpha = int(kwargs.get("bg_opacity", 1.0) * 255)
+        # Create solid color background clip
+        solid_img = Image.new("RGBA", (bg_width, bg_height), (r, g, b, bg_alpha))
+        img_np = np.array(solid_img)
+        rgb_arr = img_np[:, :, :3]
+        alpha_arr = img_np[:, :, 3] / 255.0
+        
+        try:
+            mask_clip = ImageClip(alpha_arr, ismask=True).set_duration(audio_duration)
+            bg_clip = ImageClip(rgb_arr).set_duration(audio_duration).set_mask(mask_clip)
+        except TypeError:
+            mask_clip = ImageClip(alpha_arr, is_mask=True).with_duration(audio_duration)
+            bg_clip = ImageClip(rgb_arr).with_duration(audio_duration).with_mask(mask_clip)
+            
+        audio_clip = AudioFileClip(input_path)
+        try:
+            bg_clip = bg_clip.set_audio(audio_clip)
+        except AttributeError:
+            bg_clip = bg_clip.with_audio(audio_clip)
+            
+    elif is_input_audio:
         is_bg_image = False
         try:
             img = Image.open(background_path)
@@ -699,17 +1146,14 @@ def create_lyrical_video(input_path, background_path, output_path, **kwargs):
                 bg_clip = ImageClip(background_path).set_duration(audio_duration)
             except (TypeError, AttributeError):
                 bg_clip = ImageClip(background_path).with_duration(audio_duration)
-            bg_clip = resize_video_clip(bg_clip, 720, 1280)
-            bg_width, bg_height = 720, 1280
+            bg_clip = crop_to_fill_video_clip(bg_clip, bg_width, bg_height)
         else:
             bg_source = VideoFileClip(background_path)
-            bg_width, bg_height = bg_source.size
             if bg_source.duration < audio_duration:
                 bg_clip = loop_video_clip(bg_source, duration=audio_duration)
             else:
                 bg_clip = bg_source.subclip(0, audio_duration)
-            bg_clip = resize_video_clip(bg_clip, 720, 1280)
-            bg_width, bg_height = 720, 1280
+            bg_clip = crop_to_fill_video_clip(bg_clip, bg_width, bg_height)
         
         audio_clip = AudioFileClip(input_path)
         try:
@@ -718,10 +1162,8 @@ def create_lyrical_video(input_path, background_path, output_path, **kwargs):
             bg_clip = bg_clip.with_audio(audio_clip)
     else:
         bg_clip = VideoFileClip(background_path)
-        bg_width, bg_height = bg_clip.size
-        if bg_width != 720 or bg_height != 1280:
-            bg_clip = resize_video_clip(bg_clip, 720, 1280)
-            bg_width, bg_height = 720, 1280
+        if bg_clip.w != bg_width or bg_clip.h != bg_height:
+            bg_clip = crop_to_fill_video_clip(bg_clip, bg_width, bg_height)
             
         if bg_clip.audio is None:
             print("[!] Warning: Source video file does not have an active audio track!", file=sys.stderr)
@@ -785,6 +1227,13 @@ if __name__ == "__main__":
     parser.add_argument("--fps", type=int, default=60, help="Output target frame rate (e.g. 60 or 30). Default: 60")
     parser.add_argument("--max-chunk-words", type=int, default=3, help="Maximum words displayed on screen per caption chunk. Default: 3")
     parser.add_argument("--max-silence", type=float, default=1.5, help="Maximum silence gap in seconds before resetting subtitle chunk. Default: 1.5")
+    parser.add_argument("--animation-mode", default="highlight", choices=["highlight", "word_builder", "brat"], help="Text animation/reveal mode.")
+    parser.add_argument("--text-margin", type=int, default=50, help="Horizontal layout text margin in pixels.")
+    parser.add_argument("--text-color", default=None, help="Hex text color override.")
+    parser.add_argument("--bg-color", default=None, help="Hex solid background color.")
+    parser.add_argument("--bg-opacity", type=float, default=1.0, help="Background opacity fraction.")
+    parser.add_argument("--lofi-factor", type=int, default=1, help="Lofi pixelation scaling factor.")
+    parser.add_argument("--aspect-ratio", default="9:16", choices=["9:16", "1:1", "16:9"], help="Layout aspect ratio.")
     
     args = parser.parse_args()
     
@@ -807,7 +1256,14 @@ if __name__ == "__main__":
             position_y=args.position_y,
             fps=args.fps,
             max_chunk_words=args.max_chunk_words,
-            max_silence=args.max_silence
+            max_silence=args.max_silence,
+            animation_mode=args.animation_mode,
+            text_margin=args.text_margin,
+            text_color=args.text_color,
+            bg_color=args.bg_color,
+            bg_opacity=args.bg_opacity,
+            lofi_factor=args.lofi_factor,
+            aspect_ratio=args.aspect_ratio
         )
     except Exception as err:
         print(f"\n[!] Video Composition Failed: {err}", file=sys.stderr)
