@@ -156,6 +156,7 @@ async function processMultiplierBatch(batchId: string) {
           positionYPercent: tmpl?.positionYPercent ?? batch.positionYPercent,
           marginX: tmpl?.marginX ?? batch.marginX,
           borderRadius: tmpl?.borderRadius ?? batch.borderRadius,
+          hookDuration: batch.hookDuration,
           outputPath,
           // Design template fields
           paddingX: tmpl?.paddingX,

@@ -710,6 +710,7 @@ model MultiplierBatch {
   positionYPercent Int                  @default(5)           // 0=top, 100=bottom
   marginX         Int                   @default(0)           // Horizontal margin from edges (px)
   borderRadius    Int                   @default(12)          // Corner radius in px
+  hookDuration    Int                   @default(5)           // Hook text overlay duration in seconds
 
   // Google Drive export
   driveFolderId     String?               // assigned Google Drive folder ID

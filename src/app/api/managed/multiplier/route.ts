@@ -67,6 +67,7 @@ export async function POST(req: Request) {
     const positionYPercent = parseInt(formData.get("positionYPercent") as string) || 5;
     const marginX = parseInt(formData.get("marginX") as string) || 0;
     const borderRadius = parseInt(formData.get("borderRadius") as string) ?? 12;
+    const hookDuration = parseInt(formData.get("hookDuration") as string) || 5;
 
     if (!videoFile) {
       return NextResponse.json({ error: "Please upload a video file" }, { status: 400 });
@@ -142,6 +143,7 @@ export async function POST(req: Request) {
         positionYPercent,
         marginX,
         borderRadius,
+        hookDuration,
         items: {
           create: itemsToCreate,
         },

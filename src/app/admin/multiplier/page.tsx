@@ -37,6 +37,7 @@ interface MultiplierBatch {
   stripPaddingY: number;
   positionYPercent: number;
   marginX: number;
+  hookDuration: number;
   errorMessage: string | null;
   createdAt: string;
   items: MultiplierItem[];
@@ -188,6 +189,7 @@ export default function MultiplierPage() {
   const [positionYPercent, setPositionYPercent] = useState(5);
   const [marginX, setMarginX] = useState(0);
   const [borderRadius, setBorderRadius] = useState(12);
+  const [hookDuration, setHookDuration] = useState(5);
 
   // Design studio tab
   const [designTab, setDesignTab] = useState<"typography" | "effects" | "strip" | "animation">("typography");
@@ -780,6 +782,7 @@ export default function MultiplierPage() {
       formData.append("positionYPercent", String(positionYPercent));
       formData.append("marginX", String(marginX));
       formData.append("borderRadius", String(borderRadius));
+      formData.append("hookDuration", String(hookDuration));
       if (selectedTemplateIds.length > 0) {
         formData.append("templateIds", JSON.stringify(selectedTemplateIds));
       }
@@ -2031,6 +2034,12 @@ export default function MultiplierPage() {
               <div>
                 <label className="block text-[10px] text-gray-500 mb-1 uppercase tracking-wider">Corner Radius: {borderRadius}px</label>
                 <input type="range" min={0} max={40} value={borderRadius} onChange={(e) => setBorderRadius(Number(e.target.value))} className="w-full accent-cyan-500" />
+              </div>
+
+              {/* Hook Duration */}
+              <div>
+                <label className="block text-[10px] text-gray-500 mb-1 uppercase tracking-wider">Hook Duration: {hookDuration}s</label>
+                <input type="range" min={1} max={30} value={hookDuration} onChange={(e) => setHookDuration(Number(e.target.value))} className="w-full accent-cyan-500" />
               </div>
             </div>
           </div>

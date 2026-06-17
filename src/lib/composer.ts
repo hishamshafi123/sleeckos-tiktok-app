@@ -878,6 +878,7 @@ export interface MultiplierComposeOptions {
   positionYPercent: number;
   marginX: number;
   borderRadius: number;
+  hookDuration?: number;
   outputPath: string;
 
   // Design template fields
@@ -953,6 +954,7 @@ export async function composeMultiplierVideo(options: MultiplierComposeOptions):
     animationType = "NONE", animationDuration = 0.5,
     backdropBlurEnabled = false, backdropBlurRadius = 10,
     doubleTextEnabled = false, doubleTextOutlineColor = "#000000", doubleTextOutlineWidth = 4,
+    hookDuration = 5,
   } = options;
 
   const OUTPUT_W = 720;
@@ -1073,7 +1075,7 @@ export async function composeMultiplierVideo(options: MultiplierComposeOptions):
       `[blur_src]crop=${effectiveStripW}:${stripHeight}:${effectiveStripX}:${stripY},boxblur=${blurR}:${blurR}${blurLabel}`
     );
     filterParts.push(
-      `[blur_base]${blurLabel}overlay=x=${effectiveStripX}:y=${stripY}${outLabel}`
+      `[blur_base]${blurLabel}overlay=x=${effectiveStripX}:y=${stripY}:enable='lt(t\\\\,${hookDuration})'${outLabel}`
     );
     currentLabel = outLabel;
   }
@@ -1095,13 +1097,13 @@ export async function composeMultiplierVideo(options: MultiplierComposeOptions):
       );
       const shOverLabel = getNextLabel(false);
       filterParts.push(
-        `${currentLabel}${shLabel}overlay=x=${shX}:y=${shY}:eof_action=repeat${shOverLabel}`
+        `${currentLabel}${shLabel}overlay=x=${shX}:y=${shY}:eof_action=repeat:enable='lt(t\\\\,${hookDuration})'${shOverLabel}`
       );
       currentLabel = shOverLabel;
     } else {
       const outLabel = getNextLabel(false);
       filterParts.push(
-        `${currentLabel}drawbox=x=${shX}:y=${shY}:w=${effectiveStripW}:h=${stripHeight}:color=0x${shHex.padEnd(6, "0")}@0.4:t=fill${outLabel}`
+        `${currentLabel}drawbox=x=${shX}:y=${shY}:w=${effectiveStripW}:h=${stripHeight}:color=0x${shHex.padEnd(6, "0")}@0.4:t=fill:enable='lt(t\\\\,${hookDuration})'${outLabel}`
       );
       currentLabel = outLabel;
     }
@@ -1131,7 +1133,7 @@ export async function composeMultiplierVideo(options: MultiplierComposeOptions):
     );
     const brdOverLabel = getNextLabel(false);
     filterParts.push(
-      `${currentLabel}${brdLabel}overlay=x=${effectiveStripX - bw}:y=${stripY - bw}:eof_action=repeat${brdOverLabel}`
+      `${currentLabel}${brdLabel}overlay=x=${effectiveStripX - bw}:y=${stripY - bw}:eof_action=repeat:enable='lt(t\\\\,${hookDuration})'${brdOverLabel}`
     );
     currentLabel = brdOverLabel;
   }
@@ -1161,7 +1163,7 @@ export async function composeMultiplierVideo(options: MultiplierComposeOptions):
         );
         const bgLabel = getNextLabel(false);
         filterParts.push(
-          `${currentLabel}[rrect]overlay=x=${effectiveStripX}:y=${stripY}:eof_action=repeat${bgLabel}`
+          `${currentLabel}[rrect]overlay=x=${effectiveStripX}:y=${stripY}:eof_action=repeat:enable='lt(t\\\\,${hookDuration})'${bgLabel}`
         );
         currentLabel = bgLabel;
       } else {
@@ -1171,7 +1173,7 @@ export async function composeMultiplierVideo(options: MultiplierComposeOptions):
         );
         const bgLabel = getNextLabel(false);
         filterParts.push(
-          `${currentLabel}[rrect]overlay=x=${effectiveStripX}:y=${stripY}:eof_action=repeat${bgLabel}`
+          `${currentLabel}[rrect]overlay=x=${effectiveStripX}:y=${stripY}:eof_action=repeat:enable='lt(t\\\\,${hookDuration})'${bgLabel}`
         );
         currentLabel = bgLabel;
       }
@@ -1183,7 +1185,7 @@ export async function composeMultiplierVideo(options: MultiplierComposeOptions):
       );
       const bgLabel = getNextLabel(false);
       filterParts.push(
-        `${currentLabel}[rrect]overlay=x=${effectiveStripX}:y=${stripY}:eof_action=repeat${bgLabel}`
+        `${currentLabel}[rrect]overlay=x=${effectiveStripX}:y=${stripY}:eof_action=repeat:enable='lt(t\\\\,${hookDuration})'${bgLabel}`
       );
       currentLabel = bgLabel;
     } else {
@@ -1191,7 +1193,7 @@ export async function composeMultiplierVideo(options: MultiplierComposeOptions):
       const bgColorFfmpeg = bgStripColor.startsWith("#") ? "0x" + bgStripColor.slice(1) : bgStripColor;
       const bgLabel = getNextLabel(false);
       filterParts.push(
-        `${currentLabel}drawbox=x=${effectiveStripX}:y=${stripY}:w=${effectiveStripW}:h=${stripHeight}:color=${bgColorFfmpeg}@${bgAlpha}:t=fill${bgLabel}`
+        `${currentLabel}drawbox=x=${effectiveStripX}:y=${stripY}:w=${effectiveStripW}:h=${stripHeight}:color=${bgColorFfmpeg}@${bgAlpha}:t=fill:enable='lt(t\\\\,${hookDuration})'${bgLabel}`
       );
       currentLabel = bgLabel;
     }
@@ -1231,7 +1233,7 @@ export async function composeMultiplierVideo(options: MultiplierComposeOptions):
         // Use the main text color at 0% opacity for the text body so only
         // the shadow (glow) is visible — prevents glow color tinting the text
         filterParts.push(
-          `${currentLabel}drawtext=fontfile='${escapedFontPath}':text='${escapedLineText}':fontcolor=${drawFontColor}@0.0:fontsize=${fontSize}:x=${alignX}:y=${yExpr}:shadowx=${offset}:shadowy=${offset}:shadowcolor=${glowCol}@0.6:expansion=none${alphaExpr}${outLabel}`
+          `${currentLabel}drawtext=fontfile='${escapedFontPath}':text='${escapedLineText}':fontcolor=${drawFontColor}@0.0:fontsize=${fontSize}:x=${alignX}:y=${yExpr}:shadowx=${offset}:shadowy=${offset}:shadowcolor=${glowCol}@0.6:expansion=none${alphaExpr}:enable='lt(t\\\\,${hookDuration})'${outLabel}`
         );
         currentLabel = outLabel;
       }
@@ -1247,7 +1249,7 @@ export async function composeMultiplierVideo(options: MultiplierComposeOptions):
       const escapedLineText = escapeMultiplierDrawtext(lines[i]);
       const outLabel = getNextLabel(false);
       filterParts.push(
-        `${currentLabel}drawtext=fontfile='${escapedFontPath}':text='${escapedLineText}':fontcolor=${outlineCol}:fontsize=${fontSize}:x=${alignX}:y=${yExpr}:borderw=${doubleTextOutlineWidth}:bordercolor=${outlineCol}:expansion=none${alphaExpr}${outLabel}`
+        `${currentLabel}drawtext=fontfile='${escapedFontPath}':text='${escapedLineText}':fontcolor=${outlineCol}:fontsize=${fontSize}:x=${alignX}:y=${yExpr}:borderw=${doubleTextOutlineWidth}:bordercolor=${outlineCol}:expansion=none${alphaExpr}:enable='lt(t\\\\,${hookDuration})'${outLabel}`
       );
       currentLabel = outLabel;
     }
@@ -1274,7 +1276,7 @@ export async function composeMultiplierVideo(options: MultiplierComposeOptions):
     params += alphaExpr;
 
     filterParts.push(
-      `${currentLabel}drawtext=${params}${outLabel}`
+      `${currentLabel}drawtext=${params}:enable='lt(t\\\\,${hookDuration})'${outLabel}`
     );
     currentLabel = outLabel;
   }
