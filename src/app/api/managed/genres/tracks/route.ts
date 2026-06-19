@@ -2,14 +2,18 @@ export const dynamic = "force-dynamic";
 import { NextResponse } from "next/server";
 import prisma from "@/lib/db";
 import { getSession } from "@/lib/session";
+import { can } from "@/lib/services/permissions";
 import fs from "fs";
 import path from "path";
 
 // GET /api/managed/genres/tracks — List all music tracks with campaign metrics
 export async function GET() {
   const session = await getSession();
-  if (!session || session.role !== "ADMIN") {
+  if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  if (!(await can(session.userId, "composer"))) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
   try {
@@ -81,8 +85,11 @@ export async function GET() {
 // POST /api/managed/genres/tracks — Upload audio track and save metadata
 export async function POST(req: Request) {
   const session = await getSession();
-  if (!session || session.role !== "ADMIN") {
+  if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  if (!(await can(session.userId, "composer"))) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
   try {
@@ -140,8 +147,11 @@ export async function POST(req: Request) {
 // PATCH /api/managed/genres/tracks — Toggle campaign status or edit track details
 export async function PATCH(req: Request) {
   const session = await getSession();
-  if (!session || session.role !== "ADMIN") {
+  if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  if (!(await can(session.userId, "composer"))) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
   try {
@@ -189,8 +199,11 @@ export async function PATCH(req: Request) {
 // DELETE /api/managed/genres/tracks?id=... — Delete a track from DB and file system
 export async function DELETE(req: Request) {
   const session = await getSession();
-  if (!session || session.role !== "ADMIN") {
+  if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  if (!(await can(session.userId, "composer"))) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
   const { searchParams } = new URL(req.url);

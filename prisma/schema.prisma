@@ -7,33 +7,10 @@ datasource db {
   provider = "postgresql"
 }
 
-enum UserRole {
-  CREATOR
-  BRAND_OWNER
-  ADMIN
-}
-
 enum UserStatus {
-  PENDING
-  APPROVED
-  SUSPENDED
-}
-
-enum BrandCategory {
-  BEAUTY
-  FASHION
-  FITNESS
-  FOOD
-  TECH
-  TRAVEL
-  LIFESTYLE
-  OTHER
-}
-
-enum BrandStatus {
-  PENDING
-  APPROVED
-  SUSPENDED
+  ACTIVE
+  TRIAL
+  DISABLED
 }
 
 enum CampaignStatus {
@@ -43,127 +20,76 @@ enum CampaignStatus {
   CLOSED
   COMPLETED
   CANCELLED
-}
-
-enum ApplicationStatus {
-  SUBMITTED
-  UNDER_REVIEW
-  ACCEPTED
-  REJECTED
-  WITHDRAWN
-}
-
-enum DeliverableStatus {
-  BRIEFED
-  DRAFT_UPLOADED
-  DRAFT_APPROVED
-  DRAFT_NEEDS_CHANGES
-  READY_TO_PUBLISH
-  PUBLISHED
-  PAYOUT_PENDING
-  PAID
-  CANCELLED
+  ACTIVE
+  PAUSED
+  DONE
 }
 
 model User {
-  id           String     @id @default(uuid())
-  email        String     @unique
+  id           String            @id @default(uuid())
+  email        String            @unique
   name         String?
   passwordHash String?
-  role         UserRole   @default(CREATOR)
-  status       UserStatus @default(PENDING)
-  createdAt    DateTime   @default(now())
-  updatedAt    DateTime   @updatedAt
+  roleId       String
+  role         Role              @relation(fields: [roleId], references: [id])
+  status       UserStatus        @default(TRIAL)
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+  entitlements UserEntitlement[]
 
-  creatorProfile  CreatorProfile?
-  tiktokAccount   TiktokAccount?
-  brandOwnership  Brand?          @relation("BrandOwner")
-  applications    Application[]
-  deliverables    Deliverable[]   @relation("CreatorDeliverables")
-  auditLogs       AuditLog[]
-  approvedBrands  Brand[]         @relation("BrandApprover")
-  approvedCreators CreatorProfile[] @relation("CreatorApprover")
+  // Telegram integration
+  telegramChatId     String?   @unique
+  telegramVerifyCode String?   @unique
+
+  // Project management relations
+  projectMembers     ProjectMember[]
+  assignedTasks      Task[]
+  chatMessages       ChatMessage[]
+  curatorSubmissions CuratorSubmission[]
+  activityLogs       ActivityLog[]
+
+  // LMS relations
+  lessonProgress     LessonProgress[]
+  courseEnrollments  CourseEnrollment[]
+
+  // Agent audit relations
+  agentAuditLogs     AgentAuditLog[]
 }
 
-model CreatorProfile {
-  id                     String    @id @default(uuid())
-  userId                 String    @unique
-  user                   User      @relation(fields: [userId], references: [id])
-  displayName            String
-  bio                    String?
-  nicheTags              String[]
-  followerCountSnapshot  Int       @default(0)
-  followerCountUpdatedAt DateTime?
-  contentSampleUrls      String[]
-  disclosureAgreedAt     DateTime?
-  approvedAt             DateTime?
-  approvedById           String?
-  approvedBy             User?     @relation("CreatorApprover", fields: [approvedById], references: [id])
-  rejectionReason        String?
-  stripeConnectAccountId String?
-  createdAt              DateTime  @default(now())
-  updatedAt              DateTime  @updatedAt
+model Role {
+  id       String        @id @default(uuid())
+  key      String        @unique
+  label    String
+  users    User[]
+  defaults RoleDefault[]
 }
 
-model TiktokAccount {
-  id                    String    @id @default(uuid())
-  userId                String    @unique
-  user                  User      @relation(fields: [userId], references: [id])
-  openId                String    @unique
-  unionId               String?
-  username              String
-  displayName           String
-  avatarUrl             String
-  accessToken           String
-  refreshToken          String
-  accessTokenExpiresAt  DateTime
-  refreshTokenExpiresAt DateTime
-  scopes                String
-  connectedAt           DateTime  @default(now())
-  revokedAt             DateTime?
-  // user.info.profile scope
-  bioDescription        String?
-  isVerified            Boolean   @default(false)
-  profileWebLink        String?
-  profileDeepLink       String?
-  // user.info.stats scope
-  followerCount         Int       @default(0)
-  followingCount        Int       @default(0)
-  likesCount            Int       @default(0)
-  videoCount            Int       @default(0)
-  statsUpdatedAt        DateTime?
+model RoleDefault {
+  id      String @id @default(uuid())
+  roleId  String
+  role    Role   @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  toolKey String
+
+  @@unique([roleId, toolKey])
 }
 
-model Brand {
-  id                           String        @id @default(uuid())
-  ownerUserId                  String        @unique
-  ownerUser                    User          @relation("BrandOwner", fields: [ownerUserId], references: [id])
-  legalName                    String
-  tradeName                    String
-  registrationNumber           String?
-  website                      String
-  category                     BrandCategory
-  contactEmail                 String
-  tiktokHandle                 String?
-  brandLogoUrl                 String?
-  status                       BrandStatus   @default(PENDING)
-  approvedAt                   DateTime?
-  approvedById                 String?
-  approvedBy                   User?         @relation("BrandApprover", fields: [approvedById], references: [id])
-  rejectionReason              String?
-  bannedCategoriesAcknowledged Boolean       @default(false)
-  createdAt                    DateTime      @default(now())
-  updatedAt                    DateTime      @updatedAt
+model UserEntitlement {
+  id      String  @id @default(uuid())
+  userId  String
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  toolKey String
+  granted Boolean
 
-  campaigns Campaign[]
+  @@unique([userId, toolKey])
 }
 
 model Campaign {
   id                  String         @id @default(uuid())
-  brandId             String
-  brand               Brand          @relation(fields: [brandId], references: [id])
   slug                String         @unique
   title               String
+  name                String?
+  type                String         @default("other") // "political" | "music" | "other"
+  createdBy           String?
   description         String
   brief               String
   deliverableFormat   String         @default("VIDEO")
@@ -183,77 +109,37 @@ model Campaign {
   approvedByAdminAt   DateTime?
   coverImageUrl       String?
   exampleVideos       String[]
+  
+  // Goal / calculator parameters
+  targetViews            Int         @default(0)
+  accountsCount          Int         @default(0)
+  avgViewsPerVideo       Int         @default(0)
+  videosPerAccountPerDay Int         @default(0)
+  
+  // Rich info content
+  infoContent            String?     @db.Text
+  
+  // Resources
+  resources              CampaignResource[]
+  clipFolders            ClipFolder[]
+
+  // Project management relations
+  projects               Project[]
+  curatorSubmissions     CuratorSubmission[]
+  
   createdAt           DateTime       @default(now())
   updatedAt           DateTime       @updatedAt
-
-  applications Application[]
-  deliverables Deliverable[]
 }
 
-model Application {
-  id              String            @id @default(uuid())
-  campaignId      String
-  campaign        Campaign          @relation(fields: [campaignId], references: [id])
-  creatorUserId   String
-  creatorUser     User              @relation(fields: [creatorUserId], references: [id])
-  pitch           String
-  status          ApplicationStatus @default(SUBMITTED)
-  decisionAt      DateTime?
-  decidedById     String?
-  decisionNote    String?
-  createdAt       DateTime          @default(now())
-  updatedAt       DateTime          @updatedAt
-
-  deliverable Deliverable?
-
-  @@unique([campaignId, creatorUserId])
-}
-
-model Deliverable {
-  id                   String            @id @default(uuid())
-  applicationId        String            @unique
-  application          Application       @relation(fields: [applicationId], references: [id])
-  campaignId           String
-  campaign             Campaign          @relation(fields: [campaignId], references: [id])
-  creatorUserId        String
-  creatorUser          User              @relation("CreatorDeliverables", fields: [creatorUserId], references: [id])
-  status               DeliverableStatus @default(BRIEFED)
-  draftVideoUrl        String?
-  draftCaption         String?
-  draftRevisionCount   Int               @default(0)
-  brandFeedback        String?
-  publishId            String?
-  tiktokVideoId        String?
-  tiktokPostUrl        String?
-  publishedAt          DateTime?
-  payoutAt             DateTime?
-  payoutStripeId       String?
-  createdAt            DateTime          @default(now())
-  updatedAt            DateTime          @updatedAt
-
-  metrics PostMetric[]
-}
-
-model PostMetric {
-  id             String      @id @default(uuid())
-  deliverableId  String
-  deliverable    Deliverable @relation(fields: [deliverableId], references: [id])
-  viewCount      BigInt      @default(0)
-  likeCount      BigInt      @default(0)
-  commentCount   BigInt      @default(0)
-  shareCount     BigInt      @default(0)
-  fetchedAt      DateTime    @default(now())
-}
-
-model AuditLog {
-  id           String   @id @default(uuid())
-  actorUserId  String?
-  actorUser    User?    @relation(fields: [actorUserId], references: [id])
-  action       String
-  resourceType String
-  resourceId   String?
-  metadata     Json?
-  createdAt    DateTime @default(now())
+model CampaignResource {
+  id         String   @id @default(uuid())
+  campaignId String
+  campaign   Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  label      String
+  url        String
+  type       String   // "link" | "file" | "reference"
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -593,6 +479,8 @@ model TrackLyricalTemplate {
   textMargin      Int              @default(50)
   createdAt       DateTime         @default(now())
   updatedAt       DateTime         @updatedAt
+  savedStyleId    String?
+  savedStyle      SavedStyle?      @relation(fields: [savedStyleId], references: [id], onDelete: SetNull)
 
   batchItems      GenreBatchItem[]
   clipMixerBatches ClipMixerBatch[]
@@ -620,6 +508,8 @@ model AccountGenreConfig {
   textMargin     Int            @default(50)
   createdAt      DateTime       @default(now())
   updatedAt      DateTime       @updatedAt
+  savedStyleId   String?
+  savedStyle     SavedStyle?    @relation(fields: [savedStyleId], references: [id], onDelete: SetNull)
 
   @@unique([accountId, genre])
 }
@@ -670,6 +560,9 @@ model GenreBatchItem {
 
   lyricalTemplateId   String?
   lyricalTemplate     TrackLyricalTemplate? @relation(fields: [lyricalTemplateId], references: [id], onDelete: SetNull)
+  savedStyleId        String?
+  savedStyle          SavedStyle?           @relation(fields: [savedStyleId], references: [id], onDelete: SetNull)
+  parameterTweaks     String?               @db.Text
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -843,6 +736,8 @@ model ClipFolder {
   name           String
   sectionId      String
   section        AccountSection   @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+  campaignId     String?
+  campaign       Campaign?        @relation(fields: [campaignId], references: [id], onDelete: SetNull)
   clips          ClipVideo[]
   mixerBatches   ClipMixerBatch[]
   createdAt      DateTime         @default(now())
@@ -852,6 +747,8 @@ model ClipFolder {
   parent         ClipFolder?      @relation("SubFolders", fields: [parentId], references: [id], onDelete: Cascade)
   subFolders     ClipFolder[]     @relation("SubFolders")
   clipMixerItems ClipMixerItem[]  @relation("ItemFolder")
+
+  curatorSubmissions CuratorSubmission[]
 }
 
 model ClipVideo {
@@ -877,9 +774,12 @@ model ClipMixerBatch {
   totalVideos       Int              @default(5)
   muteAudio         Boolean          @default(false)
   status            GenreBatchStatus @default(DRAFT)
+  variationStrength Int              @default(3) // 1 to 5 (Phase 4)
   createdAt         DateTime         @default(now())
   updatedAt         DateTime         @updatedAt
   items             ClipMixerItem[]
+
+  tasks             Task[]
 }
 
 model ClipMixerItem {
@@ -895,6 +795,221 @@ model ClipMixerItem {
   errorMessage      String?
   folderId          String?
   folder            ClipFolder?          @relation("ItemFolder", fields: [folderId], references: [id], onDelete: SetNull)
+  
+  // Recipe Audit Fields (Phase 4)
+  recipeJson        String?              @db.Text
+  fingerprint       String?
+  
   createdAt         DateTime             @default(now())
   updatedAt         DateTime             @updatedAt
+}
+
+model StyleTemplate {
+  id          String   @id @default(uuid())
+  key         String   @unique
+  name        String
+  engine      String   // "remotion" | "ffmpeg"
+  paramSchema String   @db.Text // JSON schema describing parameters
+  thumbnail   String?  @db.Text
+  createdBy   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model SavedStyle {
+  id                  String                 @id @default(uuid())
+  templateKey         String
+  name                String
+  params              String                 @db.Text // JSON parameters values
+  thumbnail           String?                @db.Text
+  createdBy           String?
+  tags                String[]               // Campaign or niche tags
+  createdAt           DateTime               @default(now())
+  updatedAt           DateTime               @updatedAt
+  lyricalTemplates    TrackLyricalTemplate[]
+  accountGenreConfigs AccountGenreConfig[]
+  genreBatchItems     GenreBatchItem[]
+}
+
+model StyleRenderJob {
+  id           String    @id @default(uuid())
+  savedStyleId String
+  status       String    // "PENDING" | "PROCESSING" | "COMPLETED" | "FAILED"
+  error        String?   @db.Text
+  outputUrl    String?   @db.Text
+  inputProps   String?   @db.Text // Input JSON props (subtitles, text)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+}
+
+model Project {
+  id           String          @id @default(uuid())
+  name         String
+  campaignId   String
+  campaign     Campaign        @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  status       String          @default("ACTIVE") // ACTIVE | PAUSED | DONE
+  createdBy    String?
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+  
+  members      ProjectMember[]
+  tasks        Task[]
+  chatMessages ChatMessage[]
+  activityLogs ActivityLog[]
+}
+
+model ProjectMember {
+  id          String   @id @default(uuid())
+  projectId   String
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  projectRole String   // LEAD | EDITOR | CURATOR
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([projectId, userId])
+}
+
+model Task {
+  id               String          @id @default(uuid())
+  projectId        String
+  project          Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  title            String
+  description      String?         @db.Text
+  assigneeId       String?
+  assignee         User?           @relation(fields: [assigneeId], references: [id], onDelete: SetNull)
+  status           String          @default("todo") // todo | doing | review | done
+  dueDate          DateTime?
+  tags             String[]
+  clipMixerBatchId String?
+  clipMixerBatch   ClipMixerBatch? @relation(fields: [clipMixerBatchId], references: [id], onDelete: SetNull)
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
+
+  chatMessages     ChatMessage[]
+}
+
+model ChatMessage {
+  id        String   @id @default(uuid())
+  projectId String
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  taskId    String?
+  task      Task?    @relation(fields: [taskId], references: [id], onDelete: SetNull)
+  authorId  String
+  author    User     @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  body      String   @db.Text
+  mentions  String[] // user IDs parsed from text
+  createdAt DateTime @default(now())
+}
+
+model CuratorSubmission {
+  id         String      @id @default(uuid())
+  campaignId String
+  campaign   Campaign    @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  folderId   String?     // Routes to specific campaign folder/subfolder
+  folder     ClipFolder? @relation(fields: [folderId], references: [id], onDelete: SetNull)
+  curatorId  String
+  curator    User        @relation(fields: [curatorId], references: [id], onDelete: Cascade)
+  clipRef    String      // Public uploaded video URL or path
+  status     String      @default("pending") // pending | approved | rejected
+  feedback   String?     @db.Text
+  createdAt  DateTime    @default(now())
+  updatedAt  DateTime    @updatedAt
+}
+
+model ActivityLog {
+  id        String   @id @default(uuid())
+  projectId String
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  actorId   String
+  actor     User     @relation(fields: [actorId], references: [id], onDelete: Cascade)
+  action    String   // e.g., create_project, add_member, create_task, change_status
+  target    String   // descriptive target details
+  createdAt DateTime @default(now())
+}
+
+// ────────────────────────────────────────────────────────
+// LMS (Learning Management System)
+// ────────────────────────────────────────────────────────
+
+model Course {
+  id             String             @id @default(uuid())
+  title          String
+  description    String?            @db.Text
+  assignedRoles  String[]           // role keys that should take this course
+  unlocksToolKey String?            // completing this course grants this tool
+  status         String             @default("active") // active | archived
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+
+  lessons        Lesson[]
+  enrollments    CourseEnrollment[]
+}
+
+model Lesson {
+  id           String           @id @default(uuid())
+  courseId      String
+  course       Course           @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  order        Int              @default(0)
+  title        String
+  youtubeUrl   String
+  sopMarkdown  String           @db.Text
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
+
+  progress      LessonProgress[]
+  quizQuestions QuizQuestion[]
+}
+
+model LessonProgress {
+  id          String    @id @default(uuid())
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  lessonId    String
+  lesson      Lesson    @relation(fields: [lessonId], references: [id], onDelete: Cascade)
+  completedAt DateTime  @default(now())
+  quizScore   Int?      // number of correct answers if quiz was taken
+
+  @@unique([userId, lessonId])
+}
+
+model CourseEnrollment {
+  id          String    @id @default(uuid())
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  courseId     String
+  course      Course    @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  status      String    @default("assigned") // assigned | in_progress | completed
+  completedAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@unique([userId, courseId])
+}
+
+model QuizQuestion {
+  id           String   @id @default(uuid())
+  lessonId     String
+  lesson       Lesson   @relation(fields: [lessonId], references: [id], onDelete: Cascade)
+  prompt       String   @db.Text
+  options      String[] // answer choices
+  correctIndex Int      // 0-based index into options
+  createdAt    DateTime @default(now())
+}
+
+// ────────────────────────────────────────────────────────
+// Agent Layer
+// ────────────────────────────────────────────────────────
+
+model AgentAuditLog {
+  id          String   @id @default(uuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  instruction String   @db.Text     // original user message
+  toolName    String                // which action was called
+  toolInput   Json                  // parameters passed
+  toolOutput  Json?                 // result returned
+  status      String                // success | denied | error | confirmed | pending_confirmation
+  createdAt   DateTime @default(now())
 }

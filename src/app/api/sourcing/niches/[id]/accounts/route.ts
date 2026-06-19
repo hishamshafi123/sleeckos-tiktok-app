@@ -2,6 +2,7 @@ export const dynamic = "force-dynamic";
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/db";
 import { getSession } from "@/lib/session";
+import { can } from "@/lib/services/permissions";
 
 // POST /api/sourcing/niches/[id]/accounts — add an account to a niche
 export async function POST(
@@ -9,8 +10,11 @@ export async function POST(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const session = await getSession();
-  if (!session || session.role !== "ADMIN") {
+  if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  if (!(await can(session.userId, "sourcing"))) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
   const { id: nicheId } = await params;
@@ -31,8 +35,11 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const session = await getSession();
-  if (!session || session.role !== "ADMIN") {
+  if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  if (!(await can(session.userId, "sourcing"))) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
   const { id: nicheId } = await params;

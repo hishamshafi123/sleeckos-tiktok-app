@@ -2,6 +2,7 @@ export const dynamic = "force-dynamic";
 import { NextResponse } from "next/server";
 import prisma from "@/lib/db";
 import { getSession } from "@/lib/session";
+import { can } from "@/lib/services/permissions";
 import fs from "fs";
 import path from "path";
 import { exec } from "child_process";
@@ -9,8 +10,11 @@ import { exec } from "child_process";
 // 1. POST /api/managed/genres/tracks/lyrical — Designate track as Lyrical and run Whisper alignment
 export async function POST(req: Request) {
   const session = await getSession();
-  if (!session || session.role !== "ADMIN") {
+  if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  if (!(await can(session.userId, "composer"))) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
   try {
@@ -116,8 +120,11 @@ export async function POST(req: Request) {
 // that matches the Live Studio Preview exactly. The batch renderer composites this overlay.
 export async function PATCH(req: Request) {
   const session = await getSession();
-  if (!session || session.role !== "ADMIN") {
+  if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  if (!(await can(session.userId, "composer"))) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
   try {
@@ -147,6 +154,7 @@ export async function PATCH(req: Request) {
       bgOpacity = 1.0,
       lofiFactor = 1,
       textMargin = 50,
+      savedStyleId = null,
     } = body;
 
     if (!trackId || !templateName) {
@@ -192,6 +200,7 @@ export async function PATCH(req: Request) {
       textMargin: parseInt(textMargin, 10) || 50,
       overlayVideoUrl: overlayRelativePath,
       previewImageUrl: previewRelativePath,
+      savedStyleId,
     };
 
     // Upsert Template record — save styling config + visual effects
@@ -281,8 +290,11 @@ export async function PATCH(req: Request) {
 // 2.5. PUT /api/managed/genres/tracks/lyrical — Re-render overlay for an existing template
 export async function PUT(req: Request) {
   const session = await getSession();
-  if (!session || session.role !== "ADMIN") {
+  if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  if (!(await can(session.userId, "composer"))) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
   try {
@@ -382,8 +394,11 @@ export async function PUT(req: Request) {
 // 3. GET /api/managed/genres/tracks/lyrical — Fetch all templates and alignments attached to a track
 export async function GET(req: Request) {
   const session = await getSession();
-  if (!session || session.role !== "ADMIN") {
+  if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  if (!(await can(session.userId, "composer"))) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
   const { searchParams } = new URL(req.url);
@@ -428,8 +443,11 @@ export async function GET(req: Request) {
 // 4. DELETE /api/managed/genres/tracks/lyrical — Delete template configuration and pre-rendered overlay/preview assets
 export async function DELETE(req: Request) {
   const session = await getSession();
-  if (!session || session.role !== "ADMIN") {
+  if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  if (!(await can(session.userId, "composer"))) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
   try {

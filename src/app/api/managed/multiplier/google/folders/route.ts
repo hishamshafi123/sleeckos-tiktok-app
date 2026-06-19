@@ -1,13 +1,17 @@
 export const dynamic = "force-dynamic";
 import { NextRequest, NextResponse } from "next/server";
 import { getSession } from "@/lib/session";
+import { can } from "@/lib/services/permissions";
 import { getMultiplierDriveClient } from "../drive-helper";
 
 // GET /api/managed/multiplier/google/folders?q=search — List/search Drive folders
 export async function GET(req: NextRequest) {
   const session = await getSession();
-  if (!session || session.role !== "ADMIN") {
+  if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  if (!(await can(session.userId, "multiplier"))) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
   const q = req.nextUrl.searchParams.get("q") || "";

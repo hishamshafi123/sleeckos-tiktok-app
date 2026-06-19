@@ -2,6 +2,7 @@ export const dynamic = "force-dynamic";
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/db";
 import { getSession } from "@/lib/session";
+import { can } from "@/lib/services/permissions";
 
 /**
  * GET /api/managed/sections/[id]/video-links
@@ -17,8 +18,11 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const session = await getSession();
-  if (!session || session.role !== "ADMIN") {
+  if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  if (!(await can(session.userId, "accounts"))) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
   const { id: sectionId } = await params;

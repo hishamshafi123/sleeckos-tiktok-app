@@ -2,14 +2,18 @@ export const dynamic = "force-dynamic";
 import { NextResponse } from "next/server";
 import prisma from "@/lib/db";
 import { getSession } from "@/lib/session";
+import { can } from "@/lib/services/permissions";
 import fs from "fs";
 import path from "path";
 
 // GET /api/managed/genres/accounts — Get accounts configurations list
 export async function GET() {
   const session = await getSession();
-  if (!session || session.role !== "ADMIN") {
+  if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  if (!(await can(session.userId, "composer"))) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
   try {
@@ -67,8 +71,11 @@ export async function GET() {
 // POST /api/managed/genres/accounts — Save account quote settings / upload background loops
 export async function POST(req: Request) {
   const session = await getSession();
-  if (!session || session.role !== "ADMIN") {
+  if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  if (!(await can(session.userId, "composer"))) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
   try {
@@ -123,6 +130,7 @@ export async function POST(req: Request) {
       const curveText = formData.get("curveText") === "true";
       const curvature = parseInt(formData.get("curvature") as string || "30", 10);
       const positionY = parseInt(formData.get("positionY") as string || "50", 10);
+      const savedStyleId = formData.get("savedStyleId") as string | null;
 
       // Upsert style configuration
       configRecord = await prisma.accountGenreConfig.upsert({
@@ -146,6 +154,7 @@ export async function POST(req: Request) {
           curveText,
           curvature,
           positionY,
+          savedStyleId: savedStyleId ? savedStyleId : null,
         },
         update: {
           themeText: themeText.trim(),
@@ -159,6 +168,7 @@ export async function POST(req: Request) {
           curveText,
           curvature,
           positionY,
+          savedStyleId: savedStyleId ? savedStyleId : null,
         },
       });
       console.log(`[Genre Accounts API] Upserted quote configurations for account ${accountId}`);
@@ -178,8 +188,11 @@ export async function POST(req: Request) {
 // DELETE /api/managed/genres/accounts?deleteVideoId=... — Delete a background video loop
 export async function DELETE(req: Request) {
   const session = await getSession();
-  if (!session || session.role !== "ADMIN") {
+  if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  if (!(await can(session.userId, "composer"))) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
   const { searchParams } = new URL(req.url);

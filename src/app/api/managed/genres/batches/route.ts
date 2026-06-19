@@ -2,9 +2,11 @@ export const dynamic = "force-dynamic";
 import { NextResponse } from "next/server";
 import prisma from "@/lib/db";
 import { getSession } from "@/lib/session";
+import { can } from "@/lib/services/permissions";
 import fs from "fs";
 import path from "path";
 import { generateQuotesForTheme, allocateTracks } from "@/lib/composer";
+import { uploadToR2 } from "@/lib/services/storage";
 
 // Version marker — check Docker logs to verify latest code is deployed
 const BUILD_VERSION = "v4-canvas-overlay-20260529";
@@ -12,8 +14,11 @@ const BUILD_VERSION = "v4-canvas-overlay-20260529";
 // GET /api/managed/genres/batches — Get batch history or fetch progress details of a single batch
 export async function GET(req: Request) {
   const session = await getSession();
-  if (!session || session.role !== "ADMIN") {
+  if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  if (!(await can(session.userId, "composer"))) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
   const { searchParams } = new URL(req.url);
@@ -85,8 +90,11 @@ export async function GET(req: Request) {
 // POST /api/managed/genres/batches — Create batch, generate quotes, or start composition rendering
 export async function POST(req: Request) {
   const session = await getSession();
-  if (!session || session.role !== "ADMIN") {
+  if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  if (!(await can(session.userId, "composer"))) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
   try {
@@ -246,6 +254,7 @@ export async function POST(req: Request) {
               trackEnd: trackEnd ? parseFloat(trackEnd) : null,
               backgroundVideoUrl: randomBg.videoUrl,
               lyricalTemplateId: currentTemplate.id,
+              savedStyleId: currentTemplate.savedStyleId,
               muteAudio: currentTemplate.muteAudio,
               status: "PENDING",
             },
@@ -363,6 +372,7 @@ export async function POST(req: Request) {
               trackId: defaultTrack.id, // placeholder
               trackStart: defaultTrack.defaultStart,
               backgroundVideoUrl: randomBg.videoUrl,
+              savedStyleId: config.savedStyleId,
               status: "PENDING",
             },
           });
@@ -777,8 +787,11 @@ export async function POST(req: Request) {
 // DELETE /api/managed/genres/batches?batchId=...&itemId=... — Delete a batch or individual item
 export async function DELETE(req: Request) {
   const session = await getSession();
-  if (!session || session.role !== "ADMIN") {
+  if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  if (!(await can(session.userId, "composer"))) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
   const { searchParams } = new URL(req.url);
@@ -902,7 +915,116 @@ async function processBatchRendering(batchId: string) {
         const localOutFile = path.join(rendersDir, `render_${item.id}.mp4`);
 
 
-        if (item.lyricalTemplateId && item.lyricalTemplate) {
+        let cmd: string;
+
+        // Check if we are using a SavedStyle for this item (new Remotion pre-render flow)
+        const savedStyleId = item.savedStyleId || item.lyricalTemplate?.savedStyleId;
+
+        if (savedStyleId) {
+          console.log(`[Batch Worker] Processing item ${item.id} using SavedStyle ID: ${savedStyleId}`);
+
+          const savedStyle = await prisma.savedStyle.findUnique({
+            where: { id: savedStyleId }
+          });
+
+          if (!savedStyle) {
+            throw new Error(`SavedStyle ID ${savedStyleId} not found in database.`);
+          }
+
+          // Merge parameters (SavedStyle.params + item.parameterTweaks)
+          const baseParams = JSON.parse(savedStyle.params || "{}");
+          let tweaks = {};
+          if (item.parameterTweaks) {
+            try {
+              tweaks = JSON.parse(item.parameterTweaks);
+            } catch (e) {}
+          }
+          let inputProps = { ...baseParams, ...tweaks };
+
+          const trackStartOffset = Math.max(0, item.trackStart || 0);
+          const trackEndOffset = item.trackEnd || item.track.duration;
+          const duration = Math.max(1.0, trackEndOffset - trackStartOffset);
+
+          if (item.lyricalTemplateId && item.lyricalTemplate) {
+            // Lyrical timing and lyrics mapping
+            inputProps.lyricsJson = item.track.lyricalTranscription || "[]";
+            if (item.lyricalTemplate.fontSize) inputProps.fontSize = item.lyricalTemplate.fontSize;
+            if (item.lyricalTemplate.textColor) inputProps.textColor = item.lyricalTemplate.textColor;
+            if (item.lyricalTemplate.activeColor) inputProps.activeColor = item.lyricalTemplate.activeColor;
+            if (item.lyricalTemplate.positionY !== undefined) inputProps.positionY = item.lyricalTemplate.positionY;
+            if (item.lyricalTemplate.strokeWidth !== undefined) inputProps.strokeWidth = item.lyricalTemplate.strokeWidth;
+            if (item.lyricalTemplate.strokeColor) inputProps.strokeColor = item.lyricalTemplate.strokeColor;
+            if (item.lyricalTemplate.textAlign) inputProps.textAlign = item.lyricalTemplate.textAlign;
+            if (item.lyricalTemplate.wordSpacing) inputProps.wordSpacing = item.lyricalTemplate.wordSpacing;
+            if (item.lyricalTemplate.letterSpacing !== undefined) inputProps.letterSpacing = item.lyricalTemplate.letterSpacing;
+            if (item.lyricalTemplate.textMargin !== undefined) inputProps.textMargin = item.lyricalTemplate.textMargin;
+          } else {
+            // Quote content mapping
+            inputProps.quoteText = item.quoteText;
+            inputProps.author = item.quoteAuthor || "";
+            // Apply theme configuration overrides if present
+            const quoteConfig = await prisma.accountGenreConfig.findUnique({
+              where: {
+                accountId_genre: {
+                  accountId: item.accountId,
+                  genre: "quote",
+                },
+              },
+            });
+            if (quoteConfig) {
+              if (quoteConfig.fontSize) inputProps.fontSize = quoteConfig.fontSize;
+              if (quoteConfig.fontColor) inputProps.textColor = quoteConfig.fontColor;
+            }
+          }
+
+          // Call service helper to retrieve/render WebM overlay
+          const { getOrCreateOverlay } = await import("@/lib/services/style-studio");
+          const overlayRelativeUrl = await getOrCreateOverlay(savedStyleId, savedStyle.templateKey, inputProps);
+          const overlayPath = path.join(process.cwd(), "public", overlayRelativeUrl);
+
+          if (!fs.existsSync(overlayPath)) {
+            throw new Error(`Transparent overlay not found at: ${overlayPath}`);
+          }
+
+          const finalAudioInput = item.muteAudio
+            ? `-f lavfi -i anullsrc=channel_layout=stereo:sample_rate=44100`
+            : (trackStartOffset > 0 ? `-ss ${trackStartOffset.toFixed(3)} -i "${audioPath}"` : `-i "${audioPath}"`);
+
+          const width = 720;
+          const height = 1280;
+          const filterComplex = `[0:v]scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height},setsar=1[scaled_bg];[scaled_bg][1:v]overlay=0:0:shortest=1[v]`;
+
+          cmd = [
+            `ffmpeg -y`,
+            `-stream_loop -1 -i "${bgPath}"`,
+            `-i "${overlayPath}"`,
+            finalAudioInput,
+            `-filter_complex "${filterComplex}"`,
+            `-map "[v]"`,
+            `-map 2:a`,
+            `-c:v libx264`,
+            `-pix_fmt yuv420p`,
+            `-preset superfast`,
+            `-c:a aac -b:a 192k`,
+            `-t ${duration.toFixed(3)}`,
+            `"${localOutFile}"`,
+          ].join(" ");
+
+          console.log(`[Batch Worker SavedStyle] FFmpeg cmd: ${cmd}`);
+
+          await new Promise<void>((resolvePromise, rejectPromise) => {
+            const { exec: execCmd } = require("child_process");
+            execCmd(cmd, { timeout: 180000, maxBuffer: 1024 * 1024 * 10 }, (error: any, _stdout: any, stderr: any) => {
+              if (error) {
+                console.error("[Batch Worker SavedStyle] FFmpeg error:", stderr?.substring(0, 500));
+                rejectPromise(new Error(`FFmpeg overlay composition failed: ${error.message}`));
+              } else {
+                resolvePromise();
+              }
+            });
+          });
+
+        } else if (item.lyricalTemplateId && item.lyricalTemplate) {
           // Check for Canvas pre-rendered overlay (WebM VP9 with alpha)
           let overlayUrl = item.lyricalTemplate.overlayVideoUrl;
           if (!overlayUrl) {
@@ -998,8 +1120,6 @@ async function processBatchRendering(batchId: string) {
           console.log(`[Batch Worker DEBUG] Template: '${item.lyricalTemplate?.templateName}' (ID: ${item.lyricalTemplateId})`);
           console.log(`[Batch Worker DEBUG] Has Canvas overlay: ${hasPreRenderedOverlay} (path: ${overlayUrl})`);
           console.log(`[Batch Worker DEBUG] Template effects: filter=${colorFilter}, mirror=${mirrorBg}, speed=${bgSpeed}`);
-
-          let cmd: string;
 
           // Check if this template uses a solid background color (e.g. Word Builder)
           // In this case the overlay WebM IS the full video — no background needed
@@ -1286,6 +1406,12 @@ async function processBatchRendering(batchId: string) {
         }
 
         console.log(`[Batch Worker] Item ${item.id} successfully rendered locally!`);
+        try {
+          console.log(`[Batch Worker] Uploading rendered video to R2 for item ${item.id}...`);
+          await uploadToR2(localOutFile, `uploads/renders/render_${item.id}.mp4`);
+        } catch (r2Err) {
+          console.error(`[Batch Worker] R2 upload failed for item ${item.id}:`, r2Err);
+        }
       } catch (itemErr: any) {
         if (itemErr?.code === "P2025") {
           console.log(`[Batch Worker] Item ${item.id} not found (likely batch was deleted) during error handling. Aborting loop.`);

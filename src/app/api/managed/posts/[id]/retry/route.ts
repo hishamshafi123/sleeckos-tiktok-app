@@ -2,17 +2,21 @@ export const dynamic = "force-dynamic";
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/db";
 import { getSession } from "@/lib/session";
-import { downloadDriveFile } from "@/lib/google";
-import { postVideoToTikTok, refreshTikTokToken } from "@/lib/tiktok-managed";
+import { can } from "@/lib/services/permissions";
+import { makeFilePublic, deleteDriveFile } from "@/lib/google";
+import { postViaPostPeer, driveDirectUrl } from "@/lib/postpeer";
 
-// POST /api/managed/posts/[id]/retry — retry a FAILED post
+// POST /api/managed/posts/[id]/retry — retry a FAILED post via PostPeer
 export async function POST(
   _req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   const session = await getSession();
-  if (!session || session.role !== "ADMIN") {
+  if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  if (!(await can(session.userId, "accounts"))) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
   const { id } = await params;
@@ -40,59 +44,63 @@ export async function POST(
 
   const account = post.account;
 
-  // Refresh token if needed
-  let accessToken = account.tiktokAccessToken;
-  if (account.tokenExpiresAt.getTime() - Date.now() < 3600_000) {
-    const refreshed = await refreshTikTokToken(account.tiktokRefreshToken);
-    if (refreshed.access_token) {
-      accessToken = refreshed.access_token;
-      await prisma.managedAccount.update({
-        where: { id: account.id },
-        data: {
-          tiktokAccessToken: refreshed.access_token,
-          tiktokRefreshToken:
-            refreshed.refresh_token || account.tiktokRefreshToken,
-          tokenExpiresAt: new Date(
-            Date.now() + (refreshed.expires_in ?? 86400) * 1000
-          ),
-        },
-      });
-    }
+  if (!account.postpeerAccountId) {
+    return NextResponse.json(
+      { error: "No PostPeer account ID saved on this TikTok account" },
+      { status: 400 }
+    );
   }
 
-  // Reset to downloading
+  // Reset to uploading
   await prisma.scheduledPost.update({
     where: { id },
-    data: { status: "DOWNLOADING", errorMessage: null },
+    data: { status: "UPLOADING", errorMessage: null },
   });
 
-  // Retry async
+  // Retry async via PostPeer
   (async () => {
     try {
-      const videoBuffer = await downloadDriveFile(post.driveFileId!);
-      await prisma.scheduledPost.update({
-        where: { id },
-        data: { status: "UPLOADING" },
-      });
+      await makeFilePublic(post.driveFileId!, account.id);
+      const videoUrl = driveDirectUrl(post.driveFileId!);
 
-      const { publishId } = await postVideoToTikTok(
-        accessToken,
-        videoBuffer,
+      const result = await postViaPostPeer(
+        account.postpeerAccountId!,
         post.caption,
-        account.postMode as "DIRECT" | "DRAFT"
+        videoUrl,
+        {
+          draft: account.postMode === "DRAFT",
+          privacyLevel: "PUBLIC_TO_EVERYONE",
+          disableComment: false,
+          disableDuet: false,
+          disableStitch: false,
+          publishNow: true,
+        }
       );
 
+      const tiktokPostUrl = result.platformPostUrl || null;
+
       await prisma.scheduledPost.update({
-        where: { id },
-        data: { tiktokPublishId: publishId, status: "PROCESSING" },
+        where: { id: post.id },
+        data: {
+          tiktokPublishId: result.postId || null,
+          tiktokPostUrl,
+          status: "PUBLISHED",
+          publishedAt: new Date(),
+        },
       });
+
+      // Cleanup Drive file
+      try {
+        await deleteDriveFile(post.driveFileId!, account.id);
+      } catch (delErr) {
+        console.error(`Drive delete failed in retry for ${post.driveFileId}:`, delErr);
+      }
     } catch (err) {
       await prisma.scheduledPost.update({
         where: { id },
         data: {
           status: "FAILED",
-          errorMessage:
-            err instanceof Error ? err.message : "Retry failed",
+          errorMessage: err instanceof Error ? err.message : "Retry failed",
         },
       });
     }

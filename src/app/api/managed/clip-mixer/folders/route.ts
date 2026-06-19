@@ -2,6 +2,7 @@ export const dynamic = "force-dynamic";
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/db";
 import { getSession } from "@/lib/session";
+import { can } from "@/lib/services/permissions";
 import fs from "fs";
 import path from "path";
 import { exec } from "child_process";
@@ -26,13 +27,17 @@ async function getVideoDuration(filePath: string): Promise<number> {
 // GET /api/managed/clip-mixer/folders — List folders or get a single folder with details
 export async function GET(req: NextRequest) {
   const session = await getSession();
-  if (!session || session.role !== "ADMIN") {
+  if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  if (!(await can(session.userId, "clip_mixer"))) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
   const { searchParams } = new URL(req.url);
   const sectionId = searchParams.get("sectionId");
   const folderId = searchParams.get("folderId");
+  const campaignId = searchParams.get("campaignId");
 
   try {
     if (folderId) {
@@ -50,8 +55,14 @@ export async function GET(req: NextRequest) {
       return NextResponse.json(folder);
     }
 
+    const where: any = {};
+    if (sectionId) where.sectionId = sectionId;
+    if (campaignId) {
+      where.campaignId = campaignId === "null" ? null : campaignId;
+    }
+
     const folders = await prisma.clipFolder.findMany({
-      where: sectionId ? { sectionId } : {},
+      where,
       include: {
         clips: {
           orderBy: { createdAt: "desc" },
@@ -73,8 +84,11 @@ export async function GET(req: NextRequest) {
 // POST /api/managed/clip-mixer/folders — Create a folder or upload clips to a folder
 export async function POST(req: Request) {
   const session = await getSession();
-  if (!session || session.role !== "ADMIN") {
+  if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  if (!(await can(session.userId, "clip_mixer"))) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
   try {
@@ -83,7 +97,7 @@ export async function POST(req: Request) {
     // Case 1: JSON payload for creating folders
     if (contentType.includes("application/json")) {
       const body = await req.json();
-      const { action, sectionId, name, parentId } = body;
+      const { action, sectionId, name, parentId, campaignId } = body;
 
       if (action === "CREATE_FOLDER") {
         if (!sectionId || !name) {
@@ -95,6 +109,7 @@ export async function POST(req: Request) {
             sectionId,
             name: name.trim(),
             parentId: parentId || null,
+            campaignId: campaignId || null,
           },
         });
 
@@ -107,6 +122,7 @@ export async function POST(req: Request) {
             sectionId,
             name: name.trim(),
             parentId: parentId || null,
+            campaignId: campaignId || null,
           },
         });
 
@@ -181,8 +197,11 @@ export async function POST(req: Request) {
 // PATCH /api/managed/clip-mixer/folders — Rename or move a folder
 export async function PATCH(req: Request) {
   const session = await getSession();
-  if (!session || session.role !== "ADMIN") {
+  if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  if (!(await can(session.userId, "clip_mixer"))) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
   try {
@@ -286,8 +305,11 @@ export async function PATCH(req: Request) {
 // DELETE /api/managed/clip-mixer/folders — Delete folder or a single video clip
 export async function DELETE(req: NextRequest) {
   const session = await getSession();
-  if (!session || session.role !== "ADMIN") {
+  if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  if (!(await can(session.userId, "clip_mixer"))) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
   const { searchParams } = new URL(req.url);

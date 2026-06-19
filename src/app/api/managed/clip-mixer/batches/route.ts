@@ -2,14 +2,20 @@ export const dynamic = "force-dynamic";
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/db";
 import { getSession } from "@/lib/session";
+import { can } from "@/lib/services/permissions";
 import fs from "fs";
 import path from "path";
+import { uploadToR2 } from "@/lib/services/storage";
+import { generateRecipesForBatch, calculateRecipeFingerprint, renderMix } from "@/lib/services/clip-mixer";
 
 // GET /api/managed/clip-mixer/batches — Get batch history or detailed status of a specific batch
 export async function GET(req: NextRequest) {
   const session = await getSession();
-  if (!session || session.role !== "ADMIN") {
+  if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  if (!(await can(session.userId, "clip_mixer"))) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
   const { searchParams } = new URL(req.url);
@@ -82,8 +88,11 @@ export async function GET(req: NextRequest) {
 // POST /api/managed/clip-mixer/batches — Create batch and kick off rendering
 export async function POST(req: Request) {
   const session = await getSession();
-  if (!session || session.role !== "ADMIN") {
+  if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  if (!(await can(session.userId, "clip_mixer"))) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
   try {
@@ -98,6 +107,7 @@ export async function POST(req: Request) {
       accountCount = 5,
       videosPerAccount = 3,
       trackStart = 0.0,
+      variationStrength = 3, // default strength (Phase 4)
     } = body;
 
     let selectedFolderIds = folderIds;
@@ -151,12 +161,9 @@ export async function POST(req: Request) {
       sectionAccounts.push(fallbackAccount);
     }
 
-    // Pre-rendered overlays will be generated automatically in the background by the sequential worker if missing.
-    console.log(`[Clip Mixer Batches POST] Queueing batch: missing overlays will be auto-rendered in the background`);
-
     const totalVideos = numAccounts * vidsPerAccount;
 
-    // Create batch in RENDERING status
+    // Create batch record in RENDERING status
     const batch = await prisma.clipMixerBatch.create({
       data: {
         folderId: selectedFolderIds[0],
@@ -167,27 +174,81 @@ export async function POST(req: Request) {
         totalVideos,
         muteAudio,
         status: "RENDERING",
+        variationStrength: parseInt(variationStrength) || 3,
       },
     });
 
-    // Populate batch items by cycling through sections, accounts, templates and selected folders
-    let templateCounter = 0;
-    for (let i = 0; i < totalVideos; i++) {
-      const virtualAccIdx = Math.floor(i / vidsPerAccount);
-      const account = sectionAccounts[virtualAccIdx % sectionAccounts.length];
-      const itemTemplateId = lyricalTemplateIds[templateCounter % lyricalTemplateIds.length];
-      const itemFolderId = selectedFolderIds[i % selectedFolderIds.length];
-      templateCounter++;
+    // Generate unique recipes and create items
+    try {
+      const folderUsedFingerprints: Record<string, Set<string>> = {};
+      let templateCounter = 0;
 
-      await prisma.clipMixerItem.create({
-        data: {
-          batchId: batch.id,
-          accountId: account.id,
-          lyricalTemplateId: itemTemplateId,
+      for (let i = 0; i < totalVideos; i++) {
+        const virtualAccIdx = Math.floor(i / vidsPerAccount);
+        const account = sectionAccounts[virtualAccIdx % sectionAccounts.length];
+        const itemTemplateId = lyricalTemplateIds[templateCounter % lyricalTemplateIds.length];
+        const itemFolderId = selectedFolderIds[i % selectedFolderIds.length];
+        templateCounter++;
+
+        if (!folderUsedFingerprints[itemFolderId]) {
+          folderUsedFingerprints[itemFolderId] = new Set<string>();
+        }
+
+        // Call generateRecipesForBatch to get ONE unique recipe for this folder, checking against existing fingerprints
+        const [recipe] = await generateRecipesForBatch({
           folderId: itemFolderId,
-          status: "PENDING",
-        },
-      });
+          count: 1,
+          targetDuration: parseFloat(targetDuration) || 15.0,
+          variationStrength: parseInt(variationStrength) || 3,
+          trackId,
+          templateId: itemTemplateId,
+          trackStart: parseFloat(trackStart) || 0.0,
+          muteAudio,
+        });
+
+        // Ensure uniqueness across the folder in this batch
+        let attempts = 0;
+        let finalRecipe = recipe;
+        let fingerprint = calculateRecipeFingerprint(finalRecipe);
+        
+        while (folderUsedFingerprints[itemFolderId].has(fingerprint) && attempts < 100) {
+          const [newRecipe] = await generateRecipesForBatch({
+            folderId: itemFolderId,
+            count: 1,
+            targetDuration: parseFloat(targetDuration) || 15.0,
+            variationStrength: parseInt(variationStrength) || 3,
+            trackId,
+            templateId: itemTemplateId,
+            trackStart: parseFloat(trackStart) || 0.0,
+            muteAudio,
+          });
+          finalRecipe = newRecipe;
+          fingerprint = calculateRecipeFingerprint(finalRecipe);
+          attempts++;
+        }
+
+        if (attempts >= 100) {
+          throw new Error(`Insufficient clips in folder to generate enough unique video variations without duplicates.`);
+        }
+
+        folderUsedFingerprints[itemFolderId].add(fingerprint);
+
+        await prisma.clipMixerItem.create({
+          data: {
+            batchId: batch.id,
+            accountId: account.id,
+            lyricalTemplateId: itemTemplateId,
+            folderId: itemFolderId,
+            status: "PENDING",
+            recipeJson: JSON.stringify(finalRecipe),
+            fingerprint,
+          },
+        });
+      }
+    } catch (genErr: any) {
+      // Rollback batch creation if generation fails (e.g. folder too small)
+      await prisma.clipMixerBatch.delete({ where: { id: batch.id } });
+      return NextResponse.json({ error: genErr.message || "Failed to generate unique variations." }, { status: 400 });
     }
 
     // Kick off rendering in the background
@@ -200,17 +261,20 @@ export async function POST(req: Request) {
       batchId: batch.id,
       message: "Clip Mixer batch generation started in the background",
     });
-  } catch (err) {
+  } catch (err: any) {
     console.error("[Clip Mixer Batches POST] Error:", err);
-    return NextResponse.json({ error: "Failed to create batch" }, { status: 500 });
+    return NextResponse.json({ error: err.message || "Failed to create batch" }, { status: 500 });
   }
 }
 
 // DELETE /api/managed/clip-mixer/batches — Delete a batch, its items, and rendered files
 export async function DELETE(req: NextRequest) {
   const session = await getSession();
-  if (!session || session.role !== "ADMIN") {
+  if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  if (!(await can(session.userId, "clip_mixer"))) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
   const { searchParams } = new URL(req.url);
@@ -258,8 +322,11 @@ export async function DELETE(req: NextRequest) {
 // PUT /api/managed/clip-mixer/batches — Re-render specific items or the entire batch
 export async function PUT(req: Request) {
   const session = await getSession();
-  if (!session || session.role !== "ADMIN") {
+  if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  if (!(await can(session.userId, "clip_mixer"))) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
   try {
@@ -334,14 +401,7 @@ async function processClipMixerBatch(batchId: string) {
     const batch = await prisma.clipMixerBatch.findUnique({
       where: { id: batchId },
       include: {
-        folder: {
-          include: { clips: true },
-        },
-        track: true,
         items: {
-          include: {
-            account: true,
-          },
           orderBy: { createdAt: "asc" },
         },
       },
@@ -349,12 +409,7 @@ async function processClipMixerBatch(batchId: string) {
 
     if (!batch) return;
 
-    if (batch.folder.clips.length === 0) {
-      throw new Error("No clips found in the selected folder.");
-    }
-
     // Process each item sequentially
-    const usedCombinations = new Set<string>();
     for (const item of batch.items) {
       if (item.status === "RENDERED" || item.status === "UPLOADED") continue;
 
@@ -381,387 +436,16 @@ async function processClipMixerBatch(batchId: string) {
       }
 
       try {
-        // Fetch specific layout template for this item
-        const itemTemplateId = item.lyricalTemplateId || batch.lyricalTemplateId;
-        const template = await prisma.trackLyricalTemplate.findUnique({
-          where: { id: itemTemplateId },
-        });
-
-        if (!template) {
-          throw new Error(`Lyrics template styling preset not found for queue item ${item.id}`);
-        }
-
-        const itemFolderId = item.folderId || batch.folderId;
-        const itemFolder = await prisma.clipFolder.findUnique({
-          where: { id: itemFolderId },
-          include: { clips: true },
-        });
-
-        if (!itemFolder || itemFolder.clips.length === 0) {
-          throw new Error("No clips found in the folder assigned to this video.");
-        }
-
-        const clips = [...itemFolder.clips];
+        const renderedVideoUrl = await renderMix(item.id);
         
-        // Target duration computation with random variance (+/- 2 seconds)
-        const variance = Math.random() * 4.0 - 2.0;
-        let T = batch.targetDuration + variance;
-        // Cap target duration at selected song/track duration
-        T = Math.min(T, batch.track.duration);
-        if (T < 5.0) T = 5.0; // clamp minimum video duration
-
-        const width = template.aspectRatio === "1:1" ? 720 : 720;
-        const height = template.aspectRatio === "1:1" ? 720 : 1280;
-
-        let slices: { clipPath: string; start: number; duration: number; id: string }[] = [];
-        let currentDuration = 0;
-        let attempts = 0;
-        let clipComboKey = "";
-
-        do {
-          slices = [];
-          currentDuration = 0;
-          const shuffledClips = [...clips].sort(() => Math.random() - 0.5);
-
-          for (const clip of shuffledClips) {
-            if (currentDuration >= T) {
-              break;
-            }
-
-            const remaining = T - currentDuration;
-
-            let sliceDuration = Math.random() * 2.0 + 3.0; // random chunk duration between 3.0s and 5.0s
-            if (sliceDuration > clip.duration) {
-              sliceDuration = clip.duration;
-            }
-            if (sliceDuration > remaining) {
-              sliceDuration = remaining;
-            }
-
-            if (remaining <= 5.0) {
-              if (clip.duration >= remaining) {
-                sliceDuration = remaining;
-              } else {
-                sliceDuration = clip.duration;
-              }
-            }
-
-            const maxStart = Math.max(0, clip.duration - sliceDuration);
-            const start = Math.random() * maxStart;
-
-            slices.push({
-              id: clip.id,
-              clipPath: path.join(process.cwd(), "public", clip.videoUrl),
-              start,
-              duration: sliceDuration,
-            });
-
-            currentDuration += sliceDuration;
-          }
-
-          clipComboKey = slices.map(s => s.id).sort().join(",");
-          attempts++;
-        } while (usedCombinations.has(clipComboKey) && attempts < 50 && clips.length >= Math.ceil(T / 4.0));
-
-        usedCombinations.add(clipComboKey);
-
-        if (slices.length === 0) {
-          throw new Error("Could not construct random clip slices for composition.");
-        }
-
-        const rendersDir = path.join(process.cwd(), "public", "uploads", "clip-mixer-renders");
-        if (!fs.existsSync(rendersDir)) {
-          fs.mkdirSync(rendersDir, { recursive: true });
-        }
-        const localOutFile = path.join(rendersDir, `render_${item.id}.mp4`);
-
-        const inputs: string[] = [];
-        for (const slice of slices) {
-          inputs.push(`-ss ${slice.start.toFixed(3)} -t ${slice.duration.toFixed(3)} -i "${slice.clipPath}"`);
-        }
-
-        // Overlay template VP9 WebM with alpha
-        let overlayUrl = template.overlayVideoUrl;
-        if (!overlayUrl) {
-          const sanitizedName = template.templateName.replace(/[^a-zA-Z0-9]/g, "_").toLowerCase();
-          overlayUrl = `/uploads/lyrical/overlays/track_${template.trackId}_${sanitizedName}.webm`;
-        }
-        const overlayPath = path.join(process.cwd(), "public", overlayUrl);
-        const overlayReady = fs.existsSync(overlayPath + ".ready");
-        const overlayExists = fs.existsSync(overlayPath);
-        let overlaySize = 0;
-        if (overlayExists) {
-          try { overlaySize = fs.statSync(overlayPath).size; } catch {}
-        }
-        let hasPreRenderedOverlay = overlayExists && overlayReady && overlaySize > 1024;
-
-        // Check if template needs transparency (no solid bg)
-        const bgOpacity = typeof template.bgOpacity === "number" ? template.bgOpacity : 1.0;
-        const templateHasSolidBg = !!template.bgColor &&
-          template.bgColor !== "none" &&
-          template.bgColor !== "transparent" &&
-          template.bgColor !== "null" &&
-          bgOpacity >= 0.99;
-
-        // Validate that transparent overlays use VP9 (VP8 doesn't support alpha).
-        // If the existing overlay was rendered with VP8, invalidate it for re-render.
-        if (hasPreRenderedOverlay && !templateHasSolidBg) {
-          try {
-            const { execSync } = require("child_process");
-            const codec = execSync(
-              `ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of csv=p=0 "${overlayPath}"`,
-              { timeout: 10000 }
-            ).toString().trim();
-            if (codec === "vp8") {
-              console.log(`[Clip Mixer Worker] Overlay for "${template.templateName}" uses VP8 (no alpha). Invalidating for VP9 re-render.`);
-              try { fs.unlinkSync(overlayPath + ".ready"); } catch {}
-              try { fs.unlinkSync(overlayPath); } catch {}
-              hasPreRenderedOverlay = false;
-            }
-          } catch (probeErr) {
-            console.warn(`[Clip Mixer Worker] Could not probe overlay codec, will re-render:`, probeErr);
-            hasPreRenderedOverlay = false;
-          }
-        }
-
-        if (!hasPreRenderedOverlay && templateHasSolidBg) {
-          console.log(`[Clip Mixer Worker] Pre-rendered overlay missing or invalid for template "${template.templateName}". Auto-rendering it now...`);
-          try {
-            if (!batch.track.lyricalTranscription) {
-              throw new Error(`Track "${batch.track.title}" has no Whisper alignment data.`);
-            }
-            const words = JSON.parse(batch.track.lyricalTranscription);
-            const duration = batch.track.duration || 10.0;
-            const rendererConfig = {
-              fontFamily: template.fontFamily,
-              fontSize: template.fontSize,
-              activeColor: template.activeColor,
-              strokeWidth: template.strokeWidth,
-              strokeColor: template.strokeColor,
-              positionY: template.positionY,
-              colorFilter: template.colorFilter,
-              vignette: template.vignette,
-              particleFx: template.particleFx,
-              animationMode: template.animationMode as "highlight" | "word_builder" | "brat",
-              bgColor: template.bgColor,
-              textColor: template.textColor,
-              textAlign: template.textAlign,
-              wordSpacing: template.wordSpacing,
-              letterSpacing: template.letterSpacing,
-              aspectRatio: template.aspectRatio,
-              bgOpacity: template.bgOpacity,
-              lofiFactor: template.lofiFactor,
-              textMargin: template.textMargin,
-            };
-            const { renderCanvasOverlay } = await import("@/lib/ffmpeg-overlay-renderer");
-            await renderCanvasOverlay(words, rendererConfig, duration, overlayPath);
-            console.log(`[Clip Mixer Worker] Auto-rendered template overlay successfully for template "${template.templateName}"`);
-          } catch (autoErr: any) {
-            console.error(`[Clip Mixer Worker] Failed to auto-render overlay for template "${template.templateName}":`, autoErr);
-            throw new Error(`Lyrics template overlay "${template.templateName}" could not be auto-rendered: ${autoErr.message || autoErr}`);
-          }
-        }
-
-        // For solid bg templates, the WebM overlay IS the full video (no alpha needed)
-        // For transparent templates, burn ASS subtitles directly onto concatenated clips
-        if (templateHasSolidBg) {
-          // ─── SOLID BG PATH: WebM overlay is the complete video ───
-          const audioPath = path.join(process.cwd(), "public", batch.track.fileUrl);
-          const trackStartOffset = Math.max(0, batch.trackStart || 0);
-          const ssOpt = trackStartOffset > 0 ? `-ss ${trackStartOffset.toFixed(3)}` : "";
-          const finalAudioInput = batch.muteAudio
-            ? `-f lavfi -i anullsrc=channel_layout=stereo:sample_rate=44100`
-            : `${ssOpt} -i "${audioPath}"`;
-
-          if (!batch.muteAudio && !fs.existsSync(audioPath)) {
-            throw new Error(`Audio track file not found on disk at: ${audioPath}`);
-          }
-
-          const cmd = [
-            `ffmpeg -y`,
-            trackStartOffset > 0 ? `-ss ${trackStartOffset.toFixed(3)} -i "${overlayPath}"` : `-i "${overlayPath}"`,
-            finalAudioInput,
-            `-c:v libx264`,
-            `-pix_fmt yuv420p`,
-            `-preset superfast`,
-            `-c:a aac -b:a 192k`,
-            `-t ${currentDuration.toFixed(3)}`,
-            `"${localOutFile}"`,
-          ].join(" ");
-
-          console.log(`[Clip Mixer Worker] Rendering Item ${item.id} (solid bg template: ${template.templateName}) with FFmpeg`);
-
-          await new Promise<void>((resolve, reject) => {
-            const { exec: execCmd } = require("child_process");
-            execCmd(cmd, { timeout: 300000 }, (error: any, _stdout: any, stderr: any) => {
-              if (error) {
-                console.error(`[Clip Mixer Worker] FFmpeg failed for item ${item.id}:`, stderr?.substring(0, 1000));
-                reject(new Error(`FFmpeg processing failed: ${error.message}`));
-              } else {
-                resolve();
-              }
-            });
-          });
-
-        } else {
-          // ─── TRANSPARENT TEMPLATE: Direct ASS subtitle burn ───
-          // FFmpeg 5.1 on Debian does NOT support VP8/VP9 alpha channel,
-          // so we burn ASS subtitles directly onto the concatenated clips.
-          console.log(`[Clip Mixer Worker] Using direct ASS subtitle burn (no WebM overlay — alpha not supported)`);
-
-          if (!batch.track.lyricalTranscription) {
-            throw new Error(`Track "${batch.track.title}" has no Whisper alignment data.`);
-          }
-
-          // Generate ASS from the template config
-          const { generateASS } = await import("@/lib/ffmpeg-overlay-renderer");
-          const words = JSON.parse(batch.track.lyricalTranscription);
-
-          // Shift word timings based on trackStart
-          const trackStartOffset = Math.max(0, batch.trackStart || 0);
-          const shiftedWords = words
-            .map((w: any) => {
-              const start = Math.max(0, w.start - trackStartOffset);
-              const end = w.end - trackStartOffset;
-              return { ...w, start, end };
-            })
-            .filter((w: any) => w.end > 0);
-
-          const assContent = generateASS(shiftedWords, {
-            fontFamily: template.fontFamily,
-            fontSize: template.fontSize,
-            activeColor: template.activeColor,
-            strokeWidth: template.strokeWidth,
-            strokeColor: template.strokeColor,
-            positionY: template.positionY,
-            colorFilter: template.colorFilter,
-            vignette: template.vignette,
-            particleFx: template.particleFx,
-            animationMode: template.animationMode as "highlight" | "word_builder" | "brat",
-            bgColor: template.bgColor,
-            textColor: template.textColor,
-            textAlign: template.textAlign,
-            wordSpacing: template.wordSpacing,
-            letterSpacing: template.letterSpacing,
-            aspectRatio: template.aspectRatio,
-            bgOpacity: template.bgOpacity,
-            lofiFactor: template.lofiFactor,
-            textMargin: template.textMargin,
-          });
-          const assPath = `/tmp/clip_mixer_${item.id}.ass`;
-          fs.writeFileSync(assPath, assContent, "utf-8");
-          console.log(`[Clip Mixer Worker] Generated ASS subtitle (${shiftedWords.length} words shifted by ${trackStartOffset}s, ${(assContent.length / 1024).toFixed(1)}KB)`);
-
-          // Audio input
-          const audioPath = path.join(process.cwd(), "public", batch.track.fileUrl);
-          if (batch.muteAudio) {
-            inputs.push(`-f lavfi -i anullsrc=channel_layout=stereo:sample_rate=44100`);
-          } else {
-            if (!fs.existsSync(audioPath)) {
-              throw new Error(`Audio track file not found on disk at: ${audioPath}`);
-            }
-            if (trackStartOffset > 0) {
-              inputs.push(`-ss ${trackStartOffset.toFixed(3)} -i "${audioPath}"`);
-            } else {
-              inputs.push(`-i "${audioPath}"`);
-            }
-          }
-          const audioIdx = slices.length; // audio is the input right after the clip slices
-
-          // Build scaling/cropping & concat filter complex
-          let filterComplex = "";
-          for (let i = 0; i < slices.length; i++) {
-            filterComplex += `[${i}:v]scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height},setsar=1,fps=30,format=yuv420p[v${i}];`;
-          }
-
-          let lastVideoLabel = "";
-          if (slices.length > 1) {
-            for (let i = 0; i < slices.length; i++) {
-              filterComplex += `[v${i}]`;
-            }
-            filterComplex += `concat=n=${slices.length}:v=1:a=0[v_concated];`;
-            lastVideoLabel = "v_concated";
-          } else {
-            lastVideoLabel = "v0";
-          }
-
-          // Custom Background Color Overlay
-          let finalVideoInputLabel = lastVideoLabel;
-          const bgOpacityVal = typeof template.bgOpacity === "number" ? template.bgOpacity : 1.0;
-          const hasColorOverlay = !!template.bgColor &&
-            template.bgColor !== "none" &&
-            template.bgColor !== "transparent" &&
-            template.bgColor !== "null" &&
-            bgOpacityVal > 0;
-
-          if (hasColorOverlay && template.bgColor) {
-            const colorHex = template.bgColor.startsWith("#") ? template.bgColor.slice(1) : template.bgColor;
-            const formattedColor = colorHex.startsWith("0x") ? colorHex : "0x" + colorHex;
-            filterComplex += `color=c=${formattedColor}@${bgOpacityVal}:s=${width}x${height}:d=${currentDuration.toFixed(3)}:r=30[color_overlay];[${lastVideoLabel}][color_overlay]overlay=shortest=1[colored_bg];`;
-            finalVideoInputLabel = "colored_bg";
-          }
-
-          // Burn ASS subtitles directly onto the concatenated clips
-          const fontsDir = path.join(process.cwd(), "public", "fonts");
-          const escapedAss = assPath.replace(/\\/g, "/").replace(/:/g, "\\\\:");
-          
-          const lofiFactor = template.lofiFactor ?? 1;
-          if (lofiFactor > 1) {
-            filterComplex += `[${finalVideoInputLabel}]ass='${escapedAss}':fontsdir='${fontsDir}'[v_before_lofi];`;
-            filterComplex += `[v_before_lofi]scale=w=iw/${lofiFactor}:h=ih/${lofiFactor},scale=w=iw:h=ih:flags=neighbor[v_final]`;
-          } else {
-            filterComplex += `[${finalVideoInputLabel}]ass='${escapedAss}':fontsdir='${fontsDir}'[v_final]`;
-          }
-
-          const cmd = [
-            `ffmpeg -y`,
-            ...inputs,
-            `-filter_complex "${filterComplex}"`,
-            `-map "[v_final]"`,
-            `-map ${audioIdx}:a`,
-            `-c:v libx264`,
-            `-pix_fmt yuv420p`,
-            `-preset superfast`,
-            `-c:a aac -b:a 192k`,
-            `-t ${currentDuration.toFixed(3)}`,
-            `"${localOutFile}"`,
-          ].join(" ");
-
-          console.log(`[Clip Mixer Worker] Rendering Item ${item.id} (template: ${template.templateName}) with FFmpeg: ${cmd.substring(0, 600)}...`);
-
-          await new Promise<void>((resolve, reject) => {
-            const { exec: execCmd } = require("child_process");
-            execCmd(cmd, { timeout: 300000 }, (error: any, _stdout: any, stderr: any) => {
-              // Cleanup temp ASS file
-              try { fs.unlinkSync(assPath); } catch {}
-              if (error) {
-                console.error(`[Clip Mixer Worker] FFmpeg failed for item ${item.id}:`, stderr?.substring(0, 1000));
-                reject(new Error(`FFmpeg processing failed: ${error.message}`));
-              } else {
-                resolve();
-              }
-            });
-          });
-        }
-
-
-        try {
-          await prisma.clipMixerItem.update({
-            where: { id: item.id },
-            data: {
-              status: "RENDERED",
-              renderedVideoUrl: `/uploads/clip-mixer-renders/render_${item.id}.mp4`,
-            },
-          });
-        } catch (err: any) {
-          if (err?.code === "P2025") {
-            console.log(`[Clip Mixer Worker] Item ${item.id} not found (likely batch was deleted) when finishing rendering. Aborting loop.`);
-            break;
-          }
-          throw err;
-        }
-        console.log(`[Clip Mixer Worker] Finished rendering item ${item.id}`);
-
+        await prisma.clipMixerItem.update({
+          where: { id: item.id },
+          data: {
+            status: "RENDERED",
+            renderedVideoUrl,
+            errorMessage: null,
+          },
+        });
       } catch (itemErr: any) {
         if (itemErr?.code === "P2025") {
           console.log(`[Clip Mixer Worker] Item ${item.id} not found (likely batch was deleted) during error handling. Aborting loop.`);
@@ -820,7 +504,6 @@ async function processClipMixerBatch(batchId: string) {
       throw err;
     }
     console.log(`[Clip Mixer Worker] Finished batch ${batchId}. Status: ${finalStatus}`);
-
   } catch (err: any) {
     if (err?.code === "P2025") {
       console.log(`[Clip Mixer Worker] Batch ${batchId} not found (likely deleted) during worker execution.`);

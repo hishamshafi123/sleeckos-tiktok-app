@@ -2,12 +2,16 @@ export const dynamic = "force-dynamic";
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/db";
 import { getSession } from "@/lib/session";
+import { can } from "@/lib/services/permissions";
 
 // GET /api/sourcing/niches — list all sourcing niches with counts
 export async function GET() {
   const session = await getSession();
-  if (!session || session.role !== "ADMIN") {
+  if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  if (!(await can(session.userId, "sourcing"))) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
   const niches = await prisma.sourcingNiche.findMany({
@@ -23,8 +27,11 @@ export async function GET() {
 // POST /api/sourcing/niches — create a new sourcing niche
 export async function POST(req: NextRequest) {
   const session = await getSession();
-  if (!session || session.role !== "ADMIN") {
+  if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  if (!(await can(session.userId, "sourcing"))) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
   const { name, description, color } = await req.json();

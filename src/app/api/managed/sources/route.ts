@@ -2,13 +2,17 @@ export const dynamic = "force-dynamic";
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/db";
 import { getSession } from "@/lib/session";
+import { can } from "@/lib/services/permissions";
 import { parseYouTubeUrl, resolveChannel, resolvePlaylist } from "@/lib/youtube";
 
 // GET /api/managed/sources?nicheId=xxx
 export async function GET(req: NextRequest) {
   const session = await getSession();
-  if (!session || session.role !== "ADMIN") {
+  if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  if (!(await can(session.userId, "sourcing"))) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
   const nicheId = req.nextUrl.searchParams.get("nicheId");
@@ -26,8 +30,11 @@ export async function GET(req: NextRequest) {
 // POST /api/managed/sources — add a YouTube source to a niche
 export async function POST(req: NextRequest) {
   const session = await getSession();
-  if (!session || session.role !== "ADMIN") {
+  if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  if (!(await can(session.userId, "sourcing"))) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
   const { nicheId, url } = await req.json();

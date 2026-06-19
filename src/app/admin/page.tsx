@@ -1,67 +1,175 @@
 export const dynamic = "force-dynamic";
-import { prisma } from "@/lib/db";
+import prisma from "@/lib/db";
 import Link from "next/link";
-import { Clock, Users, Megaphone, CheckCircle2 } from "lucide-react";
+import { MonitorPlay, Clock, Film, Megaphone } from "lucide-react";
+import { getSession } from "@/lib/session";
+import { can } from "@/lib/services/permissions";
+import { redirect } from "next/navigation";
 
 export default async function AdminDashboard() {
-  const [pendingBrands, pendingCreators, pendingCampaigns, recentLogs] = await Promise.all([
-    prisma.brand.count({ where: { status: "PENDING" } }),
-    prisma.creatorProfile.count({ where: { approvedAt: null } }),
-    prisma.campaign.count({ where: { status: "PENDING_REVIEW" } }),
-    prisma.auditLog.findMany({ orderBy: { createdAt: "desc" }, take: 10, include: { actorUser: { select: { email: true } } } }),
+  const session = await getSession();
+  if (!session) redirect("/login");
+
+  const hasAccess = await can(session.userId, "accounts");
+  if (!hasAccess) {
+    redirect("/admin/lms");
+  }
+  const [
+    managedAccountCount,
+    postQueueCount,
+    sourcedVideoCount,
+    campaignCount,
+    recentPosts
+  ] = await Promise.all([
+    prisma.managedAccount.count(),
+    prisma.scheduledPost.count({ where: { status: "QUEUED" } }),
+    prisma.sourcedVideo.count({ where: { status: "NEW" } }),
+    prisma.campaign.count(),
+    prisma.scheduledPost.findMany({
+      orderBy: { scheduledFor: "desc" },
+      take: 10,
+      include: { account: { select: { tiktokUsername: true } } },
+    }),
   ]);
 
-  const queues = [
-    { label: "Brands awaiting review", value: pendingBrands, href: "/admin/brands", color: "text-amber-400", bg: "bg-amber-400/10 border-amber-500/20" },
-    { label: "Creators awaiting review", value: pendingCreators, href: "/admin/creators", color: "text-purple-400", bg: "bg-purple-400/10 border-purple-500/20" },
-    { label: "Campaigns awaiting review", value: pendingCampaigns, href: "/admin/campaigns", color: "text-blue-400", bg: "bg-blue-400/10 border-blue-500/20" },
+  const cards = [
+    {
+      label: "Managed Accounts",
+      value: managedAccountCount,
+      href: "/admin/accounts",
+      icon: MonitorPlay,
+      color: "text-blue-400",
+      border: "border-blue-500/20",
+      bg: "bg-blue-600/5",
+    },
+    {
+      label: "Post Queue Size",
+      value: postQueueCount,
+      href: "/admin/accounts/queue",
+      icon: Clock,
+      color: "text-amber-400",
+      border: "border-amber-500/20",
+      bg: "bg-amber-500/5",
+    },
+    {
+      label: "New Sourced Videos",
+      value: sourcedVideoCount,
+      href: "/admin/sourcing",
+      icon: Film,
+      color: "text-emerald-400",
+      border: "border-emerald-500/20",
+      bg: "bg-emerald-500/5",
+    },
+    {
+      label: "Active Campaigns",
+      value: campaignCount,
+      href: "/admin/campaigns",
+      icon: Megaphone,
+      color: "text-purple-400",
+      border: "border-purple-500/20",
+      bg: "bg-purple-500/5",
+    },
   ];
 
   return (
-    <div className="space-y-8">
-      <div>
-        <h1 className="text-2xl font-bold text-white">Admin Overview</h1>
-        <p className="text-gray-500 mt-1">Review queues and platform activity</p>
+    <div className="space-y-6 text-zinc-100 bg-[#09090b]">
+      {/* Header */}
+      <div className="flex flex-col gap-1 border-b border-[#27272a] pb-5">
+        <h1 className="text-xl font-bold tracking-tight">Admin Overview</h1>
+        <p className="text-xs text-zinc-400">
+          Review queue status, rendering loads, and internal operations performance.
+        </p>
       </div>
 
-      {/* Queue cards */}
-      <div className="grid grid-cols-3 gap-4">
-        {queues.map(({ label, value, href, color, bg }) => (
-          <Link key={label} href={href} className={`glass border rounded-2xl p-6 ${bg} hover:scale-105 transition-all block`}>
-            <div className={`text-3xl font-black mb-1 ${color}`}>{value}</div>
-            <div className="text-sm text-gray-400">{label}</div>
-            <div className={`text-xs mt-2 ${color}`}>Review now →</div>
+      {/* Grid Stats */}
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        {cards.map((card, idx) => {
+          const Icon = card.icon;
+          return (
+            <Link
+              key={idx}
+              href={card.href}
+              className={`border rounded-md p-5 ${card.border} ${card.bg} hover:border-zinc-700 hover:bg-zinc-900/10 transition block`}
+            >
+              <div className="flex justify-between items-start">
+                <span className="text-[10px] uppercase font-semibold text-zinc-500 tracking-wider">
+                  {card.label}
+                </span>
+                <Icon className={`w-3.5 h-3.5 ${card.color}`} />
+              </div>
+              <div className="text-2xl font-bold tracking-tight mt-2">{card.value}</div>
+            </Link>
+          );
+        })}
+      </div>
+
+      {/* Recent Queue Activity */}
+      <div className="border border-[#27272a] rounded-md bg-[#09090b] p-4">
+        <div className="flex justify-between items-center pb-3 border-b border-[#27272a] mb-4">
+          <div>
+            <h2 className="text-xs font-semibold uppercase tracking-wider text-zinc-400">
+              Recent Queue Activity
+            </h2>
+            <p className="text-[10px] text-zinc-500 mt-0.5">
+              Real-time feed of automated and manual scheduling events.
+            </p>
+          </div>
+          <Link
+            href="/admin/accounts/queue"
+            className="text-xs text-[#2563eb] hover:underline"
+          >
+            Full Queue →
           </Link>
-        ))}
-      </div>
-
-      {/* Recent audit log */}
-      <div>
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="font-semibold text-white">Recent Activity</h2>
-          <Link href="/admin/audit-log" className="text-sm text-amber-400 hover:text-amber-300">Full audit log →</Link>
         </div>
-        <div className="glass border border-white/5 rounded-2xl overflow-hidden">
-          <table className="w-full text-sm">
+
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-xs border-collapse">
             <thead>
-              <tr className="border-b border-white/5">
-                <th className="text-left px-4 py-3 text-gray-500 font-medium">Action</th>
-                <th className="text-left px-4 py-3 text-gray-500 font-medium">Actor</th>
-                <th className="text-left px-4 py-3 text-gray-500 font-medium">Resource</th>
-                <th className="text-left px-4 py-3 text-gray-500 font-medium">Time</th>
+              <tr className="border-b border-[#27272a] text-zinc-500 font-semibold">
+                <th className="py-2.5">Account</th>
+                <th className="py-2.5">File Name / ID</th>
+                <th className="py-2.5">Scheduled For</th>
+                <th className="py-2.5">Status</th>
               </tr>
             </thead>
-            <tbody>
-              {recentLogs.map((log) => (
-                <tr key={log.id} className="border-b border-white/5 last:border-0">
-                  <td className="px-4 py-3 text-white font-mono text-xs">{log.action}</td>
-                  <td className="px-4 py-3 text-gray-500 text-xs">{log.actorUser?.email || "System"}</td>
-                  <td className="px-4 py-3 text-gray-500 text-xs">{log.resourceType}</td>
-                  <td className="px-4 py-3 text-gray-600 text-xs">{new Date(log.createdAt).toLocaleString()}</td>
+            <tbody className="divide-y divide-[#27272a]">
+              {recentPosts.map((post) => (
+                <tr
+                  key={post.id}
+                  className="hover:bg-zinc-900/50 transition text-zinc-300"
+                >
+                  <td className="py-3 font-medium text-zinc-100">
+                    @{post.account.tiktokUsername}
+                  </td>
+                  <td className="py-3 font-mono text-[10px] text-zinc-400">
+                    {post.driveFileName || post.videoUrl || post.id}
+                  </td>
+                  <td className="py-3 text-zinc-500">
+                    {new Date(post.scheduledFor).toLocaleString()}
+                  </td>
+                  <td className="py-3">
+                    <span
+                      className={`px-2 py-0.5 rounded-full text-[9px] font-semibold border ${
+                        post.status === "PUBLISHED"
+                          ? "bg-emerald-950/20 text-emerald-400 border-emerald-900/50"
+                          : post.status === "FAILED"
+                          ? "bg-red-950/20 text-red-400 border-red-900/50"
+                          : post.status === "QUEUED"
+                          ? "bg-blue-950/20 text-blue-400 border-blue-900/50"
+                          : "bg-zinc-950/20 text-zinc-400 border-zinc-900/50"
+                      }`}
+                    >
+                      {post.status}
+                    </span>
+                  </td>
                 </tr>
               ))}
-              {recentLogs.length === 0 && (
-                <tr><td colSpan={4} className="px-4 py-8 text-center text-gray-600">No activity yet</td></tr>
+              {recentPosts.length === 0 && (
+                <tr>
+                  <td colSpan={4} className="py-6 text-center text-zinc-500">
+                    No recent queue activity.
+                  </td>
+                </tr>
               )}
             </tbody>
           </table>

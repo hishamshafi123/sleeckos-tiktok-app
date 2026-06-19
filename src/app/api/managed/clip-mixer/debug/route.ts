@@ -2,6 +2,7 @@ export const dynamic = "force-dynamic";
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/db";
 import { getSession } from "@/lib/session";
+import { can } from "@/lib/services/permissions";
 import fs from "fs";
 import path from "path";
 import { execSync } from "child_process";
@@ -24,9 +25,12 @@ export async function GET(req: NextRequest) {
   
   if (!isBypass) {
     const session = await getSession();
-    if (!session || session.role !== "ADMIN") {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
+    if (!session) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  if (!(await can(session.userId, "clip_mixer"))) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
   }
 
   const templateId = searchParams.get("templateId");

@@ -1,90 +1,144 @@
 "use client";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { LayoutDashboard, Shield, Users, Megaphone, FileText, AlertTriangle, ScrollText, LogOut, MonitorPlay, BarChart3, Clock, History, Sparkles, Layers, Film, UserCog } from "lucide-react";
+import {
+  LayoutDashboard,
+  LogOut,
+  MonitorPlay,
+  BarChart3,
+  Clock,
+  History,
+  Sparkles,
+  Layers,
+  Film,
+  UserCog,
+  Palette,
+  Music,
+  FolderOpen,
+  Key,
+  GraduationCap
+} from "lucide-react";
 import { toast } from "sonner";
 
-const NAV = [
-  { href: "/admin", label: "Overview", icon: LayoutDashboard, exact: true },
-  { href: "/admin/brands", label: "Brands", icon: Shield },
-  { href: "/admin/creators", label: "Creators", icon: Users },
-  { href: "/admin/campaigns", label: "Campaigns", icon: Megaphone },
-  { href: "/admin/applications", label: "Applications", icon: FileText },
-  { href: "/admin/disputes", label: "Disputes", icon: AlertTriangle },
-  { href: "/admin/audit-log", label: "Audit Log", icon: ScrollText },
-  { href: "/admin/team", label: "Team", icon: UserCog },
+const PRODUCTION_NAV = [
+  { href: "/admin/clip-mixer", label: "Clip Mixer", icon: Film, toolKey: "clip_mixer" },
+  { href: "/admin/style-studio", label: "Style Studio", icon: Palette, toolKey: "style_studio" },
+  { href: "/admin/genres", label: "Bulk Genres", icon: Music, toolKey: "composer" },
+  { href: "/admin/multiplier", label: "Multiplier", icon: Layers, toolKey: "multiplier" },
 ];
 
-const ACCOUNTS_NAV = [
-  { href: "/admin/accounts", label: "Manage", icon: MonitorPlay, exact: true },
-  { href: "/admin/accounts/dashboard", label: "Analytics", icon: BarChart3 },
-  { href: "/admin/accounts/queue", label: "Post Queue", icon: Clock },
-  { href: "/admin/accounts/history", label: "History", icon: History },
-  { href: "/admin/genres", label: "Bulk Genres", icon: Sparkles },
-  { href: "/admin/multiplier", label: "Multiplier", icon: Layers },
-  { href: "/admin/clip-mixer", label: "Clip Mixer", icon: Film },
+const OPERATIONS_NAV = [
+  { href: "/admin", label: "Overview", icon: LayoutDashboard, exact: true, toolKey: "accounts" },
+  { href: "/admin/accounts", label: "Managed Accounts", icon: MonitorPlay, exact: true, toolKey: "accounts" },
+  { href: "/admin/accounts/dashboard", label: "Analytics", icon: BarChart3, toolKey: "accounts" },
+  { href: "/admin/accounts/queue", label: "Post Queue", icon: Clock, toolKey: "accounts" },
+  { href: "/admin/accounts/history", label: "History", icon: History, toolKey: "accounts" },
+  { href: "/admin/campaigns", label: "Campaigns", icon: FolderOpen, toolKey: "campaigns" },
+  { href: "/admin/projects", label: "Projects", icon: FolderOpen, toolKey: "projects" },
+  { href: "/admin/sourcing", label: "Sourcing Feed", icon: Sparkles, toolKey: "sourcing" },
 ];
 
-export default function AdminSidebar() {
+const PEOPLE_NAV = [
+  { href: "/admin/users-access", label: "Users & Access", icon: Key, toolKey: "users_access" },
+  { href: "/admin/lms", label: "LMS", icon: GraduationCap, toolKey: "lms" },
+  { href: "/admin/team", label: "Team", icon: UserCog, toolKey: "users_access" },
+];
+
+interface AdminSidebarProps {
+  allowedTools?: string[];
+}
+
+export default function AdminSidebar({ allowedTools = [] }: AdminSidebarProps) {
   const pathname = usePathname();
   const router = useRouter();
+
   const logout = async () => {
     await fetch("/api/auth/logout", { method: "POST" });
     toast.success("Logged out");
     router.push("/login");
   };
+
+  const allowedSet = new Set(allowedTools);
+
+  const filteredProduction = PRODUCTION_NAV.filter(item => allowedSet.has(item.toolKey));
+  const filteredOperations = OPERATIONS_NAV.filter(item => allowedSet.has(item.toolKey));
+  const filteredPeople = PEOPLE_NAV.filter(item => allowedSet.has(item.toolKey));
+
+  const renderLink = (item: { href: string; label: string; icon: any; exact?: boolean }) => {
+    const Icon = item.icon;
+    const active = item.exact
+      ? pathname === item.href
+      : pathname.startsWith(item.href) && !(item.href === "/admin" && pathname !== "/admin");
+
+    return (
+      <Link
+        key={item.href}
+        href={item.href}
+        className={`flex items-center gap-3 px-3 py-2 rounded-md text-xs font-medium border transition-all ${
+          active
+            ? "bg-[#2563eb]/10 text-[#2563eb] border-[#2563eb]/20"
+            : "text-zinc-400 border-transparent hover:text-zinc-200 hover:bg-zinc-900"
+        }`}
+      >
+        <Icon className="w-3.5 h-3.5 flex-shrink-0" />
+        {item.label}
+      </Link>
+    );
+  };
+
   return (
-    <aside className="fixed left-0 top-0 h-screen w-64 border-r border-white/5 bg-[#0d0d14] flex flex-col">
-      <div className="p-5 border-b border-white/5">
-        <Link href="/"><img src="/logo.png" alt="Sleeckos" className="h-7 w-auto object-contain brightness-110" /></Link>
-        <p className="text-xs text-amber-500 mt-2 font-semibold">Admin Panel</p>
+    <aside className="fixed left-0 top-0 h-screen w-60 border-r border-[#27272a] bg-[#09090b] flex flex-col z-30">
+      <div className="p-4 border-b border-[#27272a]">
+        <Link href="/admin" className="flex items-center gap-2">
+          <img
+            src="/logo.png"
+            alt="Sleeckos"
+            className="h-6 w-auto object-contain brightness-110"
+          />
+        </Link>
+        <p className="text-[10px] text-zinc-500 mt-1 font-semibold uppercase tracking-wider">
+          Internal Ops
+        </p>
       </div>
-      <nav className="flex-1 p-4 space-y-1 overflow-y-auto">
-        {NAV.map(({ href, label, icon: Icon, exact }) => {
-          const active = exact ? pathname === href : pathname.startsWith(href);
-          return (
-            <Link key={href} href={href} className={`flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all ${active ? "bg-amber-500/15 text-amber-300 border border-amber-500/20" : "text-gray-500 hover:text-white hover:bg-white/5"}`}>
-              <Icon className="w-4 h-4 flex-shrink-0" />
-              {label}
-            </Link>
-          );
-        })}
 
-        {/* TikTok Accounts section */}
-        <div className="pt-4 mt-4 border-t border-white/5">
-          <p className="px-3 mb-2 text-[10px] uppercase tracking-widest text-gray-600 font-bold">TikTok Accounts</p>
-          {ACCOUNTS_NAV.map(({ href, label, icon: Icon, exact }) => {
-            const active = exact
-              ? pathname === href
-              : pathname.startsWith(href) && !ACCOUNTS_NAV.some(n => n.href !== href && n.href.length > href.length && pathname.startsWith(n.href));
-            return (
-              <Link key={href} href={href} className={`flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all ${active ? "bg-purple-500/15 text-purple-300 border border-purple-500/20" : "text-gray-500 hover:text-white hover:bg-white/5"}`}>
-                <Icon className="w-4 h-4 flex-shrink-0" />
-                {label}
-              </Link>
-            );
-          })}
-        </div>
+      <nav className="flex-1 p-3 space-y-4 overflow-y-auto">
+        {/* Production Group */}
+        {filteredProduction.length > 0 && (
+          <div>
+            <p className="px-3 mb-1.5 text-[9px] uppercase tracking-wider text-zinc-600 font-bold">
+              Production
+            </p>
+            <div className="space-y-0.5">{filteredProduction.map(renderLink)}</div>
+          </div>
+        )}
 
-        {/* Video Sourcing section */}
-        <div className="pt-4 mt-4 border-t border-white/5">
-          <p className="px-3 mb-2 text-[10px] uppercase tracking-widest text-gray-600 font-bold">Video Sourcing</p>
-          <Link
-            href="/admin/sourcing"
-            className={`flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all ${
-              pathname.startsWith("/admin/sourcing")
-                ? "bg-red-500/15 text-red-300 border border-red-500/20"
-                : "text-gray-500 hover:text-white hover:bg-white/5"
-            }`}
-          >
-            <svg className="w-4 h-4 flex-shrink-0" viewBox="0 0 24 24" fill="currentColor"><path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z"/></svg>
-            Sourcing Feed
-          </Link>
-        </div>
+        {/* Operations Group */}
+        {filteredOperations.length > 0 && (
+          <div>
+            <p className="px-3 mb-1.5 text-[9px] uppercase tracking-wider text-zinc-600 font-bold">
+              Operations
+            </p>
+            <div className="space-y-0.5">{filteredOperations.map(renderLink)}</div>
+          </div>
+        )}
+
+        {/* People Group */}
+        {filteredPeople.length > 0 && (
+          <div>
+            <p className="px-3 mb-1.5 text-[9px] uppercase tracking-wider text-zinc-600 font-bold">
+              People
+            </p>
+            <div className="space-y-0.5">{filteredPeople.map(renderLink)}</div>
+          </div>
+        )}
       </nav>
-      <div className="p-4 border-t border-white/5">
-        <button onClick={logout} className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm text-gray-600 hover:text-red-400 hover:bg-red-400/5 transition-all w-full">
-          <LogOut className="w-4 h-4" />
+
+      <div className="p-3 border-t border-[#27272a]">
+        <button
+          onClick={logout}
+          className="flex items-center gap-3 px-3 py-2 rounded-md text-xs text-zinc-400 hover:text-red-400 hover:bg-red-950/20 transition-all w-full text-left"
+        >
+          <LogOut className="w-3.5 h-3.5" />
           Log out
         </button>
       </div>

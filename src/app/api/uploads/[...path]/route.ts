@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import fs from "fs";
 import path from "path";
 import { Readable } from "stream";
+import { getR2SignedUrl, isR2Configured } from "@/lib/services/storage";
 
 export const dynamic = "force-dynamic";
 
@@ -26,6 +27,15 @@ export async function GET(
     }
 
     if (!fs.existsSync(absolutePath)) {
+      if (isR2Configured()) {
+        const r2Key = `uploads/${pathSegments.join("/")}`;
+        console.log(`[Uploads serve handler] Local file missing, checking R2 key: ${r2Key}`);
+        const signedUrl = await getR2SignedUrl(r2Key);
+        if (signedUrl) {
+          console.log(`[Uploads serve handler] Redirecting to R2 signed URL: ${signedUrl.substring(0, 100)}...`);
+          return NextResponse.redirect(signedUrl, { status: 307 });
+        }
+      }
       return new NextResponse("Not Found", { status: 404 });
     }
 

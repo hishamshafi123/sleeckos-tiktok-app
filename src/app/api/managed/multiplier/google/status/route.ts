@@ -2,6 +2,7 @@ export const dynamic = "force-dynamic";
 import { NextResponse } from "next/server";
 import prisma from "@/lib/db";
 import { getSession } from "@/lib/session";
+import { can } from "@/lib/services/permissions";
 
 /**
  * Reuses the Google Drive connection from the first connected ManagedAccount
@@ -27,8 +28,11 @@ async function getConnectedAccount() {
 // GET /api/managed/multiplier/google/status — Check if ANY ManagedAccount has Drive connected
 export async function GET() {
   const session = await getSession();
-  if (!session || session.role !== "ADMIN") {
+  if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  if (!(await can(session.userId, "multiplier"))) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
   const account = await getConnectedAccount();
@@ -51,8 +55,11 @@ export async function GET() {
 // DELETE /api/managed/multiplier/google/status — No-op (don't disconnect the ManagedAccount's Drive)
 export async function DELETE() {
   const session = await getSession();
-  if (!session || session.role !== "ADMIN") {
+  if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  if (!(await can(session.userId, "multiplier"))) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
   // Don't actually disconnect — the ManagedAccount's Drive is shared with posting.

@@ -7,7 +7,7 @@ const key = new TextEncoder().encode(secretKey);
 export type SessionPayload = {
   userId: string;
   email: string;
-  role: "CREATOR" | "BRAND_OWNER" | "ADMIN";
+  role: string;
 };
 
 export async function createSession(payload: SessionPayload) {

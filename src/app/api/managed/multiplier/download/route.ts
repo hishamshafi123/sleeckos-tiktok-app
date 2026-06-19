@@ -2,15 +2,20 @@ export const dynamic = "force-dynamic";
 import { NextResponse } from "next/server";
 import prisma from "@/lib/db";
 import { getSession } from "@/lib/session";
+import { can } from "@/lib/services/permissions";
 import fs from "fs";
 import path from "path";
 import { exec } from "child_process";
+import { downloadFromR2, uploadToR2 } from "@/lib/services/storage";
 
 // GET /api/managed/multiplier/download?batchId=... — Check/Prepare download archive status
 export async function GET(req: Request) {
   const session = await getSession();
-  if (!session || session.role !== "ADMIN") {
+  if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  if (!(await can(session.userId, "multiplier"))) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
   const { searchParams } = new URL(req.url);
@@ -178,6 +183,10 @@ async function prepareArchiveInBackground(batchId: string, renderedCount: number
     for (let i = 0; i < batch.items.length; i++) {
       const item = batch.items[i];
       const absPath = path.join(publicDir, item.renderedVideoUrl!);
+      if (!fs.existsSync(absPath)) {
+        const key = `uploads/multiplier/renders/multi_${item.id}.mp4`;
+        await downloadFromR2(key, absPath);
+      }
       if (fs.existsSync(absPath)) {
         const hookSlug = item.hookText
           .replace(/[^a-zA-Z0-9 ]/g, "")
@@ -239,6 +248,9 @@ async function prepareArchiveInBackground(batchId: string, renderedCount: number
     if (!fs.existsSync(archivePath)) {
       throw new Error("Failed to create archive on disk");
     }
+
+    // Upload archive to R2
+    await uploadToR2(archivePath, `uploads/multiplier/archives/${archiveName}`);
 
     const archiveSize = fs.statSync(archivePath).size;
 

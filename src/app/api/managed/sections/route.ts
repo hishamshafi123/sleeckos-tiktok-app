@@ -2,12 +2,16 @@ export const dynamic = "force-dynamic";
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/db";
 import { getSession } from "@/lib/session";
+import { can } from "@/lib/services/permissions";
 
 // GET /api/managed/sections — list all sections with counts
 export async function GET() {
   const session = await getSession();
-  if (!session || session.role !== "ADMIN") {
+  if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  if (!(await can(session.userId, "accounts"))) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
   const sections = await prisma.accountSection.findMany({
@@ -34,8 +38,11 @@ export async function GET() {
 // POST /api/managed/sections — create new section
 export async function POST(req: NextRequest) {
   const session = await getSession();
-  if (!session || session.role !== "ADMIN") {
+  if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  if (!(await can(session.userId, "accounts"))) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
   const { name, color, icon } = await req.json();

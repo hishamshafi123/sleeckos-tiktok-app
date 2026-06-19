@@ -2,6 +2,7 @@ export const dynamic = "force-dynamic";
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/db";
 import { getSession } from "@/lib/session";
+import { can } from "@/lib/services/permissions";
 import { STOPWORDS } from "@/lib/youtube";
 
 // Custom keyword-based text relevance scoring helper
@@ -49,8 +50,11 @@ function calculateRelevance(title: string, description: string, context: string)
 // GET /api/managed/videos?nicheId=xxx&status=NEW&sortBy=recent&nicheContext=xxx
 export async function GET(req: NextRequest) {
   const session = await getSession();
-  if (!session || session.role !== "ADMIN") {
+  if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  if (!(await can(session.userId, "accounts"))) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
   const nicheId = req.nextUrl.searchParams.get("nicheId");
@@ -183,8 +187,11 @@ export async function GET(req: NextRequest) {
 // DELETE /api/managed/videos?nicheId=xxx
 export async function DELETE(req: NextRequest) {
   const session = await getSession();
-  if (!session || session.role !== "ADMIN") {
+  if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  if (!(await can(session.userId, "accounts"))) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
   const nicheId = req.nextUrl.searchParams.get("nicheId");

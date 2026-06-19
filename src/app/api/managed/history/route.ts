@@ -2,6 +2,7 @@ export const dynamic = "force-dynamic";
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/db";
 import { getSession } from "@/lib/session";
+import { can } from "@/lib/services/permissions";
 
 /**
  * GET /api/managed/history
@@ -16,8 +17,11 @@ import { getSession } from "@/lib/session";
  */
 export async function GET(req: NextRequest) {
   const session = await getSession();
-  if (!session || session.role !== "ADMIN") {
+  if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  if (!(await can(session.userId, "accounts"))) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
   const url = new URL(req.url);
@@ -114,8 +118,11 @@ export async function POST(req: NextRequest) {
   console.log("[RefreshLinks] POST /api/managed/history called");
   const session = await getSession();
   console.log("[RefreshLinks] Session:", session ? `role=${session.role}` : "null");
-  if (!session || session.role !== "ADMIN") {
+  if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  if (!(await can(session.userId, "accounts"))) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
   const POSTPEER_API = "https://api.postpeer.dev/v1";

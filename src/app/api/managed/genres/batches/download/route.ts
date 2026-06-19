@@ -2,15 +2,20 @@ export const dynamic = "force-dynamic";
 import { NextResponse } from "next/server";
 import prisma from "@/lib/db";
 import { getSession } from "@/lib/session";
+import { can } from "@/lib/services/permissions";
 import fs from "fs";
 import path from "path";
 import { exec } from "child_process";
+import { downloadFromR2, uploadToR2 } from "@/lib/services/storage";
 
 // GET /api/managed/genres/batches/download?batchId=... — Check/Prepare standard batch download archive status
 export async function GET(req: Request) {
   const session = await getSession();
-  if (!session || session.role !== "ADMIN") {
+  if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  if (!(await can(session.userId, "composer"))) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
   const { searchParams } = new URL(req.url);
@@ -196,6 +201,11 @@ async function prepareGenreArchiveInBackground(batchId: string, renderedCount: n
       if (!item.renderedVideoUrl) continue;
 
       const absPath = path.join(publicDir, item.renderedVideoUrl);
+      if (!fs.existsSync(absPath)) {
+        const key = `uploads/renders/render_${item.id}.mp4`;
+        await downloadFromR2(key, absPath);
+      }
+
       if (fs.existsSync(absPath)) {
         const username = item.account?.tiktokUsername || "account";
         const quoteSlug = item.quoteText
@@ -259,6 +269,9 @@ async function prepareGenreArchiveInBackground(batchId: string, renderedCount: n
       throw new Error("Failed to create archive on disk");
     }
 
+    // Upload archive to R2
+    await uploadToR2(archivePath, `uploads/genres/archives/${archiveName}`);
+
     const archiveSize = fs.statSync(archivePath).size;
 
     await updateStatus({
@@ -292,8 +305,11 @@ async function prepareGenreArchiveInBackground(batchId: string, renderedCount: n
 
 export async function POST(req: Request) {
   const session = await getSession();
-  if (!session || session.role !== "ADMIN") {
+  if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  if (!(await can(session.userId, "composer"))) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
   let tempDir = "";
@@ -339,6 +355,10 @@ export async function POST(req: Request) {
     for (const item of batch.items) {
       if (!item.renderedVideoUrl) continue;
       const absPath = path.join(publicDir, item.renderedVideoUrl);
+      if (!fs.existsSync(absPath)) {
+        const key = `uploads/renders/render_${item.id}.mp4`;
+        await downloadFromR2(key, absPath);
+      }
       if (fs.existsSync(absPath)) {
         const quoteSlug = item.quoteText
           .replace(/[^a-zA-Z0-9 ]/g, "")
@@ -403,6 +423,9 @@ export async function POST(req: Request) {
     if (!fs.existsSync(archivePath)) {
       throw new Error("tar completed but archive file not found on disk");
     }
+
+    // Upload smart archive to R2
+    await uploadToR2(archivePath, `uploads/genres/archives/${archiveName}`);
 
     const size = fs.statSync(archivePath).size;
     const downloadUrl = `/uploads/genres/archives/${archiveName}`;

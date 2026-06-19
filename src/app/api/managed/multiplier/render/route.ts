@@ -2,14 +2,19 @@ export const dynamic = "force-dynamic";
 import { NextResponse } from "next/server";
 import prisma from "@/lib/db";
 import { getSession } from "@/lib/session";
+import { can } from "@/lib/services/permissions";
 import fs from "fs";
 import path from "path";
+import { uploadToR2 } from "@/lib/services/storage";
 
 // PATCH /api/managed/multiplier/render — Reset failed items for retry
 export async function PATCH(req: Request) {
   const session = await getSession();
-  if (!session || session.role !== "ADMIN") {
+  if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  if (!(await can(session.userId, "multiplier"))) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
   try {
@@ -35,8 +40,11 @@ export async function PATCH(req: Request) {
 // POST /api/managed/multiplier/render — Start rendering a batch
 export async function POST(req: Request) {
   const session = await getSession();
-  if (!session || session.role !== "ADMIN") {
+  if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  if (!(await can(session.userId, "multiplier"))) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
   try {
@@ -227,6 +235,12 @@ async function processMultiplierBatch(batchId: string) {
         }
 
         console.log(`[Multiplier Worker] Item ${item.id} rendered successfully`);
+        try {
+          console.log(`[Multiplier Worker] Uploading rendered video to R2 for item ${item.id}...`);
+          await uploadToR2(outputPath, `uploads/multiplier/renders/multi_${item.id}.mp4`);
+        } catch (r2Err) {
+          console.error(`[Multiplier Worker] R2 upload failed for item ${item.id}:`, r2Err);
+        }
       } catch (itemErr: any) {
         if (itemErr?.code === "P2025") {
           console.log(`[Multiplier Worker] Item ${item.id} not found (likely batch was deleted) during error handling. Aborting loop.`);
