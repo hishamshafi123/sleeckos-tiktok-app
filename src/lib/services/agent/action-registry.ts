@@ -106,7 +106,7 @@ const actions: ActionDefinition[] = [
       type: "object",
       properties: {
         folderId: { type: "string", description: "Clip folder UUID to source clips from" },
-        count: { type: "number", description: "Number of mixes to generate (1-50)" },
+        count: { type: "number", description: "Number of mixes to generate (1-100)" },
         targetDuration: { type: "number", description: "Target duration in seconds (default 30)" },
         variationStrength: { type: "number", description: "Variation strength 1-5 (default 3)" },
         trackId: { type: "string", description: "Music track UUID" },
