@@ -133,6 +133,7 @@ function computeBratLayout(
 
   const fontMap: Record<string, string> = {
     "Montserrat-Black": "Montserrat",
+    "ArchivoNarrow-Bold": "Archivo Narrow",
     "Outfit-Bold": "Outfit",
     "Anton": "Anton",
     "Inter-Bold": "Inter",
@@ -2928,7 +2929,7 @@ export default function GenresDashboard() {
 
           // ── Word Builder: group into larger phrases (up to 12 words, split on gaps >1.5s)
           const phrases = (() => {
-            if (lyricalAnimationMode !== "word_builder") return [];
+            if (lyricalAnimationMode !== "word_builder" && lyricalAnimationMode !== "brat") return [];
             const res: any[][] = [];
             let current: any[] = [];
             let lastEnd = 0;
@@ -8912,7 +8913,7 @@ export default function GenresDashboard() {
 
                       // Word builder phrases
                       const pvPhrases = (() => {
-                        if (lyricalAnimationMode !== "word_builder") return [];
+                        if (lyricalAnimationMode !== "word_builder" && lyricalAnimationMode !== "brat") return [];
                         const res: any[][] = []; let cur: any[] = []; let lastEnd = 0;
                         for (const w of pvWords) {
                           if (cur.length > 0 && (w.start - lastEnd > 1.5 || cur.length >= 12)) { res.push(cur); cur = []; }
