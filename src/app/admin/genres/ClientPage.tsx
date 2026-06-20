@@ -8663,6 +8663,19 @@ export default function GenresDashboard() {
                       </div>
                     </div>
 
+                    {/* Aspect Ratio */}
+                    <div className="space-y-1">
+                      <label className="block text-[9px] uppercase tracking-wider font-extrabold text-gray-500">Aspect Ratio</label>
+                      <select
+                        value={lyricalAspectRatio}
+                        onChange={(e) => setLyricalAspectRatio(e.target.value as "9:16" | "1:1")}
+                        className="w-full bg-black/45 border border-white/10 hover:border-white/20 rounded-xl px-2 py-2 text-[11px] text-gray-300 focus:outline-none transition-all cursor-pointer"
+                      >
+                        <option value="9:16">Vertical (9:16)</option>
+                        <option value="1:1">Square (1:1)</option>
+                      </select>
+                    </div>
+
                     {/* Sliders */}
                     <div className="space-y-2.5 bg-black/30 p-3 rounded-xl border border-white/5">
                       {/* Font Size */}
@@ -8964,17 +8977,14 @@ export default function GenresDashboard() {
                                 }
                               }
                             }}
-                            className="relative aspect-[9/16] w-full max-w-[220px] bg-[#07070d] border border-white/15 rounded-[36px] overflow-hidden shadow-2xl flex flex-col justify-between group cursor-pointer hover:border-purple-500/30 transition-all duration-300"
+                            className={`relative ${lyricalAspectRatio === "1:1" ? "aspect-square" : "aspect-[9/16]"} w-full max-w-[220px] bg-[#07070d] border border-white/15 ${lyricalAspectRatio === "1:1" ? "rounded-[24px]" : "rounded-[36px]"} overflow-hidden shadow-2xl flex flex-col justify-between group cursor-pointer hover:border-purple-500/30 transition-all duration-300`}
+                            style={lyricalLofiFactor > 1 ? { imageRendering: "pixelated" as any, filter: `blur(${lyricalLofiFactor * 0.15}px)` } : undefined}
                           >
-                            {/* BG: gradient or solid color */}
+                            {/* BG: solid color or dark fallback */}
                             {lyricalBgColor ? (
                               <div className="absolute inset-0 z-0" style={{ backgroundColor: lyricalBgColor, opacity: lyricalBgOpacity }} />
                             ) : (
-                              <>
-                                <div className="absolute inset-0 bg-gradient-to-b from-[#120521] via-[#050616] to-[#04101e] opacity-90 z-0" />
-                                <div className="absolute top-[20%] left-[20%] w-[100px] h-[100px] bg-purple-600/10 rounded-full blur-[40px] animate-pulse z-0" />
-                                <div className="absolute bottom-[20%] right-[20%] w-[100px] h-[100px] bg-indigo-500/10 rounded-full blur-[40px] animate-pulse z-0" />
-                              </>
+                              <div className="absolute inset-0 bg-[#07070d] z-0" />
                             )}
 
                             {/* TikTok UI overlay */}
