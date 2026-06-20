@@ -515,7 +515,7 @@ export default function GenresDashboard() {
   const audioPlayerRef = useRef<HTMLAudioElement | null>(null);
 
   // ── Lyric Generator Wizard State ──────────────────────────────────────────
-  const [lgStep, setLgStep] = useState<1 | 2 | 3 | 4>(1);
+  const [lgStep, setLgStep] = useState<1 | 2 | 3 | 4 | 5>(1);
   // Step 1: Audio upload
   const [lgAudioFile, setLgAudioFile] = useState<File | null>(null);
   const [lgUploading, setLgUploading] = useState(false);
@@ -539,6 +539,12 @@ export default function GenresDashboard() {
   const [lgEndLine, setLgEndLine] = useState<number | null>(null);
   // Step 4: Generate
   const [lgGenerating, setLgGenerating] = useState(false);
+  // Step 5: Preview & Style
+  const [lgPreviewWords, setLgPreviewWords] = useState<any[]>([]);
+  const [lgPreviewFileUrl, setLgPreviewFileUrl] = useState("");
+  const [lgPreviewDuration, setLgPreviewDuration] = useState(0);
+  const [lgPreviewPlaying, setLgPreviewPlaying] = useState(false);
+  const lgPreviewAudioRef = useRef<HTMLAudioElement | null>(null);
 
   const lgResetWizard = () => {
     setLgStep(1);
@@ -561,6 +567,14 @@ export default function GenresDashboard() {
     setLgStartLine(null);
     setLgEndLine(null);
     setLgGenerating(false);
+    setLgPreviewWords([]);
+    setLgPreviewFileUrl("");
+    setLgPreviewDuration(0);
+    setLgPreviewPlaying(false);
+    if (lgPreviewAudioRef.current) {
+      lgPreviewAudioRef.current.pause();
+      lgPreviewAudioRef.current.src = "";
+    }
   };
 
   // Step 1: Upload audio file → creates a Track, then moves to step 2
@@ -824,8 +838,12 @@ export default function GenresDashboard() {
 
       toast.success(`Track updated: "${lgTitle}" — ${adjustedWords.length} words, ${Math.round(clipInfo.duration)}s clip`);
       fetchTracks();
-      lgResetWizard();
-      setActiveTab("tracks");
+      
+      // Store preview data and go to Step 5 (Preview & Style)
+      setLgPreviewWords(adjustedWords);
+      setLgPreviewFileUrl(trimData.filePath);
+      setLgPreviewDuration(trimData.duration);
+      setLgStep(5);
     } catch (err: any) {
       toast.error(err.message || "Generation failed");
     } finally {
@@ -8042,9 +8060,10 @@ export default function GenresDashboard() {
                 { n: 2, label: "Transcribe" },
                 { n: 3, label: "Lines" },
                 { n: 4, label: "Create" },
+                { n: 5, label: "Preview" },
               ].map((s, i) => (
                 <div key={s.n} className="flex items-center gap-2">
-                  {i > 0 && <div className={`w-8 h-px ${lgStep >= s.n ? "bg-emerald-500/50" : "bg-white/10"}`} />}
+                  {i > 0 && <div className={`w-6 h-px ${lgStep >= s.n ? "bg-emerald-500/50" : "bg-white/10"}`} />}
                   <div
                     className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[10px] font-bold transition-all ${
                       lgStep === s.n
@@ -8514,6 +8533,584 @@ export default function GenresDashboard() {
                       </>
                     )}
                   </button>
+                </div>
+              </div>
+            )}
+
+            {/* ── STEP 5: Preview & Style Studio ───────────────────────────── */}
+            {lgStep === 5 && (
+              <div className="space-y-5 animate-fadeIn">
+                {/* Hidden audio element for preview playback */}
+                <audio
+                  ref={lgPreviewAudioRef}
+                  src={resolveUrl(lgPreviewFileUrl)}
+                  className="hidden"
+                  onEnded={() => setLgPreviewPlaying(false)}
+                  onTimeUpdate={(e) => setLyricalPlaybackTime(e.currentTarget.currentTime)}
+                />
+
+                {/* Header Bar */}
+                <div className="bg-[#0d0d16]/80 backdrop-blur-md border border-white/10 p-4 rounded-2xl flex flex-col md:flex-row justify-between items-start md:items-center gap-3 shadow-xl">
+                  <div className="flex items-center gap-3">
+                    <div className="w-2.5 h-2.5 rounded-full bg-purple-500 shadow-[0_0_12px_rgba(168,85,247,0.9)] animate-pulse" />
+                    <div>
+                      <h2 className="text-sm font-black text-white leading-none tracking-tight uppercase">Preview & Style Studio</h2>
+                      <p className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider mt-0.5">
+                        Track: <span className="text-amber-400 font-bold">{lgTitle}</span> — {lgArtist} <span className="text-gray-600">|</span> {lgPreviewDuration.toFixed(1)}s <span className="text-gray-600">|</span> {lgPreviewWords.length} words
+                      </p>
+                    </div>
+                  </div>
+                  <span className="text-[9px] font-black uppercase tracking-widest px-2.5 py-1 rounded-full bg-green-500/10 text-green-400 border border-green-500/20">
+                    ✓ Word-Synced
+                  </span>
+                </div>
+
+                {/* 2-Column Layout: Controls + Preview */}
+                <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+                  
+                  {/* ── Left Column: Styling Controls ── */}
+                  <div className="lg:col-span-5 bg-[#0d0d16]/70 backdrop-blur-xl border border-white/10 p-4 rounded-2xl shadow-2xl space-y-4 max-h-[700px] overflow-y-auto">
+                    <div className="flex items-center gap-2 pb-2 border-b border-white/5">
+                      <Sliders className="w-3.5 h-3.5 text-purple-400" />
+                      <h3 className="text-[10px] font-black uppercase tracking-widest text-purple-300">Styling Controls</h3>
+                    </div>
+
+                    {/* Preset Theme */}
+                    <div className="space-y-1">
+                      <label className="block text-[9px] uppercase tracking-wider font-extrabold text-gray-500">Preset Theme</label>
+                      <select
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          if (val === "neon-rainbow") {
+                            setLyricalFontFamily("Montserrat-Black"); setLyricalFontSize(48); setLyricalActiveColor("multi");
+                            setLyricalStrokeWidth(5); setLyricalStrokeColor("#000000"); setLyricalPositionY(0.75);
+                            setLyricalAnimationMode("highlight"); setLyricalBgColor(null); setLyricalTextColor(null);
+                            setLyricalTextAlign("center"); setLyricalWordSpacing("normal"); setLyricalLetterSpacing(0);
+                          } else if (val === "vibrant-yellow") {
+                            setLyricalFontFamily("Anton"); setLyricalFontSize(50); setLyricalActiveColor("#ffff00");
+                            setLyricalStrokeWidth(4); setLyricalStrokeColor("#000000"); setLyricalPositionY(0.70);
+                            setLyricalAnimationMode("highlight"); setLyricalBgColor(null); setLyricalTextColor(null);
+                            setLyricalTextAlign("center"); setLyricalWordSpacing("normal"); setLyricalLetterSpacing(0);
+                          } else if (val === "word-builder-yellow") {
+                            setLyricalFontFamily("Inter-Light"); setLyricalFontSize(56); setLyricalActiveColor("#000000");
+                            setLyricalStrokeWidth(0); setLyricalStrokeColor("#000000"); setLyricalPositionY(0.40);
+                            setLyricalAnimationMode("word_builder"); setLyricalBgColor("#F5A623"); setLyricalBgOpacity(1.0);
+                            setLyricalLofiFactor(1); setLyricalTextColor("#000000"); setLyricalTextAlign("left");
+                            setLyricalWordSpacing("extra_wide"); setLyricalLetterSpacing(0);
+                          } else if (val === "brat-style") {
+                            setLyricalFontFamily("Montserrat-Black"); setLyricalFontSize(76); setLyricalActiveColor("#000000");
+                            setLyricalStrokeWidth(0); setLyricalStrokeColor("#000000"); setLyricalPositionY(0.40);
+                            setLyricalAnimationMode("brat"); setLyricalBgColor("#8ace00"); setLyricalBgOpacity(1.0);
+                            setLyricalLofiFactor(8); setLyricalTextMargin(50); setLyricalTextColor("#000000");
+                            setLyricalTextAlign("left"); setLyricalWordSpacing("wide"); setLyricalLetterSpacing(-2);
+                          } else if (val === "hot-pink") {
+                            setLyricalFontFamily("Inter-Bold"); setLyricalFontSize(48); setLyricalActiveColor("#ff007f");
+                            setLyricalStrokeWidth(5); setLyricalStrokeColor("#000000"); setLyricalPositionY(0.75);
+                            setLyricalAnimationMode("highlight"); setLyricalBgColor(null); setLyricalTextColor(null);
+                            setLyricalTextAlign("center"); setLyricalWordSpacing("normal"); setLyricalLetterSpacing(0);
+                          } else if (val === "electric-green") {
+                            setLyricalFontFamily("Outfit-Bold"); setLyricalFontSize(46); setLyricalActiveColor("#00ff00");
+                            setLyricalStrokeWidth(6); setLyricalStrokeColor("#111111"); setLyricalPositionY(0.80);
+                            setLyricalAnimationMode("highlight"); setLyricalBgColor(null); setLyricalTextColor(null);
+                            setLyricalTextAlign("center"); setLyricalWordSpacing("normal"); setLyricalLetterSpacing(0);
+                          }
+                        }}
+                        className="w-full bg-black/45 border border-white/10 hover:border-white/20 rounded-xl px-3 py-2 text-xs text-gray-300 focus:outline-none transition-all cursor-pointer"
+                      >
+                        <option value="custom">-- Choose Preset --</option>
+                        <option value="neon-rainbow">Neon Rainbow</option>
+                        <option value="vibrant-yellow">Vibrant Yellow</option>
+                        <option value="electric-green">Electric Green</option>
+                        <option value="hot-pink">Hot Pink</option>
+                        <option value="word-builder-yellow">⚡ Word Builder (Yellow)</option>
+                        <option value="brat-style">💚 Brat Style</option>
+                      </select>
+                    </div>
+
+                    {/* Font + Animation Mode Row */}
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="space-y-1">
+                        <label className="block text-[9px] uppercase tracking-wider font-extrabold text-gray-500">Font Family</label>
+                        <select
+                          value={lyricalFontFamily}
+                          onChange={(e) => setLyricalFontFamily(e.target.value)}
+                          className="w-full bg-black/45 border border-white/10 hover:border-white/20 rounded-xl px-2 py-2 text-[11px] text-gray-300 focus:outline-none transition-all cursor-pointer"
+                        >
+                          <option value="Montserrat-Black">Montserrat Black</option>
+                          <option value="Outfit-Bold">Outfit Bold</option>
+                          <option value="Anton">Anton</option>
+                          <option value="Inter-Bold">Inter Bold</option>
+                          <option value="Inter-Regular">Inter Regular</option>
+                          <option value="Inter-Light">Inter Light</option>
+                          <option value="Caveat-Bold">Caveat Bold</option>
+                        </select>
+                      </div>
+                      <div className="space-y-1">
+                        <label className="block text-[9px] uppercase tracking-wider font-extrabold text-gray-500">Animation Mode</label>
+                        <select
+                          value={lyricalAnimationMode}
+                          onChange={(e) => setLyricalAnimationMode(e.target.value)}
+                          className="w-full bg-black/45 border border-white/10 hover:border-white/20 rounded-xl px-2 py-2 text-[11px] text-gray-300 focus:outline-none transition-all cursor-pointer"
+                        >
+                          <option value="highlight">Highlight (word glow)</option>
+                          <option value="word_builder">Word Builder (progressive)</option>
+                          <option value="brat">Brat (lo-fi fill)</option>
+                        </select>
+                      </div>
+                    </div>
+
+                    {/* Sliders */}
+                    <div className="space-y-2.5 bg-black/30 p-3 rounded-xl border border-white/5">
+                      {/* Font Size */}
+                      <div className="space-y-1">
+                        <div className="flex justify-between text-[9px] uppercase tracking-wider font-extrabold text-gray-500">
+                          <span>Font Size</span><span className="text-purple-400">{lyricalFontSize}px</span>
+                        </div>
+                        <input type="range" min="24" max="90" value={lyricalFontSize}
+                          onChange={(e) => setLyricalFontSize(parseInt(e.target.value))}
+                          className="w-full h-1.5 bg-gray-800 rounded-lg appearance-none cursor-pointer accent-purple-500" />
+                      </div>
+                      {/* Stroke Width */}
+                      <div className="space-y-1">
+                        <div className="flex justify-between text-[9px] uppercase tracking-wider font-extrabold text-gray-500">
+                          <span>Stroke</span><span className="text-purple-400">{lyricalStrokeWidth}px</span>
+                        </div>
+                        <input type="range" min="0" max="12" value={lyricalStrokeWidth}
+                          onChange={(e) => setLyricalStrokeWidth(parseInt(e.target.value))}
+                          className="w-full h-1.5 bg-gray-800 rounded-lg appearance-none cursor-pointer accent-purple-500" />
+                      </div>
+                      {/* Position Y */}
+                      <div className="space-y-1">
+                        <div className="flex justify-between text-[9px] uppercase tracking-wider font-extrabold text-gray-500">
+                          <span>Position Y</span><span className="text-purple-400">{Math.round(lyricalPositionY * 100)}%</span>
+                        </div>
+                        <input type="range" min="20" max="90" value={lyricalPositionY * 100}
+                          onChange={(e) => setLyricalPositionY(parseInt(e.target.value) / 100)}
+                          className="w-full h-1.5 bg-gray-800 rounded-lg appearance-none cursor-pointer accent-purple-500" />
+                      </div>
+                      {/* Lo-Fi Pixelation */}
+                      <div className="space-y-1">
+                        <div className="flex justify-between text-[9px] uppercase tracking-wider font-extrabold text-gray-500">
+                          <span>Lo-Fi Pixelation</span><span className="text-amber-400">{lyricalLofiFactor}x</span>
+                        </div>
+                        <input type="range" min="1" max="20" value={lyricalLofiFactor}
+                          onChange={(e) => setLyricalLofiFactor(parseInt(e.target.value))}
+                          className="w-full h-1.5 bg-gray-800 rounded-lg appearance-none cursor-pointer accent-purple-500" />
+                      </div>
+                      {/* Text Margin */}
+                      <div className="space-y-1">
+                        <div className="flex justify-between text-[9px] uppercase tracking-wider font-extrabold text-gray-500">
+                          <span>Text Margin</span><span className="text-amber-400">{lyricalTextMargin}px</span>
+                        </div>
+                        <input type="range" min="10" max="200" step="5" value={lyricalTextMargin}
+                          onChange={(e) => setLyricalTextMargin(parseInt(e.target.value))}
+                          className="w-full h-1.5 bg-gray-800 rounded-lg appearance-none cursor-pointer accent-purple-500" />
+                      </div>
+                    </div>
+
+                    {/* Colors Row */}
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="space-y-1">
+                        <label className="block text-[9px] uppercase tracking-wider font-extrabold text-gray-500">Active Color</label>
+                        <select
+                          value={["multi","#ffff00","#00ff00","#00ffff","#ff007f","#ff5500","#bf00ff","#ffffff","#000000"].includes(lyricalActiveColor) ? lyricalActiveColor : "custom"}
+                          onChange={(e) => setLyricalActiveColor(e.target.value === "custom" ? "#ffffff" : e.target.value)}
+                          className="w-full bg-black/45 border border-white/10 rounded-xl px-2 py-2 text-[11px] text-gray-300 focus:outline-none cursor-pointer"
+                        >
+                          <option value="multi">Rainbow</option>
+                          <option value="#ffff00">Yellow</option>
+                          <option value="#00ff00">Green</option>
+                          <option value="#00ffff">Cyan</option>
+                          <option value="#ff007f">Pink</option>
+                          <option value="#ff5500">Orange</option>
+                          <option value="#bf00ff">Purple</option>
+                          <option value="#ffffff">White</option>
+                          <option value="#000000">Black</option>
+                          <option value="custom">Custom...</option>
+                        </select>
+                        {lyricalActiveColor !== "multi" && (
+                          <input type="color" value={lyricalActiveColor.startsWith("#") ? lyricalActiveColor : "#ffffff"}
+                            onChange={(e) => setLyricalActiveColor(e.target.value)}
+                            className="w-full h-6 rounded-lg border border-white/10 cursor-pointer bg-transparent mt-1" />
+                        )}
+                      </div>
+                      <div className="space-y-1">
+                        <label className="block text-[9px] uppercase tracking-wider font-extrabold text-gray-500">Stroke Color</label>
+                        <select value={lyricalStrokeColor} onChange={(e) => setLyricalStrokeColor(e.target.value)}
+                          className="w-full bg-black/45 border border-white/10 rounded-xl px-2 py-2 text-[11px] text-gray-300 focus:outline-none cursor-pointer"
+                        >
+                          <option value="#000000">Black</option>
+                          <option value="#ffffff">White</option>
+                          <option value="#1a1a1a">Charcoal</option>
+                          <option value="#333333">Grey</option>
+                        </select>
+                      </div>
+                    </div>
+
+                    {/* Text Color + Alignment */}
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="space-y-1">
+                        <label className="block text-[9px] uppercase tracking-wider font-extrabold text-gray-500">Text Color</label>
+                        <div className="flex items-center gap-1.5">
+                          <input type="color" value={lyricalTextColor || "#ffffff"}
+                            onChange={(e) => setLyricalTextColor(e.target.value)}
+                            className="w-7 h-7 rounded-lg border border-white/10 cursor-pointer bg-transparent" />
+                          <input type="text" value={lyricalTextColor || ""} placeholder="Default"
+                            onChange={(e) => {
+                              const v = e.target.value;
+                              if (v === "") setLyricalTextColor(null);
+                              else if (/^#[0-9a-fA-F]{0,6}$/.test(v)) setLyricalTextColor(v);
+                            }}
+                            className="flex-1 bg-black/45 border border-white/10 rounded-lg px-2 py-1 text-[10px] text-gray-300 font-mono focus:outline-none" />
+                        </div>
+                      </div>
+                      <div className="space-y-1">
+                        <label className="block text-[9px] uppercase tracking-wider font-extrabold text-gray-500">Alignment</label>
+                        <select value={lyricalTextAlign} onChange={(e) => setLyricalTextAlign(e.target.value)}
+                          className="w-full bg-black/45 border border-white/10 rounded-xl px-2 py-2 text-[11px] text-gray-300 focus:outline-none cursor-pointer"
+                        >
+                          <option value="center">Center</option>
+                          <option value="left">Left</option>
+                          <option value="right">Right</option>
+                        </select>
+                      </div>
+                    </div>
+
+                    {/* Background Color Toggle */}
+                    <div className="space-y-2 bg-black/20 p-3 rounded-xl border border-white/5">
+                      <div className="flex items-center justify-between">
+                        <label className="text-[9px] uppercase tracking-wider font-extrabold text-gray-500">Background Color</label>
+                        <button type="button"
+                          onClick={() => setLyricalBgColor(lyricalBgColor ? null : "#8ace00")}
+                          className={`relative w-9 h-5 rounded-full transition-all ${lyricalBgColor ? "bg-amber-500" : "bg-gray-700"}`}
+                        >
+                          <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow-md transition-all ${lyricalBgColor ? "left-[18px]" : "left-0.5"}`} />
+                        </button>
+                      </div>
+                      {lyricalBgColor && (
+                        <>
+                          <div className="flex items-center gap-2">
+                            <input type="color" value={lyricalBgColor} onChange={(e) => setLyricalBgColor(e.target.value)}
+                              className="w-7 h-7 rounded-lg border border-white/10 cursor-pointer bg-transparent" />
+                            <input type="text" value={lyricalBgColor}
+                              onChange={(e) => { if (/^#[0-9a-fA-F]{0,6}$/.test(e.target.value)) setLyricalBgColor(e.target.value); }}
+                              className="flex-1 bg-black/45 border border-white/10 rounded-lg px-2 py-1 text-[10px] text-gray-300 font-mono focus:outline-none" />
+                          </div>
+                          <div className="space-y-1">
+                            <div className="flex justify-between text-[9px] text-gray-500 uppercase font-extrabold">
+                              <span>Opacity</span><span>{Math.round(lyricalBgOpacity * 100)}%</span>
+                            </div>
+                            <input type="range" min="0" max="1" step="0.05" value={lyricalBgOpacity}
+                              onChange={(e) => setLyricalBgOpacity(parseFloat(e.target.value))}
+                              className="w-full h-1 bg-gray-800 rounded-lg appearance-none cursor-pointer accent-purple-500" />
+                          </div>
+                        </>
+                      )}
+                    </div>
+
+                    {/* Word Spacing + Letter Spacing */}
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="space-y-1">
+                        <label className="block text-[9px] uppercase tracking-wider font-extrabold text-gray-500">Word Spacing</label>
+                        <select value={lyricalWordSpacing} onChange={(e) => setLyricalWordSpacing(e.target.value)}
+                          className="w-full bg-black/45 border border-white/10 rounded-xl px-2 py-2 text-[11px] text-gray-300 focus:outline-none cursor-pointer"
+                        >
+                          <option value="normal">Normal</option>
+                          <option value="wide">Wide</option>
+                          <option value="extra_wide">Extra Wide</option>
+                        </select>
+                      </div>
+                      <div className="space-y-1">
+                        <div className="flex justify-between text-[9px] uppercase tracking-wider font-extrabold text-gray-500">
+                          <span>Letter Space</span><span className="text-purple-400">{lyricalLetterSpacing}px</span>
+                        </div>
+                        <input type="range" min="-5" max="15" value={lyricalLetterSpacing}
+                          onChange={(e) => setLyricalLetterSpacing(parseInt(e.target.value))}
+                          className="w-full h-1.5 bg-gray-800 rounded-lg appearance-none cursor-pointer accent-purple-500" />
+                      </div>
+                    </div>
+
+                    {/* Save + Start Over Buttons */}
+                    <div className="space-y-2 pt-2 border-t border-white/5">
+                      <button
+                        type="button"
+                        disabled={preRenderingTemplate}
+                        onClick={() => {
+                          if (lgTrackId) handlePreRenderTemplate(lgTrackId);
+                        }}
+                        className="w-full bg-gradient-to-r from-amber-500 via-purple-500 to-indigo-600 hover:from-amber-600 hover:to-indigo-700 text-white font-extrabold py-2.5 px-4 rounded-xl text-xs flex items-center justify-center gap-2 shadow-lg transition-all disabled:opacity-50 cursor-pointer"
+                      >
+                        {preRenderingTemplate ? (
+                          <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Saving...</>
+                        ) : (
+                          <><Sparkles className="w-3.5 h-3.5" /> Save Styling Template</>
+                        )}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (lgPreviewAudioRef.current) lgPreviewAudioRef.current.pause();
+                          setLgPreviewPlaying(false);
+                          lgResetWizard();
+                        }}
+                        className="w-full text-[10px] text-gray-500 hover:text-white transition-colors flex items-center justify-center gap-1 py-2 cursor-pointer"
+                      >
+                        <RefreshCw className="w-3 h-3" /> Start Over (New Track)
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* ── Right Column: Live Preview ── */}
+                  <div className="lg:col-span-7 bg-[#0d0d16]/70 backdrop-blur-xl border border-white/10 p-5 rounded-2xl shadow-2xl space-y-4 flex flex-col items-center">
+                    <div className="w-full flex justify-between items-center pb-2 border-b border-white/5">
+                      <div className="flex items-center gap-2">
+                        <Play className="w-3.5 h-3.5 text-amber-400" />
+                        <h3 className="text-[10px] font-black uppercase tracking-widest text-amber-300">Live Preview</h3>
+                      </div>
+                      <span className={`text-[9px] font-black uppercase tracking-widest px-2 py-0.5 rounded-full border ${lgPreviewPlaying ? "bg-amber-500/10 text-amber-400 border-amber-500/20 animate-pulse" : "bg-white/5 text-gray-500 border-white/5"}`}>
+                        {lgPreviewPlaying ? "Playing" : "Paused"}
+                      </span>
+                    </div>
+
+                    {/* Phone Preview */}
+                    {(() => {
+                      // Compute preview rendering data
+                      const pvWords = lgPreviewWords;
+                      const pvTime = lyricalPlaybackTime;
+                      const pvDuration = lgPreviewDuration;
+                      const pvPercent = pvDuration > 0 ? Math.min(100, Math.max(0, (pvTime / pvDuration) * 100)) : 0;
+
+                      // Chunk words (max 3 words, gap 1.5s)
+                      const pvChunks = (() => {
+                        const res: any[][] = []; let cur: any[] = [];
+                        for (const w of pvWords) {
+                          if (cur.length === 0) { cur.push(w); }
+                          else {
+                            const gap = w.start - cur[cur.length - 1].end;
+                            if (cur.length >= 3 || gap > 1.5) { res.push(cur); cur = [w]; }
+                            else cur.push(w);
+                          }
+                        }
+                        if (cur.length > 0) res.push(cur);
+                        return res;
+                      })();
+
+                      const pvActiveChunk = pvChunks.find(chunk => {
+                        if (chunk.length === 0) return false;
+                        return pvTime >= chunk[0].start && pvTime <= chunk[chunk.length - 1].end;
+                      });
+                      const pvCurrentChunk = pvActiveChunk || (() => {
+                        let last = null;
+                        for (const chunk of pvChunks) {
+                          if (chunk.length > 0 && pvTime >= chunk[0].start) last = chunk;
+                        }
+                        return last;
+                      })() || pvChunks[0] || [{ word: "Preview", start: 0, end: 1 }];
+
+                      // Word builder phrases
+                      const pvPhrases = (() => {
+                        if (lyricalAnimationMode !== "word_builder") return [];
+                        const res: any[][] = []; let cur: any[] = []; let lastEnd = 0;
+                        for (const w of pvWords) {
+                          if (cur.length > 0 && (w.start - lastEnd > 1.5 || cur.length >= 12)) { res.push(cur); cur = []; }
+                          cur.push(w); lastEnd = w.end;
+                        }
+                        if (cur.length > 0) res.push(cur);
+                        return res;
+                      })();
+                      const pvCurrentPhrase = pvPhrases.find(p => p.length > 0 && pvTime >= p[0].start - 0.05 && pvTime <= p[p.length - 1].end + 0.3) || null;
+                      const pvVisibleWords = pvCurrentPhrase ? pvCurrentPhrase.filter((w: any) => pvTime >= w.start - 0.05) : [];
+
+                      // Font + color helpers
+                      const pvFont = (() => {
+                        if (lyricalFontFamily.startsWith("Montserrat")) return "'Montserrat', sans-serif";
+                        if (lyricalFontFamily.startsWith("Outfit")) return "'Outfit', sans-serif";
+                        if (lyricalFontFamily.startsWith("Anton")) return "'Anton', sans-serif";
+                        if (lyricalFontFamily.startsWith("Inter")) return "'Inter', sans-serif";
+                        if (lyricalFontFamily.startsWith("Caveat")) return "'Caveat', cursive";
+                        return "'Montserrat', sans-serif";
+                      })();
+                      const hexList = ["#FFFF00","#00FF00","#00FFFF","#FF00FF","#FF5F00","#FF007F"];
+                      const pvGetColor = (w: any, idx: number, active: boolean) => {
+                        if (!active) return "#ffffff";
+                        if (lyricalActiveColor === "multi") return hexList[idx % hexList.length];
+                        return lyricalActiveColor;
+                      };
+                      const pvJustify = lyricalTextAlign === "left" ? "flex-start" : lyricalTextAlign === "right" ? "flex-end" : "center";
+                      const pvTextAlignClass = lyricalTextAlign === "left" ? "text-left" : lyricalTextAlign === "right" ? "text-right" : "text-center";
+                      const pvGapX = (() => {
+                        if (lyricalWordSpacing === "wide") return lyricalAnimationMode === "word_builder" ? "14px" : "10px";
+                        if (lyricalWordSpacing === "extra_wide") return lyricalAnimationMode === "word_builder" ? "20px" : "16px";
+                        return lyricalAnimationMode === "word_builder" ? "6px" : "4px";
+                      })();
+                      const pvGapY = lyricalAnimationMode === "word_builder" ? "8px" : "2px";
+
+                      return (
+                        <>
+                          <div
+                            onClick={() => {
+                              if (lgPreviewPlaying) {
+                                lgPreviewAudioRef.current?.pause();
+                                setLgPreviewPlaying(false);
+                              } else {
+                                if (lgPreviewAudioRef.current) {
+                                  lgPreviewAudioRef.current.play();
+                                  setLgPreviewPlaying(true);
+                                }
+                              }
+                            }}
+                            className="relative aspect-[9/16] w-full max-w-[220px] bg-[#07070d] border border-white/15 rounded-[36px] overflow-hidden shadow-2xl flex flex-col justify-between group cursor-pointer hover:border-purple-500/30 transition-all duration-300"
+                          >
+                            {/* BG: gradient or solid color */}
+                            {lyricalBgColor ? (
+                              <div className="absolute inset-0 z-0" style={{ backgroundColor: lyricalBgColor, opacity: lyricalBgOpacity }} />
+                            ) : (
+                              <>
+                                <div className="absolute inset-0 bg-gradient-to-b from-[#120521] via-[#050616] to-[#04101e] opacity-90 z-0" />
+                                <div className="absolute top-[20%] left-[20%] w-[100px] h-[100px] bg-purple-600/10 rounded-full blur-[40px] animate-pulse z-0" />
+                                <div className="absolute bottom-[20%] right-[20%] w-[100px] h-[100px] bg-indigo-500/10 rounded-full blur-[40px] animate-pulse z-0" />
+                              </>
+                            )}
+
+                            {/* TikTok UI overlay */}
+                            <div className="absolute right-3 bottom-12 flex flex-col items-center gap-3 z-10 text-white/50 pointer-events-none">
+                              <div className="flex flex-col items-center gap-0.5">
+                                <span className="text-[10px]">❤️</span>
+                                <span className="text-[6px] font-black text-white/90">12.5K</span>
+                              </div>
+                              <div className="flex flex-col items-center gap-0.5">
+                                <span className="text-[10px]">💬</span>
+                                <span className="text-[6px] font-black text-white/90">342</span>
+                              </div>
+                            </div>
+                            <div className="absolute left-3 bottom-3 flex items-center gap-1.5 z-10 text-white/60 pointer-events-none">
+                              <div className="w-3.5 h-3.5 rounded-full bg-purple-500/25 border border-purple-500/40 flex items-center justify-center text-[6px] font-black uppercase text-purple-300">L</div>
+                              <div className="text-[7px] leading-tight">
+                                <p className="text-white/90 font-bold leading-none">@sleeckos</p>
+                                <p className="text-[6px] text-white/45 mt-0.5 leading-none">Lyrical Video</p>
+                              </div>
+                            </div>
+
+                            {/* Play/Pause hover overlay */}
+                            <div className="absolute inset-0 flex items-center justify-center bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity duration-300 z-20">
+                              <div className="w-11 h-11 rounded-full bg-black/70 border border-white/15 flex items-center justify-center text-white shadow-2xl backdrop-blur-sm scale-90 group-hover:scale-100 transition-all">
+                                {lgPreviewPlaying ? (
+                                  <Pause className="w-4 h-4 text-purple-400 fill-current" />
+                                ) : (
+                                  <Play className="w-4 h-4 text-amber-400 fill-current translate-x-0.5" />
+                                )}
+                              </div>
+                            </div>
+
+                            {/* ── LYRICS RENDER LAYER ── */}
+                            {(() => {
+                              if (lyricalAnimationMode === "brat") {
+                                const layoutWords = computeBratLayout(pvVisibleWords, lyricalFontFamily, lyricalFontSize, 720, 1280, lyricalTextMargin);
+                                return (
+                                  <div className="absolute inset-0 z-10 select-none pointer-events-none">
+                                    {layoutWords.map((w: any, idx: number) => (
+                                      <span key={idx} className="absolute uppercase" style={{
+                                        left: `${w.x * 0.25}px`, top: `${w.y * 0.25}px`,
+                                        fontSize: `${w.fontSize * 0.25}px`, fontFamily: pvFont,
+                                        color: lyricalTextColor || "#000000",
+                                        letterSpacing: `${lyricalLetterSpacing * 0.25}px`,
+                                        textTransform: "lowercase" as const, lineHeight: 1.0, fontWeight: 900
+                                      }}>
+                                        {w.word.toLowerCase()}
+                                      </span>
+                                    ))}
+                                  </div>
+                                );
+                              } else if (lyricalAnimationMode === "word_builder") {
+                                return (
+                                  <div className={`absolute left-0 right-0 px-4 transform -translate-y-1/2 z-10 select-none pointer-events-none ${pvTextAlignClass}`}
+                                    style={{ top: `${lyricalPositionY * 100}%`, fontFamily: pvFont, fontSize: `${lyricalFontSize * 0.25}px`, lineHeight: 1.6 }}
+                                  >
+                                    <div className="flex flex-wrap items-center" style={{
+                                      justifyContent: pvJustify, gap: `${pvGapY} ${pvGapX}`,
+                                      maxHeight: `${Math.round(lyricalFontSize * 0.25 * 1.6 * 3 + 12)}px`, overflow: "hidden"
+                                    }}>
+                                      {pvVisibleWords.map((w: any, idx: number) => (
+                                        <span key={idx} style={{
+                                          color: lyricalTextColor || "#000000", fontWeight: 300,
+                                          textTransform: "lowercase" as const,
+                                          letterSpacing: `${lyricalLetterSpacing * 0.25}px`, display: "inline-block"
+                                        }}>
+                                          {w.word.toLowerCase()}
+                                        </span>
+                                      ))}
+                                    </div>
+                                  </div>
+                                );
+                              } else {
+                                // Highlight mode
+                                return (
+                                  <div className={`absolute left-0 right-0 px-3 transform -translate-y-1/2 z-10 select-none pointer-events-none ${pvTextAlignClass}`}
+                                    style={{ top: `${lyricalPositionY * 100}%`, fontFamily: pvFont, fontSize: `${lyricalFontSize * 0.25}px`, lineHeight: 1.25 }}
+                                  >
+                                    <div className="flex flex-wrap items-center" style={{ justifyContent: pvJustify, gap: `${pvGapY} ${pvGapX}` }}>
+                                      {pvCurrentChunk.map((w: any, idx: number) => {
+                                        const isActive = lgPreviewPlaying ? (pvTime >= w.start && pvTime <= w.end) : (idx === 0);
+                                        const color = pvGetColor(w, idx, isActive);
+                                        return (
+                                          <span key={idx} style={{
+                                            color: isActive ? color : (lyricalTextColor || "#ffffff"),
+                                            WebkitTextStroke: `${lyricalStrokeWidth * 0.25}px ${lyricalStrokeColor}`,
+                                            textShadow: isActive ? `0 0 8px ${color}cc, 0 0 16px ${color}50` : "none",
+                                            transform: isActive ? "scale(1.12)" : "scale(1.0)",
+                                            letterSpacing: `${lyricalLetterSpacing * 0.25}px`,
+                                            transition: "all 0.08s ease-out", display: "inline-block"
+                                          }} className={isActive ? "font-black tracking-tight" : "font-extrabold"}>
+                                            {w.word}
+                                          </span>
+                                        );
+                                      })}
+                                    </div>
+                                  </div>
+                                );
+                              }
+                            })()}
+
+                            {/* Progress bar */}
+                            <div className="absolute bottom-0 left-0 right-0 h-1 bg-white/10 z-20">
+                              <div className="h-full bg-gradient-to-r from-amber-400 to-purple-500 transition-all duration-100 ease-linear"
+                                style={{ width: `${pvPercent}%` }} />
+                            </div>
+                          </div>
+
+                          {/* Timeline Scrubber */}
+                          <div className="w-full space-y-2 mt-2 px-1 bg-black/20 p-3 rounded-xl border border-white/5">
+                            <div className="flex justify-between items-center text-[10px] text-gray-500 font-semibold uppercase tracking-wider">
+                              <span>Playback</span>
+                              <span className="text-white font-bold">{pvTime.toFixed(1)}s / {pvDuration.toFixed(1)}s</span>
+                            </div>
+                            <input type="range" min="0" max={pvDuration} step="0.05" value={pvTime}
+                              onChange={(e) => {
+                                const t = parseFloat(e.target.value);
+                                setLyricalPlaybackTime(t);
+                                if (lgPreviewAudioRef.current) lgPreviewAudioRef.current.currentTime = t;
+                              }}
+                              className="w-full h-1.5 bg-gray-800 rounded-lg appearance-none cursor-pointer accent-amber-500" />
+                          </div>
+
+                          {/* Lyrics Text Display */}
+                          <div className="w-full bg-black/20 p-3 rounded-xl border border-white/5 max-h-28 overflow-y-auto">
+                            <p className="text-[9px] uppercase tracking-wider text-gray-600 mb-1.5 font-bold">Word Timeline ({pvWords.length} words)</p>
+                            <div className="flex flex-wrap gap-1">
+                              {pvWords.map((w: any, i: number) => {
+                                const active = pvTime >= w.start && pvTime <= w.end;
+                                return (
+                                  <span key={i} className={`text-[10px] px-1 py-0.5 rounded transition-all ${active ? "bg-emerald-500/30 text-emerald-300 font-bold" : "text-gray-500"}`}>
+                                    {w.word}
+                                  </span>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        </>
+                      );
+                    })()}
+                  </div>
                 </div>
               </div>
             )}
