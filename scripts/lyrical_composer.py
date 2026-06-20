@@ -222,6 +222,23 @@ def ensure_font(font_path_or_name):
             return cache_path
         except Exception as e:
             print(f"[-] Failed to download font: {e}. Falling back to system fonts.")
+
+    # Direct fetch for Archivo Narrow (brat style font)
+    if "archivonarrow" in font_path_or_name.lower() or "archivo" in font_path_or_name.lower():
+        url = "https://github.com/google/fonts/raw/main/ofl/archivonarrow/ArchivoNarrow%5Bwght%5D.ttf"
+        print(f"[*] Cache miss. Downloading Archivo Narrow from: {url}")
+        try:
+            import urllib.request
+            req = urllib.request.Request(
+                url, 
+                headers={'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)'}
+            )
+            with urllib.request.urlopen(req) as response, open(cache_path, 'wb') as out_file:
+                shutil.copyfileobj(response, out_file)
+            print(f"[+] Archivo Narrow font cached at {cache_path}")
+            return cache_path
+        except Exception as e:
+            print(f"[-] Failed to download Archivo Narrow: {e}. Falling back.")
             
     # Standard Operating System Fallbacks
     fallbacks = []

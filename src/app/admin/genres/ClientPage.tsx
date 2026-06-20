@@ -1060,7 +1060,7 @@ export default function GenresDashboard() {
       const link = document.createElement("link");
       link.id = id;
       link.rel = "stylesheet";
-      link.href = "https://fonts.googleapis.com/css2?family=Anton&family=Caveat:wght@700&family=Great+Vibes&family=Inter:wght@700&family=Lora:ital,wght@0,700;1,700&family=Montserrat:wght@700&family=Oswald:wght@700&family=Outfit:wght@700&family=Playfair+Display:ital,wght@0,700;1,700&display=swap";
+      link.href = "https://fonts.googleapis.com/css2?family=Anton&family=Archivo+Narrow:wght@400;500;600;700&family=Caveat:wght@700&family=Great+Vibes&family=Inter:wght@700&family=Lora:ital,wght@0,700;1,700&family=Montserrat:wght@700&family=Oswald:wght@700&family=Outfit:wght@700&family=Playfair+Display:ital,wght@0,700;1,700&display=swap";
       document.head.appendChild(link);
     }
 
@@ -2768,7 +2768,7 @@ export default function GenresDashboard() {
       `}</style>
       {/* Import premium styling fonts dynamically */}
       <link 
-        href="https://fonts.googleapis.com/css2?family=Anton&family=Caveat:wght@700&family=Inter:wght@700;900&family=Montserrat:wght@900&family=Outfit:wght@800;900&display=swap" 
+        href="https://fonts.googleapis.com/css2?family=Anton&family=Archivo+Narrow:wght@400;500;600;700&family=Caveat:wght@700&family=Inter:wght@700;900&family=Montserrat:wght@900&family=Outfit:wght@800;900&display=swap" 
         rel="stylesheet" 
       />
       <audio 
@@ -3000,6 +3000,7 @@ export default function GenresDashboard() {
           })();
 
           const cssFontFamily = (() => {
+            if (lyricalFontFamily.startsWith("ArchivoNarrow")) return "'Archivo Narrow', sans-serif";
             if (lyricalFontFamily.startsWith("Montserrat")) return "'Montserrat', sans-serif";
             if (lyricalFontFamily.startsWith("Outfit")) return "'Outfit', sans-serif";
             if (lyricalFontFamily.startsWith("Anton")) return "'Anton', sans-serif";
@@ -3398,7 +3399,7 @@ export default function GenresDashboard() {
                               setLyricalLetterSpacing(0);
                             } else if (val === "brat-style") {
                               setLyricalTemplateName("Brat Style");
-                              setLyricalFontFamily("Montserrat-Black");
+                              setLyricalFontFamily("ArchivoNarrow-Bold");
                               setLyricalFontSize(76);
                               setLyricalActiveColor("#000000");
                               setLyricalStrokeWidth(0);
@@ -3451,6 +3452,7 @@ export default function GenresDashboard() {
                             className="w-full bg-black/45 border border-white/10 hover:border-white/20 rounded-2xl px-3 py-2 text-xs text-gray-300 focus:outline-none transition-all duration-300 cursor-pointer"
                           >
                             <option value="Montserrat-Black">Montserrat Black</option>
+                            <option value="ArchivoNarrow-Bold">Archivo Narrow (Brat)</option>
                             <option value="Outfit-Bold">Outfit Bold</option>
                             <option value="Anton">Anton</option>
                             <option value="Inter-Bold">Inter Bold</option>
@@ -8598,7 +8600,7 @@ export default function GenresDashboard() {
                             setLyricalLofiFactor(1); setLyricalTextColor("#000000"); setLyricalTextAlign("left");
                             setLyricalWordSpacing("extra_wide"); setLyricalLetterSpacing(0);
                           } else if (val === "brat-style") {
-                            setLyricalFontFamily("Montserrat-Black"); setLyricalFontSize(76); setLyricalActiveColor("#000000");
+                            setLyricalFontFamily("ArchivoNarrow-Bold"); setLyricalFontSize(76); setLyricalActiveColor("#000000");
                             setLyricalStrokeWidth(0); setLyricalStrokeColor("#000000"); setLyricalPositionY(0.40);
                             setLyricalAnimationMode("brat"); setLyricalBgColor("#8ace00"); setLyricalBgOpacity(1.0);
                             setLyricalLofiFactor(8); setLyricalTextMargin(50); setLyricalTextColor("#000000");
@@ -8637,6 +8639,7 @@ export default function GenresDashboard() {
                           className="w-full bg-black/45 border border-white/10 hover:border-white/20 rounded-xl px-2 py-2 text-[11px] text-gray-300 focus:outline-none transition-all cursor-pointer"
                         >
                           <option value="Montserrat-Black">Montserrat Black</option>
+                          <option value="ArchivoNarrow-Bold">Archivo Narrow (Brat)</option>
                           <option value="Outfit-Bold">Outfit Bold</option>
                           <option value="Anton">Anton</option>
                           <option value="Inter-Bold">Inter Bold</option>
@@ -8923,6 +8926,7 @@ export default function GenresDashboard() {
 
                       // Font + color helpers
                       const pvFont = (() => {
+                        if (lyricalFontFamily.startsWith("ArchivoNarrow")) return "'Archivo Narrow', sans-serif";
                         if (lyricalFontFamily.startsWith("Montserrat")) return "'Montserrat', sans-serif";
                         if (lyricalFontFamily.startsWith("Outfit")) return "'Outfit', sans-serif";
                         if (lyricalFontFamily.startsWith("Anton")) return "'Anton', sans-serif";
