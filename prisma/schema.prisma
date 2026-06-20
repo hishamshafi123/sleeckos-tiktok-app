@@ -446,6 +446,7 @@ model Track {
   lyricalTranscription String?                // JSON array of word-level aligned timestamps
   lyricalTemplates    TrackLyricalTemplate[]
   clipMixerBatches    ClipMixerBatch[]
+  lyricGenerations    LyricGeneration[]
 }
 
 model TrackLyricalTemplate {
@@ -1012,4 +1013,38 @@ model AgentAuditLog {
   toolOutput  Json?                 // result returned
   status      String                // success | denied | error | confirmed | pending_confirmation
   createdAt   DateTime @default(now())
+}
+
+// ────────────────────────────────────────────────────────
+// Lyric Generator
+// ────────────────────────────────────────────────────────
+
+model LyricGeneration {
+  id              String   @id @default(uuid())
+  songQuery       String                    // Original search query "Song - Artist"
+  artistName      String?
+  trackName       String?
+
+  // Source selection
+  lrclibId        Int?                      // LRCLIB track ID selected
+  youtubeVideoId  String?                   // YouTube video ID selected
+  syncedLyrics    String?  @db.Text         // Raw .lrc content (synced)
+
+  // Line range
+  startLine       Int      @default(0)      // 0-indexed start line
+  endLine         Int      @default(0)      // 0-indexed end line
+  startTime       Float    @default(0.0)    // Derived start timestamp (seconds)
+  endTime         Float    @default(0.0)    // Derived end timestamp (seconds)
+
+  // Output
+  timedWords      String?  @db.Text         // JSON word-level timing array
+  audioFileUrl    String?                   // Local path to trimmed audio
+  trackId         String?                   // Link to Track if one was created
+  track           Track?   @relation(fields: [trackId], references: [id], onDelete: SetNull)
+
+  // Metadata
+  sourceType      String   @default("lrclib") // "lrclib" | "manual_lrc" | "stable_ts"
+  createdById     String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
 }

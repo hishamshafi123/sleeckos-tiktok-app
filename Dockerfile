@@ -64,7 +64,7 @@ RUN groupadd --system --gid 1001 nodejs && \
 # Only re-runs if the RUN command itself is modified.
 RUN python3 -m venv venv && \
     ./venv/bin/pip install --no-cache-dir --upgrade pip && \
-    ./venv/bin/pip install --no-cache-dir stable-ts "moviepy==1.0.3" pillow numpy faster-whisper && \
+    ./venv/bin/pip install --no-cache-dir stable-ts "moviepy==1.0.3" pillow numpy faster-whisper yt-dlp && \
     chown -R nextjs:nodejs venv
 
 # ── CACHEABLE: Bake Google Fonts ─────────────────────────────────────────────

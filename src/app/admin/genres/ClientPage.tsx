@@ -4,7 +4,7 @@ import { useState, useEffect, useRef } from "react";
 import { 
   Sparkles, Music, Sliders, Play, Pause, Trash2, Plus, 
   Upload, Film, CheckCircle2, AlertCircle, RefreshCw, ChevronRight, ChevronDown, Check, X, Lock, Tag, Folder, FolderOpen, Eye, Filter,
-  Loader2, ExternalLink, Download, Edit3
+  Loader2, ExternalLink, Download, Edit3, Search, FileText, Clock, Mic
 } from "lucide-react";
 import { toast as originalToast } from "sonner";
 
@@ -276,7 +276,7 @@ function computeBratLayout(
 }
 
 // Tabs Enum
-type TabType = "tracks" | "accounts" | "batches";
+type TabType = "tracks" | "accounts" | "batches" | "lyric-gen";
 
 interface Track {
   id: string;
@@ -513,6 +513,201 @@ export default function GenresDashboard() {
   // Audio Player State
   const [playingTrackId, setPlayingTrackId] = useState<string | null>(null);
   const audioPlayerRef = useRef<HTMLAudioElement | null>(null);
+
+  // ── Lyric Generator Wizard State ──────────────────────────────────────────
+  const [lgStep, setLgStep] = useState<1 | 2 | 3 | 4>(1);
+  const [lgQuery, setLgQuery] = useState("");
+  const [lgSearching, setLgSearching] = useState(false);
+  const [lgYoutubeResults, setLgYoutubeResults] = useState<any[]>([]);
+  const [lgLrclibResults, setLgLrclibResults] = useState<any[]>([]);
+  const [lgSelectedYt, setLgSelectedYt] = useState<any>(null);
+  const [lgSelectedLrc, setLgSelectedLrc] = useState<any>(null);
+  const [lgDownloading, setLgDownloading] = useState(false);
+  const [lgAudioUrl, setLgAudioUrl] = useState<string>("");
+  const [lgAudioDuration, setLgAudioDuration] = useState(0);
+  const [lgStartLine, setLgStartLine] = useState<number | null>(null);
+  const [lgEndLine, setLgEndLine] = useState<number | null>(null);
+  const [lgManualMode, setLgManualMode] = useState(false);
+  const [lgManualLrc, setLgManualLrc] = useState("");
+  const [lgParsedLines, setLgParsedLines] = useState<any[]>([]);
+  const [lgGenerating, setLgGenerating] = useState(false);
+  const [lgSearchErrors, setLgSearchErrors] = useState<{ lrclib: string | null; youtube: string | null }>({ lrclib: null, youtube: null });
+
+  const lgResetWizard = () => {
+    setLgStep(1);
+    setLgQuery("");
+    setLgYoutubeResults([]);
+    setLgLrclibResults([]);
+    setLgSelectedYt(null);
+    setLgSelectedLrc(null);
+    setLgDownloading(false);
+    setLgAudioUrl("");
+    setLgAudioDuration(0);
+    setLgStartLine(null);
+    setLgEndLine(null);
+    setLgManualMode(false);
+    setLgManualLrc("");
+    setLgParsedLines([]);
+    setLgGenerating(false);
+    setLgSearchErrors({ lrclib: null, youtube: null });
+  };
+
+  const lgHandleSearch = async () => {
+    if (!lgQuery.trim()) return;
+    setLgSearching(true);
+    setLgSearchErrors({ lrclib: null, youtube: null });
+    try {
+      const isUrl = lgQuery.trim().startsWith("http");
+      const res = await fetch("/api/managed/genres/lyric-generator/search", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          query: lgQuery.trim(),
+          youtubeUrl: isUrl ? lgQuery.trim() : undefined,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Search failed");
+      setLgYoutubeResults(data.youtube || []);
+      setLgLrclibResults(data.lrclib || []);
+      setLgSearchErrors(data.errors || { lrclib: null, youtube: null });
+      if ((data.lrclib?.length || 0) > 0 || (data.youtube?.length || 0) > 0) {
+        setLgStep(2);
+      } else {
+        toast.error("No results found. Try a different query or paste .lrc content manually.");
+      }
+    } catch (err: any) {
+      toast.error(err.message || "Search failed");
+    } finally {
+      setLgSearching(false);
+    }
+  };
+
+  const lgHandleDownloadAudio = async () => {
+    if (!lgSelectedYt) return;
+    setLgDownloading(true);
+    try {
+      const res = await fetch("/api/managed/genres/lyric-generator/download-audio", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ videoId: lgSelectedYt.videoId }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Download failed");
+      setLgAudioUrl(data.filePath);
+      setLgAudioDuration(data.duration);
+      toast.success("Audio downloaded successfully");
+    } catch (err: any) {
+      toast.error(err.message || "Audio download failed");
+    } finally {
+      setLgDownloading(false);
+    }
+  };
+
+  const lgHandleSelectLrc = (lrc: any) => {
+    setLgSelectedLrc(lrc);
+    setLgParsedLines(lrc.parsedLines || []);
+    setLgStartLine(null);
+    setLgEndLine(null);
+  };
+
+  const lgHandleLineClick = (lineIdx: number) => {
+    if (lgStartLine === null) {
+      setLgStartLine(lineIdx);
+      setLgEndLine(null);
+    } else if (lgEndLine === null) {
+      if (lineIdx >= lgStartLine) {
+        setLgEndLine(lineIdx);
+      } else {
+        // Clicked before start — reset start
+        setLgStartLine(lineIdx);
+        setLgEndLine(null);
+      }
+    } else {
+      // Both set — reset to new start
+      setLgStartLine(lineIdx);
+      setLgEndLine(null);
+    }
+  };
+
+  const lgParseManualLrc = () => {
+    if (!lgManualLrc.trim()) return;
+    const timeRegex = /\[(\d+):(\d+(?:\.\d+)?)]/;
+    const lines: any[] = [];
+    let idx = 0;
+    for (const line of lgManualLrc.split("\n")) {
+      const match = timeRegex.exec(line);
+      if (match) {
+        const mins = parseInt(match[1], 10);
+        const secs = parseFloat(match[2]);
+        const text = line.replace(timeRegex, "").trim();
+        lines.push({ text, start: mins * 60 + secs, end: 0, index: idx++ });
+      }
+    }
+    lines.sort((a: any, b: any) => a.start - b.start);
+    lines.forEach((l: any, i: number) => { l.index = i; });
+    for (let i = 0; i < lines.length; i++) {
+      lines[i].end = i < lines.length - 1 ? lines[i + 1].start : lines[i].start + 4;
+    }
+    setLgParsedLines(lines);
+    setLgSelectedLrc({ syncedLyrics: lgManualLrc, trackName: "Manual", artistName: "" });
+    setLgStartLine(null);
+    setLgEndLine(null);
+    toast.success(`Parsed ${lines.length} lyric lines`);
+  };
+
+  const lgGetClipInfo = () => {
+    if (lgStartLine === null || lgEndLine === null || lgParsedLines.length === 0) return null;
+    const startTime = lgParsedLines[lgStartLine]?.start || 0;
+    const endTime = lgParsedLines[lgEndLine]?.end || 0;
+    const duration = endTime - startTime;
+    return { startTime, endTime, duration, lineCount: lgEndLine - lgStartLine + 1 };
+  };
+
+  const lgFormatTime = (secs: number) => {
+    const m = Math.floor(secs / 60);
+    const s = Math.floor(secs % 60);
+    const ms = Math.round((secs % 1) * 100);
+    return `${m}:${s.toString().padStart(2, "0")}.${ms.toString().padStart(2, "0")}`;
+  };
+
+  const lgHandleGenerate = async () => {
+    if (!lgSelectedLrc || lgStartLine === null || lgEndLine === null || !lgAudioUrl) {
+      toast.error("Please complete all steps before generating");
+      return;
+    }
+    setLgGenerating(true);
+    try {
+      const res = await fetch("/api/managed/genres/lyric-generator/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          syncedLyrics: lgSelectedLrc.syncedLyrics || lgManualLrc,
+          startLine: lgStartLine,
+          endLine: lgEndLine,
+          audioFileUrl: lgAudioUrl,
+          title: lgSelectedLrc.trackName || lgQuery.split("-")[0]?.trim() || "Untitled",
+          artist: lgSelectedLrc.artistName || lgQuery.split("-")[1]?.trim() || "Unknown",
+          songQuery: lgQuery,
+          lrclibId: lgSelectedLrc.id || undefined,
+          youtubeVideoId: lgSelectedYt?.videoId || undefined,
+          sourceType: lgManualMode ? "manual_lrc" : "lrclib",
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Generation failed");
+      toast.success(`Track created: ${data.track.title} (${data.lineRange.lineCount} lines, ${Math.round(data.lineRange.clipDuration)}s)`);
+      // Refresh tracks list
+      fetchTracks();
+      lgResetWizard();
+      setActiveTab("tracks");
+    } catch (err: any) {
+      toast.error(err.message || "Generation failed");
+    } finally {
+      setLgGenerating(false);
+    }
+  };
+
 
   // 2. Account Settings Form State
   const [themeText, setThemeText] = useState("");
@@ -2490,6 +2685,17 @@ export default function GenresDashboard() {
           >
             <Sparkles className="w-4 h-4" />
             Composer Wizard
+          </button>
+          <button
+            onClick={() => setActiveTab("lyric-gen")}
+            className={`flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold transition-all duration-300 ${
+              activeTab === "lyric-gen" 
+                ? "bg-gradient-to-r from-emerald-500/20 to-cyan-500/20 text-emerald-400 border border-emerald-500/30 shadow-lg shadow-emerald-500/5 backdrop-blur-md" 
+                : "text-gray-400 hover:text-white"
+            }`}
+          >
+            <Mic className="w-4 h-4" />
+            Lyric Generator
           </button>
         </div>
       </div>
@@ -7675,6 +7881,470 @@ export default function GenresDashboard() {
           </div>
         );
       })()}
+
+      {/* ────────────────────────────────────────────────────────────────────────
+          TAB: LYRIC GENERATOR
+      ──────────────────────────────────────────────────────────────────────── */}
+      {activeTab === "lyric-gen" && (
+        <div className="bg-[#0d0d16]/80 backdrop-blur-md border border-white/10 rounded-3xl overflow-hidden">
+          {/* Header */}
+          <div className="px-6 py-5 border-b border-white/5 flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-emerald-500/20 to-cyan-500/20 border border-emerald-500/30 flex items-center justify-center">
+                <Mic className="w-4 h-4 text-emerald-400" />
+              </div>
+              <div>
+                <h2 className="text-sm font-bold text-white">Lyric Generator</h2>
+                <p className="text-[10px] text-gray-500">Search songs → pick lyrics → select lines → create track</p>
+              </div>
+            </div>
+            {lgStep > 1 && (
+              <button
+                onClick={lgResetWizard}
+                className="text-[10px] text-gray-500 hover:text-white transition-colors flex items-center gap-1"
+              >
+                <RefreshCw className="w-3 h-3" />
+                Start Over
+              </button>
+            )}
+          </div>
+
+          {/* Step Indicator */}
+          <div className="px-6 py-3 border-b border-white/5 bg-black/20">
+            <div className="flex items-center gap-2">
+              {[
+                { n: 1, label: "Search" },
+                { n: 2, label: "Select" },
+                { n: 3, label: "Lines" },
+                { n: 4, label: "Create" },
+              ].map((s, i) => (
+                <div key={s.n} className="flex items-center gap-2">
+                  {i > 0 && <div className={`w-8 h-px ${lgStep >= s.n ? "bg-emerald-500/50" : "bg-white/10"}`} />}
+                  <div
+                    className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[10px] font-bold transition-all ${
+                      lgStep === s.n
+                        ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30"
+                        : lgStep > s.n
+                        ? "bg-emerald-500/10 text-emerald-500/60"
+                        : "text-gray-600"
+                    }`}
+                  >
+                    {lgStep > s.n ? (
+                      <CheckCircle2 className="w-3 h-3" />
+                    ) : (
+                      <span className="w-3.5 h-3.5 rounded-full border border-current flex items-center justify-center text-[8px]">
+                        {s.n}
+                      </span>
+                    )}
+                    {s.label}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="p-6 space-y-5">
+            {/* ── STEP 1: Song Search ──────────────────────────────────────────── */}
+            {lgStep === 1 && (
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-[10px] uppercase tracking-wider text-gray-500 font-bold mb-2">
+                    Search Song
+                  </label>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={lgQuery}
+                      onChange={(e) => setLgQuery(e.target.value)}
+                      onKeyDown={(e) => e.key === "Enter" && lgHandleSearch()}
+                      placeholder="Song name - Artist (e.g. Von Dutch - Charli XCX) or YouTube URL..."
+                      className="flex-1 bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-emerald-500/50 transition-colors"
+                    />
+                    <button
+                      onClick={lgHandleSearch}
+                      disabled={lgSearching || !lgQuery.trim()}
+                      className="px-5 py-3 bg-gradient-to-r from-emerald-600 to-cyan-600 hover:from-emerald-500 hover:to-cyan-500 disabled:opacity-40 text-white font-bold text-xs rounded-xl transition-all flex items-center gap-2"
+                    >
+                      {lgSearching ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
+                      {lgSearching ? "Searching..." : "Search"}
+                    </button>
+                  </div>
+                  <p className="text-[9px] text-gray-600 mt-2">
+                    Searches LRCLIB for synced lyrics and YouTube for audio simultaneously. You can also paste a YouTube URL directly.
+                  </p>
+                </div>
+
+                {/* Manual LRC Mode Toggle */}
+                <div className="border-t border-white/5 pt-4">
+                  <button
+                    onClick={() => { setLgManualMode(!lgManualMode); }}
+                    className="text-[10px] text-gray-500 hover:text-emerald-400 transition-colors flex items-center gap-1.5"
+                  >
+                    <FileText className="w-3 h-3" />
+                    {lgManualMode ? "Hide manual .lrc paste" : "Or paste .lrc content manually"}
+                  </button>
+
+                  {lgManualMode && (
+                    <div className="mt-3 space-y-2">
+                      <textarea
+                        value={lgManualLrc}
+                        onChange={(e) => setLgManualLrc(e.target.value)}
+                        placeholder={"[00:07.50] I went my own way and I made it\n[00:10.19] I'm your favorite reference, baby\n[00:12.06] Call me Gabbriette..."}
+                        rows={8}
+                        className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-xs text-white placeholder-gray-600 focus:outline-none focus:border-emerald-500/50 transition-colors font-mono"
+                      />
+                      <button
+                        onClick={() => {
+                          lgParseManualLrc();
+                          if (lgParsedLines.length > 0 || lgManualLrc.trim()) {
+                            setLgStep(3);
+                          }
+                        }}
+                        disabled={!lgManualLrc.trim()}
+                        className="px-4 py-2 bg-emerald-600/20 hover:bg-emerald-600/30 border border-emerald-500/30 text-emerald-400 font-bold text-[10px] rounded-lg transition-all disabled:opacity-40"
+                      >
+                        Parse & Continue →
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* ── STEP 2: Version Selection ────────────────────────────────────── */}
+            {lgStep === 2 && (
+              <div className="space-y-5">
+                <div className="grid grid-cols-2 gap-4">
+                  {/* YouTube Audio Results */}
+                  <div>
+                    <h3 className="text-[10px] uppercase tracking-wider text-gray-500 font-bold mb-2 flex items-center gap-1.5">
+                      <Play className="w-3 h-3 text-red-400" />
+                      YouTube Audio ({lgYoutubeResults.length})
+                      {lgSearchErrors.youtube && <span className="text-red-400/60 normal-case font-normal ml-1">— unavailable on this machine</span>}
+                    </h3>
+                    <div className="space-y-1.5 max-h-[300px] overflow-y-auto pr-1">
+                      {lgYoutubeResults.length === 0 && !lgSearchErrors.youtube && (
+                        <p className="text-[10px] text-gray-600 py-4 text-center">No YouTube results</p>
+                      )}
+                      {lgSearchErrors.youtube && lgYoutubeResults.length === 0 && (
+                        <div className="text-[10px] text-gray-500 py-4 text-center space-y-2">
+                          <p>yt-dlp not available locally.</p>
+                          <p className="text-gray-600">You can upload audio manually in the Tracks Library tab, then come back to use the line range selector.</p>
+                        </div>
+                      )}
+                      {lgYoutubeResults.map((yt: any) => (
+                        <button
+                          key={yt.videoId}
+                          onClick={() => setLgSelectedYt(yt)}
+                          className={`w-full text-left p-2.5 rounded-xl border transition-all text-xs ${
+                            lgSelectedYt?.videoId === yt.videoId
+                              ? "bg-red-500/10 border-red-500/30 text-white"
+                              : "bg-black/20 border-white/5 text-gray-400 hover:border-white/20 hover:text-white"
+                          }`}
+                        >
+                          <div className="font-bold truncate">{yt.title}</div>
+                          <div className="text-[9px] text-gray-500 mt-0.5 flex items-center gap-2">
+                            <span>{yt.channel}</span>
+                            <span>·</span>
+                            <span>{Math.floor(yt.duration / 60)}:{(yt.duration % 60).toString().padStart(2, "0")}</span>
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* LRCLIB Lyrics Results */}
+                  <div>
+                    <h3 className="text-[10px] uppercase tracking-wider text-gray-500 font-bold mb-2 flex items-center gap-1.5">
+                      <FileText className="w-3 h-3 text-emerald-400" />
+                      Synced Lyrics ({lgLrclibResults.length})
+                    </h3>
+                    <div className="space-y-1.5 max-h-[300px] overflow-y-auto pr-1">
+                      {lgLrclibResults.length === 0 && (
+                        <p className="text-[10px] text-gray-600 py-4 text-center">No synced lyrics found</p>
+                      )}
+                      {lgLrclibResults.map((lrc: any) => (
+                        <button
+                          key={lrc.id}
+                          onClick={() => lgHandleSelectLrc(lrc)}
+                          className={`w-full text-left p-2.5 rounded-xl border transition-all text-xs ${
+                            lgSelectedLrc?.id === lrc.id
+                              ? "bg-emerald-500/10 border-emerald-500/30 text-white"
+                              : "bg-black/20 border-white/5 text-gray-400 hover:border-white/20 hover:text-white"
+                          }`}
+                        >
+                          <div className="font-bold truncate">{lrc.trackName}</div>
+                          <div className="text-[9px] text-gray-500 mt-0.5 flex items-center gap-2">
+                            <span>{lrc.artistName}</span>
+                            <span>·</span>
+                            <span>{lrc.albumName}</span>
+                            <span>·</span>
+                            <span>{lrc.parsedLines?.length || 0} lines</span>
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Audio Download + Continue */}
+                <div className="border-t border-white/5 pt-4 flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    {lgSelectedYt && !lgAudioUrl && (
+                      <button
+                        onClick={lgHandleDownloadAudio}
+                        disabled={lgDownloading}
+                        className="px-4 py-2 bg-gradient-to-r from-red-600/20 to-orange-600/20 hover:from-red-600/30 hover:to-orange-600/30 border border-red-500/30 text-red-400 font-bold text-[10px] rounded-lg transition-all flex items-center gap-1.5 disabled:opacity-40"
+                      >
+                        {lgDownloading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Download className="w-3 h-3" />}
+                        {lgDownloading ? "Downloading Audio..." : "Download Audio"}
+                      </button>
+                    )}
+                    {lgAudioUrl && (
+                      <div className="flex items-center gap-2 text-[10px] text-emerald-400">
+                        <CheckCircle2 className="w-3.5 h-3.5" />
+                        <span className="font-bold">Audio ready</span>
+                        <span className="text-gray-500">({Math.round(lgAudioDuration)}s)</span>
+                      </div>
+                    )}
+                  </div>
+                  <button
+                    onClick={() => {
+                      if (!lgSelectedLrc) {
+                        toast.error("Please select a lyrics version");
+                        return;
+                      }
+                      setLgStep(3);
+                    }}
+                    disabled={!lgSelectedLrc}
+                    className="px-5 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white font-bold text-xs rounded-xl transition-all flex items-center gap-1.5"
+                  >
+                    Continue to Line Selection
+                    <ChevronRight className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* ── STEP 3: Line Range Selection ─────────────────────────────────── */}
+            {lgStep === 3 && (
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h3 className="text-sm font-bold text-white">Select Line Range</h3>
+                    <p className="text-[10px] text-gray-500 mt-0.5">
+                      Click a line to set <span className="text-emerald-400 font-bold">START</span>, click another to set <span className="text-cyan-400 font-bold">END</span>. Auto-computes clip timestamps.
+                    </p>
+                  </div>
+                  {lgGetClipInfo() && (
+                    <div className="bg-emerald-500/10 border border-emerald-500/20 rounded-xl px-3 py-2 flex items-center gap-3">
+                      <div className="text-[10px]">
+                        <span className="text-emerald-400 font-mono font-bold">{lgFormatTime(lgGetClipInfo()!.startTime)}</span>
+                        <span className="text-gray-500 mx-1">→</span>
+                        <span className="text-cyan-400 font-mono font-bold">{lgFormatTime(lgGetClipInfo()!.endTime)}</span>
+                      </div>
+                      <div className="text-[9px] text-gray-500">
+                        {lgGetClipInfo()!.lineCount} lines · {Math.round(lgGetClipInfo()!.duration)}s
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Song info */}
+                {lgSelectedLrc && (
+                  <div className="flex items-center gap-2 text-[10px] text-gray-500">
+                    <Music className="w-3 h-3" />
+                    <span className="font-bold text-white">{lgSelectedLrc.trackName}</span>
+                    <span>—</span>
+                    <span>{lgSelectedLrc.artistName}</span>
+                    {lgSelectedLrc.albumName && (
+                      <>
+                        <span>·</span>
+                        <span className="italic">{lgSelectedLrc.albumName}</span>
+                      </>
+                    )}
+                  </div>
+                )}
+
+                {/* Lyrics Lines */}
+                <div className="bg-black/30 rounded-2xl border border-white/5 max-h-[450px] overflow-y-auto">
+                  {lgParsedLines.map((line: any, idx: number) => {
+                    const isStart = lgStartLine === idx;
+                    const isEnd = lgEndLine === idx;
+                    const isInRange =
+                      lgStartLine !== null &&
+                      lgEndLine !== null &&
+                      idx >= lgStartLine &&
+                      idx <= lgEndLine;
+                    const isOutOfRange =
+                      lgStartLine !== null &&
+                      lgEndLine !== null &&
+                      !isInRange;
+
+                    return (
+                      <button
+                        key={idx}
+                        onClick={() => lgHandleLineClick(idx)}
+                        className={`w-full text-left px-4 py-2 flex items-center gap-3 border-b border-white/[0.03] transition-all group ${
+                          isStart
+                            ? "bg-emerald-500/15 border-l-2 border-l-emerald-500"
+                            : isEnd
+                            ? "bg-cyan-500/15 border-l-2 border-l-cyan-500"
+                            : isInRange
+                            ? "bg-emerald-500/5 border-l-2 border-l-emerald-500/30"
+                            : isOutOfRange
+                            ? "opacity-30"
+                            : "hover:bg-white/[0.03]"
+                        }`}
+                      >
+                        {/* Line Number */}
+                        <span className="text-[9px] font-mono text-gray-600 w-5 text-right shrink-0">
+                          {idx + 1}
+                        </span>
+                        {/* Timestamp */}
+                        <span className={`text-[9px] font-mono shrink-0 w-14 ${
+                          isStart ? "text-emerald-400" : isEnd ? "text-cyan-400" : "text-gray-600"
+                        }`}>
+                          [{lgFormatTime(line.start)}]
+                        </span>
+                        {/* Lyric Text */}
+                        <span className={`text-xs flex-1 ${
+                          isStart || isEnd ? "text-white font-bold" : isInRange ? "text-white/80" : "text-gray-400"
+                        }`}>
+                          {line.text || <span className="text-gray-700 italic">♫ (instrumental)</span>}
+                        </span>
+                        {/* Range Indicator */}
+                        {isStart && (
+                          <span className="text-[8px] bg-emerald-500/30 text-emerald-300 px-1.5 py-0.5 rounded font-bold uppercase shrink-0">
+                            Start
+                          </span>
+                        )}
+                        {isEnd && (
+                          <span className="text-[8px] bg-cyan-500/30 text-cyan-300 px-1.5 py-0.5 rounded font-bold uppercase shrink-0">
+                            End
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {/* Step 3 Actions */}
+                <div className="flex items-center justify-between">
+                  <button
+                    onClick={() => setLgStep(2)}
+                    className="text-[10px] text-gray-500 hover:text-white transition-colors flex items-center gap-1"
+                  >
+                    ← Back to Selection
+                  </button>
+                  <button
+                    onClick={() => {
+                      if (lgStartLine === null || lgEndLine === null) {
+                        toast.error("Please select both a start and end line");
+                        return;
+                      }
+                      if (!lgAudioUrl) {
+                        toast.error("Please download or upload audio first (go back to step 2)");
+                        return;
+                      }
+                      setLgStep(4);
+                    }}
+                    disabled={lgStartLine === null || lgEndLine === null}
+                    className="px-5 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white font-bold text-xs rounded-xl transition-all flex items-center gap-1.5"
+                  >
+                    Review & Create
+                    <ChevronRight className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* ── STEP 4: Confirm & Create Track ───────────────────────────────── */}
+            {lgStep === 4 && (
+              <div className="space-y-5">
+                <div className="bg-gradient-to-br from-emerald-500/5 to-cyan-500/5 rounded-2xl border border-emerald-500/10 p-5 space-y-4">
+                  <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                    Ready to Create Track
+                  </h3>
+
+                  <div className="grid grid-cols-2 gap-4 text-xs">
+                    <div>
+                      <span className="text-gray-500 text-[10px] uppercase tracking-wider">Song</span>
+                      <p className="text-white font-bold mt-0.5">{lgSelectedLrc?.trackName || "—"}</p>
+                    </div>
+                    <div>
+                      <span className="text-gray-500 text-[10px] uppercase tracking-wider">Artist</span>
+                      <p className="text-white font-bold mt-0.5">{lgSelectedLrc?.artistName || "—"}</p>
+                    </div>
+                    <div>
+                      <span className="text-gray-500 text-[10px] uppercase tracking-wider">Line Range</span>
+                      <p className="text-white font-bold mt-0.5">
+                        Lines {(lgStartLine || 0) + 1} – {(lgEndLine || 0) + 1} ({lgGetClipInfo()?.lineCount || 0} lines)
+                      </p>
+                    </div>
+                    <div>
+                      <span className="text-gray-500 text-[10px] uppercase tracking-wider">Clip Duration</span>
+                      <p className="text-white font-bold mt-0.5">
+                        {lgGetClipInfo() ? `${lgFormatTime(lgGetClipInfo()!.startTime)} → ${lgFormatTime(lgGetClipInfo()!.endTime)} (${Math.round(lgGetClipInfo()!.duration)}s)` : "—"}
+                      </p>
+                    </div>
+                    <div>
+                      <span className="text-gray-500 text-[10px] uppercase tracking-wider">Audio Source</span>
+                      <p className="text-white font-bold mt-0.5">
+                        {lgSelectedYt ? `YouTube: ${lgSelectedYt.title?.substring(0, 40)}...` : lgAudioUrl ? "Uploaded" : "None"}
+                      </p>
+                    </div>
+                    <div>
+                      <span className="text-gray-500 text-[10px] uppercase tracking-wider">Lyrics Source</span>
+                      <p className="text-white font-bold mt-0.5">
+                        {lgManualMode ? "Manual .lrc" : "LRCLIB"}
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Preview selected lines */}
+                  <div className="bg-black/30 rounded-xl p-3 max-h-32 overflow-y-auto">
+                    <p className="text-[9px] uppercase tracking-wider text-gray-600 mb-1.5">Selected Lyrics Preview</p>
+                    {lgParsedLines.slice(lgStartLine || 0, (lgEndLine || 0) + 1).map((line: any, i: number) => (
+                      <p key={i} className="text-[10px] text-gray-300 leading-relaxed">
+                        <span className="text-gray-600 font-mono mr-2">[{lgFormatTime(line.start)}]</span>
+                        {line.text}
+                      </p>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between">
+                  <button
+                    onClick={() => setLgStep(3)}
+                    className="text-[10px] text-gray-500 hover:text-white transition-colors flex items-center gap-1"
+                  >
+                    ← Back to Line Selection
+                  </button>
+                  <button
+                    onClick={lgHandleGenerate}
+                    disabled={lgGenerating}
+                    className="px-6 py-3 bg-gradient-to-r from-emerald-600 to-cyan-600 hover:from-emerald-500 hover:to-cyan-500 disabled:opacity-40 text-white font-bold text-sm rounded-xl transition-all flex items-center gap-2 shadow-lg shadow-emerald-500/10"
+                  >
+                    {lgGenerating ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        Creating Track...
+                      </>
+                    ) : (
+                      <>
+                        <Sparkles className="w-4 h-4" />
+                        Create Track
+                      </>
+                    )}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       <datalist id="musicians-datalist">
         {uniqueMusiciansList.map((musician) => (
