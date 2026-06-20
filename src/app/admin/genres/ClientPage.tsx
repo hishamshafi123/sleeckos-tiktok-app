@@ -570,7 +570,7 @@ export default function GenresDashboard() {
     setLgUploading(true);
     try {
       const formData = new FormData();
-      formData.append("file", lgAudioFile);
+      formData.append("audioFile", lgAudioFile);
       formData.append("title", lgTitle.trim());
       formData.append("artist", lgArtist.trim() || "Unknown");
       formData.append("defaultStart", "0");
