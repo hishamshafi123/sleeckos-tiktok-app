@@ -120,7 +120,8 @@ function computeBratLayout(
   baseFontSize: number,
   canvasWidth: number,
   canvasHeight: number,
-  margin: number
+  margin: number,
+  positionY: number = 0.2
 ) {
   if (typeof window === "undefined") return [];
   let canvas = (window as any).__previewLayoutCanvas;
@@ -217,7 +218,7 @@ function computeBratLayout(
   const lines = getWrappedLines(wordTexts, bestFontSize);
 
   const startX = margin;
-  const startY = Math.round(canvasHeight * 0.2);
+  const startY = Math.round(canvasHeight * positionY);
   const spaceWidth = measureText(" ", bestFontSize);
   const lineHeight = bestFontSize * 1.15;
   const lineSpacing = 10;
@@ -995,6 +996,7 @@ export default function GenresDashboard() {
   const [lyricalBgOpacity, setLyricalBgOpacity] = useState<number>(1.0);
   const [lyricalLofiFactor, setLyricalLofiFactor] = useState<number>(1);
   const [lyricalTextMargin, setLyricalTextMargin] = useState<number>(50);
+  const [lyricalTextMotion, setLyricalTextMotion] = useState<string>("none");
   const [mixupVisuals, setMixupVisuals] = useState<boolean>(true);
 
   // Lyrical transcription editor states
@@ -1469,6 +1471,7 @@ export default function GenresDashboard() {
           bgOpacity: lyricalBgOpacity,
           lofiFactor: lyricalLofiFactor,
           textMargin: lyricalTextMargin,
+          textMotion: lyricalTextMotion,
           savedStyleId: lyricalSavedStyleId ? lyricalSavedStyleId : null,
         }),
       });
@@ -2766,6 +2769,26 @@ export default function GenresDashboard() {
         .animate-wave-3 {
           animation: wave-bounce-3 0.7s infinite ease-in-out;
         }
+        /* Text Motion Animations */
+        @keyframes pvFloat {
+          0%, 100% { transform: translateY(0); }
+          50% { transform: translateY(-6px); }
+        }
+        @keyframes pvWave {
+          0%, 100% { transform: translateX(0); }
+          25% { transform: translateX(-4px); }
+          75% { transform: translateX(4px); }
+        }
+        @keyframes pvPulse {
+          0%, 100% { transform: scale(1.0); }
+          50% { transform: scale(1.04); }
+        }
+        @keyframes pvDrift {
+          0%, 100% { transform: translate(0, 0); }
+          25% { transform: translate(3px, -4px); }
+          50% { transform: translate(-2px, -6px); }
+          75% { transform: translate(-4px, -2px); }
+        }
       `}</style>
       {/* Import premium styling fonts dynamically */}
       <link 
@@ -3783,6 +3806,28 @@ export default function GenresDashboard() {
                         </p>
                       </div>
 
+                      {/* Text Motion */}
+                      <div className="space-y-2 bg-black/20 p-3 rounded-2xl border border-white/5 shadow-inner">
+                        <label className="block text-[9px] uppercase tracking-wider font-extrabold text-gray-500">Text Motion</label>
+                        <select
+                          value={lyricalTextMotion}
+                          onChange={(e) => setLyricalTextMotion(e.target.value)}
+                          className="w-full bg-black/45 border border-white/10 hover:border-white/20 rounded-2xl px-3 py-2 text-xs text-gray-300 focus:outline-none transition-all duration-300 cursor-pointer"
+                        >
+                          <option value="none">None (Static)</option>
+                          <option value="float">Float (gentle up/down)</option>
+                          <option value="wave">Wave (side sway)</option>
+                          <option value="pulse">Pulse (breathe)</option>
+                          <option value="drift">Drift (slow diagonal)</option>
+                        </select>
+                        <p className="text-[8px] text-gray-600">
+                          {lyricalTextMotion !== "none" 
+                            ? `Subtle ${lyricalTextMotion} animation applied to text layer`
+                            : "No motion effect applied"
+                          }
+                        </p>
+                      </div>
+
                       {/* Text Frame Margin */}
                       <div className="space-y-2 bg-black/20 p-3 rounded-2xl border border-white/5 shadow-inner">
                         <div className="flex justify-between items-center">
@@ -4204,9 +4249,18 @@ export default function GenresDashboard() {
                         })();
                         const gapY = lyricalAnimationMode === "word_builder" ? "8px" : "2px";
                         
+                        // Text motion animation
+                        const motionStyle: React.CSSProperties = (() => {
+                          if (lyricalTextMotion === "float") return { animation: "pvFloat 3s ease-in-out infinite" };
+                          if (lyricalTextMotion === "wave") return { animation: "pvWave 2.5s ease-in-out infinite" };
+                          if (lyricalTextMotion === "pulse") return { animation: "pvPulse 2s ease-in-out infinite" };
+                          if (lyricalTextMotion === "drift") return { animation: "pvDrift 4s ease-in-out infinite" };
+                          return {};
+                        })();
+
                         return lyricalAnimationMode === "brat" ? (
                           /* ── BRAT STYLE MODE: Dynamic Font Sizing & Position ── */
-                          <div className="absolute inset-0 z-10 select-none pointer-events-none">
+                          <div className="absolute inset-0 z-10 select-none pointer-events-none" style={motionStyle}>
                             {(() => {
                               const layoutWords = computeBratLayout(
                                 wordBuilderVisibleWords,
@@ -4214,7 +4268,8 @@ export default function GenresDashboard() {
                                 lyricalFontSize,
                                 720,
                                 1280,
-                                lyricalTextMargin
+                                lyricalTextMargin,
+                                lyricalPositionY
                               );
                               return layoutWords.map((w: any, idx: number) => (
                                 <span
@@ -4245,7 +4300,8 @@ export default function GenresDashboard() {
                               top: `${lyricalPositionY * 100}%`,
                               fontFamily: cssFontFamily,
                               fontSize: `${lyricalFontSize * 0.23}px`,
-                              lineHeight: 1.6
+                              lineHeight: 1.6,
+                              ...motionStyle
                             }}
                           >
                             <div 
@@ -4281,7 +4337,8 @@ export default function GenresDashboard() {
                               top: `${lyricalPositionY * 100}%`,
                               fontFamily: cssFontFamily,
                               fontSize: `${lyricalFontSize * 0.23}px`,
-                              lineHeight: 1.25
+                              lineHeight: 1.25,
+                              ...motionStyle
                             }}
                           >
                             <div 
@@ -8847,6 +8904,22 @@ export default function GenresDashboard() {
                       </div>
                     </div>
 
+                    {/* Text Motion */}
+                    <div className="space-y-1">
+                      <label className="block text-[9px] uppercase tracking-wider font-extrabold text-gray-500">Text Motion</label>
+                      <select
+                        value={lyricalTextMotion}
+                        onChange={(e) => setLyricalTextMotion(e.target.value)}
+                        className="w-full bg-black/45 border border-white/10 hover:border-white/20 rounded-xl px-2 py-2 text-[11px] text-gray-300 focus:outline-none transition-all cursor-pointer"
+                      >
+                        <option value="none">None (Static)</option>
+                        <option value="float">Float (gentle up/down)</option>
+                        <option value="wave">Wave (side sway)</option>
+                        <option value="pulse">Pulse (breathe)</option>
+                        <option value="drift">Drift (slow diagonal)</option>
+                      </select>
+                    </div>
+
                     {/* Save + Start Over Buttons */}
                     <div className="space-y-2 pt-2 border-t border-white/5">
                       <button
@@ -8978,7 +9051,6 @@ export default function GenresDashboard() {
                               }
                             }}
                             className={`relative ${lyricalAspectRatio === "1:1" ? "aspect-square" : "aspect-[9/16]"} w-full max-w-[220px] bg-[#07070d] border border-white/15 ${lyricalAspectRatio === "1:1" ? "rounded-[24px]" : "rounded-[36px]"} overflow-hidden shadow-2xl flex flex-col justify-between group cursor-pointer hover:border-purple-500/30 transition-all duration-300`}
-                            style={lyricalLofiFactor > 1 ? { imageRendering: "pixelated" as any, filter: `blur(${lyricalLofiFactor * 0.15}px)` } : undefined}
                           >
                             {/* BG: solid color or dark fallback */}
                             {lyricalBgColor ? (
@@ -9019,15 +9091,31 @@ export default function GenresDashboard() {
 
                             {/* ── LYRICS RENDER LAYER ── */}
                             {(() => {
+                              // Motion animation class
+                              const motionStyle: React.CSSProperties = (() => {
+                                if (lyricalTextMotion === "float") return { animation: "pvFloat 3s ease-in-out infinite" };
+                                if (lyricalTextMotion === "wave") return { animation: "pvWave 2.5s ease-in-out infinite" };
+                                if (lyricalTextMotion === "pulse") return { animation: "pvPulse 2s ease-in-out infinite" };
+                                if (lyricalTextMotion === "drift") return { animation: "pvDrift 4s ease-in-out infinite" };
+                                return {};
+                              })();
+
+                              // Lo-fi style for lyrics layer only
+                              const lofiStyle: React.CSSProperties = lyricalLofiFactor > 1 ? {
+                                imageRendering: "pixelated" as any,
+                                filter: `contrast(1.05)`,
+                              } : {};
+
                               if (lyricalAnimationMode === "brat") {
-                                const layoutWords = computeBratLayout(pvVisibleWords, lyricalFontFamily, lyricalFontSize, 720, 1280, lyricalTextMargin);
+                                const layoutWords = computeBratLayout(pvVisibleWords, lyricalFontFamily, lyricalFontSize, 720, 1280, lyricalTextMargin, lyricalPositionY);
                                 return (
-                                  <div className="absolute inset-0 z-10 select-none pointer-events-none">
+                                  <div className="absolute inset-0 z-10 select-none pointer-events-none" style={{ ...motionStyle, ...lofiStyle }}>
                                     {layoutWords.map((w: any, idx: number) => (
-                                      <span key={idx} className="absolute uppercase" style={{
+                                      <span key={idx} className="absolute" style={{
                                         left: `${w.x * 0.25}px`, top: `${w.y * 0.25}px`,
                                         fontSize: `${w.fontSize * 0.25}px`, fontFamily: pvFont,
                                         color: lyricalTextColor || "#000000",
+                                        WebkitTextStroke: lyricalStrokeWidth > 0 ? `${lyricalStrokeWidth * 0.25}px ${lyricalStrokeColor}` : undefined,
                                         letterSpacing: `${lyricalLetterSpacing * 0.25}px`,
                                         textTransform: "lowercase" as const, lineHeight: 1.0, fontWeight: 900
                                       }}>
@@ -9039,7 +9127,7 @@ export default function GenresDashboard() {
                               } else if (lyricalAnimationMode === "word_builder") {
                                 return (
                                   <div className={`absolute left-0 right-0 px-4 transform -translate-y-1/2 z-10 select-none pointer-events-none ${pvTextAlignClass}`}
-                                    style={{ top: `${lyricalPositionY * 100}%`, fontFamily: pvFont, fontSize: `${lyricalFontSize * 0.25}px`, lineHeight: 1.6 }}
+                                    style={{ top: `${lyricalPositionY * 100}%`, fontFamily: pvFont, fontSize: `${lyricalFontSize * 0.25}px`, lineHeight: 1.6, ...motionStyle, ...lofiStyle }}
                                   >
                                     <div className="flex flex-wrap items-center" style={{
                                       justifyContent: pvJustify, gap: `${pvGapY} ${pvGapX}`,
@@ -9049,6 +9137,7 @@ export default function GenresDashboard() {
                                         <span key={idx} style={{
                                           color: lyricalTextColor || "#000000", fontWeight: 300,
                                           textTransform: "lowercase" as const,
+                                          WebkitTextStroke: lyricalStrokeWidth > 0 ? `${lyricalStrokeWidth * 0.25}px ${lyricalStrokeColor}` : undefined,
                                           letterSpacing: `${lyricalLetterSpacing * 0.25}px`, display: "inline-block"
                                         }}>
                                           {w.word.toLowerCase()}
@@ -9061,7 +9150,7 @@ export default function GenresDashboard() {
                                 // Highlight mode
                                 return (
                                   <div className={`absolute left-0 right-0 px-3 transform -translate-y-1/2 z-10 select-none pointer-events-none ${pvTextAlignClass}`}
-                                    style={{ top: `${lyricalPositionY * 100}%`, fontFamily: pvFont, fontSize: `${lyricalFontSize * 0.25}px`, lineHeight: 1.25 }}
+                                    style={{ top: `${lyricalPositionY * 100}%`, fontFamily: pvFont, fontSize: `${lyricalFontSize * 0.25}px`, lineHeight: 1.25, ...motionStyle, ...lofiStyle }}
                                   >
                                     <div className="flex flex-wrap items-center" style={{ justifyContent: pvJustify, gap: `${pvGapY} ${pvGapX}` }}>
                                       {pvCurrentChunk.map((w: any, idx: number) => {
