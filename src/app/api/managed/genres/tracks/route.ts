@@ -156,7 +156,7 @@ export async function PATCH(req: Request) {
 
   try {
     const body = await req.json();
-    const { id, genre, musician, campaignOn, lyricalTranscription } = body;
+    const { id, genre, musician, campaignOn, lyricalTranscription, fileUrl, duration, defaultStart, defaultDuration, isLyrical, title, artist } = body;
 
     if (!id) {
       return NextResponse.json({ error: "Missing track ID" }, { status: 400 });
@@ -173,6 +173,13 @@ export async function PATCH(req: Request) {
     if (lyricalTranscription !== undefined) {
       updateData.lyricalTranscription = lyricalTranscription;
     }
+    if (fileUrl !== undefined) updateData.fileUrl = fileUrl;
+    if (duration !== undefined) updateData.duration = duration;
+    if (defaultStart !== undefined) updateData.defaultStart = defaultStart;
+    if (defaultDuration !== undefined) updateData.defaultDuration = defaultDuration;
+    if (isLyrical !== undefined) updateData.isLyrical = !!isLyrical;
+    if (title !== undefined) updateData.title = title.trim();
+    if (artist !== undefined) updateData.artist = artist.trim();
     
     if (campaignOn !== undefined) {
       updateData.campaignOn = !!campaignOn;
