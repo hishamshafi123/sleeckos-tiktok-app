@@ -21,6 +21,11 @@ export interface ComposeOptions {
   curveText?: boolean;
   curvature?: number;
   positionY?: number;
+  strokeEnabled?: boolean;
+  strokeColor?: string;
+  strokeWidth?: number;
+  letterSpacing?: number;
+  colorFilter?: string;
 }
 
 /**
@@ -52,7 +57,23 @@ const FONT_URLS: Record<string, string> = {
   "Caveat": "https://fonts.gstatic.com/s/caveat/v23/WnznHAc5bAfYB2QRah7pcpNvOx-pjRV6eIWpZA.ttf",
   "Caveat-Bold": "https://fonts.gstatic.com/s/caveat/v23/WnznHAc5bAfYB2QRah7pcpNvOx-pjRV6eIWpZA.ttf",
   "Lora": "https://fonts.gstatic.com/s/lora/v37/0QI6MX1D_JOuGQbT0gvTJPa787z5vBJBkqg.ttf",
-  "Lora-Bold": "https://fonts.gstatic.com/s/lora/v37/0QI6MX1D_JOuGQbT0gvTJPa787z5vBJBkqg.ttf"
+  "Lora-Bold": "https://fonts.gstatic.com/s/lora/v37/0QI6MX1D_JOuGQbT0gvTJPa787z5vBJBkqg.ttf",
+  "BebasNeue-Regular": "https://github.com/google/fonts/raw/main/ofl/bebasneue/BebasNeue-Regular.ttf",
+  "Bebas Neue": "https://github.com/google/fonts/raw/main/ofl/bebasneue/BebasNeue-Regular.ttf",
+  "ArchivoBlack-Regular": "https://github.com/google/fonts/raw/main/ofl/archivoblack/ArchivoBlack-Regular.ttf",
+  "Archivo Black": "https://github.com/google/fonts/raw/main/ofl/archivoblack/ArchivoBlack-Regular.ttf",
+  "LilitaOne-Regular": "https://github.com/google/fonts/raw/main/ofl/lilitaone/LilitaOne-Regular.ttf",
+  "Lilita One": "https://github.com/google/fonts/raw/main/ofl/lilitaone/LilitaOne-Regular.ttf",
+  "ArchivoNarrow-Bold": "https://github.com/google/fonts/raw/main/ofl/archivonarrow/ArchivoNarrow-Bold.ttf",
+  "Archivo Narrow": "https://github.com/google/fonts/raw/main/ofl/archivonarrow/ArchivoNarrow-Bold.ttf",
+  "PermanentMarker-Regular": "https://github.com/google/fonts/raw/main/ofl/permanentmarker/PermanentMarker-Regular.ttf",
+  "Permanent Marker": "https://github.com/google/fonts/raw/main/ofl/permanentmarker/PermanentMarker-Regular.ttf",
+  "Cinzel-Bold": "https://github.com/google/fonts/raw/main/ofl/cinzel/static/Cinzel-Bold.ttf",
+  "Cinzel": "https://github.com/google/fonts/raw/main/ofl/cinzel/static/Cinzel-Bold.ttf",
+  "Kanit-Black": "https://github.com/google/fonts/raw/main/ofl/kanit/Kanit-Black.ttf",
+  "Kanit": "https://github.com/google/fonts/raw/main/ofl/kanit/Kanit-Black.ttf",
+  "Syne-ExtraBold": "https://github.com/google/fonts/raw/main/ofl/syne/static/Syne-ExtraBold.ttf",
+  "Syne": "https://github.com/google/fonts/raw/main/ofl/syne/static/Syne-ExtraBold.ttf"
 };
 
 /** Minimum valid font file size — anything smaller is a corrupt cache artifact */
@@ -339,7 +360,12 @@ export async function composeVideo(options: ComposeOptions): Promise<string> {
     outputPath,
     curveText = false,
     curvature = 30,
-    positionY = 50
+    positionY = 50,
+    strokeEnabled = false,
+    strokeColor = "#000000",
+    strokeWidth = 0,
+    letterSpacing = 0,
+    colorFilter = "none"
   } = options;
 
   // 1. Resolve font path
@@ -351,6 +377,29 @@ export async function composeVideo(options: ComposeOptions): Promise<string> {
 
   // Calculate audio fade start (fade out for last 1 second)
   const fadeStart = Math.max(0, videoLength - 1.0);
+
+  // Background color grading filter complex additions
+  let extraFilters = "";
+  if (colorFilter && colorFilter !== "none") {
+    let filterString = "";
+    if (colorFilter === "cyberpunk") filterString = "eq=contrast=1.2:brightness=-0.05:saturation=1.3,hue=h=320";
+    else if (colorFilter === "cinema") filterString = "eq=contrast=1.1:brightness=-0.05:saturation=1.2,colorbalance=rs=0.04:gs=0.02:bs=-0.03:rm=0.03:gm=0.01:bm=-0.02";
+    else if (colorFilter === "monochrome") filterString = "eq=contrast=1.3:brightness=-0.1:saturation=0";
+    else if (colorFilter === "vhs") filterString = "eq=contrast=1.1:brightness=-0.05:saturation=0.85,noise=alls=8:allf=t+u";
+    else if (colorFilter === "emerald") filterString = "eq=contrast=1.15:brightness=-0.1:saturation=0.7,hue=h=80";
+    else if (colorFilter === "polaroid") filterString = "eq=contrast=0.95:brightness=0.02:saturation=1.1,colorbalance=rs=0.03:gs=0.02:bs=-0.02";
+    else if (colorFilter === "midnight") filterString = "eq=contrast=1.1:brightness=-0.15:saturation=1.15,hue=h=190";
+    else if (colorFilter === "golden_hour") filterString = "eq=contrast=1.05:brightness=0.05:saturation=1.3,colorbalance=rs=0.05:gs=0.03:bs=-0.04,hue=h=-10";
+    else if (colorFilter === "arctic") filterString = "eq=contrast=1.1:brightness=0.05:saturation=0.6,hue=h=180";
+    else if (colorFilter === "neon_noir") filterString = "eq=contrast=1.4:brightness=-0.25:saturation=1.5,hue=h=280";
+    else if (colorFilter === "rose_tint") filterString = "eq=contrast=1.05:brightness=0.0:saturation=1.2,hue=h=330,colorbalance=rs=0.04:gs=-0.02:bs=-0.01";
+    else if (colorFilter === "vintage_film") filterString = "eq=contrast=0.9:brightness=-0.05:saturation=0.8,colorbalance=rs=0.06:gs=0.04:bs=-0.05";
+    else if (colorFilter === "tropical") filterString = "eq=contrast=1.1:brightness=0.05:saturation=1.5,hue=h=60";
+    
+    if (filterString) {
+      extraFilters = `,${filterString}`;
+    }
+  }
 
   let filterComplex = "";
   let textFilePath = "";
@@ -446,7 +495,8 @@ export async function composeVideo(options: ComposeOptions): Promise<string> {
       font-weight: bold;
       fill: ${fontColor};
       text-anchor: middle;
-      letter-spacing: 1px;
+      letter-spacing: ${letterSpacing}px;
+      ${strokeEnabled && strokeWidth > 0 ? `stroke: ${strokeColor}; stroke-width: ${strokeWidth}px; paint-order: stroke fill;` : ""}
     }
     .author-text {
       font-family: 'StoicFont', 'Arial', sans-serif;
@@ -482,7 +532,7 @@ export async function composeVideo(options: ComposeOptions): Promise<string> {
 
     // Build the filter complex overlaying the rasterized image onto scaled/cropped background
     filterComplex = [
-      `[0:v]scale='if(gte(iw/ih,720/1280),-1,720)':'if(gte(iw/ih,720/1280),1280,-1)',crop=720:1280[bg]`,
+      `[0:v]scale='if(gte(iw/ih,720/1280),-1,720)':'if(gte(iw/ih,720/1280),1280,-1)',crop=720:1280${extraFilters}[bg]`,
       `[2:v]format=yuva420p,fade=in:st=0:d=0.5:alpha=1,fade=out:st=${fadeStart}:d=0.5:alpha=1[v_overlay]`,
       `[bg][v_overlay]overlay=x=0:y=0[v]`,
       `[1:a]afade=t=out:st=${fadeStart}:d=1[a]`
@@ -561,10 +611,18 @@ export async function composeVideo(options: ComposeOptions): Promise<string> {
         drawShadowStr = `:shadowcolor=${drawShadowColor}:shadowx=2:shadowy=2`;
       }
 
+      let strokeStr = "";
+      if (strokeEnabled && strokeWidth > 0) {
+        const drawStrokeColor = formatFfmpegColor(strokeColor);
+        strokeStr = `:borderw=${strokeWidth}:bordercolor=${drawStrokeColor}`;
+      }
+
+      let spacingStr = letterSpacing > 0 ? `:spacing=${letterSpacing}` : "";
+
       const alphaStr = `:alpha='if(lt(t\\,0.5)\\,t/0.5\\,if(gt(t\\,${videoLength}-0.5)\\,(${videoLength}-t)/0.5\\,1))'`;
 
       drawtextFilters.push(
-        `${lastLabel}drawtext=fontfile='${escapedFontPath}':textfile='${escapedLineFilePath}':fontcolor=${drawFontColor}:fontsize=${fontSize}:x='max(${stripX + paddingX}\\,${stripX}+(${stripW}-text_w)/2)':y=${lineY}${drawShadowStr}${alphaStr}:expansion=none${nextLabel}`
+        `${lastLabel}drawtext=fontfile='${escapedFontPath}':textfile='${escapedLineFilePath}':fontcolor=${drawFontColor}:fontsize=${fontSize}:x='max(${stripX + paddingX}\\,${stripX}+(${stripW}-text_w)/2)':y=${lineY}${drawShadowStr}${strokeStr}${spacingStr}${alphaStr}:expansion=none${nextLabel}`
       );
       lastLabel = nextLabel;
     }
@@ -577,7 +635,7 @@ export async function composeVideo(options: ComposeOptions): Promise<string> {
       const alphaVal = Math.round(255 * bgAlpha);
 
       filterComplex = [
-        `[0:v]scale='if(gte(iw/ih,${OUTPUT_W}/${OUTPUT_H}),-1,${OUTPUT_W})':'if(gte(iw/ih,${OUTPUT_W}/${OUTPUT_H}),${OUTPUT_H},-1)',crop=${OUTPUT_W}:${OUTPUT_H}[scaled]`,
+        `[0:v]scale='if(gte(iw/ih,${OUTPUT_W}/${OUTPUT_H}),-1,${OUTPUT_W})':'if(gte(iw/ih,${OUTPUT_W}/${OUTPUT_H}),${OUTPUT_H},-1)',crop=${OUTPUT_W}:${OUTPUT_H}${extraFilters}[scaled]`,
         // Set duration to 1s (:d=1) so geq math evaluates ONLY once for a static frame instead of every single frame (300x speedup!)
         `color=c=0x${bgHex.padEnd(6, "0")}:s=${stripW}x${stripHeight}:d=1:r=1,format=yuva420p,geq=r='${cR}':g='${cG}':b='${cB}':a='if(gt(hypot(max(0,${R}-min(X,W-1-X)),max(0,${R}-min(Y,H-1-Y))),${R}),0,${alphaVal})'[rrect]`,
         // overlay repeats last frame indefinitely (eof_action=repeat) which is extremely cheap and fast
@@ -588,8 +646,8 @@ export async function composeVideo(options: ComposeOptions): Promise<string> {
     } else {
       const bgColorFfmpeg = bgStripColor.startsWith("#") ? "0x" + bgStripColor.slice(1) : bgStripColor;
       const drawBoxOverlay = isTransparent
-        ? `[0:v]scale='if(gte(iw/ih,${OUTPUT_W}/${OUTPUT_H}),-1,${OUTPUT_W})':'if(gte(iw/ih,${OUTPUT_W}/${OUTPUT_H}),${OUTPUT_H},-1)',crop=${OUTPUT_W}:${OUTPUT_H}[bg]`
-        : `[0:v]scale='if(gte(iw/ih,${OUTPUT_W}/${OUTPUT_H}),-1,${OUTPUT_W})':'if(gte(iw/ih,${OUTPUT_W}/${OUTPUT_H}),${OUTPUT_H},-1)',crop=${OUTPUT_W}:${OUTPUT_H},drawbox=x=${stripX}:y=${stripY}:w=${stripW}:h=${stripHeight}:color=${bgColorFfmpeg}@${bgAlpha}:t=fill[bg]`;
+        ? `[0:v]scale='if(gte(iw/ih,${OUTPUT_W}/${OUTPUT_H}),-1,${OUTPUT_W})':'if(gte(iw/ih,${OUTPUT_W}/${OUTPUT_H}),${OUTPUT_H},-1)',crop=${OUTPUT_W}:${OUTPUT_H}${extraFilters}[bg]`
+        : `[0:v]scale='if(gte(iw/ih,${OUTPUT_W}/${OUTPUT_H}),-1,${OUTPUT_W})':'if(gte(iw/ih,${OUTPUT_W}/${OUTPUT_H}),${OUTPUT_H},-1)',crop=${OUTPUT_W}:${OUTPUT_H}${extraFilters},drawbox=x=${stripX}:y=${stripY}:w=${stripW}:h=${stripHeight}:color=${bgColorFfmpeg}@${bgAlpha}:t=fill[bg]`;
 
       filterComplex = [
         drawBoxOverlay,

@@ -130,6 +130,11 @@ export async function POST(req: Request) {
       const curveText = formData.get("curveText") === "true";
       const curvature = parseInt(formData.get("curvature") as string || "30", 10);
       const positionY = parseInt(formData.get("positionY") as string || "50", 10);
+      const strokeEnabled = formData.get("strokeEnabled") === "true";
+      const strokeColor = formData.get("strokeColor") as string || "#000000";
+      const strokeWidth = parseInt(formData.get("strokeWidth") as string || "0", 10);
+      const letterSpacing = parseInt(formData.get("letterSpacing") as string || "0", 10);
+      const colorFilter = formData.get("colorFilter") as string || "none";
       const savedStyleId = formData.get("savedStyleId") as string | null;
 
       // Upsert style configuration
@@ -154,6 +159,11 @@ export async function POST(req: Request) {
           curveText,
           curvature,
           positionY,
+          strokeEnabled,
+          strokeColor: strokeColor.trim(),
+          strokeWidth,
+          letterSpacing,
+          colorFilter: colorFilter.trim(),
           savedStyleId: savedStyleId ? savedStyleId : null,
         },
         update: {
@@ -168,6 +178,11 @@ export async function POST(req: Request) {
           curveText,
           curvature,
           positionY,
+          strokeEnabled,
+          strokeColor: strokeColor.trim(),
+          strokeWidth,
+          letterSpacing,
+          colorFilter: colorFilter.trim(),
           savedStyleId: savedStyleId ? savedStyleId : null,
         },
       });

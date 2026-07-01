@@ -507,6 +507,11 @@ model AccountGenreConfig {
   curvature      Int            @default(30)
   positionY      Int            @default(50)
   textMargin     Int            @default(50)
+  strokeEnabled  Boolean        @default(false)
+  strokeColor    String         @default("#000000")
+  strokeWidth    Int            @default(0)
+  letterSpacing  Int            @default(0)
+  colorFilter    String         @default("none")
   createdAt      DateTime       @default(now())
   updatedAt      DateTime       @updatedAt
   savedStyleId   String?

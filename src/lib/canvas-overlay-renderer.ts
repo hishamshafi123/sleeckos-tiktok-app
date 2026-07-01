@@ -28,6 +28,7 @@ interface TemplateConfig {
   fontFamily: string;
   fontSize: number;
   activeColor: string;
+  strokeEnabled?: boolean;
   strokeWidth: number;
   strokeColor: string;
   positionY: number;
@@ -385,7 +386,7 @@ function generateOverlayHTML(
   #captions .word {
     display: inline-block;
     color: ${isWordBuilder ? textColor : "#ffffff"};
-    ${isWordBuilder ? "" : `-webkit-text-stroke: ${config.strokeWidth}px ${config.strokeColor};`}
+    ${(isWordBuilder || !config.strokeEnabled) ? "" : `-webkit-text-stroke: ${config.strokeWidth}px ${config.strokeColor};`}
     font-weight: ${isWordBuilder ? "300" : "800"};
     ${isWordBuilder ? "text-transform: lowercase; letter-spacing: -0.01em;" : ""}
     transition: all 0.08s ease-out;
@@ -440,6 +441,7 @@ function generateOverlayHTML(
     const chunks = ${chunksJSON};
     const activeColorConfig = "${activeColor}";
     const multiColors = ${multiColorsJSON};
+    const strokeEnabled = ${!!config.strokeEnabled};
     const strokeWidth = ${config.strokeWidth};
     const strokeColor = "${config.strokeColor}";
     const animationMode = "${config.animationMode || "highlight"}";
@@ -683,7 +685,7 @@ function generateOverlayHTML(
         const textShadow = isActive 
           ? "text-shadow: 0 0 8px " + color + "cc, 0 0 16px " + color + "50;"
           : "text-shadow: none;";
-        const stroke = "-webkit-text-stroke: " + strokeWidth + "px " + strokeColor + ";";
+        const stroke = strokeEnabled ? "-webkit-text-stroke: " + strokeWidth + "px " + strokeColor + ";" : "";
         
         html += '<span class="word ' + (isActive ? 'active' : '') + '" style="color:' + color + ';' + textShadow + stroke + '">' + w.word + '</span>';
       }

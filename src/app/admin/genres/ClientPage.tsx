@@ -318,6 +318,11 @@ interface GenreConfig {
   curveText: boolean;
   curvature: number;
   positionY: number;
+  strokeEnabled?: boolean;
+  strokeColor?: string;
+  strokeWidth?: number;
+  letterSpacing?: number;
+  colorFilter?: string;
   savedStyleId?: string | null;
 }
 
@@ -867,6 +872,11 @@ export default function GenresDashboard() {
   const [curveText, setCurveText] = useState(false);
   const [curvature, setCurvature] = useState(30);
   const [positionY, setPositionY] = useState(50);
+  const [strokeEnabled, setStrokeEnabled] = useState(false);
+  const [strokeColor, setStrokeColor] = useState("#000000");
+  const [strokeWidth, setStrokeWidth] = useState(0);
+  const [letterSpacing, setLetterSpacing] = useState(0);
+  const [colorFilter, setColorFilter] = useState("none");
   const [uploadingBg, setUploadingBg] = useState(false);
   const [savingConfig, setSavingConfig] = useState(false);
   const [driveUrl, setDriveUrl] = useState("");
@@ -1063,7 +1073,7 @@ export default function GenresDashboard() {
       const link = document.createElement("link");
       link.id = id;
       link.rel = "stylesheet";
-      link.href = "https://fonts.googleapis.com/css2?family=Anton&family=Archivo+Narrow:wght@400;500;600;700&family=Caveat:wght@700&family=Great+Vibes&family=Inter:wght@700&family=Lora:ital,wght@0,700;1,700&family=Montserrat:wght@700&family=Oswald:wght@700&family=Outfit:wght@700&family=Playfair+Display:ital,wght@0,700;1,700&display=swap";
+      link.href = "https://fonts.googleapis.com/css2?family=Anton&family=Archivo+Narrow:wght@400;500;600;700&family=Caveat:wght@700&family=Great+Vibes&family=Inter:wght@700&family=Lora:ital,wght@0,700;1,700&family=Montserrat:wght@700&family=Oswald:wght@700&family=Outfit:wght@700&family=Playfair+Display:ital,wght@0,700;1,700&family=Bebas+Neue&family=Archivo+Black&family=Lilita+One&family=Permanent+Marker&family=Cinzel:wght@700&family=Kanit:wght@900&family=Syne:wght@800&display=swap";
       document.head.appendChild(link);
     }
 
@@ -1181,6 +1191,11 @@ export default function GenresDashboard() {
       setCurveText(config?.curveText || false);
       setCurvature(config?.curvature !== undefined ? config.curvature : 30);
       setPositionY(config?.positionY ?? 50);
+      setStrokeEnabled(config?.strokeEnabled || false);
+      setStrokeColor(config?.strokeColor || "#000000");
+      setStrokeWidth(config?.strokeWidth || 0);
+      setLetterSpacing(config?.letterSpacing || 0);
+      setColorFilter(config?.colorFilter || "none");
       setAccountSavedStyleId(config?.savedStyleId || "");
       setPreviewBgIndex(0);
 
@@ -1194,6 +1209,11 @@ export default function GenresDashboard() {
       setCurvature(30);
       setBoxColor("none");
       setPositionY(50);
+      setStrokeEnabled(false);
+      setStrokeColor("#000000");
+      setStrokeWidth(0);
+      setLetterSpacing(0);
+      setColorFilter("none");
       setAccountSavedStyleId("");
       setPreviewBgIndex(0);
       setSelectedFolderId("");
@@ -1718,6 +1738,11 @@ export default function GenresDashboard() {
     data.append("curveText", curveText.toString());
     data.append("curvature", curvature.toString());
     data.append("positionY", positionY.toString());
+    data.append("strokeEnabled", strokeEnabled.toString());
+    data.append("strokeColor", strokeColor);
+    data.append("strokeWidth", strokeWidth.toString());
+    data.append("letterSpacing", letterSpacing.toString());
+    data.append("colorFilter", colorFilter);
     data.append("savedStyleId", accountSavedStyleId);
 
     try {
@@ -1831,7 +1856,42 @@ export default function GenresDashboard() {
       case "Lora": return "'Lora', serif";
       case "Montserrat": return "'Montserrat', sans-serif";
       case "Oswald": return "'Oswald', sans-serif";
+      case "Bebas Neue":
+      case "BebasNeue-Regular": return "'Bebas Neue', sans-serif";
+      case "Archivo Black":
+      case "ArchivoBlack-Regular": return "'Archivo Black', sans-serif";
+      case "Lilita One":
+      case "LilitaOne-Regular": return "'Lilita One', sans-serif";
+      case "Archivo Narrow":
+      case "ArchivoNarrow-Bold": return "'Archivo Narrow', sans-serif";
+      case "Permanent Marker":
+      case "PermanentMarker-Regular": return "'Permanent Marker', cursive";
+      case "Cinzel":
+      case "Cinzel-Bold": return "'Cinzel', serif";
+      case "Kanit":
+      case "Kanit-Black": return "'Kanit', sans-serif";
+      case "Syne":
+      case "Syne-ExtraBold": return "'Syne', sans-serif";
       default: return "'Outfit', sans-serif";
+    }
+  };
+
+  const getCssColorFilterStyle = (filterName: string) => {
+    switch (filterName) {
+      case "cyberpunk": return "contrast(1.2) saturate(1.3) hue-rotate(320deg) brightness(0.95)";
+      case "cinema": return "sepia(0.2) contrast(1.1) saturate(1.2) brightness(0.95)";
+      case "monochrome": return "grayscale(1) contrast(1.3) brightness(0.9)";
+      case "vhs": return "contrast(1.1) saturate(0.85) sepia(0.1) brightness(0.95)";
+      case "emerald": return "contrast(1.15) saturate(0.7) sepia(0.1) hue-rotate(80deg) brightness(0.9)";
+      case "polaroid": return "contrast(0.95) saturate(1.1) sepia(0.15) brightness(1.02)";
+      case "midnight": return "contrast(1.1) saturate(1.15) hue-rotate(190deg) brightness(0.85)";
+      case "golden_hour": return "contrast(1.05) saturate(1.3) sepia(0.25) brightness(1.05) hue-rotate(-10deg)";
+      case "arctic": return "contrast(1.1) saturate(0.6) hue-rotate(180deg) brightness(1.05)";
+      case "neon_noir": return "contrast(1.4) saturate(1.5) brightness(0.75) hue-rotate(280deg)";
+      case "rose_tint": return "contrast(1.05) saturate(1.2) sepia(0.15) hue-rotate(330deg) brightness(1.0)";
+      case "vintage_film": return "contrast(0.9) saturate(0.8) sepia(0.3) brightness(0.95)";
+      case "tropical": return "contrast(1.1) saturate(1.5) hue-rotate(60deg) brightness(1.05)";
+      default: return "none";
     }
   };
 
@@ -2792,7 +2852,7 @@ export default function GenresDashboard() {
       `}</style>
       {/* Import premium styling fonts dynamically */}
       <link 
-        href="https://fonts.googleapis.com/css2?family=Anton&family=Archivo+Narrow:wght@400;500;600;700&family=Caveat:wght@700&family=Inter:wght@700;900&family=Montserrat:wght@900&family=Outfit:wght@800;900&display=swap" 
+        href="https://fonts.googleapis.com/css2?family=Anton&family=Archivo+Narrow:wght@400;500;600;700&family=Caveat:wght@700&family=Inter:wght@700;900&family=Montserrat:wght@900&family=Outfit:wght@800;900&family=Bebas+Neue&family=Archivo+Black&family=Lilita+One&family=Permanent+Marker&family=Cinzel:wght@700&family=Kanit:wght@900&family=Syne:wght@800&display=swap" 
         rel="stylesheet" 
       />
       <audio 
@@ -5326,6 +5386,14 @@ export default function GenresDashboard() {
                             <option value="Lora">Lora (Elegant Classic Serif)</option>
                             <option value="Montserrat">Montserrat (Geometric Premium Sans)</option>
                             <option value="Oswald">Oswald (Narrow Tall Gothic)</option>
+                            <option value="Bebas Neue">Bebas Neue (High-Impact Capital Condensed)</option>
+                            <option value="Archivo Black">Archivo Black (Ultra-Heavy Modern Block)</option>
+                            <option value="Lilita One">Lilita One (Playful Bulky Sans)</option>
+                            <option value="Archivo Narrow">Archivo Narrow (Condensed Bold Brat Style)</option>
+                            <option value="Permanent Marker">Permanent Marker (Edgy Marker Brush)</option>
+                            <option value="Cinzel">Cinzel Bold (Luxury Ancient Roman Serif)</option>
+                            <option value="Kanit">Kanit Black (Super-Weighted Modern Sans)</option>
+                            <option value="Syne">Syne ExtraBold (Avant-Garde Wide Geometric)</option>
                           </select>
                         </div>
 
@@ -5499,6 +5567,120 @@ export default function GenresDashboard() {
                           </select>
                         </div>
 
+                        {/* Letter Spacing */}
+                        <div>
+                          <div className="flex justify-between items-center mb-2">
+                            <label className="block text-xs uppercase tracking-wider font-bold text-gray-400">
+                              Letter Spacing (px)
+                            </label>
+                            <span className="text-xs font-extrabold text-blue-400">{letterSpacing}px</span>
+                          </div>
+                          <input
+                            type="range"
+                            min="-5"
+                            max="20"
+                            value={letterSpacing}
+                            onChange={(e) => setLetterSpacing(parseInt(e.target.value))}
+                            className="w-full h-1.5 bg-[#141423] rounded-lg appearance-none cursor-pointer accent-blue-500"
+                          />
+                        </div>
+
+                        {/* Stroke / Outline controls */}
+                        <div className="md:col-span-2 bg-[#1b1b2f]/30 border border-white/5 p-4 rounded-2xl space-y-4">
+                          <div className="flex items-center justify-between">
+                            <div>
+                              <label className="block text-xs uppercase tracking-wider font-bold text-gray-300">
+                                Text Stroke Outline
+                              </label>
+                              <span className="text-[10px] text-gray-500 font-medium">Add a sharp outline border around the text</span>
+                            </div>
+                            <label className="relative inline-flex items-center cursor-pointer">
+                              <input
+                                type="checkbox"
+                                checked={strokeEnabled}
+                                onChange={() => setStrokeEnabled(!strokeEnabled)}
+                                className="sr-only peer"
+                              />
+                              <div className="w-9 h-5 bg-gray-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-gray-300 after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-amber-500 peer-checked:after:bg-black peer-checked:after:border-black"></div>
+                            </label>
+                          </div>
+
+                          {strokeEnabled && (
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2 border-t border-white/5 transition-all duration-300">
+                              <div>
+                                <div className="flex justify-between items-center mb-2">
+                                  <label className="block text-[11px] uppercase tracking-wider font-bold text-gray-400">
+                                    Stroke Width (px)
+                                  </label>
+                                  <span className="text-xs font-extrabold text-amber-400">{strokeWidth}px</span>
+                                </div>
+                                <input
+                                  type="range"
+                                  min="1"
+                                  max="12"
+                                  value={strokeWidth}
+                                  onChange={(e) => setStrokeWidth(parseInt(e.target.value))}
+                                  className="w-full h-1.5 bg-[#0d0d16] rounded-lg appearance-none cursor-pointer accent-amber-500"
+                                />
+                              </div>
+
+                              <div>
+                                <label className="block text-[11px] uppercase tracking-wider font-bold text-gray-400 mb-2">
+                                  Stroke Color
+                                </label>
+                                <div className="flex gap-2 items-center">
+                                  <input
+                                    type="text"
+                                    value={strokeColor}
+                                    onChange={(e) => setStrokeColor(e.target.value)}
+                                    placeholder="#000000"
+                                    className="flex-1 bg-[#0d0d16] border border-white/5 rounded-xl px-3 py-2 text-xs font-bold text-white focus:outline-none focus:border-amber-500/50"
+                                  />
+                                  <div className="relative w-8 h-8 rounded-xl overflow-hidden border border-white/5 bg-[#0d0d16] flex items-center justify-center hover:border-amber-500/40 transition-all duration-300">
+                                    <input
+                                      type="color"
+                                      value={strokeColor.startsWith("#") && strokeColor.length === 7 ? strokeColor : "#000000"}
+                                      onChange={(e) => setStrokeColor(e.target.value)}
+                                      className="absolute inset-0 w-full h-full p-0 border-0 cursor-pointer bg-transparent opacity-0 z-10"
+                                    />
+                                    <div className="w-4 h-4 rounded-full border border-white/10" style={{ backgroundColor: strokeColor.startsWith("#") ? strokeColor : "#000000" }} />
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+
+                      </div>
+
+                      {/* Color grading / filters */}
+                      <div className="bg-[#141423]/60 p-4 border border-white/5 rounded-2xl space-y-4">
+                        <div>
+                          <label className="block text-xs uppercase tracking-wider font-bold text-gray-300">
+                            Color Grading Filter
+                          </label>
+                          <span className="text-[10px] text-gray-500 font-medium">Apply premium color filter/grading overlay to the video background</span>
+                        </div>
+                        <select
+                          value={colorFilter}
+                          onChange={(e) => setColorFilter(e.target.value)}
+                          className="w-full bg-[#0d0d16] border border-white/5 rounded-xl px-3 py-2 text-xs font-bold text-gray-300 focus:outline-none focus:border-amber-500/50 cursor-pointer"
+                        >
+                          <option value="none">Normal (Clear)</option>
+                          <option value="cyberpunk">Cyberpunk</option>
+                          <option value="cinema">Cinema (Warm)</option>
+                          <option value="vhs">VHS (Retro)</option>
+                          <option value="monochrome">Moody Mono</option>
+                          <option value="emerald">Emerald</option>
+                          <option value="polaroid">Polaroid</option>
+                          <option value="midnight">Midnight</option>
+                          <option value="golden_hour">Golden Hour</option>
+                          <option value="arctic">Arctic Blue</option>
+                          <option value="neon_noir">Neon Noir</option>
+                          <option value="rose_tint">Rosé Tint</option>
+                          <option value="vintage_film">Vintage Film</option>
+                          <option value="tropical">Tropical</option>
+                        </select>
                       </div>
 
                       {/* Curve Text (Arc Along Path) */}
@@ -5573,6 +5755,7 @@ export default function GenresDashboard() {
                         <video
                           src={resolveUrl(selectedAccount.backgroundVideos[previewBgIndex]?.videoUrl)}
                           className="absolute inset-0 w-full h-full object-cover"
+                          style={{ filter: getCssColorFilterStyle(colorFilter) }}
                           muted
                           loop
                           autoPlay
@@ -5654,6 +5837,9 @@ export default function GenresDashboard() {
                                 padding: isClearBox ? "0px" : (curveText ? "16px 20px" : "10px 14px"),
                                 boxShadow: isClearBox ? "none" : undefined,
                                 border: isClearBox ? "none" : "1px solid rgba(255, 255, 255, 0.05)",
+                                letterSpacing: `${letterSpacing * 0.38}px`,
+                                WebkitTextStroke: strokeEnabled && strokeWidth > 0 ? `${strokeWidth * 0.38}px ${strokeColor}` : undefined,
+                                paintOrder: strokeEnabled && strokeWidth > 0 ? "stroke fill" : undefined,
                                 transition: "all 0.2s ease",
                               }}
                               className={`text-center font-bold max-w-[95%] break-words pointer-events-auto ${isClearBox ? "" : "shadow-xl"}`}
@@ -5672,7 +5858,10 @@ export default function GenresDashboard() {
                                         fontFamily: getCssFontFamily(fontFamily),
                                         fontSize: `${Math.max(10, fontSize * 0.38)}px`,
                                         textShadow: getCssTextShadow(shadowColor),
-                                        letterSpacing: "1px",
+                                        letterSpacing: `${letterSpacing * 0.38}px`,
+                                        stroke: strokeEnabled && strokeWidth > 0 ? strokeColor : "none",
+                                        strokeWidth: strokeEnabled && strokeWidth > 0 ? strokeWidth * 0.38 : 0,
+                                        paintOrder: strokeEnabled && strokeWidth > 0 ? "stroke fill" : undefined,
                                       }}
                                       fill={fontColor}
                                       className="font-bold"
@@ -6220,10 +6409,12 @@ export default function GenresDashboard() {
                   <input
                     type="number"
                     min="1"
-                    max="10"
+                    max="100"
                     value={postsPerAccount}
                     onChange={(e) => {
-                      const val = parseInt(e.target.value) || 1;
+                      let val = parseInt(e.target.value) || 1;
+                      if (val > 100) val = 100;
+                      if (val < 1) val = 1;
                       setPostsPerAccount(val);
                       setBatchPostsTotal(selectedBatchAccountIds.length * val);
                     }}

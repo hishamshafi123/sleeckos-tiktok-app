@@ -124,6 +124,14 @@ const FONT_OPTIONS = [
   "Caveat-Bold",
   "Lora-Bold",
   "GreatVibes-Regular",
+  "BebasNeue-Regular",
+  "ArchivoBlack-Regular",
+  "LilitaOne-Regular",
+  "ArchivoNarrow-Bold",
+  "PermanentMarker-Regular",
+  "Cinzel-Bold",
+  "Kanit-Black",
+  "Syne-ExtraBold",
 ];
 
 const TEXT_CASE_OPTIONS = [
@@ -132,6 +140,28 @@ const TEXT_CASE_OPTIONS = [
   { value: "capitalize", label: "Abc" },
   { value: "none", label: "As Is" },
 ];
+
+const getCssFontFamily = (font: string) => {
+  if (!font) return "'Outfit', sans-serif";
+  if (font.includes("Outfit")) return "'Outfit', sans-serif";
+  if (font.includes("Inter")) return "'Inter', sans-serif";
+  if (font.includes("Playfair")) return "'Playfair Display', serif";
+  if (font.includes("GreatVibes")) return "'Great Vibes', cursive";
+  if (font.includes("Anton")) return "'Anton', sans-serif";
+  if (font.includes("Caveat")) return "'Caveat', cursive";
+  if (font.includes("Lora")) return "'Lora', serif";
+  if (font.includes("Montserrat")) return "'Montserrat', sans-serif";
+  if (font.includes("Oswald")) return "'Oswald', sans-serif";
+  if (font.includes("Bebas")) return "'Bebas Neue', sans-serif";
+  if (font.includes("ArchivoBlack") || font.includes("Archivo Black")) return "'Archivo Black', sans-serif";
+  if (font.includes("Lilita")) return "'Lilita One', sans-serif";
+  if (font.includes("ArchivoNarrow") || font.includes("Archivo Narrow")) return "'Archivo Narrow', sans-serif";
+  if (font.includes("Permanent")) return "'Permanent Marker', cursive";
+  if (font.includes("Cinzel")) return "'Cinzel', serif";
+  if (font.includes("Kanit")) return "'Kanit', sans-serif";
+  if (font.includes("Syne")) return "'Syne', sans-serif";
+  return "'Outfit', sans-serif";
+};
 
 // Output dimensions (TikTok 9:16)
 const OUTPUT_W = 720;
@@ -422,7 +452,17 @@ export default function MultiplierPage() {
     } catch {}
   }, []);
 
-  useEffect(() => { fetchTemplates(); }, [fetchTemplates]);
+  useEffect(() => {
+    fetchTemplates();
+    const id = "google-fonts-preview-multiplier";
+    if (!document.getElementById(id)) {
+      const link = document.createElement("link");
+      link.id = id;
+      link.rel = "stylesheet";
+      link.href = "https://fonts.googleapis.com/css2?family=Anton&family=Archivo+Narrow:wght@400;500;600;700&family=Caveat:wght@700&family=Great+Vibes&family=Inter:wght@700;900&family=Lora:ital,wght@0,700;1,700&family=Montserrat:wght@700;900&family=Oswald:wght@700&family=Outfit:wght@700;800;900&family=Playfair+Display:ital,wght@0,700;1,700&family=Bebas+Neue&family=Archivo+Black&family=Lilita+One&family=Permanent+Marker&family=Cinzel:wght@700&family=Kanit:wght@900&family=Syne:wght@800&display=swap";
+      document.head.appendChild(link);
+    }
+  }, [fetchTemplates]);
 
   const openTemplateEditor = (tmpl?: DesignTemplate) => {
     if (tmpl) {
@@ -1078,11 +1118,7 @@ export default function MultiplierPage() {
               const isSelected = selectedTemplateIds.includes(tmpl.id);
               // Build CSS preview style
               const previewStyle: React.CSSProperties = {
-                fontFamily: tmpl.fontFamily.includes("Outfit") ? "Outfit, sans-serif"
-                  : tmpl.fontFamily.includes("Inter") ? "Inter, sans-serif"
-                  : tmpl.fontFamily.includes("Anton") ? "Anton, sans-serif"
-                  : tmpl.fontFamily.includes("Montserrat") ? "Montserrat, sans-serif"
-                  : "sans-serif",
+                fontFamily: getCssFontFamily(tmpl.fontFamily),
                 fontSize: Math.min(tmpl.fontSize * 0.35, 18),
                 color: tmpl.fontColor,
                 textTransform: tmpl.textCase === "UPPERCASE" ? "uppercase"
@@ -1357,7 +1393,7 @@ export default function MultiplierPage() {
                       style={{
                         color: editingTemplate.fontColor || "#FFF",
                         fontSize: Math.max(8, (editingTemplate.fontSize ?? 42) * (300 / OUTPUT_W)),
-                        fontFamily: (editingTemplate.fontFamily || "Outfit-Bold").includes("Outfit") ? "Outfit, sans-serif" : "sans-serif",
+                        fontFamily: getCssFontFamily(editingTemplate.fontFamily || "Outfit-Bold"),
                         fontWeight: "bold",
                         textTransform: editingTemplate.textCase === "UPPERCASE" ? "uppercase" : editingTemplate.textCase === "LOWERCASE" ? "lowercase" : "none",
                         letterSpacing: `${((editingTemplate.letterSpacing ?? 1) - 1) * 4}px`,
@@ -1401,7 +1437,7 @@ export default function MultiplierPage() {
                       style={{
                         color: editingTemplate.fontColor || "#FFF",
                         fontSize: Math.max(8, (editingTemplate.fontSize ?? 42) * (300 / OUTPUT_W)),
-                        fontFamily: (editingTemplate.fontFamily || "Outfit-Bold").includes("Outfit") ? "Outfit, sans-serif" : "sans-serif",
+                        fontFamily: getCssFontFamily(editingTemplate.fontFamily || "Outfit-Bold"),
                         fontWeight: "bold",
                         textTransform: editingTemplate.textCase === "UPPERCASE" ? "uppercase" : editingTemplate.textCase === "LOWERCASE" ? "lowercase" : "none",
                         wordBreak: "break-word",

@@ -952,6 +952,7 @@ async function processBatchRendering(batchId: string) {
             if (item.lyricalTemplate.textColor) inputProps.textColor = item.lyricalTemplate.textColor;
             if (item.lyricalTemplate.activeColor) inputProps.activeColor = item.lyricalTemplate.activeColor;
             if (item.lyricalTemplate.positionY !== undefined) inputProps.positionY = item.lyricalTemplate.positionY;
+            inputProps.strokeEnabled = item.lyricalTemplate.strokeWidth > 0;
             if (item.lyricalTemplate.strokeWidth !== undefined) inputProps.strokeWidth = item.lyricalTemplate.strokeWidth;
             if (item.lyricalTemplate.strokeColor) inputProps.strokeColor = item.lyricalTemplate.strokeColor;
             if (item.lyricalTemplate.textAlign) inputProps.textAlign = item.lyricalTemplate.textAlign;
@@ -1080,6 +1081,7 @@ async function processBatchRendering(batchId: string) {
                 fontFamily: item.lyricalTemplate.fontFamily,
                 fontSize: item.lyricalTemplate.fontSize,
                 activeColor: item.lyricalTemplate.activeColor,
+                strokeEnabled: item.lyricalTemplate.strokeWidth > 0,
                 strokeWidth: item.lyricalTemplate.strokeWidth,
                 strokeColor: item.lyricalTemplate.strokeColor,
                 positionY: item.lyricalTemplate.positionY,
@@ -1188,6 +1190,7 @@ async function processBatchRendering(batchId: string) {
               fontFamily: tpl.fontFamily,
               fontSize: tpl.fontSize,
               activeColor: tpl.activeColor,
+              strokeEnabled: tpl.strokeWidth > 0,
               strokeWidth: tpl.strokeWidth,
               strokeColor: tpl.strokeColor,
               positionY: tpl.positionY,
@@ -1386,6 +1389,11 @@ async function processBatchRendering(batchId: string) {
             curveText: styleConfig.curveText,
             curvature: styleConfig.curvature,
             positionY: styleConfig.positionY,
+            strokeEnabled: styleConfig.strokeEnabled,
+            strokeColor: styleConfig.strokeColor,
+            strokeWidth: styleConfig.strokeWidth,
+            letterSpacing: styleConfig.letterSpacing,
+            colorFilter: styleConfig.colorFilter,
           });
         }
 

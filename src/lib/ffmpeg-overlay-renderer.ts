@@ -24,6 +24,7 @@ interface TemplateConfig {
   fontFamily: string;
   fontSize: number;
   activeColor: string;
+  strokeEnabled?: boolean;
   strokeWidth: number;
   strokeColor: string;
   positionY: number;
@@ -64,6 +65,23 @@ const FONT_MAP: Record<string, { name: string; file: string; weight: number }> =
   "PlayfairDisplay-Bold": { name: "Playfair Display", file: "PlayfairDisplay-Bold.ttf", weight: 700 },
   "GreatVibes-Regular":   { name: "Great Vibes",      file: "GreatVibes-Regular.ttf", weight: 400 },
   "Lora-Bold":        { name: "Lora",       file: "Lora-Bold.ttf", weight: 700 },
+  // New High-Impact Fonts
+  "Bebas Neue":             { name: "Bebas Neue", file: "BebasNeue.ttf", weight: 400 },
+  "BebasNeue-Regular":      { name: "Bebas Neue", file: "BebasNeue-Regular.ttf", weight: 400 },
+  "Archivo Black":          { name: "Archivo Black", file: "ArchivoBlack.ttf", weight: 900 },
+  "ArchivoBlack-Regular":   { name: "Archivo Black", file: "ArchivoBlack-Regular.ttf", weight: 900 },
+  "Lilita One":             { name: "Lilita One", file: "LilitaOne.ttf", weight: 400 },
+  "LilitaOne-Regular":      { name: "Lilita One", file: "LilitaOne-Regular.ttf", weight: 400 },
+  "Archivo Narrow":         { name: "Archivo Narrow", file: "ArchivoNarrow.ttf", weight: 700 },
+  "ArchivoNarrow-Bold":     { name: "Archivo Narrow", file: "ArchivoNarrow-Bold.ttf", weight: 700 },
+  "Permanent Marker":       { name: "Permanent Marker", file: "PermanentMarker.ttf", weight: 400 },
+  "PermanentMarker-Regular":{ name: "Permanent Marker", file: "PermanentMarker-Regular.ttf", weight: 400 },
+  "Cinzel":                 { name: "Cinzel", file: "Cinzel.ttf", weight: 700 },
+  "Cinzel-Bold":            { name: "Cinzel", file: "Cinzel-Bold.ttf", weight: 700 },
+  "Kanit":                  { name: "Kanit", file: "Kanit.ttf", weight: 900 },
+  "Kanit-Black":            { name: "Kanit", file: "Kanit-Black.ttf", weight: 900 },
+  "Syne":                   { name: "Syne", file: "Syne.ttf", weight: 800 },
+  "Syne-ExtraBold":         { name: "Syne", file: "Syne-ExtraBold.ttf", weight: 800 },
 };
 
 const FALLBACK_FONT_FILE = "Montserrat-Bold.ttf";
@@ -296,7 +314,7 @@ export function generateASS(words: Word[], config: TemplateConfig): string {
   const activeColor = hexToASS(config.activeColor === "multi" ? "#FFFF00" : config.activeColor || "#FFFFFF");
   const inactiveColor = config.textColor ? hexToASS(config.textColor) : "&H00888888&";
   const strokeColor = hexToASS(config.strokeColor || "#000000");
-  const outline = Math.min(config.strokeWidth ?? 3, 6);
+  const outline = config.strokeEnabled ? Math.min(config.strokeWidth ?? 3, 6) : 0;
 
   const isMulti = config.activeColor === "multi";
   const boldVal = fontEntry.weight || 700;
