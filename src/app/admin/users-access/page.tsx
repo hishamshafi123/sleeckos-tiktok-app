@@ -16,7 +16,8 @@ import {
   Check,
   RefreshCw,
   Loader2,
-  AlertCircle
+  AlertCircle,
+  Folder
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -79,6 +80,12 @@ export default function UsersAccessPage() {
   const [overrides, setOverrides] = useState<Record<string, "grant" | "revoke" | "default">>({});
   const [saving, setSaving] = useState(false);
 
+  // Vault Access states
+  const [activeTab, setActiveTab] = useState<"system" | "vault">("system");
+  const [vaultAccessList, setVaultAccessList] = useState<any[]>([]);
+  const [loadingVaultAccess, setLoadingVaultAccess] = useState(false);
+  const [searchFolderQuery, setSearchFolderQuery] = useState("");
+
   // Create states
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [newName, setNewName] = useState("");
@@ -86,6 +93,49 @@ export default function UsersAccessPage() {
   const [newPassword, setNewPassword] = useState("");
   const [newRoleKey, setNewRoleKey] = useState("editor");
   const [creating, setCreating] = useState(false);
+
+  const fetchUserVaultAccess = async (userId?: string) => {
+    const targetId = userId || selectedUser?.id;
+    if (!targetId) return;
+
+    setLoadingVaultAccess(true);
+    try {
+      const res = await fetch(`/api/managed/vault/users/${targetId}/access`);
+      if (!res.ok) throw new Error("Failed to fetch folder access details");
+      const data = await res.json();
+      setVaultAccessList(data);
+    } catch (err: any) {
+      toast.error(err.message || "Failed to read vault permissions");
+    } finally {
+      setLoadingVaultAccess(false);
+    }
+  };
+
+  const handleUpdateFolderPermission = async (folderId: string, value: string) => {
+    if (!selectedUser) return;
+
+    try {
+      if (value === "inherited") {
+        const res = await fetch(`/api/managed/vault/users/${selectedUser.id}/access?folderId=${folderId}`, {
+          method: "DELETE",
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || "Failed to remove custom override");
+      } else {
+        const res = await fetch(`/api/managed/vault/users/${selectedUser.id}/access`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ folderId, permission: value }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || "Failed to set custom override");
+      }
+      toast.success("Folder permissions updated");
+      fetchUserVaultAccess(selectedUser.id);
+    } catch (err: any) {
+      toast.error(err.message || "Failed to update permissions");
+    }
+  };
 
   const fetchUsers = async () => {
     setLoading(true);
@@ -109,6 +159,8 @@ export default function UsersAccessPage() {
     setSelectedUser(user);
     setEditRoleKey(user.role.key);
     setEditStatus(user.status);
+    setActiveTab("system");
+    fetchUserVaultAccess(user.id);
 
     // Parse overrides from entitlements array
     const parsedOverrides: Record<string, "grant" | "revoke" | "default"> = {};
@@ -422,138 +474,258 @@ export default function UsersAccessPage() {
                 </button>
               </div>
 
-              {/* Status and Role selectors */}
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-1">
-                  <label className="text-[9px] uppercase font-bold text-zinc-500">Role</label>
-                  <select
-                    value={editRoleKey}
-                    onChange={(e) => setEditRoleKey(e.target.value)}
-                    className="w-full bg-[#09090b] border border-[#27272a] rounded-md px-2 py-1.5 text-xs text-zinc-300 focus:outline-none focus:border-[#2563eb]"
-                  >
-                    <option value="admin">Administrator</option>
-                    <option value="team_lead">Team Lead</option>
-                    <option value="editor">Editor</option>
-                    <option value="curator">Curator</option>
-                  </select>
-                </div>
-
-                <div className="space-y-1">
-                  <label className="text-[9px] uppercase font-bold text-zinc-500">Status</label>
-                  <select
-                    value={editStatus}
-                    onChange={(e) => setEditStatus(e.target.value as any)}
-                    className="w-full bg-[#09090b] border border-[#27272a] rounded-md px-2 py-1.5 text-xs text-zinc-300 focus:outline-none focus:border-[#2563eb]"
-                  >
-                    <option value="ACTIVE">ACTIVE</option>
-                    <option value="TRIAL">TRIAL</option>
-                    <option value="DISABLED">DISABLED</option>
-                  </select>
-                </div>
-              </div>
-
-              {/* Specific Overrides Checklist */}
-              <div className="space-y-3 pt-2">
-                <h3 className="text-xs font-bold text-zinc-400 border-b border-[#27272a] pb-1.5">
-                  Tool Permissions Overrides
-                </h3>
-
-                {selectedUser.status === "TRIAL" && (
-                  <div className="p-2.5 bg-amber-950/20 border border-amber-900/50 text-amber-300 rounded text-[10px] flex items-start gap-1.5 leading-relaxed mb-4">
-                    <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5 text-amber-400" />
-                    <span>
-                      User status is <strong>TRIAL</strong>. Role defaults are locked down: they only have access to <strong>LMS Academy</strong> plus any tools explicitly marked <strong>Always Grant</strong>.
-                    </span>
-                  </div>
-                )}
-
-                <div className="space-y-2 max-h-[350px] overflow-y-auto pr-1">
-                  {TOOLS.map((tool) => {
-                    const val = overrides[tool.key] || "default";
-                    const isDefaultGranted = (ROLE_DEFAULTS[editRoleKey] || []).includes(tool.key);
-                    
-                    // Effective state
-                    let isEffectiveAllowed = false;
-                    if (editStatus === "DISABLED") {
-                      isEffectiveAllowed = false;
-                    } else if (editStatus === "TRIAL") {
-                      isEffectiveAllowed = tool.key === "lms" || val === "grant";
-                    } else {
-                      isEffectiveAllowed = val === "grant" || (val === "default" && isDefaultGranted);
-                    }
-
-                    return (
-                      <div
-                        key={tool.key}
-                        className="border border-[#27272a] rounded-md p-3 space-y-2 bg-zinc-950/10 text-xs flex flex-col justify-between"
-                      >
-                        <div className="flex justify-between items-start gap-2">
-                          <div className="space-y-0.5">
-                            <span className="font-semibold text-zinc-200 flex items-center gap-1.5">
-                              {tool.label}
-                              {isEffectiveAllowed ? (
-                                <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 inline-block" title="Allowed" />
-                              ) : (
-                                <span className="h-1.5 w-1.5 rounded-full bg-zinc-600 inline-block" title="Denied" />
-                              )}
-                            </span>
-                            <p className="text-[10px] text-zinc-500 leading-normal">{tool.desc}</p>
-                          </div>
-                        </div>
-
-                        {/* Three Way Action Buttons */}
-                        <div className="flex rounded border border-[#27272a] overflow-hidden text-[10px] bg-[#09090b] text-zinc-400">
-                          <button
-                            type="button"
-                            onClick={() => handleOverrideChange(tool.key, "default")}
-                            className={`flex-1 py-1 text-center font-medium border-r border-[#27272a] transition ${
-                              val === "default"
-                                ? "bg-zinc-800 text-zinc-200"
-                                : "hover:bg-zinc-900"
-                            }`}
-                          >
-                            Inherit ({isDefaultGranted ? "Grant" : "Revoke"})
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => handleOverrideChange(tool.key, "grant")}
-                            className={`flex-1 py-1 text-center font-medium border-r border-[#27272a] transition ${
-                              val === "grant"
-                                ? "bg-emerald-950/40 text-emerald-400"
-                                : "hover:bg-zinc-900"
-                            }`}
-                          >
-                            Always Grant
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => handleOverrideChange(tool.key, "revoke")}
-                            className={`flex-1 py-1 text-center font-medium transition ${
-                              val === "revoke"
-                                ? "bg-red-950/40 text-red-400"
-                                : "hover:bg-zinc-900"
-                            }`}
-                          >
-                            Always Revoke
-                          </button>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-
-              {/* Save Changes button */}
-              <div className="pt-4 border-t border-[#27272a] flex justify-end">
+              {/* Navigation Tabs */}
+              <div className="flex border-b border-[#27272a] text-xs font-semibold gap-4">
                 <button
-                  onClick={handleSaveUser}
-                  disabled={saving}
-                  className="flex items-center gap-1.5 px-3 py-1.5 bg-[#2563eb] text-white rounded-md text-xs font-semibold hover:bg-blue-700 transition disabled:opacity-50"
+                  type="button"
+                  onClick={() => setActiveTab("system")}
+                  className={`pb-2 border-b-2 transition ${
+                    activeTab === "system"
+                      ? "border-blue-500 text-white font-bold"
+                      : "border-transparent text-zinc-400 hover:text-zinc-200"
+                  }`}
                 >
-                  {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
-                  Save Access Config
+                  System & Tool Access
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActiveTab("vault");
+                    fetchUserVaultAccess(selectedUser.id);
+                  }}
+                  className={`pb-2 border-b-2 transition ${
+                    activeTab === "vault"
+                      ? "border-blue-500 text-white font-bold"
+                      : "border-transparent text-zinc-400 hover:text-zinc-200"
+                  }`}
+                >
+                  Vault Folder Access
                 </button>
               </div>
+
+              {activeTab === "system" ? (
+                <>
+                  {/* Status and Role selectors */}
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-1">
+                      <label className="text-[9px] uppercase font-bold text-zinc-500">Role</label>
+                      <select
+                        value={editRoleKey}
+                        onChange={(e) => setEditRoleKey(e.target.value)}
+                        className="w-full bg-[#09090b] border border-[#27272a] rounded-md px-2 py-1.5 text-xs text-zinc-300 focus:outline-none focus:border-[#2563eb]"
+                      >
+                        <option value="admin">Administrator</option>
+                        <option value="team_lead">Team Lead</option>
+                        <option value="editor">Editor</option>
+                        <option value="curator">Curator</option>
+                      </select>
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="text-[9px] uppercase font-bold text-zinc-500">Status</label>
+                      <select
+                        value={editStatus}
+                        onChange={(e) => setEditStatus(e.target.value as any)}
+                        className="w-full bg-[#09090b] border border-[#27272a] rounded-md px-2 py-1.5 text-xs text-zinc-300 focus:outline-none focus:border-[#2563eb]"
+                      >
+                        <option value="ACTIVE">ACTIVE</option>
+                        <option value="TRIAL">TRIAL</option>
+                        <option value="DISABLED">DISABLED</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  {/* Specific Overrides Checklist */}
+                  <div className="space-y-3 pt-2">
+                    <h3 className="text-xs font-bold text-zinc-400 border-b border-[#27272a] pb-1.5">
+                      Tool Permissions Overrides
+                    </h3>
+
+                    {selectedUser.status === "TRIAL" && (
+                      <div className="p-2.5 bg-amber-950/20 border border-amber-900/50 text-amber-300 rounded text-[10px] flex items-start gap-1.5 leading-relaxed mb-4">
+                        <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5 text-amber-400" />
+                        <span>
+                          User status is <strong>TRIAL</strong>. Role defaults are locked down: they only have access to <strong>LMS Academy</strong> plus any tools explicitly marked <strong>Always Grant</strong>.
+                        </span>
+                      </div>
+                    )}
+
+                    <div className="space-y-2 max-h-[350px] overflow-y-auto pr-1">
+                      {TOOLS.map((tool) => {
+                        const val = overrides[tool.key] || "default";
+                        const isDefaultGranted = (ROLE_DEFAULTS[editRoleKey] || []).includes(tool.key);
+                        
+                        // Effective state
+                        let isEffectiveAllowed = false;
+                        if (editStatus === "DISABLED") {
+                          isEffectiveAllowed = false;
+                        } else if (editStatus === "TRIAL") {
+                          isEffectiveAllowed = tool.key === "lms" || val === "grant";
+                        } else {
+                          isEffectiveAllowed = val === "grant" || (val === "default" && isDefaultGranted);
+                        }
+
+                        return (
+                          <div
+                            key={tool.key}
+                            className="border border-[#27272a] rounded-md p-3 space-y-2 bg-zinc-950/10 text-xs flex flex-col justify-between"
+                          >
+                            <div className="flex justify-between items-start gap-2">
+                              <div className="space-y-0.5">
+                                <span className="font-semibold text-zinc-200 flex items-center gap-1.5">
+                                  {tool.label}
+                                  {isEffectiveAllowed ? (
+                                    <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 inline-block" title="Allowed" />
+                                  ) : (
+                                    <span className="h-1.5 w-1.5 rounded-full bg-zinc-600 inline-block" title="Denied" />
+                                  )}
+                                </span>
+                                <p className="text-[10px] text-zinc-500 leading-normal">{tool.desc}</p>
+                              </div>
+                            </div>
+
+                            {/* Three Way Action Buttons */}
+                            <div className="flex rounded border border-[#27272a] overflow-hidden text-[10px] bg-[#09090b] text-zinc-400">
+                              <button
+                                type="button"
+                                onClick={() => handleOverrideChange(tool.key, "default")}
+                                className={`flex-1 py-1 text-center font-medium border-r border-[#27272a] transition ${
+                                  val === "default"
+                                    ? "bg-zinc-800 text-zinc-200"
+                                    : "hover:bg-zinc-900"
+                                }`}
+                              >
+                                Inherit ({isDefaultGranted ? "Grant" : "Revoke"})
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleOverrideChange(tool.key, "grant")}
+                                className={`flex-1 py-1 text-center font-medium border-r border-[#27272a] transition ${
+                                  val === "grant"
+                                    ? "bg-emerald-950/40 text-emerald-400"
+                                    : "hover:bg-zinc-900"
+                                }`}
+                              >
+                                Always Grant
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleOverrideChange(tool.key, "revoke")}
+                                className={`flex-1 py-1 text-center font-medium transition ${
+                                  val === "revoke"
+                                    ? "bg-red-950/40 text-red-400"
+                                    : "hover:bg-zinc-900"
+                                }`}
+                              >
+                                Always Revoke
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Save Changes button */}
+                  <div className="pt-4 border-t border-[#27272a] flex justify-end">
+                    <button
+                      onClick={handleSaveUser}
+                      disabled={saving}
+                      className="flex items-center gap-1.5 px-3 py-1.5 bg-[#2563eb] text-white rounded-md text-xs font-semibold hover:bg-blue-700 transition disabled:opacity-50"
+                    >
+                      {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+                      Save Access Config
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <div className="space-y-4 animate-in fade-in duration-200">
+                  <div className="relative">
+                    <Search className="absolute left-2.5 top-2.5 w-3.5 h-3.5 text-zinc-500" />
+                    <input
+                      type="text"
+                      placeholder="Search folders..."
+                      value={searchFolderQuery}
+                      onChange={(e) => setSearchFolderQuery(e.target.value)}
+                      className="w-full bg-[#09090b] border border-[#27272a] rounded-md pl-8 pr-4 py-1.5 text-xs text-zinc-300 placeholder:text-zinc-600 focus:outline-none focus:border-[#2563eb] transition"
+                    />
+                  </div>
+
+                  {loadingVaultAccess ? (
+                    <div className="flex flex-col items-center justify-center py-10 space-y-2">
+                      <Loader2 className="w-5 h-5 text-blue-500 animate-spin" />
+                      <p className="text-[10px] text-zinc-500 font-bold uppercase">Loading folder access...</p>
+                    </div>
+                  ) : vaultAccessList.length === 0 ? (
+                    <p className="text-xs text-zinc-500 italic text-center py-10">No folders configured in Data Vault.</p>
+                  ) : (
+                    <div className="space-y-3 max-h-[420px] overflow-y-auto pr-1">
+                      {vaultAccessList
+                        .filter((item) =>
+                          item.folderName.toLowerCase().includes(searchFolderQuery.toLowerCase())
+                        )
+                        .map((item) => (
+                          <div
+                            key={item.folderId}
+                            className="border border-[#27272a] rounded-md p-3 space-y-2.5 bg-zinc-950/20 text-xs"
+                          >
+                            <div className="flex justify-between items-start gap-2">
+                              <div className="space-y-0.5">
+                                <span className="font-semibold text-zinc-200 flex items-center gap-1.5">
+                                  <Folder className="w-3.5 h-3.5 text-blue-500 flex-shrink-0" />
+                                  {item.folderName}
+                                </span>
+                                
+                                {item.isInherited && item.inheritedFromName && (
+                                  <span className="inline-block text-[9px] text-zinc-500 font-bold uppercase mt-1 bg-zinc-900/60 px-1.5 py-0.5 rounded border border-zinc-850">
+                                    Inherited from: {item.inheritedFromName}
+                                  </span>
+                                )}
+                                {!item.isInherited && item.isExplicit && (
+                                  <span className="inline-block text-[9px] text-blue-400 font-bold uppercase mt-1 bg-blue-950/20 px-1.5 py-0.5 rounded border border-blue-900/20">
+                                    Explicit Override
+                                  </span>
+                                )}
+                                {!item.isInherited && !item.isExplicit && item.permission && (
+                                  <span className="inline-block text-[9px] text-emerald-400 font-bold uppercase mt-1 bg-emerald-950/20 px-1.5 py-0.5 rounded border border-emerald-900/20">
+                                    Default Access
+                                  </span>
+                                )}
+                              </div>
+
+                              <span className={`text-[10px] font-bold uppercase px-1.5 py-0.5 rounded ${
+                                item.permission === "manage"
+                                  ? "bg-purple-950/40 text-purple-400 border border-purple-900/30"
+                                  : item.permission === "edit"
+                                  ? "bg-blue-950/40 text-blue-400 border border-blue-900/30"
+                                  : item.permission === "view"
+                                  ? "bg-zinc-900 text-zinc-400 border border-zinc-800"
+                                  : "bg-red-950/40 text-red-400 border border-red-900/30"
+                              }`}>
+                                {item.permission || "no access"}
+                              </span>
+                            </div>
+
+                            <div className="pt-1.5 border-t border-zinc-900">
+                              <label className="block text-[8px] uppercase font-bold text-zinc-500 mb-1">Set Access Override</label>
+                              <select
+                                value={item.isExplicit ? item.permission || "null" : "inherited"}
+                                onChange={(e) => handleUpdateFolderPermission(item.folderId, e.target.value)}
+                                className="w-full bg-[#09090b] border border-[#27272a] rounded px-2.5 py-1 text-xs text-zinc-300 focus:outline-none focus:border-[#2563eb]"
+                              >
+                                <option value="inherited">Inherited (Default)</option>
+                                <option value="view">Explicit: View</option>
+                                <option value="edit">Explicit: Edit</option>
+                                <option value="manage">Explicit: Manage</option>
+                                <option value="null">Explicit: No Access / Blocked</option>
+                              </select>
+                            </div>
+                          </div>
+                        ))}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           )}
         </div>

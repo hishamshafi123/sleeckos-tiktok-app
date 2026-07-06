@@ -252,9 +252,17 @@ export async function grantFolderAccess(
   targetUserOrRole: { targetUserId?: string; roleKey?: string },
   permission: "view" | "edit" | "manage"
 ) {
-  const perm = await getFolderPermission(userId, folderId);
-  if (perm !== "manage") {
-    throw new Error("Forbidden: Only folder managers can share access parameters");
+  const caller = await prisma.user.findUnique({
+    where: { id: userId },
+    include: { role: true },
+  });
+  const isAuthorized =
+    caller?.role?.key === "admin" ||
+    caller?.role?.key === "team_lead" ||
+    (await getFolderPermission(userId, folderId)) === "manage";
+
+  if (!isAuthorized) {
+    throw new Error("Forbidden: Access management privileges required");
   }
 
   const { targetUserId, roleKey } = targetUserOrRole;
@@ -281,9 +289,17 @@ export async function grantFolderAccess(
 }
 
 export async function revokeFolderAccess(userId: string, folderId: string, accessId: string) {
-  const perm = await getFolderPermission(userId, folderId);
-  if (perm !== "manage") {
-    throw new Error("Forbidden: Only folder managers can manage configurations");
+  const caller = await prisma.user.findUnique({
+    where: { id: userId },
+    include: { role: true },
+  });
+  const isAuthorized =
+    caller?.role?.key === "admin" ||
+    caller?.role?.key === "team_lead" ||
+    (await getFolderPermission(userId, folderId)) === "manage";
+
+  if (!isAuthorized) {
+    throw new Error("Forbidden: Access management privileges required");
   }
 
   const access = await prisma.vaultFolderAccess.findUnique({ where: { id: accessId } });
@@ -738,3 +754,116 @@ function parseCsv(text: string): string[][] {
   
   return result.filter(r => r.length > 0 && r.some(cell => cell.trim() !== ""));
 }
+
+/**
+ * Fetch computed folder access configuration for a specific user.
+ * Walks hierarchies to return explicit and inherited permissions for all vault folders.
+ */
+export async function getUserVaultAccess(targetUserId: string) {
+  const user = await prisma.user.findUnique({
+    where: { id: targetUserId },
+    include: { role: true },
+  });
+  if (!user) throw new Error("User not found");
+
+  const folders = await prisma.vaultFolder.findMany({
+    include: {
+      accessList: true,
+    },
+    orderBy: { name: "asc" },
+  });
+
+  const hasProjects = await can(targetUserId, "projects");
+
+  const results = [];
+
+  for (const folder of folders) {
+    let permission: "view" | "edit" | "manage" | null = null;
+    let isInherited = false;
+    let isExplicit = false;
+    let inheritedFromFolderId: string | undefined = undefined;
+    let inheritedFromName: string | undefined = undefined;
+    let accessId: string | undefined = undefined;
+
+    if (user.status === "DISABLED") {
+      permission = null;
+    } else if (user.role?.key === "admin") {
+      permission = "manage";
+      isExplicit = true;
+    } else if (!hasProjects) {
+      permission = null;
+    } else {
+      // Walk parent chain
+      let currentId: string | null = folder.id;
+      let nearestConfiguredFolder: any = null;
+
+      while (currentId) {
+        const node = folders.find((f) => f.id === currentId);
+        if (!node) break;
+
+        if (node.accessList.length > 0) {
+          nearestConfiguredFolder = node;
+          break; // Stop walk at nearest configured directory level
+        }
+        currentId = node.parentFolderId;
+      }
+
+      if (!nearestConfiguredFolder) {
+        // Default baseline projects access
+        permission = "edit";
+        isExplicit = false;
+        isInherited = false;
+      } else {
+        // Look for matching rules
+        let highest: "view" | "edit" | "manage" | null = null;
+        let matchedAccess: any = null;
+
+        for (const entry of nearestConfiguredFolder.accessList) {
+          if (entry.userId === targetUserId) {
+            highest = getHigherPermission(highest, entry.permission as any);
+            matchedAccess = entry;
+          } else if (entry.roleKey === user.role?.key) {
+            highest = getHigherPermission(highest, entry.permission as any);
+            matchedAccess = entry;
+          }
+        }
+
+        if (highest) {
+          permission = highest;
+          if (nearestConfiguredFolder.id === folder.id) {
+            isExplicit = true;
+            isInherited = false;
+            if (matchedAccess?.userId === targetUserId) {
+              accessId = matchedAccess.id; // User-specific accessId for quick revocation
+            }
+          } else {
+            isExplicit = false;
+            isInherited = true;
+            inheritedFromFolderId = nearestConfiguredFolder.id;
+            inheritedFromName = nearestConfiguredFolder.name;
+          }
+        } else {
+          // Nearest configured folder has permissions but none match this user
+          permission = null;
+          isExplicit = false;
+          isInherited = false;
+        }
+      }
+    }
+
+    results.push({
+      folderId: folder.id,
+      folderName: folder.name,
+      parentFolderId: folder.parentFolderId,
+      permission,
+      isInherited,
+      isExplicit,
+      inheritedFromFolderId,
+      inheritedFromName,
+      accessId,
+    });
+  }
+
+  return results;
+}
+

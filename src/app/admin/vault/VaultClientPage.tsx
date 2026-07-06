@@ -489,6 +489,39 @@ export default function VaultClientPage({
     }
   };
 
+  const handleUpdateExistingAccess = async (access: any, newPermission: string) => {
+    if (!shareModalFolderId) return;
+
+    try {
+      const payload: any = {
+        folderId: shareModalFolderId,
+        permission: newPermission,
+      };
+      if (access.userId) payload.userId = access.userId;
+      else payload.roleKey = access.roleKey;
+
+      const res = await fetch("/api/managed/vault/folders/access", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to update access level");
+
+      toast.success("Permission updated successfully");
+      
+      // Update local state list
+      setFolderAccessList((prev) =>
+        prev.map((item) => (item.id === access.id ? { ...item, permission: newPermission } : item))
+      );
+      
+      // Reload folders to propagate changes
+      fetchFolders();
+    } catch (err: any) {
+      toast.error(err.message || "Failed to update access level");
+    }
+  };
+
   // CSV Export Handler
   const handleExportCsv = async (includeSecrets: boolean) => {
     if (!selectedSheetId) return;
@@ -1191,7 +1224,7 @@ export default function VaultClientPage({
                 <label className="block text-[10px] uppercase font-bold text-zinc-500 mb-2">Access Rules Configured</label>
                 <div className="space-y-2 max-h-40 overflow-y-auto pr-1">
                   {folderAccessList.length === 0 ? (
-                    <p className="text-xs text-zinc-500 italic">No custom rules. Folder inherits parent ACLs.</p>
+                    <p className="text-xs text-zinc-500 italic">No one else has access to this folder yet</p>
                   ) : (
                     folderAccessList.map((access) => {
                       let desc = "";
@@ -1206,20 +1239,30 @@ export default function VaultClientPage({
                       return (
                         <div
                           key={access.id}
-                          className="flex items-center justify-between bg-zinc-950 border border-zinc-850 p-2.5 rounded-lg"
+                          className="flex items-center justify-between bg-zinc-950 border border-zinc-850 p-2 py-1.5 rounded-lg gap-4"
                         >
-                          <div className="text-xs">
-                            <p className="font-semibold text-white">{desc}</p>
-                            <p className="text-[10px] text-zinc-500 uppercase tracking-widest font-bold mt-0.5">
-                              Permission: {access.permission}
-                            </p>
+                          <div className="text-xs truncate max-w-[50%]">
+                            <p className="font-semibold text-white truncate">{desc}</p>
                           </div>
-                          <button
-                            onClick={() => handleRevokeShare(access.id)}
-                            className="p-1 text-zinc-500 hover:text-red-400 hover:bg-zinc-900 rounded transition-all"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
+                          
+                          <div className="flex items-center gap-2">
+                            <select
+                              value={access.permission}
+                              onChange={(e) => handleUpdateExistingAccess(access, e.target.value)}
+                              className="bg-[#111] border border-zinc-800 rounded px-2 py-1 text-xs text-zinc-300 focus:outline-none"
+                            >
+                              <option value="view">View</option>
+                              <option value="edit">Edit</option>
+                              <option value="manage">Manage</option>
+                            </select>
+                            
+                            <button
+                              onClick={() => handleRevokeShare(access.id)}
+                              className="p-1 text-zinc-500 hover:text-red-400 hover:bg-[#111] rounded transition-all"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
                         </div>
                       );
                     })
