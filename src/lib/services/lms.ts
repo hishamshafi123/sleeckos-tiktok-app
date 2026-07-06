@@ -1,6 +1,35 @@
 import prisma from "@/lib/db";
 import { unlockToolForUser } from "@/lib/services/permissions";
 
+export function extractYoutubeVideoId(urlOrId: string): string {
+  if (!urlOrId) return "";
+  const cleaned = urlOrId.trim();
+  if (cleaned.length === 11 && !cleaned.includes("/") && !cleaned.includes(".")) {
+    return cleaned; // Already a video ID
+  }
+  try {
+    const urlObj = new URL(cleaned.startsWith("http") ? cleaned : `https://${cleaned}`);
+    if (urlObj.hostname.includes("youtu.be")) {
+      return urlObj.pathname.substring(1);
+    }
+    if (urlObj.pathname.includes("/shorts/")) {
+      const match = urlObj.pathname.match(/\/shorts\/([a-zA-Z0-9_-]{11})/);
+      if (match) return match[1];
+    }
+    if (urlObj.pathname.includes("/embed/")) {
+      const match = urlObj.pathname.match(/\/embed\/([a-zA-Z0-9_-]{11})/);
+      if (match) return match[1];
+    }
+    const v = urlObj.searchParams.get("v");
+    if (v && v.length === 11) return v;
+  } catch {}
+
+  const match = cleaned.match(/(?:youtu\.be\/|youtube\.com\/(?:embed\/|v\/|watch\?v=|watch\?.+&v=))([a-zA-Z0-9_-]{11})/);
+  if (match) return match[1];
+
+  return cleaned;
+}
+
 // ─── Course CRUD (Admin) ───────────────────────────────
 
 export async function createCourse(data: {
@@ -8,6 +37,7 @@ export async function createCourse(data: {
   description?: string;
   assignedRoles: string[];
   unlocksToolKey?: string;
+  order?: number;
 }) {
   return prisma.course.create({
     data: {
@@ -15,6 +45,7 @@ export async function createCourse(data: {
       description: data.description || null,
       assignedRoles: data.assignedRoles,
       unlocksToolKey: data.unlocksToolKey || null,
+      order: data.order ?? 0,
     },
   });
 }
@@ -27,6 +58,7 @@ export async function updateCourse(
     assignedRoles?: string[];
     unlocksToolKey?: string | null;
     status?: string;
+    order?: number;
   }
 ) {
   return prisma.course.update({
@@ -44,7 +76,7 @@ export async function getCourses() {
     include: {
       _count: { select: { lessons: true, enrollments: true } },
     },
-    orderBy: { createdAt: "desc" },
+    orderBy: { order: "asc" },
   });
 }
 
@@ -52,7 +84,20 @@ export async function getCourseDetails(courseId: string) {
   return prisma.course.findUnique({
     where: { id: courseId },
     include: {
+      sections: {
+        orderBy: { order: "asc" },
+        include: {
+          lessons: {
+            orderBy: { order: "asc" },
+            include: {
+              quizQuestions: true,
+              _count: { select: { progress: true } },
+            },
+          },
+        },
+      },
       lessons: {
+        where: { sectionId: null }, // unassigned lessons
         orderBy: { order: "asc" },
         include: {
           quizQuestions: true,
@@ -69,16 +114,69 @@ export async function getCourseDetails(courseId: string) {
   });
 }
 
+// ─── Section CRUD (Admin) ──────────────────────────────
+
+export async function createSection(data: {
+  courseId: string;
+  title: string;
+  order?: number;
+}) {
+  let order = data.order;
+  if (order === undefined || order === null) {
+    const maxSection = await prisma.section.findFirst({
+      where: { courseId: data.courseId },
+      orderBy: { order: "desc" },
+    });
+    order = (maxSection?.order ?? -1) + 1;
+  }
+
+  return prisma.section.create({
+    data: {
+      courseId: data.courseId,
+      title: data.title,
+      order,
+    },
+  });
+}
+
+export async function updateSection(
+  sectionId: string,
+  data: {
+    title?: string;
+    order?: number;
+  }
+) {
+  return prisma.section.update({
+    where: { id: sectionId },
+    data,
+  });
+}
+
+export async function deleteSection(sectionId: string) {
+  return prisma.section.delete({ where: { id: sectionId } });
+}
+
+export async function reorderSections(courseId: string, sectionIds: string[]) {
+  const updates = sectionIds.map((id, idx) =>
+    prisma.section.update({
+      where: { id },
+      data: { order: idx },
+    })
+  );
+  return prisma.$transaction(updates);
+}
+
 // ─── Lesson CRUD (Admin) ──────────────────────────────
 
 export async function createLesson(data: {
   courseId: string;
+  sectionId?: string | null;
   title: string;
-  youtubeUrl: string;
-  sopMarkdown: string;
+  youtubeVideoId: string;
+  stepsMarkdown: string;
+  resources?: any;
   order?: number;
 }) {
-  // Auto-assign order if not provided
   let order = data.order;
   if (order === undefined || order === null) {
     const maxLesson = await prisma.lesson.findFirst({
@@ -91,9 +189,11 @@ export async function createLesson(data: {
   return prisma.lesson.create({
     data: {
       courseId: data.courseId,
+      sectionId: data.sectionId || null,
       title: data.title,
-      youtubeUrl: data.youtubeUrl,
-      sopMarkdown: data.sopMarkdown,
+      youtubeVideoId: extractYoutubeVideoId(data.youtubeVideoId),
+      stepsMarkdown: data.stepsMarkdown,
+      resources: data.resources ? JSON.parse(JSON.stringify(data.resources)) : [],
       order,
     },
   });
@@ -102,15 +202,25 @@ export async function createLesson(data: {
 export async function updateLesson(
   lessonId: string,
   data: {
+    sectionId?: string | null;
     title?: string;
-    youtubeUrl?: string;
-    sopMarkdown?: string;
+    youtubeVideoId?: string;
+    stepsMarkdown?: string;
+    resources?: any;
     order?: number;
   }
 ) {
+  const updateData: any = { ...data };
+  if (data.resources !== undefined) {
+    updateData.resources = JSON.parse(JSON.stringify(data.resources));
+  }
+  if (data.youtubeVideoId !== undefined) {
+    updateData.youtubeVideoId = extractYoutubeVideoId(data.youtubeVideoId);
+  }
+
   return prisma.lesson.update({
     where: { id: lessonId },
-    data,
+    data: updateData,
   });
 }
 
@@ -190,7 +300,6 @@ export async function enrollUsersByCourse(courseId: string) {
 
   if (!course) throw new Error("Course not found");
 
-  // Find all users whose role key matches the assignedRoles
   const roles = await prisma.role.findMany({
     where: { key: { in: course.assignedRoles } },
     select: { id: true },
@@ -239,9 +348,18 @@ export async function getMyEnrollments(userId: string) {
     include: {
       course: {
         include: {
+          sections: {
+            orderBy: { order: "asc" },
+            include: {
+              lessons: {
+                orderBy: { order: "asc" },
+                select: { id: true, title: true, order: true, sectionId: true },
+              },
+            },
+          },
           lessons: {
             orderBy: { order: "asc" },
-            select: { id: true, title: true, order: true },
+            select: { id: true, title: true, order: true, sectionId: true },
           },
           _count: { select: { lessons: true } },
         },
@@ -252,23 +370,84 @@ export async function getMyEnrollments(userId: string) {
 
   // Attach per-lesson completion status
   const lessonProgress = await prisma.lessonProgress.findMany({
-    where: { userId },
+    where: {
+      userId,
+      completedAt: { not: null as any },
+    },
     select: { lessonId: true },
   });
   const completedLessonIds = new Set(lessonProgress.map((lp) => lp.lessonId));
 
-  return enrollments.map((e) => ({
+  return enrollments.map((e: any) => ({
     ...e,
-    completedLessons: e.course.lessons.filter((l) => completedLessonIds.has(l.id)).length,
+    completedLessons: e.course.lessons.filter((l: any) => completedLessonIds.has(l.id)).length,
+    completedLessonIds: Array.from(completedLessonIds),
     totalLessons: e.course._count.lessons,
   }));
+}
+
+/**
+ * Save resume state and watch progress. Mark complete if watchedPct >= 90% and quiz count is 0.
+ */
+export async function saveLessonProgress(data: {
+  userId: string;
+  lessonId: string;
+  watchedPct: number;
+  lastPositionSec: number;
+}) {
+  const { userId, lessonId, watchedPct, lastPositionSec } = data;
+
+  const isAutoComplete = watchedPct >= 90;
+
+  const quizCount = await prisma.quizQuestion.count({
+    where: { lessonId },
+  });
+
+  const existingProgress = await prisma.lessonProgress.findUnique({
+    where: {
+      userId_lessonId: { userId, lessonId },
+    },
+  });
+
+  const isAlreadyComplete = !!existingProgress?.completedAt;
+  const shouldMarkComplete = isAutoComplete && quizCount === 0 && !isAlreadyComplete;
+
+  const progress = await prisma.lessonProgress.upsert({
+    where: {
+      userId_lessonId: { userId, lessonId },
+    },
+    update: {
+      watchedPct: Math.max(existingProgress?.watchedPct || 0, watchedPct),
+      lastPositionSec,
+      ...(shouldMarkComplete ? { completedAt: new Date() } : {}),
+    },
+    create: {
+      userId,
+      lessonId,
+      watchedPct,
+      lastPositionSec,
+      ...(shouldMarkComplete ? { completedAt: new Date() } : {}),
+    },
+  });
+
+  if (shouldMarkComplete) {
+    const lesson = await prisma.lesson.findUnique({
+      where: { id: lessonId },
+      select: { courseId: true },
+    });
+    if (lesson) {
+      await updateEnrollmentStatus(userId, lesson.courseId);
+      await checkCourseCompletion(userId, lesson.courseId);
+    }
+  }
+
+  return progress;
 }
 
 /**
  * Mark a lesson as complete (no quiz required).
  */
 export async function markLessonComplete(userId: string, lessonId: string) {
-  // Check if lesson has quiz questions
   const quizCount = await prisma.quizQuestion.count({
     where: { lessonId },
   });
@@ -281,11 +460,18 @@ export async function markLessonComplete(userId: string, lessonId: string) {
     where: {
       userId_lessonId: { userId, lessonId },
     },
-    update: { completedAt: new Date() },
-    create: { userId, lessonId },
+    update: {
+      completedAt: new Date(),
+      watchedPct: 100,
+    },
+    create: {
+      userId,
+      lessonId,
+      completedAt: new Date(),
+      watchedPct: 100,
+    },
   });
 
-  // Update enrollment status
   const lesson = await prisma.lesson.findUnique({
     where: { id: lessonId },
     select: { courseId: true },
@@ -304,7 +490,7 @@ export async function markLessonComplete(userId: string, lessonId: string) {
 export async function submitQuizAnswers(
   userId: string,
   lessonId: string,
-  answers: number[] // user's selected indexes per question, in order of quizQuestions
+  answers: number[]
 ) {
   const questions = await prisma.quizQuestion.findMany({
     where: { lessonId },
@@ -320,7 +506,7 @@ export async function submitQuizAnswers(
   }
 
   let correct = 0;
-  const results: { questionId: string; correct: boolean; yourAnswer: number; correctAnswer: number }[] = [];
+  const results: any[] = [];
 
   for (let i = 0; i < questions.length; i++) {
     const isCorrect = answers[i] === questions[i].correctIndex;
@@ -336,12 +522,28 @@ export async function submitQuizAnswers(
   const passed = correct === questions.length;
 
   if (passed) {
+    const existingProgress = await prisma.lessonProgress.findUnique({
+      where: {
+        userId_lessonId: { userId, lessonId },
+      },
+    });
+
     await prisma.lessonProgress.upsert({
       where: {
         userId_lessonId: { userId, lessonId },
       },
-      update: { completedAt: new Date(), quizScore: correct },
-      create: { userId, lessonId, quizScore: correct },
+      update: {
+        completedAt: new Date(),
+        quizScore: correct,
+        watchedPct: Math.max(existingProgress?.watchedPct || 0, 100),
+      },
+      create: {
+        userId,
+        lessonId,
+        completedAt: new Date(),
+        quizScore: correct,
+        watchedPct: 100,
+      },
     });
 
     const lesson = await prisma.lesson.findUnique({
@@ -378,12 +580,12 @@ async function checkCourseCompletion(userId: string, courseId: string) {
   const completedCount = await prisma.lessonProgress.count({
     where: {
       userId,
+      completedAt: { not: null as any },
       lessonId: { in: lessonIds },
     },
   });
 
   if (completedCount >= lessonIds.length && lessonIds.length > 0) {
-    // Mark enrollment as completed
     await prisma.courseEnrollment.update({
       where: {
         userId_courseId: { userId, courseId },
@@ -394,7 +596,6 @@ async function checkCourseCompletion(userId: string, courseId: string) {
       },
     });
 
-    // Unlock tool if configured
     if (course.unlocksToolKey) {
       await unlockToolForUser(userId, course.unlocksToolKey, `Completed LMS course: ${course.title}`);
     }
@@ -437,16 +638,17 @@ export async function getEnrollmentDashboard() {
     orderBy: [{ course: { title: "asc" } }, { user: { name: "asc" } }],
   });
 
-  // Batch-fetch all lesson progress for these users
   const userIds = [...new Set(enrollments.map((e) => e.userId))];
   const allProgress = await prisma.lessonProgress.findMany({
-    where: { userId: { in: userIds } },
+    where: {
+      userId: { in: userIds },
+      completedAt: { not: null as any },
+    },
     select: { userId: true, lessonId: true, lesson: { select: { courseId: true } } },
   });
 
-  // Build a map: userId -> courseId -> completedCount
   const progressMap = new Map<string, Map<string, number>>();
-  for (const p of allProgress) {
+  for (const p of allProgress as any[]) {
     if (!progressMap.has(p.userId)) progressMap.set(p.userId, new Map());
     const userMap = progressMap.get(p.userId)!;
     const courseId = p.lesson.courseId;

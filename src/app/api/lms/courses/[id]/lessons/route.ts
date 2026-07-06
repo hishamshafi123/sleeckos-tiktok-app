@@ -49,17 +49,21 @@ export async function POST(
   try {
     const { id } = await params;
     const body = await req.json();
-    const { title, youtubeUrl, sopMarkdown, order } = body;
+    const { title, youtubeVideoId, youtubeUrl, stepsMarkdown, sopMarkdown, sectionId, resources, order } = body;
+    const finalVideoId = youtubeVideoId || youtubeUrl;
+    const finalMarkdown = stepsMarkdown !== undefined ? stepsMarkdown : (sopMarkdown || "");
 
-    if (!title || !youtubeUrl) {
-      return NextResponse.json({ error: "Title and YouTube URL are required" }, { status: 400 });
+    if (!title || !finalVideoId) {
+      return NextResponse.json({ error: "Title and YouTube URL/ID are required" }, { status: 400 });
     }
 
     const lesson = await createLesson({
       courseId: id,
+      sectionId: sectionId || null,
       title,
-      youtubeUrl,
-      sopMarkdown: sopMarkdown || "",
+      youtubeVideoId: finalVideoId,
+      stepsMarkdown: finalMarkdown,
+      resources,
       order,
     });
     return NextResponse.json(lesson, { status: 201 });

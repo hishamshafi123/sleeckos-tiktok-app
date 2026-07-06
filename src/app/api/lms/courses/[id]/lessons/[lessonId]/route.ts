@@ -11,6 +11,7 @@ import {
   addQuizQuestion,
   updateQuizQuestion,
   deleteQuizQuestion,
+  saveLessonProgress,
 } from "@/lib/services/lms";
 import prisma from "@/lib/db";
 
@@ -76,7 +77,11 @@ export async function PATCH(
     }
 
     // Default: update lesson content
-    const updated = await updateLesson(lessonId, body);
+    const updateData: any = { ...body };
+    if (body.youtubeUrl !== undefined) updateData.youtubeVideoId = body.youtubeUrl;
+    if (body.sopMarkdown !== undefined) updateData.stepsMarkdown = body.sopMarkdown;
+
+    const updated = await updateLesson(lessonId, updateData);
     return NextResponse.json(updated);
   } catch (err: any) {
     return NextResponse.json({ error: err.message }, { status: 500 });
@@ -122,6 +127,20 @@ export async function POST(
     const { lessonId } = await params;
     const body = await req.json();
     const { action, answers } = body;
+
+    if (action === "SAVE_PROGRESS") {
+      const { watchedPct, lastPositionSec } = body;
+      if (watchedPct === undefined || lastPositionSec === undefined) {
+        return NextResponse.json({ error: "watchedPct and lastPositionSec required" }, { status: 400 });
+      }
+      const progress = await saveLessonProgress({
+        userId: session.userId,
+        lessonId,
+        watchedPct: parseFloat(watchedPct),
+        lastPositionSec: parseFloat(lastPositionSec),
+      });
+      return NextResponse.json(progress);
+    }
 
     if (action === "SUBMIT_QUIZ") {
       if (!Array.isArray(answers)) {

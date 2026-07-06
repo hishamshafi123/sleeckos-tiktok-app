@@ -946,36 +946,54 @@ model Course {
   assignedRoles  String[]           // role keys that should take this course
   unlocksToolKey String?            // completing this course grants this tool
   status         String             @default("active") // active | archived
+  order          Int                @default(0)
   createdAt      DateTime           @default(now())
   updatedAt      DateTime           @updatedAt
 
+  sections       Section[]
   lessons        Lesson[]
   enrollments    CourseEnrollment[]
 }
 
-model Lesson {
-  id           String           @id @default(uuid())
-  courseId      String
-  course       Course           @relation(fields: [courseId], references: [id], onDelete: Cascade)
-  order        Int              @default(0)
-  title        String
-  youtubeUrl   String
-  sopMarkdown  String           @db.Text
-  createdAt    DateTime         @default(now())
-  updatedAt    DateTime         @updatedAt
+model Section {
+  id        String   @id @default(uuid())
+  courseId  String
+  course    Course   @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  title     String
+  order     Int      @default(0)
+  lessons   Lesson[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
 
-  progress      LessonProgress[]
-  quizQuestions QuizQuestion[]
+model Lesson {
+  id             String           @id @default(uuid())
+  courseId       String
+  course         Course           @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  sectionId      String?
+  section        Section?         @relation(fields: [sectionId], references: [id], onDelete: SetNull)
+  order          Int              @default(0)
+  title          String
+  youtubeVideoId String           @default("")
+  stepsMarkdown  String           @db.Text
+  resources      Json             @default("[]") // external resources links/files list
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  progress       LessonProgress[]
+  quizQuestions  QuizQuestion[]
 }
 
 model LessonProgress {
-  id          String    @id @default(uuid())
-  userId      String
-  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  lessonId    String
-  lesson      Lesson    @relation(fields: [lessonId], references: [id], onDelete: Cascade)
-  completedAt DateTime  @default(now())
-  quizScore   Int?      // number of correct answers if quiz was taken
+  id              String    @id @default(uuid())
+  userId          String
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  lessonId        String
+  lesson          Lesson    @relation(fields: [lessonId], references: [id], onDelete: Cascade)
+  completedAt     DateTime?
+  quizScore       Int?      // number of correct answers if quiz was taken
+  watchedPct      Float     @default(0)
+  lastPositionSec Float     @default(0)
 
   @@unique([userId, lessonId])
 }
@@ -984,7 +1002,7 @@ model CourseEnrollment {
   id          String    @id @default(uuid())
   userId      String
   user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  courseId     String
+  courseId    String
   course      Course    @relation(fields: [courseId], references: [id], onDelete: Cascade)
   status      String    @default("assigned") // assigned | in_progress | completed
   completedAt DateTime?
