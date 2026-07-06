@@ -16,7 +16,8 @@ import {
   Music,
   FolderOpen,
   Key,
-  GraduationCap
+  GraduationCap,
+  Database
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -35,6 +36,7 @@ const OPERATIONS_NAV = [
   { href: "/admin/accounts/history", label: "History", icon: History, toolKey: "accounts" },
   { href: "/admin/campaigns", label: "Campaigns", icon: FolderOpen, toolKey: "campaigns" },
   { href: "/admin/projects", label: "Projects", icon: FolderOpen, toolKey: "projects" },
+  { href: "/admin/vault", label: "Data Vault", icon: Database, toolKey: "projects" },
   { href: "/admin/sourcing", label: "Sourcing Feed", icon: Sparkles, toolKey: "sourcing" },
 ];
 

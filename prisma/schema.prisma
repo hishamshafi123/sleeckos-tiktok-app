@@ -1053,3 +1053,93 @@ model LyricGeneration {
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 }
+
+// ────────────────────────────────────────────────────────
+// Data Vault / Sheets for Project Management
+// ────────────────────────────────────────────────────────
+
+model VaultFolder {
+  id             String              @id @default(uuid())
+  name           String
+  parentFolderId String?
+  parentFolder   VaultFolder?        @relation("FolderHierarchy", fields: [parentFolderId], references: [id], onDelete: Cascade)
+  subFolders     VaultFolder[]       @relation("FolderHierarchy")
+  createdBy      String?
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+  sheets         Sheet[]
+  accessList     VaultFolderAccess[]
+}
+
+model VaultFolderAccess {
+  id         String      @id @default(uuid())
+  folderId   String
+  folder     VaultFolder @relation(fields: [folderId], references: [id], onDelete: Cascade)
+  userId     String?
+  roleKey    String?     // User role key (e.g. "curator", "editor", etc.)
+  permission String      // "view" | "edit" | "manage"
+  createdAt  DateTime    @default(now())
+  updatedAt  DateTime    @updatedAt
+
+  @@unique([folderId, userId])
+  @@unique([folderId, roleKey])
+}
+
+model Sheet {
+  id        String        @id @default(uuid())
+  folderId  String
+  folder    VaultFolder   @relation(fields: [folderId], references: [id], onDelete: Cascade)
+  name      String
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+  columns   SheetColumn[]
+  rows      SheetRow[]
+}
+
+model SheetColumn {
+  id        String      @id @default(uuid())
+  sheetId   String
+  sheet     Sheet       @relation(fields: [sheetId], references: [id], onDelete: Cascade)
+  name      String
+  order     Int
+  type      String      // "text" | "email" | "number" | "url" | "secret" | "date"
+  cells     SheetCell[]
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
+
+  @@unique([sheetId, name])
+}
+
+model SheetRow {
+  id        String      @id @default(uuid())
+  sheetId   String
+  sheet     Sheet       @relation(fields: [sheetId], references: [id], onDelete: Cascade)
+  order     Int
+  cells     SheetCell[]
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
+}
+
+model SheetCell {
+  id             String      @id @default(uuid())
+  rowId          String
+  row            SheetRow    @relation(fields: [rowId], references: [id], onDelete: Cascade)
+  columnId       String
+  column         SheetColumn @relation(fields: [columnId], references: [id], onDelete: Cascade)
+  value          String?     @db.Text
+  valueEncrypted String?     @db.Text
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+
+  @@unique([rowId, columnId])
+}
+
+model VaultAuditLog {
+  id        String   @id @default(uuid())
+  userId    String?
+  userEmail String?
+  action    String   // "reveal" | "edit" | "export" | "import" | "grant" | "revoke"
+  target    String   // target details e.g. "Folder: X", "Cell: Y", etc.
+  createdAt DateTime @default(now())
+}
+
