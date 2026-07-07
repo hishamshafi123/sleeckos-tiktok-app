@@ -20,7 +20,7 @@ export async function GET(req: NextRequest) {
   if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
-  if (!(await can(session.userId, "accounts"))) {
+  if (!(await can(session.userId, "history"))) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 

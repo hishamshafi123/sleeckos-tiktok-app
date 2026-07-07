@@ -1,46 +1,43 @@
 import prisma from "@/lib/db";
 
+export const ALL_TOOLS = [
+  "overview",
+  "accounts",
+  "analytics",
+  "post_queue",
+  "history",
+  "clip_mixer",
+  "style_studio",
+  "composer",
+  "multiplier",
+  "campaigns",
+  "projects",
+  "data_vault",
+  "sourcing",
+  "users_access",
+  "lms",
+];
+
 export const DEFAULT_ROLES = [
   {
     key: "admin",
     label: "Administrator",
-    tools: [
-      "clip_mixer",
-      "style_studio",
-      "composer",
-      "multiplier",
-      "accounts",
-      "campaigns",
-      "projects",
-      "sourcing",
-      "users_access",
-      "lms",
-    ],
+    tools: [...ALL_TOOLS],
   },
   {
     key: "team_lead",
     label: "Team Lead",
-    tools: [
-      "clip_mixer",
-      "style_studio",
-      "composer",
-      "multiplier",
-      "accounts",
-      "campaigns",
-      "projects",
-      "sourcing",
-      "lms",
-    ],
+    tools: ["lms"],
   },
   {
     key: "editor",
     label: "Editor",
-    tools: ["clip_mixer", "style_studio", "composer", "multiplier", "lms"],
+    tools: ["lms"],
   },
   {
     key: "curator",
     label: "Curator",
-    tools: ["campaigns", "projects", "lms", "accounts", "sourcing"],
+    tools: ["lms"],
   },
 ];
 
@@ -104,11 +101,20 @@ export async function getEffectiveAccess(userId: string): Promise<Set<string>> {
 
   const allowed = new Set<string>();
 
+  // Explicit admin bypass: Admin has full access by explicit logic
+  if (user.role && user.role.key === "admin") {
+    for (const tool of ALL_TOOLS) {
+      allowed.add(tool);
+    }
+    return allowed;
+  }
+
+  // Base tools baseline:
   // If new hire (TRIAL), they ONLY start with 'lms' regardless of role defaults
   if (user.status === "TRIAL") {
     allowed.add("lms");
-  } else {
-    // ACTIVE status: inherit all defaults for the role
+  } else if (user.status === "ACTIVE") {
+    // ACTIVE status: inherit defaults for the role
     if (user.role && user.role.defaults) {
       for (const def of user.role.defaults) {
         allowed.add(def.toolKey);

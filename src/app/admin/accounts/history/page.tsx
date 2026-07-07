@@ -9,7 +9,7 @@ export default async function Page(props: any) {
   const session = await getSession();
   if (!session) redirect("/login");
 
-  const isAllowed = await can(session.userId, "accounts");
+  const isAllowed = await can(session.userId, "history");
   if (!isAllowed) {
     return <AccessDenied tool="History" />;
   }

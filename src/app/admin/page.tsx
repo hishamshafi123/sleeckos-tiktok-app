@@ -10,7 +10,7 @@ export default async function AdminDashboard() {
   const session = await getSession();
   if (!session) redirect("/login");
 
-  const hasAccess = await can(session.userId, "accounts");
+  const hasAccess = await can(session.userId, "overview");
   if (!hasAccess) {
     redirect("/admin/lms");
   }

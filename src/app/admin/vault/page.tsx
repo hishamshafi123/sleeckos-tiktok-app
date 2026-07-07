@@ -12,7 +12,7 @@ export default async function VaultPage() {
   const session = await getSession();
   if (!session) redirect("/login");
 
-  const hasAccess = await can(session.userId, "projects");
+  const hasAccess = await can(session.userId, "data_vault");
   if (!hasAccess) {
     return <AccessDenied tool="Data Vault" />;
   }

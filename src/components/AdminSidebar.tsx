@@ -29,14 +29,14 @@ const PRODUCTION_NAV = [
 ];
 
 const OPERATIONS_NAV = [
-  { href: "/admin", label: "Overview", icon: LayoutDashboard, exact: true, toolKey: "accounts" },
+  { href: "/admin", label: "Overview", icon: LayoutDashboard, exact: true, toolKey: "overview" },
   { href: "/admin/accounts", label: "Managed Accounts", icon: MonitorPlay, exact: true, toolKey: "accounts" },
-  { href: "/admin/accounts/dashboard", label: "Analytics", icon: BarChart3, toolKey: "accounts" },
-  { href: "/admin/accounts/queue", label: "Post Queue", icon: Clock, toolKey: "accounts" },
-  { href: "/admin/accounts/history", label: "History", icon: History, toolKey: "accounts" },
+  { href: "/admin/accounts/dashboard", label: "Analytics", icon: BarChart3, toolKey: "analytics" },
+  { href: "/admin/accounts/queue", label: "Post Queue", icon: Clock, toolKey: "post_queue" },
+  { href: "/admin/accounts/history", label: "History", icon: History, toolKey: "history" },
   { href: "/admin/campaigns", label: "Campaigns", icon: FolderOpen, toolKey: "campaigns" },
   { href: "/admin/projects", label: "Projects", icon: FolderOpen, toolKey: "projects" },
-  { href: "/admin/vault", label: "Data Vault", icon: Database, toolKey: "projects" },
+  { href: "/admin/vault", label: "Data Vault", icon: Database, toolKey: "data_vault" },
   { href: "/admin/sourcing", label: "Sourcing Feed", icon: Sparkles, toolKey: "sourcing" },
 ];
 

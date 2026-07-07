@@ -97,7 +97,7 @@ export async function getFolderPermission(
   }
 
   // 2. Gate accessibility on base projects tool entitlement
-  const hasProjectsEntitlement = await can(userId, "projects");
+  const hasProjectsEntitlement = await can(userId, "data_vault");
   if (!hasProjectsEntitlement) return null;
 
   // 3. Traversal up the parent hierarchy to locate nearest ACL configuration
@@ -151,8 +151,8 @@ export async function createFolder(userId: string, name: string, parentFolderId?
     }
   } else {
     // Creating root folders is restricted to active project management users
-    const hasProjects = await can(userId, "projects");
-    if (!hasProjects) throw new Error("Forbidden: projects entitlement required");
+    const hasProjects = await can(userId, "data_vault");
+    if (!hasProjects) throw new Error("Forbidden: data_vault entitlement required");
   }
 
   const folder = await prisma.vaultFolder.create({
@@ -773,7 +773,7 @@ export async function getUserVaultAccess(targetUserId: string) {
     orderBy: { name: "asc" },
   });
 
-  const hasProjects = await can(targetUserId, "projects");
+  const hasProjects = await can(targetUserId, "data_vault");
 
   const results = [];
 

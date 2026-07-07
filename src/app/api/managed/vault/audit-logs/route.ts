@@ -13,7 +13,7 @@ export async function GET(req: NextRequest) {
   }
 
   // Ensure projects entitlement exists
-  const hasProjects = await can(session.userId, "projects");
+  const hasProjects = await can(session.userId, "data_vault");
   if (!hasProjects) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }

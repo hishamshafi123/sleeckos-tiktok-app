@@ -2,11 +2,17 @@ export const dynamic = "force-dynamic";
 import prisma from "@/lib/db";
 import { getSession } from "@/lib/session";
 import { redirect } from "next/navigation";
+import { can } from "@/lib/services/permissions";
 import { BarChart3, TrendingUp, Eye, Heart, Video, AlertCircle } from "lucide-react";
 
 export default async function AccountsDashboard() {
   const session = await getSession();
-  if (!session || session.role !== "ADMIN") redirect("/login");
+  if (!session) redirect("/login");
+
+  const hasAccess = await can(session.userId, "analytics");
+  if (!hasAccess) {
+    redirect("/admin/lms");
+  }
 
   const now = new Date();
   const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
