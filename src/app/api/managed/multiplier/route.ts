@@ -7,7 +7,7 @@ import { createGroup } from "@/lib/services/multiplier";
 import fs from "fs";
 import path from "path";
 
-// GET /api/managed/multiplier — List all multiplier groups
+// GET /api/managed/multiplier — List all multiplier groups (and transform/merge legacy batches)
 export async function GET() {
   const session = await getSession();
   if (!session) {
@@ -40,7 +40,69 @@ export async function GET() {
       },
     });
 
-    return NextResponse.json(groups);
+    const legacyBatches = await prisma.multiplierBatch.findMany({
+      orderBy: { createdAt: "desc" },
+      include: {
+        items: {
+          orderBy: { createdAt: "asc" },
+        },
+      },
+    });
+
+    const transformedLegacy = legacyBatches.map((b) => ({
+      id: b.id,
+      name: b.name || "Legacy Batch",
+      campaignId: "",
+      campaign: { id: "", title: "Legacy Batch" },
+      transcript: null,
+      transcriptStatus: "PENDING",
+      styleId: "news-lower-third",
+      mappingMode: "each",
+      settings: {
+        fontSize: b.fontSize,
+        fontColor: b.fontColor,
+        bgStripColor: b.bgStripColor,
+        bgStripOpacity: b.bgStripOpacity,
+        positionYPercent: b.positionYPercent,
+        hookDuration: b.hookDuration,
+        accentColor: "#E11D48",
+      },
+      status: b.status === "COMPLETED" ? "COMPLETED" : b.status === "FAILED" ? "FAILED" : b.status === "RENDERING" ? "RENDERING" : "DRAFT",
+      errorMessage: b.errorMessage,
+      createdAt: b.createdAt.toISOString(),
+      variations: [
+        {
+          id: b.id + "-var",
+          groupId: b.id,
+          videoRef: b.sourceVideoUrl,
+          order: 0,
+        }
+      ],
+      hooks: b.items.map((item, idx) => ({
+        id: item.id,
+        groupId: b.id,
+        text: item.hookText,
+        source: "manual",
+        order: idx,
+      })),
+      outputs: b.items.map((item) => ({
+        id: item.id,
+        variationId: b.id + "-var",
+        hookId: item.id,
+        status: item.status === "RENDERED" ? "COMPLETED" : item.status === "FAILED" ? "FAILED" : item.status === "RENDERING" ? "RENDERING" : "PENDING",
+        outputRef: item.renderedVideoUrl,
+        driveFolderId: item.driveFolderId || b.driveFolderId,
+        errorMessage: item.errorMessage,
+        variation: { videoRef: b.sourceVideoUrl },
+        hook: { text: item.hookText },
+      })),
+    }));
+
+    const combined = [...groups, ...transformedLegacy].sort(
+      (a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    );
+
+    return NextResponse.json(combined);
   } catch (err: any) {
     console.error("[Multiplier Group GET API] Error:", err);
     return NextResponse.json({ error: err.message || "Failed to fetch groups" }, { status: 500 });
@@ -81,7 +143,7 @@ export async function POST(req: Request) {
   }
 }
 
-// DELETE /api/managed/multiplier?groupId=... — Delete a group and its files
+// DELETE /api/managed/multiplier?groupId=... — Delete a group/batch and its files
 export async function DELETE(req: Request) {
   const session = await getSession();
   if (!session) {
@@ -107,34 +169,61 @@ export async function DELETE(req: Request) {
       },
     });
 
-    if (!group) {
-      return NextResponse.json({ error: "Group not found" }, { status: 404 });
-    }
-
     const publicDir = path.join(process.cwd(), "public");
 
-    // Clean up variations files
-    for (const v of group.variations) {
-      const vPath = path.join(publicDir, v.videoRef);
-      if (fs.existsSync(vPath)) {
-        try { fs.unlinkSync(vPath); } catch {}
-      }
-    }
-
-    // Clean up output files
-    for (const o of group.outputs) {
-      if (o.outputRef) {
-        const oPath = path.join(publicDir, o.outputRef);
-        if (fs.existsSync(oPath)) {
-          try { fs.unlinkSync(oPath); } catch {}
+    if (group) {
+      // Clean up variations files
+      for (const v of group.variations) {
+        const vPath = path.join(publicDir, v.videoRef);
+        if (fs.existsSync(vPath)) {
+          try { fs.unlinkSync(vPath); } catch {}
         }
       }
-    }
 
-    // Delete group (cascade deletes variations, hooks, outputs in DB)
-    await prisma.multiplierGroup.delete({
-      where: { id: groupId },
-    });
+      // Clean up output files
+      for (const o of group.outputs) {
+        if (o.outputRef) {
+          const oPath = path.join(publicDir, o.outputRef);
+          if (fs.existsSync(oPath)) {
+            try { fs.unlinkSync(oPath); } catch {}
+          }
+        }
+      }
+
+      // Delete group (cascade deletes variations, hooks, outputs in DB)
+      await prisma.multiplierGroup.delete({
+        where: { id: groupId },
+      });
+    } else {
+      // Try deleting legacy batch
+      const batch = await prisma.multiplierBatch.findUnique({
+        where: { id: groupId },
+        include: { items: true },
+      });
+
+      if (!batch) {
+        return NextResponse.json({ error: "Group or legacy Batch not found" }, { status: 404 });
+      }
+
+      // Delete legacy source video
+      const sourcePath = path.join(publicDir, batch.sourceVideoUrl);
+      if (fs.existsSync(sourcePath)) {
+        try { fs.unlinkSync(sourcePath); } catch {}
+      }
+
+      // Delete legacy rendered videos
+      for (const item of batch.items) {
+        if (item.renderedVideoUrl) {
+          const renderPath = path.join(publicDir, item.renderedVideoUrl);
+          if (fs.existsSync(renderPath)) {
+            try { fs.unlinkSync(renderPath); } catch {}
+          }
+        }
+      }
+
+      // Delete from DB (cascade deletes items)
+      await prisma.multiplierBatch.delete({ where: { id: groupId } });
+    }
 
     return NextResponse.json({ success: true });
   } catch (err: any) {
