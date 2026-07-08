@@ -117,6 +117,11 @@ COPY --from=builder --chown=nextjs:nodejs /app/node_modules/mitt ./node_modules/
 COPY --from=builder --chown=nextjs:nodejs /app/node_modules/debug ./node_modules/debug
 COPY --from=builder --chown=nextjs:nodejs /app/node_modules/ms ./node_modules/ms
 
+# Copy remotion and rspack packages for composition building at runtime
+COPY --from=builder --chown=nextjs:nodejs /app/node_modules/@remotion ./node_modules/@remotion
+COPY --from=builder --chown=nextjs:nodejs /app/node_modules/remotion ./node_modules/remotion
+COPY --from=builder --chown=nextjs:nodejs /app/node_modules/@rspack ./node_modules/@rspack
+
 # Entrypoint runs migrations then starts the app
 COPY --chown=nextjs:nodejs docker-entrypoint.sh ./
 RUN chmod +x docker-entrypoint.sh
