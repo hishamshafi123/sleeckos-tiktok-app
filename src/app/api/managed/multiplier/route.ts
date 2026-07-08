@@ -296,7 +296,29 @@ export async function PATCH(req: Request) {
 
   try {
     const body = await req.json();
-    const { groupId, outputId, batchId, itemId, driveFolderId, driveFolderName } = body;
+    const { groupId, outputId, batchId, itemId, driveFolderId, driveFolderName, assignments } = body;
+
+    // 0. Bulk assignments (Multi-folder round-robin distribution)
+    if (assignments && Array.isArray(assignments)) {
+      console.log(`[Multiplier PATCH] Performing bulk update for ${assignments.length} items...`);
+      for (const a of assignments) {
+        if (a.outputId) {
+          await prisma.multiplierOutput.update({
+            where: { id: a.outputId },
+            data: { driveFolderId: a.driveFolderId || null },
+          });
+        } else if (a.itemId) {
+          await prisma.multiplierItem.update({
+            where: { id: a.itemId },
+            data: { 
+              driveFolderId: a.driveFolderId || null,
+              driveFolderName: a.driveFolderName || null,
+            },
+          });
+        }
+      }
+      return NextResponse.json({ success: true, message: "Distributed folders successfully" });
+    }
 
     // 1. Group settings driveFolderId assignment
     if (groupId) {

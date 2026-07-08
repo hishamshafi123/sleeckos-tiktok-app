@@ -128,6 +128,7 @@ export default function ClientPage() {
   const [folderSearch, setFolderSearch] = useState("");
   const [searchingFolders, setSearchingFolders] = useState(false);
   const [syncingOutputs, setSyncingOutputs] = useState<Set<string>>(new Set());
+  const [selectedPickerFolders, setSelectedPickerFolders] = useState<{ id: string; name: string }[]>([]);
 
   // Fetch initial data
   const fetchData = async () => {
@@ -182,27 +183,92 @@ export default function ClientPage() {
     }
   };
 
-  const handleAssignFolder = async (targetId: string, folderId: string, folderName: string) => {
+  const handleToggleFolder = (folder: { id: string; name: string }) => {
+    setSelectedPickerFolders((prev) => {
+      const exists = prev.some((f) => f.id === folder.id);
+      if (exists) {
+        return prev.filter((f) => f.id !== folder.id);
+      }
+      return [...prev, folder];
+    });
+  };
+
+  const handleAssignFolder = async (targetId: string, folderId?: string, folderName?: string) => {
     if (!folderPickerTarget) return;
     const { type } = folderPickerTarget;
 
     try {
-      const res = await fetch("/api/managed/multiplier", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          groupId: type === "group" || type === "batch" ? targetId : undefined,
-          outputId: type === "output" ? targetId : undefined,
-          itemId: type === "item" ? targetId : undefined,
-          driveFolderId: folderId,
-          driveFolderName: folderName,
-        }),
-      });
+      if (type === "group" || type === "batch") {
+        if (selectedPickerFolders.length === 0) {
+          toast.error("Please select at least one folder first.");
+          return;
+        }
 
-      if (!res.ok) throw new Error("Failed to assign folder on server");
-      
-      toast.success(`Folder "${folderName}" assigned successfully.`);
+        const groupObj = groups.find((g) => g.id === targetId);
+        if (!groupObj) throw new Error("Group not found");
+
+        const assignments: any[] = [];
+        const isLegacy = groupObj.campaignId === "";
+
+        if (isLegacy) {
+          groupObj.outputs.forEach((item, idx) => {
+            const folder = selectedPickerFolders[idx % selectedPickerFolders.length];
+            assignments.push({
+              itemId: item.id,
+              driveFolderId: folder.id,
+              driveFolderName: folder.name,
+            });
+          });
+        } else {
+          groupObj.outputs.forEach((item, idx) => {
+            const folder = selectedPickerFolders[idx % selectedPickerFolders.length];
+            assignments.push({
+              outputId: item.id,
+              driveFolderId: folder.id,
+              driveFolderName: folder.name,
+            });
+          });
+        }
+
+        const displayNames = selectedPickerFolders.map((f) => f.name).join(", ");
+        const firstFolderId = selectedPickerFolders[0].id;
+
+        const res = await fetch("/api/managed/multiplier", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            groupId: !isLegacy ? targetId : undefined,
+            batchId: isLegacy ? targetId : undefined,
+            driveFolderId: firstFolderId,
+            driveFolderName: displayNames,
+            assignments,
+          }),
+        });
+
+        if (!res.ok) throw new Error("Failed to distribute folders on server");
+
+        toast.success(`Distributed ${selectedPickerFolders.length} folders across ${groupObj.outputs.length} videos.`);
+      } else {
+        if (!folderId || !folderName) return;
+
+        const res = await fetch("/api/managed/multiplier", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            outputId: type === "output" ? targetId : undefined,
+            itemId: type === "item" ? targetId : undefined,
+            driveFolderId: folderId,
+            driveFolderName: folderName,
+          }),
+        });
+
+        if (!res.ok) throw new Error("Failed to assign folder on server");
+
+        toast.success(`Folder "${folderName}" assigned to video.`);
+      }
+
       setFolderPickerTarget(null);
+      setSelectedPickerFolders([]);
       await fetchData();
     } catch (err: any) {
       toast.error(err.message || "Failed to save folder");
@@ -1641,75 +1707,145 @@ export default function ClientPage() {
       )}
 
       {/* Google Drive Folder Picker Modal */}
-      {folderPickerTarget && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm"
-          onClick={() => setFolderPickerTarget(null)}
-        >
+      {folderPickerTarget && (() => {
+        const isBulk = folderPickerTarget.type === "group" || folderPickerTarget.type === "batch";
+        return (
           <div
-            className="bg-[#18181b] rounded-2xl border border-[#27272a] p-5 max-w-md w-full mx-4 shadow-2xl space-y-4"
-            onClick={(e) => e.stopPropagation()}
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm"
+            onClick={() => setFolderPickerTarget(null)}
           >
-            <div className="flex items-center justify-between">
-              <h3 className="text-[#fafafa] text-sm font-semibold flex items-center gap-2">
-                <FolderOpen className="w-4 h-4 text-[#E11D48]" /> Select Google Drive Folder
-                <span className="text-[#71717a] text-[10px] font-normal">
-                  ({folderPickerTarget.type === "output" || folderPickerTarget.type === "item" ? "per video variation" : "group default"})
-                </span>
-              </h3>
-              <button
-                onClick={() => setFolderPickerTarget(null)}
-                className="text-[#71717a] hover:text-[#fafafa] transition-all"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
+            <div
+              className="bg-[#18181b] rounded-2xl border border-[#27272a] p-5 max-w-md w-full mx-4 shadow-2xl space-y-4"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between">
+                <h3 className="text-[#fafafa] text-sm font-semibold flex items-center gap-2">
+                  <FolderOpen className="w-4 h-4 text-[#E11D48]" /> 
+                  {isBulk ? "Select Multiple Folders" : "Select Google Drive Folder"}
+                  <span className="text-[#71717a] text-[10px] font-normal">
+                    ({isBulk ? "group round-robin" : "per video variation"})
+                  </span>
+                </h3>
+                <button
+                  onClick={() => setFolderPickerTarget(null)}
+                  className="text-[#71717a] hover:text-[#fafafa] transition-all"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
 
-            <div className="flex gap-2">
-              <input
-                type="text"
-                placeholder="Search folders..."
-                value={folderSearch}
-                onChange={(e) => setFolderSearch(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && searchDriveFolders(folderSearch)}
-                className="flex-1 px-3 py-2 rounded-lg bg-[#09090b] border border-[#27272a] text-[#fafafa] text-sm focus:outline-none focus:border-[#E11D48]"
-              />
-              <button
-                onClick={() => searchDriveFolders(folderSearch)}
-                disabled={searchingFolders}
-                className="px-3 py-2 rounded-lg bg-[#E11D48]/10 text-[#E11D48] border border-[#E11D48]/20 text-xs font-semibold hover:bg-[#E11D48]/20 transition-all disabled:opacity-50 flex items-center justify-center"
-              >
-                {searchingFolders ? (
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                ) : (
-                  <Search className="w-4 h-4" />
-                )}
-              </button>
-            </div>
-
-            <div className="max-h-64 overflow-y-auto space-y-1 custom-scrollbar pr-1">
-              {driveFolders.length === 0 ? (
-                <p className="text-xs text-[#71717a] text-center py-6">
-                  {searchingFolders ? "Searching..." : "Type in input and press search"}
+              {isBulk && (
+                <p className="text-[#71717a] text-[11px] leading-relaxed">
+                  Select multiple folders below. Rendered videos will be distributed cyclically (round-robin) across your selections.
                 </p>
-              ) : (
-                driveFolders.map((folder) => (
-                  <button
-                    key={folder.id}
-                    onClick={() => handleAssignFolder(folderPickerTarget.id, folder.id, folder.name)}
-                    className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-[#27272a] text-left transition-all group"
-                  >
-                    <FolderOpen className="w-4 h-4 text-rose-500/80 group-hover:text-rose-500 flex-shrink-0" />
-                    <span className="text-sm text-[#e4e4e7] group-hover:text-[#fafafa] truncate">
-                      {folder.name}
+              )}
+
+              {/* Search Box */}
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  placeholder="Search folders..."
+                  value={folderSearch}
+                  onChange={(e) => setFolderSearch(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && searchDriveFolders(folderSearch)}
+                  className="flex-1 px-3 py-2 rounded-lg bg-[#09090b] border border-[#27272a] text-[#fafafa] text-sm focus:outline-none focus:border-[#E11D48]"
+                />
+                <button
+                  onClick={() => searchDriveFolders(folderSearch)}
+                  disabled={searchingFolders}
+                  className="px-3 py-2 rounded-lg bg-[#E11D48]/10 text-[#E11D48] border border-[#E11D48]/20 text-xs font-semibold hover:bg-[#E11D48]/20 transition-all disabled:opacity-50 flex items-center justify-center"
+                >
+                  {searchingFolders ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <Search className="w-4 h-4" />
+                  )}
+                </button>
+              </div>
+
+              {/* Selected folder chips */}
+              {isBulk && selectedPickerFolders.length > 0 && (
+                <div className="flex flex-wrap gap-1.5 p-2 bg-[#09090b] rounded-lg border border-[#27272a] max-h-24 overflow-y-auto">
+                  {selectedPickerFolders.map((f, idx) => (
+                    <span
+                      key={f.id}
+                      className="flex items-center gap-1.5 px-2 py-0.5 rounded bg-[#E11D48]/10 text-[#E11D48] text-[10px] font-semibold border border-[#E11D48]/20"
+                    >
+                      <span className="opacity-50 font-mono">{idx + 1}.</span>
+                      <span className="truncate max-w-[120px]">{f.name}</span>
+                      <button
+                        onClick={() => handleToggleFolder(f)}
+                        className="text-[#E11D48]/60 hover:text-red-500 transition-colors"
+                      >
+                        <X className="w-3 h-3" />
+                      </button>
                     </span>
-                  </button>
-                ))
+                  ))}
+                </div>
+              )}
+
+              {/* Folder list */}
+              <div className="max-h-56 overflow-y-auto space-y-1 custom-scrollbar pr-1">
+                {driveFolders.length === 0 ? (
+                  <p className="text-xs text-[#71717a] text-center py-6">
+                    {searchingFolders ? "Searching..." : "Type in input and press search"}
+                  </p>
+                ) : (
+                  driveFolders.map((folder) => {
+                    const isSelected = selectedPickerFolders.some((f) => f.id === folder.id);
+                    return (
+                      <button
+                        key={folder.id}
+                        onClick={() => {
+                          if (isBulk) {
+                            handleToggleFolder(folder);
+                          } else {
+                            handleAssignFolder(folderPickerTarget.id, folder.id, folder.name);
+                          }
+                        }}
+                        className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-left transition-all border group ${
+                          isSelected 
+                            ? "bg-[#E11D48]/5 border-[#E11D48]/20" 
+                            : "bg-transparent border-transparent hover:bg-[#27272a]"
+                        }`}
+                      >
+                        {isBulk && (
+                          <div className={`w-4 h-4 rounded border flex items-center justify-center flex-shrink-0 transition-all ${
+                            isSelected 
+                              ? "bg-[#E11D48] border-[#E11D48]" 
+                              : "border-[#27272a] group-hover:border-[#71717a]"
+                          }`}>
+                            {isSelected && <Check className="w-3.5 h-3.5 text-white" />}
+                          </div>
+                        )}
+                        <FolderOpen className={`w-4 h-4 flex-shrink-0 transition-colors ${
+                          isSelected ? "text-[#E11D48]" : "text-rose-500/80 group-hover:text-rose-500"
+                        }`} />
+                        <span className={`text-sm truncate ${
+                          isSelected ? "text-[#fafafa] font-semibold" : "text-[#e4e4e7] group-hover:text-[#fafafa]"
+                        }`}>
+                          {folder.name}
+                        </span>
+                      </button>
+                    );
+                  })
+                )}
+              </div>
+
+              {/* Action Button for bulk mode */}
+              {isBulk && (
+                <button
+                  onClick={() => handleAssignFolder(folderPickerTarget.id)}
+                  disabled={selectedPickerFolders.length === 0}
+                  className="w-full py-2.5 rounded-xl bg-[#E11D48] hover:bg-rose-700 disabled:opacity-30 disabled:cursor-not-allowed text-white text-sm font-semibold transition-all shadow-lg flex items-center justify-center gap-1.5"
+                >
+                  <Check className="w-4 h-4" /> Distribute {selectedPickerFolders.length} Folder{selectedPickerFolders.length !== 1 ? "s" : ""} (Round-Robin)
+                </button>
               )}
             </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
     </div>
   );
 }
