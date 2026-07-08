@@ -18,6 +18,7 @@ export async function GET() {
   }
 
   try {
+    console.log("[Multiplier GET] Querying groups...");
     const groups = await prisma.multiplierGroup.findMany({
       orderBy: { createdAt: "desc" },
       include: {
@@ -39,7 +40,9 @@ export async function GET() {
         },
       },
     });
+    console.log(`[Multiplier GET] Found ${groups.length} groups.`);
 
+    console.log("[Multiplier GET] Querying legacy batches...");
     const legacyBatches = await prisma.multiplierBatch.findMany({
       orderBy: { createdAt: "desc" },
       include: {
@@ -48,60 +51,69 @@ export async function GET() {
         },
       },
     });
+    console.log(`[Multiplier GET] Found ${legacyBatches.length} legacy batches.`);
 
-    const transformedLegacy = legacyBatches.map((b) => ({
-      id: b.id,
-      name: b.name || "Legacy Batch",
-      campaignId: "",
-      campaign: { id: "", title: "Legacy Batch" },
-      transcript: null,
-      transcriptStatus: "PENDING",
-      styleId: "news-lower-third",
-      mappingMode: "each",
-      settings: {
-        fontSize: b.fontSize,
-        fontColor: b.fontColor,
-        bgStripColor: b.bgStripColor,
-        bgStripOpacity: b.bgStripOpacity,
-        positionYPercent: b.positionYPercent,
-        hookDuration: b.hookDuration,
-        accentColor: "#E11D48",
-      },
-      status: b.status === "COMPLETED" ? "COMPLETED" : b.status === "FAILED" ? "FAILED" : b.status === "RENDERING" ? "RENDERING" : "DRAFT",
-      errorMessage: b.errorMessage,
-      createdAt: b.createdAt.toISOString(),
-      variations: [
-        {
-          id: b.id + "-var",
-          groupId: b.id,
-          videoRef: b.sourceVideoUrl,
-          order: 0,
-        }
-      ],
-      hooks: b.items.map((item, idx) => ({
-        id: item.id,
-        groupId: b.id,
-        text: item.hookText,
-        source: "manual",
-        order: idx,
-      })),
-      outputs: b.items.map((item) => ({
-        id: item.id,
-        variationId: b.id + "-var",
-        hookId: item.id,
-        status: item.status === "RENDERED" ? "COMPLETED" : item.status === "FAILED" ? "FAILED" : item.status === "RENDERING" ? "RENDERING" : "PENDING",
-        outputRef: item.renderedVideoUrl,
-        driveFolderId: item.driveFolderId || b.driveFolderId,
-        errorMessage: item.errorMessage,
-        variation: { videoRef: b.sourceVideoUrl },
-        hook: { text: item.hookText },
-      })),
-    }));
+    const transformedLegacy = legacyBatches.map((b) => {
+      try {
+        return {
+          id: b.id,
+          name: b.name || "Legacy Batch",
+          campaignId: "",
+          campaign: { id: "", title: "Legacy Batch" },
+          transcript: null,
+          transcriptStatus: "PENDING",
+          styleId: "news-lower-third",
+          mappingMode: "each",
+          settings: {
+            fontSize: b.fontSize,
+            fontColor: b.fontColor,
+            bgStripColor: b.bgStripColor,
+            bgStripOpacity: b.bgStripOpacity,
+            positionYPercent: b.positionYPercent,
+            hookDuration: b.hookDuration,
+            accentColor: "#E11D48",
+          },
+          status: b.status === "COMPLETED" ? "COMPLETED" : b.status === "FAILED" ? "FAILED" : b.status === "RENDERING" ? "RENDERING" : "DRAFT",
+          errorMessage: b.errorMessage,
+          createdAt: b.createdAt.toISOString(),
+          variations: [
+            {
+              id: b.id + "-var",
+              groupId: b.id,
+              videoRef: b.sourceVideoUrl,
+              order: 0,
+            }
+          ],
+          hooks: b.items.map((item, idx) => ({
+            id: item.id,
+            groupId: b.id,
+            text: item.hookText,
+            source: "manual",
+            order: idx,
+          })),
+          outputs: b.items.map((item) => ({
+            id: item.id,
+            variationId: b.id + "-var",
+            hookId: item.id,
+            status: item.status === "RENDERED" ? "COMPLETED" : item.status === "FAILED" ? "FAILED" : item.status === "RENDERING" ? "RENDERING" : "PENDING",
+            outputRef: item.renderedVideoUrl,
+            driveFolderId: item.driveFolderId || b.driveFolderId,
+            errorMessage: item.errorMessage,
+            variation: { videoRef: b.sourceVideoUrl },
+            hook: { text: item.hookText },
+          })),
+        };
+      } catch (mapErr: any) {
+        console.error(`[Multiplier GET] Error mapping legacy batch ${b.id}:`, mapErr);
+        throw mapErr;
+      }
+    });
 
     const combined = [...groups, ...transformedLegacy].sort(
       (a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
     );
 
+    console.log(`[Multiplier GET] Successfully returning ${combined.length} total items.`);
     return NextResponse.json(combined);
   } catch (err: any) {
     console.error("[Multiplier Group GET API] Error:", err);
