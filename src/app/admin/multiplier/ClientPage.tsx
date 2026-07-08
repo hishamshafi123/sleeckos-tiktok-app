@@ -21,7 +21,9 @@ import {
   Loader2,
   ExternalLink,
   ChevronDown,
-  ChevronUp
+  ChevronUp,
+  FolderOpen,
+  Search
 } from "lucide-react";
 
 interface Campaign {
@@ -118,6 +120,14 @@ export default function ClientPage() {
   // Poll state
   const pollTimerRef = useRef<NodeJS.Timeout | null>(null);
 
+  // Google Drive state
+  const [driveConnected, setDriveConnected] = useState(false);
+  const [driveEmail, setDriveEmail] = useState("");
+  const [folderPickerTarget, setFolderPickerTarget] = useState<{ type: "group" | "output" | "batch" | "item"; id: string } | null>(null);
+  const [driveFolders, setDriveFolders] = useState<{ id: string; name: string }[]>([]);
+  const [folderSearch, setFolderSearch] = useState("");
+  const [searchingFolders, setSearchingFolders] = useState(false);
+
   // Fetch initial data
   const fetchData = async () => {
     try {
@@ -142,6 +152,59 @@ export default function ClientPage() {
       console.error("Error loading groups:", err);
     } finally {
       setLoadingGroups(false);
+    }
+
+    try {
+      const driveRes = await fetch("/api/managed/multiplier/google/status");
+      if (driveRes.ok) {
+        const data = await driveRes.json();
+        setDriveConnected(data.connected);
+        setDriveEmail(data.email || "");
+      }
+    } catch (err) {
+      console.error("Error loading drive status:", err);
+    }
+  };
+
+  const searchDriveFolders = async (query: string) => {
+    setSearchingFolders(true);
+    try {
+      const res = await fetch(`/api/managed/multiplier/google/folders?q=${encodeURIComponent(query)}`);
+      if (res.ok) {
+        const data = await res.json();
+        setDriveFolders(data.folders || []);
+      }
+    } catch {
+      toast.error("Failed to query Google Drive folders");
+    } finally {
+      setSearchingFolders(false);
+    }
+  };
+
+  const handleAssignFolder = async (targetId: string, folderId: string, folderName: string) => {
+    if (!folderPickerTarget) return;
+    const { type } = folderPickerTarget;
+
+    try {
+      const res = await fetch("/api/managed/multiplier", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          groupId: type === "group" || type === "batch" ? targetId : undefined,
+          outputId: type === "output" ? targetId : undefined,
+          itemId: type === "item" ? targetId : undefined,
+          driveFolderId: folderId,
+          driveFolderName: folderName,
+        }),
+      });
+
+      if (!res.ok) throw new Error("Failed to assign folder on server");
+      
+      toast.success(`Folder "${folderName}" assigned successfully.`);
+      setFolderPickerTarget(null);
+      await fetchData();
+    } catch (err: any) {
+      toast.error(err.message || "Failed to save folder");
     }
   };
 
@@ -1341,6 +1404,28 @@ export default function ClientPage() {
                       </div>
 
                       <div className="flex items-center gap-3">
+                        {driveConnected && (
+                          <button
+                            onClick={() => {
+                              const isLegacy = group.campaignId === "";
+                              setFolderPickerTarget({
+                                type: isLegacy ? "batch" : "group",
+                                id: group.id
+                              });
+                              setFolderSearch("");
+                              setDriveFolders([]);
+                            }}
+                            className="px-2.5 py-1 bg-[#18181b] hover:bg-[#27272a] text-[#e4e4e7] hover:text-[#fafafa] font-semibold rounded text-[10px] transition-all flex items-center gap-1.5 border border-[#27272a] shadow-sm"
+                          >
+                            <FolderOpen className="w-3.5 h-3.5 text-rose-500" />
+                            {(() => {
+                              const s: any = typeof group.settings === "string" 
+                                ? JSON.parse(group.settings) 
+                                : (group.settings || {});
+                              return s.driveFolderName || "Group Default Drive Folder";
+                            })()}
+                          </button>
+                        )}
                         <span
                           className={`text-xs font-semibold px-2.5 py-0.5 rounded-full ${
                             group.status === "COMPLETED"
@@ -1432,6 +1517,29 @@ export default function ClientPage() {
                                 </div>
                               </div>
 
+                              {driveConnected && (
+                                  <div className="mt-1 flex items-center justify-between gap-2 border-t border-[#27272a]/40 pt-2 text-[10px] text-[#71717a]">
+                                    <span className="truncate flex items-center gap-1">
+                                      <FolderOpen className="w-3.5 h-3.5 text-rose-500/80" />
+                                      {out.driveFolderId ? "Synced Override" : "No Folder Override"}
+                                    </span>
+                                    <button
+                                      onClick={() => {
+                                        const isLegacy = group.campaignId === "";
+                                        setFolderPickerTarget({
+                                          type: isLegacy ? "item" : "output",
+                                          id: out.id
+                                        });
+                                        setFolderSearch("");
+                                        setDriveFolders([]);
+                                      }}
+                                      className="px-2 py-0.5 bg-[#18181b] hover:bg-[#27272a] text-[#e4e4e7] hover:text-[#fafafa] rounded font-semibold transition-all border border-[#27272a]"
+                                    >
+                                      {out.driveFolderId ? "Change" : "Select Folder"}
+                                    </button>
+                                  </div>
+                              )}
+
                               {out.errorMessage && (
                                 <p className="text-[10px] text-red-500 bg-red-500/5 p-1.5 rounded break-words max-h-16 overflow-y-auto">
                                   {out.errorMessage}
@@ -1447,6 +1555,77 @@ export default function ClientPage() {
               })}
             </div>
           )}
+        </div>
+      )}
+
+      {/* Google Drive Folder Picker Modal */}
+      {folderPickerTarget && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm"
+          onClick={() => setFolderPickerTarget(null)}
+        >
+          <div
+            className="bg-[#18181b] rounded-2xl border border-[#27272a] p-5 max-w-md w-full mx-4 shadow-2xl space-y-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between">
+              <h3 className="text-[#fafafa] text-sm font-semibold flex items-center gap-2">
+                <FolderOpen className="w-4 h-4 text-[#E11D48]" /> Select Google Drive Folder
+                <span className="text-[#71717a] text-[10px] font-normal">
+                  ({folderPickerTarget.type === "output" || folderPickerTarget.type === "item" ? "per video variation" : "group default"})
+                </span>
+              </h3>
+              <button
+                onClick={() => setFolderPickerTarget(null)}
+                className="text-[#71717a] hover:text-[#fafafa] transition-all"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="flex gap-2">
+              <input
+                type="text"
+                placeholder="Search folders..."
+                value={folderSearch}
+                onChange={(e) => setFolderSearch(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && searchDriveFolders(folderSearch)}
+                className="flex-1 px-3 py-2 rounded-lg bg-[#09090b] border border-[#27272a] text-[#fafafa] text-sm focus:outline-none focus:border-[#E11D48]"
+              />
+              <button
+                onClick={() => searchDriveFolders(folderSearch)}
+                disabled={searchingFolders}
+                className="px-3 py-2 rounded-lg bg-[#E11D48]/10 text-[#E11D48] border border-[#E11D48]/20 text-xs font-semibold hover:bg-[#E11D48]/20 transition-all disabled:opacity-50 flex items-center justify-center"
+              >
+                {searchingFolders ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Search className="w-4 h-4" />
+                )}
+              </button>
+            </div>
+
+            <div className="max-h-64 overflow-y-auto space-y-1 custom-scrollbar pr-1">
+              {driveFolders.length === 0 ? (
+                <p className="text-xs text-[#71717a] text-center py-6">
+                  {searchingFolders ? "Searching..." : "Type in input and press search"}
+                </p>
+              ) : (
+                driveFolders.map((folder) => (
+                  <button
+                    key={folder.id}
+                    onClick={() => handleAssignFolder(folderPickerTarget.id, folder.id, folder.name)}
+                    className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-[#27272a] text-left transition-all group"
+                  >
+                    <FolderOpen className="w-4 h-4 text-rose-500/80 group-hover:text-rose-500 flex-shrink-0" />
+                    <span className="text-sm text-[#e4e4e7] group-hover:text-[#fafafa] truncate">
+                      {folder.name}
+                    </span>
+                  </button>
+                ))
+              )}
+            </div>
+          </div>
         </div>
       )}
     </div>

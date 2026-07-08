@@ -72,6 +72,8 @@ export async function GET() {
             positionYPercent: b.positionYPercent,
             hookDuration: b.hookDuration,
             accentColor: "#E11D48",
+            driveFolderId: b.driveFolderId || null,
+            driveFolderName: b.driveFolderName || null,
           },
           status: b.status === "COMPLETED" ? "COMPLETED" : b.status === "FAILED" ? "FAILED" : b.status === "RENDERING" ? "RENDERING" : "DRAFT",
           errorMessage: b.errorMessage,
@@ -241,5 +243,83 @@ export async function DELETE(req: Request) {
   } catch (err: any) {
     console.error("[Multiplier Group DELETE API] Error:", err);
     return NextResponse.json({ error: err.message || "Failed to delete group" }, { status: 500 });
+  }
+}
+
+// PATCH /api/managed/multiplier — Assign Drive folders to Groups, Outputs, Legacy Batches/Items
+export async function PATCH(req: Request) {
+  const session = await getSession();
+  if (!session) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  if (!(await can(session.userId, "multiplier"))) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
+
+  try {
+    const body = await req.json();
+    const { groupId, outputId, batchId, itemId, driveFolderId, driveFolderName } = body;
+
+    // 1. Group settings driveFolderId assignment
+    if (groupId) {
+      const group = await prisma.multiplierGroup.findUnique({ where: { id: groupId } });
+      if (!group) return NextResponse.json({ error: "Group not found" }, { status: 404 });
+      
+      const currentSettings = typeof group.settings === "string" 
+        ? JSON.parse(group.settings) 
+        : (group.settings || {});
+      
+      const newSettings = { 
+        ...currentSettings, 
+        driveFolderId: driveFolderId || null,
+        driveFolderName: driveFolderName || null
+      };
+
+      await prisma.multiplierGroup.update({
+        where: { id: groupId },
+        data: { settings: newSettings },
+      });
+      return NextResponse.json({ success: true, message: "Group default folder updated" });
+    }
+
+    // 2. Output driveFolderId assignment
+    if (outputId) {
+      const output = await prisma.multiplierOutput.update({
+        where: { id: outputId },
+        data: { 
+          driveFolderId: driveFolderId || null,
+        },
+      });
+      return NextResponse.json({ success: true, output });
+    }
+
+    // 3. Legacy Item folder assignment
+    if (itemId) {
+      const item = await prisma.multiplierItem.update({
+        where: { id: itemId },
+        data: { 
+          driveFolderId: driveFolderId || null,
+          driveFolderName: driveFolderName || null
+        },
+      });
+      return NextResponse.json({ success: true, item });
+    }
+
+    // 4. Legacy Batch folder assignment
+    if (batchId) {
+      const batch = await prisma.multiplierBatch.update({
+        where: { id: batchId },
+        data: { 
+          driveFolderId: driveFolderId || null,
+          driveFolderName: driveFolderName || null
+        },
+      });
+      return NextResponse.json({ success: true, batch });
+    }
+
+    return NextResponse.json({ error: "Missing target ID" }, { status: 400 });
+  } catch (err: any) {
+    console.error("[Multiplier PATCH API] Error:", err);
+    return NextResponse.json({ error: err.message || "Failed to assign folder" }, { status: 500 });
   }
 }
