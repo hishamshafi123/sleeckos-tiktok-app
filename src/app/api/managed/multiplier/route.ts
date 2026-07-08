@@ -175,6 +175,46 @@ export async function DELETE(req: Request) {
   }
 
   try {
+    const publicDir = path.join(process.cwd(), "public");
+
+    if (groupId === "all") {
+      // 1. Clean up new group files
+      const groups = await prisma.multiplierGroup.findMany({
+        include: { variations: true, outputs: true },
+      });
+      for (const g of groups) {
+        for (const v of g.variations) {
+          const vPath = path.join(publicDir, v.videoRef);
+          try { fs.unlinkSync(vPath); } catch {}
+        }
+        for (const o of g.outputs) {
+          if (o.outputRef) {
+            const oPath = path.join(publicDir, o.outputRef);
+            try { fs.unlinkSync(oPath); } catch {}
+          }
+        }
+      }
+      await prisma.multiplierGroup.deleteMany();
+
+      // 2. Clean up legacy batch files
+      const batches = await prisma.multiplierBatch.findMany({
+        include: { items: true },
+      });
+      for (const b of batches) {
+        const sourcePath = path.join(publicDir, b.sourceVideoUrl);
+        try { fs.unlinkSync(sourcePath); } catch {}
+        for (const item of b.items) {
+          if (item.renderedVideoUrl) {
+            const renderPath = path.join(publicDir, item.renderedVideoUrl);
+            try { fs.unlinkSync(renderPath); } catch {}
+          }
+        }
+      }
+      await prisma.multiplierBatch.deleteMany();
+
+      return NextResponse.json({ success: true, message: "All groups and batches deleted" });
+    }
+
     const group = await prisma.multiplierGroup.findUnique({
       where: { id: groupId },
       include: {
@@ -182,8 +222,6 @@ export async function DELETE(req: Request) {
         outputs: true,
       },
     });
-
-    const publicDir = path.join(process.cwd(), "public");
 
     if (group) {
       // Clean up variations files

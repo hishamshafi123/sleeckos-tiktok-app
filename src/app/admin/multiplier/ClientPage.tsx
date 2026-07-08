@@ -651,6 +651,24 @@ export default function ClientPage() {
     }
   };
 
+  const handleDeleteAllGroups = async () => {
+    if (!confirm("Are you sure you want to delete ALL multiplier groups/batches and all associated video files? This action is permanent and cannot be undone.")) return;
+
+    try {
+      const res = await fetch("/api/managed/multiplier?groupId=all", {
+        method: "DELETE",
+      });
+
+      if (!res.ok) throw new Error("Bulk deletion failed");
+
+      toast.success("All batches and groups deleted successfully.");
+      setSelectedGroup(null);
+      await fetchData();
+    } catch (err: any) {
+      toast.error(err.message || "Failed to delete batches");
+    }
+  };
+
   // Live output computation
   const getEstimatedOutputs = () => {
     if (!selectedGroup) return 0;
@@ -1390,12 +1408,23 @@ export default function ClientPage() {
             <h2 className="text-xl font-bold flex items-center gap-2">
               <Layers className="text-[#E11D48] w-5 h-5" /> Rendering Batches Progress Board
             </h2>
-            <button
-              onClick={fetchData}
-              className="p-2 bg-[#18181b] border border-[#27272a] rounded-lg hover:bg-[#27272a] transition-all"
-            >
-              <RefreshCw className="w-4 h-4" />
-            </button>
+            <div className="flex items-center gap-2">
+              {groups.length > 0 && (
+                <button
+                  onClick={handleDeleteAllGroups}
+                  className="px-3 py-2 bg-red-500/10 hover:bg-red-500/20 text-red-500 border border-red-500/20 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all"
+                >
+                  <Trash className="w-4 h-4" /> Delete All Batches
+                </button>
+              )}
+              <button
+                onClick={fetchData}
+                className="p-2 bg-[#18181b] border border-[#27272a] rounded-lg hover:bg-[#27272a] transition-all"
+                title="Refresh Board"
+              >
+                <RefreshCw className="w-4 h-4" />
+              </button>
+            </div>
           </div>
 
           {loadingGroups ? (
@@ -1469,6 +1498,13 @@ export default function ClientPage() {
                         >
                           {group.status}
                         </span>
+                        <button
+                          onClick={() => handleDeleteGroup(group.id)}
+                          className="p-1 bg-[#18181b] hover:bg-red-500/10 text-[#71717a] hover:text-red-500 border border-[#27272a] rounded-lg transition-all flex items-center justify-center"
+                          title="Delete Batch"
+                        >
+                          <Trash className="w-3.5 h-3.5" />
+                        </button>
                       </div>
                     </div>
 
