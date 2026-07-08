@@ -1,2497 +1,1454 @@
 "use client";
-import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+
+import React, { useState, useEffect, useRef } from "react";
 import { toast } from "sonner";
 import {
-  Upload, FileText, Play, Download, Trash2, Loader2,
-  Check, X, Layers, RefreshCw, Palette, Move, Pause,
-  Plus, FolderOpen, Cloud, CloudOff, Search, LogIn,
-  Copy, Sparkles, Wand2,
+  Layers,
+  Video,
+  Sparkles,
+  Upload,
+  Play,
+  Check,
+  X,
+  Trash,
+  Plus,
+  RefreshCw,
+  FileSpreadsheet,
+  Settings2,
+  AlertCircle,
+  PlusCircle,
+  CheckCircle2,
+  Loader2,
+  ExternalLink,
+  ChevronDown,
+  ChevronUp
 } from "lucide-react";
 
-// ─── Types ───────────────────────────────────────────────────────────────────
-
-interface MultiplierItem {
+interface Campaign {
   id: string;
-  hookText: string;
-  status: string;
-  renderedVideoUrl: string | null;
-  errorMessage: string | null;
-  templateId: string | null;
-  driveFolderId: string | null;
-  driveFolderName: string | null;
+  title: string;
+  type: string;
+  description: string;
+  brief: string;
 }
 
-interface MultiplierBatch {
+interface MultiplierHook {
   id: string;
-  name: string;
-  sourceVideoUrl: string;
-  totalItems: number;
-  status: string;
-  fontFamily: string;
-  fontSize: number;
-  fontColor: string;
-  textCase: string;
-  bgStripColor: string;
-  bgStripOpacity: number;
-  textPosition: string;
-  stripPaddingY: number;
-  positionYPercent: number;
-  marginX: number;
-  hookDuration: number;
-  errorMessage: string | null;
-  createdAt: string;
-  items: MultiplierItem[];
-  _count?: { items: number };
-  driveFolderId: string | null;
-  driveFolderName: string | null;
-  driveExportStatus: string | null;
+  text: string;
+  source: string;
+  order: number;
 }
 
-interface DesignTemplate {
+interface MultiplierVariation {
+  id: string;
+  videoRef: string;
+  order: number;
+}
+
+interface MultiplierOutput {
+  id: string;
+  variationId: string;
+  hookId: string;
+  status: "PENDING" | "RENDERING" | "COMPLETED" | "FAILED";
+  outputRef: string | null;
+  driveFolderId: string | null;
+  errorMessage: string | null;
+  variation: { videoRef: string };
+  hook: { text: string };
+}
+
+interface MultiplierGroup {
   id: string;
   name: string;
-  // Typography
-  fontFamily: string;
-  fontSize: number;
-  fontColor: string;
-  textCase: string;
-  letterSpacing: number;
-  lineHeight: number;
-  // Text Effects
-  strokeEnabled: boolean;
-  strokeColor: string;
-  strokeWidth: number;
-  shadowEnabled: boolean;
-  shadowColor: string;
-  shadowX: number;
-  shadowY: number;
-  glowEnabled: boolean;
-  glowColor: string;
-  glowIntensity: number;
-  // Strip
-  bgStripColor: string;
-  bgStripOpacity: number;
-  stripWidthMode: string;
-  stripWidthPercent: number;
-  borderRadius: number;
-  stripBorderEnabled: boolean;
-  stripBorderColor: string;
-  stripBorderWidth: number;
-  stripShadowEnabled: boolean;
-  stripShadowColor: string;
-  stripShadowOffset: number;
-  // Layout
-  positionYPercent: number;
-  marginX: number;
-  paddingY: number;
-  paddingX: number;
-  textAlign: string;
-  // Advanced
-  stripGradientEnabled: boolean;
-  stripGradientColor2: string;
-  stripGradientAngle: number;
-  stripShape: string;
-  animationType: string;
-  animationDuration: number;
-  backdropBlurEnabled: boolean;
-  backdropBlurRadius: number;
-  textGradientEnabled: boolean;
-  textGradientColor1: string;
-  textGradientColor2: string;
-  textGradientAngle: number;
-  doubleTextEnabled: boolean;
-  doubleTextOutlineColor: string;
-  doubleTextOutlineWidth: number;
-  isPreset: boolean;
-  presetCategory: string | null;
+  campaignId: string;
+  campaign: { id: string; title: string };
+  transcript: string | null;
+  transcriptStatus: "PENDING" | "TRANSCRIBING" | "TRANSCRIBED" | "FAILED";
+  styleId: string;
+  mappingMode: "each" | "distribute";
+  settings: any;
+  status: "DRAFT" | "QUEUED" | "RENDERING" | "COMPLETED" | "FAILED";
+  errorMessage: string | null;
+  variations: MultiplierVariation[];
+  hooks: MultiplierHook[];
+  outputs: MultiplierOutput[];
   createdAt: string;
 }
 
-interface DriveFolder {
-  id: string;
-  name: string;
-}
+export default function ClientPage() {
+  const [activeTab, setActiveTab] = useState<"builder" | "queue">("builder");
+  const [campaigns, setCampaigns] = useState<Campaign[]>([]);
+  const [groups, setGroups] = useState<MultiplierGroup[]>([]);
+  const [loadingCampaigns, setLoadingCampaigns] = useState(true);
+  const [loadingGroups, setLoadingGroups] = useState(true);
 
-// ─── Constants ───────────────────────────────────────────────────────────────
+  // Builder state
+  const [selectedGroup, setSelectedGroup] = useState<MultiplierGroup | null>(null);
+  const [groupName, setGroupName] = useState("");
+  const [selectedCampaignId, setSelectedCampaignId] = useState("");
+  const [styleId, setStyleId] = useState<"news-lower-third" | "breaking-headline" | "subtitle-box" | "quote-card">("news-lower-third");
+  const [mappingMode, setMappingMode] = useState<"each" | "distribute">("each");
 
-const FONT_OPTIONS = [
-  "Outfit-Bold",
-  "Inter-Bold",
-  "PlayfairDisplay-Bold",
-  "Anton-Regular",
-  "Oswald-Bold",
-  "Montserrat-Bold",
-  "Caveat-Bold",
-  "Lora-Bold",
-  "GreatVibes-Regular",
-  "BebasNeue-Regular",
-  "ArchivoBlack-Regular",
-  "LilitaOne-Regular",
-  "ArchivoNarrow-Bold",
-  "PermanentMarker-Regular",
-  "Cinzel-Bold",
-  "Kanit-Black",
-  "Syne-ExtraBold",
-];
-
-const TEXT_CASE_OPTIONS = [
-  { value: "UPPERCASE", label: "ABC" },
-  { value: "lowercase", label: "abc" },
-  { value: "capitalize", label: "Abc" },
-  { value: "none", label: "As Is" },
-];
-
-const getCssFontFamily = (font: string) => {
-  if (!font) return "'Outfit', sans-serif";
-  if (font.includes("Outfit")) return "'Outfit', sans-serif";
-  if (font.includes("Inter")) return "'Inter', sans-serif";
-  if (font.includes("Playfair")) return "'Playfair Display', serif";
-  if (font.includes("GreatVibes")) return "'Great Vibes', cursive";
-  if (font.includes("Anton")) return "'Anton', sans-serif";
-  if (font.includes("Caveat")) return "'Caveat', cursive";
-  if (font.includes("Lora")) return "'Lora', serif";
-  if (font.includes("Montserrat")) return "'Montserrat', sans-serif";
-  if (font.includes("Oswald")) return "'Oswald', sans-serif";
-  if (font.includes("Bebas")) return "'Bebas Neue', sans-serif";
-  if (font.includes("ArchivoBlack") || font.includes("Archivo Black")) return "'Archivo Black', sans-serif";
-  if (font.includes("Lilita")) return "'Lilita One', sans-serif";
-  if (font.includes("ArchivoNarrow") || font.includes("Archivo Narrow")) return "'Archivo Narrow', sans-serif";
-  if (font.includes("Permanent")) return "'Permanent Marker', cursive";
-  if (font.includes("Cinzel")) return "'Cinzel', serif";
-  if (font.includes("Kanit")) return "'Kanit', sans-serif";
-  if (font.includes("Syne")) return "'Syne', sans-serif";
-  return "'Outfit', sans-serif";
-};
-
-// Output dimensions (TikTok 9:16)
-const OUTPUT_W = 720;
-const OUTPUT_H = 1280;
-
-// ─── Helper for Safe Error Handling ──────────────────────────────────────────
-
-async function getErrorMessage(res: Response, fallback: string): Promise<string> {
-  try {
-    const contentType = res.headers.get("content-type");
-    if (contentType && contentType.includes("application/json")) {
-      const err = await res.json();
-      return err.error || fallback;
-    }
-    const text = await res.text();
-    if (text && text.length < 200 && !text.includes("<html") && !text.includes("<HTML")) {
-      return text;
-    }
-    return `${fallback} (${res.status} ${res.statusText})`;
-  } catch {
-    return `${fallback} (${res.status} ${res.statusText})`;
-  }
-}
-
-// ─── Component ───────────────────────────────────────────────────────────────
-
-export default function MultiplierPage() {
-  // Batches list
-  const [batches, setBatches] = useState<MultiplierBatch[]>([]);
-  const [loading, setLoading] = useState(true);
-
-  // Download states (batchId -> DownloadState)
-  interface DownloadState {
-    progress: number;
-    totalSize: string;
-    loadedSize: string;
-  }
-  const [downloads, setDownloads] = useState<Record<string, DownloadState>>({});
-
-  // Upload form
-  const [videoFile, setVideoFile] = useState<File | null>(null);
-  const [csvFile, setCsvFile] = useState<File | null>(null);
-  const [batchName, setBatchName] = useState("");
-  const [parsedHooks, setParsedHooks] = useState<string[]>([]);
-  const [uploading, setUploading] = useState(false);
-
-  // Styling
-  const [fontFamily, setFontFamily] = useState("Outfit-Bold");
-  const [fontSize, setFontSize] = useState(42);
+  // Style Settings state
+  const [fontSize, setFontSize] = useState(32);
   const [fontColor, setFontColor] = useState("#FFFFFF");
-  const [textCase, setTextCase] = useState("UPPERCASE");
   const [bgStripColor, setBgStripColor] = useState("#000000");
-  const [bgStripOpacity, setBgStripOpacity] = useState(1.0);
-  const [stripPaddingY, setStripPaddingY] = useState(20);
-  const [positionYPercent, setPositionYPercent] = useState(5);
-  const [marginX, setMarginX] = useState(0);
-  const [borderRadius, setBorderRadius] = useState(12);
+  const [bgStripOpacity, setBgStripOpacity] = useState(0.85);
+  const [positionYPercent, setPositionYPercent] = useState(75);
+  const [accentColor, setAccentColor] = useState("#E11D48");
+  const [author, setAuthor] = useState("");
+
+  // Rendering Settings
   const [hookDuration, setHookDuration] = useState(5);
+  const [animationType, setAnimationType] = useState<"NONE" | "FADE_IN" | "SLIDE_UP">("NONE");
+  const [animationDuration, setAnimationDuration] = useState(0.5);
 
-  // Design studio tab
-  const [designTab, setDesignTab] = useState<"typography" | "effects" | "strip" | "animation">("typography");
+  // Variations & manual hooks inputs
+  const [filesToUpload, setFilesToUpload] = useState<File[]>([]);
+  const [uploadingFiles, setUploadingFiles] = useState(false);
+  const [newHookText, setNewHookText] = useState("");
+  const [aiHookCount, setAiHookCount] = useState(5);
+  const [generatingAiHooks, setGeneratingAiHooks] = useState(false);
+  const [transcribing, setTranscribing] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
 
-  // Rendering
-  const [renderingBatchId, setRenderingBatchId] = useState<string | null>(null);
-  const [pausingBatchId, setPausingBatchId] = useState<string | null>(null);
+  // File Drag-Drop Ref
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Preview
-  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
-  const [videoObjectUrl, setVideoObjectUrl] = useState<string | null>(null);
+  // Poll state
+  const pollTimerRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Refs
-  const videoInputRef = useRef<HTMLInputElement>(null);
-  const csvInputRef = useRef<HTMLInputElement>(null);
-  const pollRef = useRef<NodeJS.Timeout | null>(null);
-  const previewContainerRef = useRef<HTMLDivElement>(null);
-
-  // Dragging state
-  const [isDragging, setIsDragging] = useState(false);
-  const dragStartRef = useRef<{ startY: number; startPercent: number } | null>(null);
-
-  // ─── Design Templates ────────────────────────────────────────────────────────
-  const [templates, setTemplates] = useState<DesignTemplate[]>([]);
-  const [selectedTemplateIds, setSelectedTemplateIds] = useState<string[]>([]);
-  const [showTemplateEditor, setShowTemplateEditor] = useState(false);
-  const [editingTemplate, setEditingTemplate] = useState<Partial<DesignTemplate> | null>(null);
-  const [savingTemplate, setSavingTemplate] = useState(false);
-
-  const defaultTemplateValues = (): Partial<DesignTemplate> => ({
-    name: "",
-    fontFamily: "Outfit-Bold", fontSize: 42, fontColor: "#FFFFFF",
-    textCase: "UPPERCASE", letterSpacing: 1.0, lineHeight: 1.4,
-    strokeEnabled: false, strokeColor: "#000000", strokeWidth: 2,
-    shadowEnabled: false, shadowColor: "#000000", shadowX: 2, shadowY: 2,
-    glowEnabled: false, glowColor: "#FF00FF", glowIntensity: 2,
-    bgStripColor: "#000000", bgStripOpacity: 1.0,
-    stripWidthMode: "FULL", stripWidthPercent: 100, borderRadius: 12,
-    stripBorderEnabled: false, stripBorderColor: "#FFFFFF", stripBorderWidth: 1,
-    stripShadowEnabled: false, stripShadowColor: "#000000", stripShadowOffset: 4,
-    positionYPercent: 5, marginX: 0, paddingY: 20, paddingX: 20,
-    textAlign: "CENTER",
-    // Advanced
-    stripGradientEnabled: false, stripGradientColor2: "#333333", stripGradientAngle: 90,
-    stripShape: "FULL",
-    animationType: "NONE", animationDuration: 0.5,
-    backdropBlurEnabled: false, backdropBlurRadius: 10,
-    textGradientEnabled: false, textGradientColor1: "#FFFFFF", textGradientColor2: "#00FFFF", textGradientAngle: 180,
-    doubleTextEnabled: false, doubleTextOutlineColor: "#000000", doubleTextOutlineWidth: 4,
-    isPreset: false, presetCategory: null,
-  });
-
-  // ─── Google Drive ───────────────────────────────────────────────────────────
-  const [driveConnected, setDriveConnected] = useState(false);
-  const [driveEmail, setDriveEmail] = useState("");
-  // Folder picker target: { type: 'batch' | 'item', id: string }
-  const [folderPickerTarget, setFolderPickerTarget] = useState<{ type: "batch" | "item"; id: string } | null>(null);
-  const showFolderPicker = folderPickerTarget?.id || null; // backward compat for modal
-  const [driveFolders, setDriveFolders] = useState<DriveFolder[]>([]);
-  const [folderSearch, setFolderSearch] = useState("");
-  const [searchingFolders, setSearchingFolders] = useState(false);
-  const [exportingBatches, setExportingBatches] = useState<Set<string>>(new Set());
-  const [renamingBatchId, setRenamingBatchId] = useState<string | null>(null);
-  const [renamingBatchValue, setRenamingBatchValue] = useState("");
-  // Multi-folder batch assignment
-  const [multiFolderPickerBatchId, setMultiFolderPickerBatchId] = useState<string | null>(null);
-  const [batchSelectedFolders, setBatchSelectedFolders] = useState<Record<string, DriveFolder[]>>({});
-  const [multiFolderSearch, setMultiFolderSearch] = useState("");
-  const [multiFolderResults, setMultiFolderResults] = useState<DriveFolder[]>([]);
-  const [searchingMultiFolders, setSearchingMultiFolders] = useState(false);
-
-  // ─── Video Object URL ─────────────────────────────────────────────────────
-
-  useEffect(() => {
-    if (videoFile) {
-      const url = URL.createObjectURL(videoFile);
-      setVideoObjectUrl(url);
-      return () => URL.revokeObjectURL(url);
-    } else {
-      setVideoObjectUrl(null);
-    }
-  }, [videoFile]);
-
-  // ─── Preview Text (apply casing) ─────────────────────────────────────────
-
-  const previewText = useMemo(() => {
-    const raw = parsedHooks[0] || "Sample hook text preview";
-    switch (textCase) {
-      case "UPPERCASE": return raw.toUpperCase();
-      case "lowercase": return raw.toLowerCase();
-      case "capitalize": return raw.replace(/\b\w/g, (c) => c.toUpperCase());
-      default: return raw;
-    }
-  }, [parsedHooks, textCase]);
-
-  // ─── Strip Geometry (mirroring FFmpeg logic) ──────────────────────────────
-
-  const stripGeometry = useMemo(() => {
-    // Adaptive char width: must match FFmpeg logic exactly
-    const isUppercase = textCase.trim().toLowerCase() === "uppercase";
-    const charWidthMultiplier = isUppercase ? 0.65 : 0.55;
-    const paddingX = Math.max(stripPaddingY, 16);
-    const effectiveTextWidth = OUTPUT_W - marginX * 2 - paddingX * 2;
-    const charsPerLine = Math.max(8, Math.floor(effectiveTextWidth / (fontSize * charWidthMultiplier)));
-    const words = previewText.split(" ");
-    let lines = 1;
-    let currentLineLength = 0;
-    for (const word of words) {
-      // Handle words longer than charsPerLine (force break)
-      if (word.length > charsPerLine) {
-        if (currentLineLength > 0) {
-          lines++;
-          currentLineLength = 0;
-        }
-        const chunks = Math.ceil(word.length / charsPerLine);
-        lines += chunks - 1; // first chunk is the current line
-        currentLineLength = word.length % charsPerLine || charsPerLine;
-        continue;
-      }
-      if (currentLineLength + word.length + 1 > charsPerLine && currentLineLength > 0) {
-        lines++;
-        currentLineLength = word.length;
-      } else {
-        currentLineLength += (currentLineLength > 0 ? 1 : 0) + word.length;
-      }
-    }
-
-    const lineHeight = fontSize * 1.4;
-    const stripHeight = lines * lineHeight + stripPaddingY * 2 + 10;
-    const maxY = OUTPUT_H - stripHeight;
-    const yPercent = Math.max(0, Math.min(100, positionYPercent));
-    const stripY = (maxY * yPercent) / 100;
-
-    return {
-      stripHeight,
-      stripY,
-      stripX: marginX,
-      stripW: OUTPUT_W - marginX * 2,
-      lines,
-    };
-  }, [fontSize, marginX, stripPaddingY, positionYPercent, previewText, textCase]);
-
-  // ─── Drag to Position ─────────────────────────────────────────────────────
-
-  const handlePreviewMouseDown = (e: React.MouseEvent) => {
-    if (!previewContainerRef.current) return;
-    e.preventDefault();
-    setIsDragging(true);
-    dragStartRef.current = {
-      startY: e.clientY,
-      startPercent: positionYPercent,
-    };
-  };
-
-  useEffect(() => {
-    if (!isDragging) return;
-
-    const handleMouseMove = (e: MouseEvent) => {
-      if (!dragStartRef.current || !previewContainerRef.current) return;
-      const containerRect = previewContainerRef.current.getBoundingClientRect();
-      const containerH = containerRect.height;
-      const deltaY = e.clientY - dragStartRef.current.startY;
-      const deltaPercent = (deltaY / containerH) * 100;
-      const newPercent = Math.max(0, Math.min(100, dragStartRef.current.startPercent + deltaPercent));
-      setPositionYPercent(Math.round(newPercent));
-    };
-
-    const handleMouseUp = () => {
-      setIsDragging(false);
-      dragStartRef.current = null;
-    };
-
-    window.addEventListener("mousemove", handleMouseMove);
-    window.addEventListener("mouseup", handleMouseUp);
-    return () => {
-      window.removeEventListener("mousemove", handleMouseMove);
-      window.removeEventListener("mouseup", handleMouseUp);
-    };
-  }, [isDragging]);
-
-  // ─── Data Fetching ───────────────────────────────────────────────────────
-
-  const fetchBatches = useCallback(async () => {
+  // Fetch initial data
+  const fetchData = async () => {
     try {
-      const res = await fetch("/api/managed/multiplier");
-      if (res.ok) {
-        const data = await res.json();
-        setBatches(data);
-        const rendering = data.find((b: MultiplierBatch) => b.status === "RENDERING");
-        if (rendering) {
-          setRenderingBatchId(rendering.id);
-        } else {
-          setRenderingBatchId(null);
-        }
+      const campRes = await fetch("/api/managed/campaigns");
+      if (campRes.ok) {
+        const data = await campRes.json();
+        setCampaigns(data);
       }
     } catch (err) {
-      console.error("Error fetching batches:", err);
+      console.error("Error loading campaigns:", err);
     } finally {
-      setLoading(false);
+      setLoadingCampaigns(false);
     }
-  }, []);
 
-  useEffect(() => {
-    // Reset any batches stuck at "EXPORTING" from previous failed sessions
-    fetch("/api/managed/multiplier/export", {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "reset-stuck" }),
-    }).catch(() => {});
-    fetchBatches();
-  }, [fetchBatches]);
-
-  // Poll while rendering
-  useEffect(() => {
-    if (renderingBatchId) {
-      pollRef.current = setInterval(fetchBatches, 3000);
-    } else if (pollRef.current) {
-      clearInterval(pollRef.current);
-      pollRef.current = null;
-    }
-    return () => { if (pollRef.current) clearInterval(pollRef.current); };
-  }, [renderingBatchId, fetchBatches]);
-
-  // ─── Design Templates Data ────────────────────────────────────────────────
-
-  const fetchTemplates = useCallback(async () => {
     try {
-      const res = await fetch("/api/managed/multiplier/templates");
-      if (res.ok) setTemplates(await res.json());
-    } catch {}
-  }, []);
+      const groupRes = await fetch("/api/managed/multiplier");
+      if (groupRes.ok) {
+        const data = await groupRes.json();
+        setGroups(data);
+      }
+    } catch (err) {
+      console.error("Error loading groups:", err);
+    } finally {
+      setLoadingGroups(false);
+    }
+  };
 
   useEffect(() => {
-    fetchTemplates();
-    const id = "google-fonts-preview-multiplier";
-    if (!document.getElementById(id)) {
-      const link = document.createElement("link");
-      link.id = id;
-      link.rel = "stylesheet";
-      link.href = "https://fonts.googleapis.com/css2?family=Anton&family=Archivo+Narrow:wght@400;500;600;700&family=Caveat:wght@700&family=Great+Vibes&family=Inter:wght@700;900&family=Lora:ital,wght@0,700;1,700&family=Montserrat:wght@700;900&family=Oswald:wght@700&family=Outfit:wght@700;800;900&family=Playfair+Display:ital,wght@0,700;1,700&family=Bebas+Neue&family=Archivo+Black&family=Lilita+One&family=Permanent+Marker&family=Cinzel:wght@700&family=Kanit:wght@900&family=Syne:wght@800&display=swap";
-      document.head.appendChild(link);
-    }
-  }, [fetchTemplates]);
+    fetchData();
+    return () => {
+      if (pollTimerRef.current) clearInterval(pollTimerRef.current);
+    };
+  }, []);
 
-  const openTemplateEditor = (tmpl?: DesignTemplate) => {
-    if (tmpl) {
-      setEditingTemplate({ ...tmpl });
+  // Poll active rendering groups
+  useEffect(() => {
+    const activeGroups = groups.filter(
+      (g) => g.status === "QUEUED" || g.status === "RENDERING" || g.transcriptStatus === "TRANSCRIBING"
+    );
+
+    if (activeGroups.length > 0) {
+      if (!pollTimerRef.current) {
+        pollTimerRef.current = setInterval(async () => {
+          try {
+            const res = await fetch("/api/managed/multiplier");
+            if (res.ok) {
+              const data = await res.json();
+              setGroups(data);
+              // Update selected group in real-time
+              if (selectedGroup) {
+                const updated = data.find((g: MultiplierGroup) => g.id === selectedGroup.id);
+                if (updated) setSelectedGroup(updated);
+              }
+            }
+          } catch (err) {
+            console.error("Polling failed:", err);
+          }
+        }, 3000);
+      }
     } else {
-      setEditingTemplate(defaultTemplateValues());
+      if (pollTimerRef.current) {
+        clearInterval(pollTimerRef.current);
+        pollTimerRef.current = null;
+      }
     }
-    setShowTemplateEditor(true);
+  }, [groups, selectedGroup]);
+
+  // Load selected group details into form
+  const handleSelectGroup = (group: MultiplierGroup) => {
+    setSelectedGroup(group);
+    setGroupName(group.name);
+    setSelectedCampaignId(group.campaignId);
+    setStyleId(group.styleId as any);
+    setMappingMode(group.mappingMode as any);
+
+    let parsedSettings = {};
+    try {
+      parsedSettings = typeof group.settings === "string" 
+        ? JSON.parse(group.settings) 
+        : (group.settings || {});
+    } catch {}
+
+    const s: any = parsedSettings;
+    setFontSize(s.fontSize ?? 32);
+    setFontColor(s.fontColor ?? "#FFFFFF");
+    setBgStripColor(s.bgStripColor ?? "#000000");
+    setBgStripOpacity(s.bgStripOpacity ?? 0.85);
+    setPositionYPercent(s.positionYPercent ?? 75);
+    setAccentColor(s.accentColor ?? "#E11D48");
+    setAuthor(s.author ?? "");
+    setHookDuration(s.hookDuration ?? 5);
+    setAnimationType(s.animationType ?? "NONE");
+    setAnimationDuration(s.animationDuration ?? 0.5);
+
+    setFilesToUpload([]);
   };
 
-  const updateEditingField = (key: string, value: any) => {
-    setEditingTemplate((prev) => prev ? { ...prev, [key]: value } : prev);
-  };
-
-  const handleSaveTemplate = async () => {
-    if (!editingTemplate?.name?.trim()) {
-      toast.error("Template name is required");
+  const handleCreateNewGroup = async () => {
+    if (!groupName.trim()) {
+      toast.error("Please enter a group name");
       return;
     }
-    setSavingTemplate(true);
-    try {
-      const isUpdate = !!editingTemplate.id;
-      const res = await fetch("/api/managed/multiplier/templates", {
-        method: isUpdate ? "PUT" : "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(editingTemplate),
-      });
-      if (!res.ok) throw new Error((await res.json()).error);
-      toast.success(isUpdate ? "Template updated!" : "Template saved!");
-      setShowTemplateEditor(false);
-      setEditingTemplate(null);
-      fetchTemplates();
-    } catch (err: any) {
-      toast.error(err.message || "Failed to save template");
-    } finally {
-      setSavingTemplate(false);
+    if (!selectedCampaignId) {
+      toast.error("Please select a Campaign");
+      return;
     }
-  };
 
-  const handleDeleteTemplate = async (id: string) => {
-    if (!confirm("Delete this design template?")) return;
-    try {
-      await fetch(`/api/managed/multiplier/templates?id=${id}`, { method: "DELETE" });
-      toast.success("Template deleted");
-      setSelectedTemplateIds((prev) => prev.filter((t) => t !== id));
-      fetchTemplates();
-    } catch {
-      toast.error("Failed to delete");
-    }
-  };
-
-  const handleDuplicateTemplate = async (id: string) => {
-    try {
-      const res = await fetch(`/api/managed/multiplier/templates?action=duplicate&id=${id}`, { method: "POST" });
-      if (!res.ok) throw new Error((await res.json()).error);
-      toast.success("Template duplicated!");
-      fetchTemplates();
-    } catch (err: any) {
-      toast.error(err.message || "Failed to duplicate");
-    }
-  };
-
-  const seedPresets = async () => {
-    try {
-      const res = await fetch("/api/managed/multiplier/templates?action=seed-presets", { method: "POST" });
-      if (res.ok) {
-        const data = await res.json();
-        if (data.count > 0) {
-          toast.success(`${data.count} preset designs loaded!`);
-          fetchTemplates();
-        }
-      }
-    } catch {}
-  };
-
-  // Auto-seed presets on first load if no templates exist
-  useEffect(() => {
-    if (templates.length === 0 && !loading) {
-      seedPresets();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [templates.length, loading]);
-
-  const toggleTemplateSelection = (id: string) => {
-    setSelectedTemplateIds((prev) =>
-      prev.includes(id) ? prev.filter((t) => t !== id) : [...prev, id]
-    );
-  };
-
-  // ─── Google Drive ────────────────────────────────────────────────────────
-
-  const fetchDriveStatus = useCallback(async () => {
-    try {
-      const res = await fetch("/api/managed/multiplier/google/status");
-      if (res.ok) {
-        const data = await res.json();
-        setDriveConnected(data.connected);
-        setDriveEmail(data.email || "");
-      }
-    } catch {}
-  }, []);
-
-  useEffect(() => { fetchDriveStatus(); }, [fetchDriveStatus]);
-
-  const handleDisconnectDrive = async () => {
-    if (!confirm("Disconnect Google Drive?")) return;
-    try {
-      await fetch("/api/managed/multiplier/google/status", { method: "DELETE" });
-      setDriveConnected(false);
-      setDriveEmail("");
-      toast.success("Drive disconnected");
-    } catch {
-      toast.error("Failed to disconnect");
-    }
-  };
-
-  const searchDriveFolders = async (query: string) => {
-    setSearchingFolders(true);
-    try {
-      const res = await fetch(`/api/managed/multiplier/google/folders?q=${encodeURIComponent(query)}`);
-      if (res.ok) {
-        const data = await res.json();
-        setDriveFolders(data.folders || []);
-      }
-    } catch {} finally {
-      setSearchingFolders(false);
-    }
-  };
-
-  const searchMultiFolders = async (query: string) => {
-    setSearchingMultiFolders(true);
-    try {
-      const res = await fetch(`/api/managed/multiplier/google/folders?q=${encodeURIComponent(query)}`);
-      if (res.ok) {
-        const data = await res.json();
-        setMultiFolderResults(data.folders || []);
-      }
-    } catch {} finally {
-      setSearchingMultiFolders(false);
-    }
-  };
-
-  const handleAssignFolder = async (targetId: string, folderId: string, folderName: string) => {
-    const isItem = folderPickerTarget?.type === "item";
-    // Optimistic local state update — prevents scroll jump
-    setBatches((prev) =>
-      prev.map((b) => {
-        if (isItem) {
-          return {
-            ...b,
-            items: b.items.map((item) =>
-              item.id === targetId ? { ...item, driveFolderId: folderId, driveFolderName: folderName } : item
-            ),
-          };
-        } else if (b.id === targetId) {
-          return { ...b, driveFolderId: folderId, driveFolderName: folderName };
-        }
-        return b;
-      })
-    );
-    setFolderPickerTarget(null);
-    toast.success(`Folder "${folderName}" assigned`);
-
-    // Persist to server in background (no refetch)
-    try {
-      await fetch("/api/managed/multiplier", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(
-          isItem
-            ? { itemId: targetId, driveFolderId: folderId, driveFolderName: folderName }
-            : { batchId: targetId, driveFolderId: folderId, driveFolderName: folderName }
-        ),
-      });
-    } catch {
-      toast.error("Failed to save folder — please refresh");
-    }
-  };
-
-  // ─── Multi-folder batch assignment (round-robin) ──────────────────────────
-
-  const handleBatchMultiFolderSelect = (batchId: string, folder: DriveFolder) => {
-    setBatchSelectedFolders((prev) => {
-      const existing = prev[batchId] || [];
-      // Toggle: add if not present, remove if already selected
-      const isSelected = existing.some((f) => f.id === folder.id);
-      if (isSelected) {
-        return { ...prev, [batchId]: existing.filter((f) => f.id !== folder.id) };
-      }
-      return { ...prev, [batchId]: [...existing, folder] };
-    });
-  };
-
-  const handleBatchMultiFolderAssign = async (batchId: string) => {
-    const folders = batchSelectedFolders[batchId] || [];
-    if (folders.length === 0) { toast.error("Select at least one folder"); return; }
-
-    const batch = batches.find((b) => b.id === batchId);
-    if (!batch) return;
-
-    const renderedItems = batch.items.filter((i) => i.status === "RENDERED");
-    if (renderedItems.length === 0) { toast.error("No rendered videos to assign"); return; }
-
-    // Round-robin: assign folders cyclically to rendered items
-    const assignments: { itemId: string; folderId: string; folderName: string }[] = [];
-    renderedItems.forEach((item, idx) => {
-      const folder = folders[idx % folders.length];
-      assignments.push({ itemId: item.id, folderId: folder.id, folderName: folder.name });
-    });
-
-    // Optimistic local state update
-    setBatches((prev) =>
-      prev.map((b) => {
-        if (b.id !== batchId) return b;
-        return {
-          ...b,
-          items: b.items.map((item) => {
-            const assignment = assignments.find((a) => a.itemId === item.id);
-            if (assignment) {
-              return { ...item, driveFolderId: assignment.folderId, driveFolderName: assignment.folderName };
-            }
-            return item;
-          }),
-        };
-      })
-    );
-
-    setMultiFolderPickerBatchId(null);
-    setBatchSelectedFolders((prev) => { const copy = { ...prev }; delete copy[batchId]; return copy; });
-    toast.success(`${folders.length} folder(s) assigned to ${renderedItems.length} videos (round-robin)`);
-
-    // Persist all to server in background
-    try {
-      await Promise.all(
-        assignments.map((a) =>
-          fetch("/api/managed/multiplier", {
-            method: "PATCH",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ itemId: a.itemId, driveFolderId: a.folderId, driveFolderName: a.folderName }),
-          })
-        )
-      );
-    } catch {
-      toast.error("Some folder assignments failed — please refresh");
-    }
-  };
-
-  const handleRenameBatch = async (batchId: string, newName: string) => {
-    // Optimistic local state update
-    setBatches((prev) => prev.map((b) => (b.id === batchId ? { ...b, name: newName } : b)));
-    setRenamingBatchId(null);
-    toast.success("Batch renamed");
+    const settingsObj = {
+      fontSize,
+      fontColor,
+      bgStripColor,
+      bgStripOpacity,
+      positionYPercent,
+      accentColor,
+      author,
+      hookDuration,
+      animationType,
+      animationDuration,
+    };
 
     try {
-      await fetch("/api/managed/multiplier", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ batchId, name: newName }),
-      });
-    } catch {
-      toast.error("Failed to save name — please refresh");
-    }
-  };
-
-  const handleExportToDrive = async (batchId: string) => {
-    setExportingBatches((prev) => new Set([...prev, batchId]));
-    try {
-      const res = await fetch("/api/managed/multiplier/export", {
+      const res = await fetch("/api/managed/multiplier", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ batchId }),
+        body: JSON.stringify({
+          name: groupName,
+          campaignId: selectedCampaignId,
+          styleId,
+          mappingMode,
+          settings: settingsObj,
+        }),
       });
+
       if (!res.ok) {
         const err = await res.json();
-        throw new Error(err.error);
+        throw new Error(err.error || "Failed to create group");
       }
-      toast.success("Export started! Videos uploading to Drive...");
-      // Poll for completion (max 10 minutes)
-      let pollCount = 0;
-      const maxPolls = 200; // 200 * 3s = 10 min
-      const pollExport = setInterval(async () => {
-        pollCount++;
-        if (pollCount > maxPolls) {
-          clearInterval(pollExport);
-          setExportingBatches((prev) => { const next = new Set(prev); next.delete(batchId); return next; });
-          toast.error("Export timed out — check batches for status");
-          fetchBatches();
-          return;
-        }
-        try {
-          const statusRes = await fetch(`/api/managed/multiplier/export?batchId=${batchId}`);
-          if (statusRes.ok) {
-            const statusData = await statusRes.json();
-            if (statusData.status === "EXPORTED") {
-              clearInterval(pollExport);
-              setExportingBatches((prev) => { const next = new Set(prev); next.delete(batchId); return next; });
-              toast.success("Export completed!");
-              fetchBatches();
-            } else if (statusData.status === "FAILED" || statusData.status === null) {
-              clearInterval(pollExport);
-              setExportingBatches((prev) => { const next = new Set(prev); next.delete(batchId); return next; });
-              toast.error(statusData.error ? `Export failed: ${statusData.error}` : "Export failed — you can retry");
-              fetchBatches();
-            }
-          }
-        } catch {}
-      }, 3000);
+
+      const newGroup = await res.json();
+      toast.success("Group created successfully! Now upload video variations.");
+      await fetchData();
+      handleSelectGroup(newGroup);
     } catch (err: any) {
-      toast.error(err.message || "Export failed");
-      setExportingBatches((prev) => { const next = new Set(prev); next.delete(batchId); return next; });
+      toast.error(err.message);
     }
   };
 
-  // ─── CSV Parsing ─────────────────────────────────────────────────────────
+  const handleUpdateGroupSettings = async () => {
+    if (!selectedGroup) return;
 
-  const handleCsvUpload = async (file: File) => {
-    setCsvFile(file);
+    const settingsObj = {
+      fontSize,
+      fontColor,
+      bgStripColor,
+      bgStripOpacity,
+      positionYPercent,
+      accentColor,
+      author,
+      hookDuration,
+      animationType,
+      animationDuration,
+    };
+
+    try {
+      const res = await fetch(`/api/managed/multiplier/groups/${selectedGroup.id}/render`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          mappingMode,
+          styleId,
+          settings: settingsObj,
+        }),
+      });
+
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || "Failed to save settings");
+      }
+
+      toast.success("Group configuration updated.");
+      await fetchData();
+      // Reload updated info
+      const updated = groups.find((g) => g.id === selectedGroup.id);
+      if (updated) setSelectedGroup(updated);
+    } catch (err: any) {
+      toast.error(err.message);
+    }
+  };
+
+  // Upload video variations
+  const handleUploadVariations = async () => {
+    if (!selectedGroup || filesToUpload.length === 0) return;
+
+    setUploadingFiles(true);
+    const formData = new FormData();
+    filesToUpload.forEach((f) => {
+      formData.append("file", f);
+    });
+
+    try {
+      const res = await fetch(`/api/managed/multiplier/groups/${selectedGroup.id}/variations`, {
+        method: "POST",
+        body: formData,
+      });
+
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || "Failed to upload variations");
+      }
+
+      toast.success("Video variations uploaded successfully.");
+      setFilesToUpload([]);
+      await fetchData();
+      const updated = groups.find((g) => g.id === selectedGroup.id);
+      if (updated) setSelectedGroup(updated);
+    } catch (err: any) {
+      toast.error(err.message);
+    } finally {
+      setUploadingFiles(false);
+    }
+  };
+
+  // Trigger Whisper stable-ts Transcription (Once per group)
+  const handleTranscribeGroup = async () => {
+    if (!selectedGroup) return;
+
+    setTranscribing(true);
+    try {
+      const res = await fetch(`/api/managed/multiplier/groups/${selectedGroup.id}/transcribe`, {
+        method: "POST",
+      });
+
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || "Transcription initiation failed");
+      }
+
+      toast.success("Whisper transcription alignment queued. Processing in background...");
+      // Immediately refresh groups state
+      await fetchData();
+    } catch (err: any) {
+      toast.error(err.message);
+    } finally {
+      setTranscribing(false);
+    }
+  };
+
+  // AI Hook Generation via Gemini
+  const handleGenerateAiHooks = async () => {
+    if (!selectedGroup) return;
+
+    setGeneratingAiHooks(true);
+    try {
+      const res = await fetch(`/api/managed/multiplier/groups/${selectedGroup.id}/hooks/ai`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          count: aiHookCount,
+          useCampaignContext: true,
+        }),
+      });
+
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || "Gemini hook generator failed");
+      }
+
+      toast.success(`Successfully generated ${aiHookCount} AI captions.`);
+      await fetchData();
+      const updated = groups.find((g) => g.id === selectedGroup.id);
+      if (updated) setSelectedGroup(updated);
+    } catch (err: any) {
+      toast.error(err.message);
+    } finally {
+      setGeneratingAiHooks(false);
+    }
+  };
+
+  // Add a manual hook
+  const handleAddManualHook = async () => {
+    if (!selectedGroup || !newHookText.trim()) return;
+
+    try {
+      const res = await fetch(`/api/managed/multiplier/groups/${selectedGroup.id}/hooks/manual`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: newHookText }),
+      });
+
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || "Failed to add manual hook");
+      }
+
+      setNewHookText("");
+      toast.success("Manual hook added.");
+      await fetchData();
+      const updated = groups.find((g) => g.id === selectedGroup.id);
+      if (updated) setSelectedGroup(updated);
+    } catch (err: any) {
+      toast.error(err.message);
+    }
+  };
+
+  // Import CSV Hooks
+  const handleCSVImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!selectedGroup || !e.target.files?.[0]) return;
+    const file = e.target.files[0];
     const text = await file.text();
-    const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
-    if (lines.length === 0) { setParsedHooks([]); return; }
 
-    const firstLine = lines[0].toLowerCase();
-    const isHeader = firstLine.includes("hook") || firstLine.includes("text") || firstLine === "caption" || firstLine === "title";
-    const dataLines = isHeader ? lines.slice(1) : lines;
+    // Basic CSV line parser
+    const hooks = text
+      .split(/\r?\n/)
+      .map((l) => l.trim().replace(/^"/, "").replace(/"$/, ""))
+      .filter((l) => l.length > 2);
 
-    const hooks = dataLines.map((line) => {
-      if (line.startsWith('"') && line.endsWith('"')) return line.slice(1, -1).replace(/""/g, '"');
-      if (line.includes(",")) {
-        const first = line.split(",")[0].trim();
-        return first.startsWith('"') && first.endsWith('"') ? first.slice(1, -1) : first;
+    if (hooks.length === 0) {
+      toast.error("No valid lines found in CSV file");
+      return;
+    }
+
+    try {
+      let count = 0;
+      for (const h of hooks) {
+        await fetch(`/api/managed/multiplier/groups/${selectedGroup.id}/hooks/manual`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text: h }),
+        });
+        count++;
       }
-      return line;
-    }).filter((h) => h.length > 0);
-    setParsedHooks(hooks);
+      toast.success(`Imported ${count} hooks from CSV successfully.`);
+      await fetchData();
+      const updated = groups.find((g) => g.id === selectedGroup.id);
+      if (updated) setSelectedGroup(updated);
+    } catch (err) {
+      toast.error("Error importing CSV hooks");
+    }
   };
 
-  // ─── Upload & Create Batch ───────────────────────────────────────────────
+  // Delete hook
+  const handleDeleteHook = async (hookId: string) => {
+    if (!selectedGroup) return;
 
-  const handleCreateBatch = async () => {
-    if (!videoFile) { toast.error("Please upload a video file"); return; }
-    if (!csvFile || parsedHooks.length === 0) { toast.error("Please upload a CSV with text hooks"); return; }
-
-    setUploading(true);
     try {
-      const formData = new FormData();
-      formData.append("video", videoFile);
-      formData.append("csv", csvFile!);
-      formData.append("name", batchName);
-      formData.append("fontFamily", fontFamily);
-      formData.append("fontSize", String(fontSize));
-      formData.append("fontColor", fontColor);
-      formData.append("textCase", textCase);
-      formData.append("bgStripColor", bgStripColor);
-      formData.append("bgStripOpacity", String(bgStripOpacity));
-      formData.append("textPosition", positionYPercent <= 50 ? "TOP" : "BOTTOM");
-      formData.append("stripPaddingY", String(stripPaddingY));
-      formData.append("positionYPercent", String(positionYPercent));
-      formData.append("marginX", String(marginX));
-      formData.append("borderRadius", String(borderRadius));
-      formData.append("hookDuration", String(hookDuration));
-      if (selectedTemplateIds.length > 0) {
-        formData.append("templateIds", JSON.stringify(selectedTemplateIds));
-      }
+      const res = await fetch(`/api/managed/multiplier/groups/${selectedGroup.id}/hooks/manual?hookId=${hookId}`, {
+        method: "DELETE",
+      });
 
-      const res = await fetch("/api/managed/multiplier", { method: "POST", body: formData });
-      if (!res.ok) {
-        const errMsg = await getErrorMessage(res, "Upload failed");
-        throw new Error(errMsg);
-      }
+      if (!res.ok) throw new Error("Failed to delete hook");
 
-      toast.success(`Batch created!`);
-      setVideoFile(null); setCsvFile(null); setBatchName(""); setParsedHooks([]); setSelectedTemplateIds([]);
-      if (videoInputRef.current) videoInputRef.current.value = "";
-      if (csvInputRef.current) csvInputRef.current.value = "";
-      fetchBatches();
+      toast.success("Hook removed.");
+      await fetchData();
+      const updated = groups.find((g) => g.id === selectedGroup.id);
+      if (updated) setSelectedGroup(updated);
     } catch (err: any) {
-      toast.error(err.message || "Failed to create batch");
-    } finally {
-      setUploading(false);
+      toast.error(err.message);
     }
   };
 
-  // ─── Actions ──────────────────────────────────────────────────────────────
+  // Trigger Rendering Queue Start
+  const handleStartRendering = async () => {
+    if (!selectedGroup) return;
 
-  const handleStartRender = async (batchId: string) => {
     try {
-      const res = await fetch("/api/managed/multiplier/render", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ batchId }),
-      });
-      if (!res.ok) {
-        const errMsg = await getErrorMessage(res, "Render failed");
-        throw new Error(errMsg);
-      }
-      toast.success("Rendering started!");
-      setRenderingBatchId(batchId);
-      fetchBatches();
-    } catch (err: any) { toast.error(err.message || "Failed to start rendering"); }
-  };
+      const settingsObj = {
+        fontSize,
+        fontColor,
+        bgStripColor,
+        bgStripOpacity,
+        positionYPercent,
+        accentColor,
+        author,
+        hookDuration,
+        animationType,
+        animationDuration,
+      };
 
-  const handleRetryFailed = async (batchId: string) => {
-    try {
-      // Reset failed items to PENDING first
-      const resetRes = await fetch("/api/managed/multiplier/render", {
-        method: "PATCH", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ batchId, action: "retry-failed" }),
+      const res = await fetch(`/api/managed/multiplier/groups/${selectedGroup.id}/render`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          mappingMode,
+          styleId,
+          settings: settingsObj,
+        }),
       });
-      if (!resetRes.ok) {
-        const errMsg = await getErrorMessage(resetRes, "Reset failed");
-        throw new Error(errMsg);
+
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || "Failed to trigger rendering batch");
       }
 
-      // Now start the render (it will skip already-RENDERED items)
-      const res = await fetch("/api/managed/multiplier/render", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ batchId }),
-      });
-      if (!res.ok) {
-        const errMsg = await getErrorMessage(res, "Render failed");
-        throw new Error(errMsg);
-      }
-      toast.success("Retrying failed renders!");
-      setRenderingBatchId(batchId);
-      fetchBatches();
-    } catch (err: any) { toast.error(err.message || "Failed to retry rendering"); }
-  };
-
-  const handlePauseRender = async (batchId: string) => {
-    try {
-      setPausingBatchId(batchId);
-      const res = await fetch("/api/managed/multiplier/pause", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ batchId }),
-      });
-      if (!res.ok) {
-        const errMsg = await getErrorMessage(res, "Pause failed");
-        throw new Error(errMsg);
-      }
-      toast.success("Batch paused/stopped. Active renders will stop at the next item.");
-      fetchBatches();
+      toast.success("Group output rendering batch queued! Redirecting to Queue...");
+      await fetchData();
+      setActiveTab("queue");
     } catch (err: any) {
-      toast.error(err.message || "Failed to pause rendering");
-    } finally {
-      setPausingBatchId(null);
+      toast.error(err.message);
     }
   };
 
-  const handleDownload = async (batchId: string) => {
+  // Retry output row
+  const handleRetryOutput = async (group: MultiplierGroup, outputId: string) => {
     try {
-      setDownloads((prev) => ({
-        ...prev,
-        [batchId]: { progress: 0, totalSize: "Preparing...", loadedSize: "0%" }
-      }));
-
-      let isPrepared = false;
-      let statusData: any = null;
-
-      // Poll the status every 2 seconds
-      while (!isPrepared) {
-        const res = await fetch(`/api/managed/multiplier/download?batchId=${batchId}`);
-        const text = await res.text();
-
-        if (!res.ok) {
-          let errMsg = "Failed to prepare download";
-          try {
-            const err = JSON.parse(text);
-            errMsg = err.error || errMsg;
-          } catch {
-            if (text.trim().startsWith("<")) {
-              const titleMatch = text.match(/<title>(.*?)<\/title>/i);
-              errMsg = `Server error (${res.status}): ${titleMatch ? titleMatch[1] : "HTML Error"}`;
-            }
-          }
-          throw new Error(errMsg);
-        }
-
-        try {
-          statusData = JSON.parse(text);
-        } catch {
-          throw new Error("Invalid server status response");
-        }
-
-        if (statusData.status === "COMPLETED") {
-          isPrepared = true;
-          break;
-        } else if (statusData.status === "FAILED") {
-          throw new Error(statusData.message || "Archive preparation failed");
-        } else if (statusData.status === "PREPARING") {
-          setDownloads((prev) => ({
-            ...prev,
-            [batchId]: {
-              progress: statusData.progress || 5,
-              totalSize: "Preparing Archive...",
-              loadedSize: statusData.message || "Processing...",
-            }
-          }));
-          // Wait 2 seconds before the next status poll
-          await new Promise((resolve) => setTimeout(resolve, 2000));
-        } else {
-          await new Promise((resolve) => setTimeout(resolve, 2000));
-        }
-      }
-
-      if (statusData && statusData.downloadUrl) {
-        setDownloads((prev) => ({
-          ...prev,
-          [batchId]: {
-            progress: 100,
-            totalSize: "Redirecting...",
-            loadedSize: "Starting browser download",
-          }
-        }));
-
-        const fileUrl = `/api${statusData.downloadUrl}`;
-        const link = document.createElement("a");
-        link.href = fileUrl;
-        link.download = statusData.downloadUrl.split("/").pop() || `multiplier_${batchId.substring(0, 8)}.tar`;
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-
-        toast.success("Download started in browser!");
-        // Let user see 100% complete state for 3s
-        await new Promise((resolve) => setTimeout(resolve, 3000));
-      }
-    } catch (err: any) {
-      toast.error(err.message || "Failed to download");
-    } finally {
-      setDownloads((prev) => {
-        const next = { ...prev };
-        delete next[batchId];
-        return next;
+      const res = await fetch(`/api/managed/multiplier/groups/${group.id}/render`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ outputId }),
       });
+
+      if (!res.ok) throw new Error("Retry request failed");
+
+      toast.success("Output render retried.");
+      await fetchData();
+    } catch (err: any) {
+      toast.error(err.message);
     }
   };
 
-  const triggerBlobDownload = (blob: Blob, batchId: string, res: Response) => {
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    const disposition = res.headers.get("Content-Disposition");
-    const filenameMatch = disposition?.match(/filename="([^"]+)"/);
-    a.download = filenameMatch?.[1] || `multiplier_${batchId.substring(0, 8)}.tar.gz`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-  };
+  // Delete entire Group
+  const handleDeleteGroup = async (groupId: string) => {
+    if (!confirm("Are you sure you want to delete this Multiplier Group and all associated files?")) return;
 
-  const handleDeleteBatch = async (batchId: string) => {
-    if (!confirm("Delete this batch and all its rendered videos?")) return;
     try {
-      const res = await fetch(`/api/managed/multiplier?batchId=${batchId}`, { method: "DELETE" });
-      if (!res.ok) {
-        const errMsg = await getErrorMessage(res, "Delete failed");
-        throw new Error(errMsg);
-      }
-      toast.success("Batch deleted"); fetchBatches();
-    } catch (err: any) { toast.error(err.message || "Failed to delete batch"); }
-  };
+      const res = await fetch(`/api/managed/multiplier?groupId=${groupId}`, {
+        method: "DELETE",
+      });
 
-  const handleDeleteAllBatches = async () => {
-    if (!confirm("Are you absolutely sure you want to delete ALL multiplier batches and all their rendered videos? This action cannot be undone.")) return;
-    try {
-      const res = await fetch("/api/managed/multiplier?batchId=all", { method: "DELETE" });
-      if (!res.ok) {
-        const errMsg = await getErrorMessage(res, "Delete all failed");
-        throw new Error(errMsg);
-      }
-      toast.success("All batches deleted"); fetchBatches();
-    } catch (err: any) { toast.error(err.message || "Failed to delete all batches"); }
-  };
+      if (!res.ok) throw new Error("Deletion failed");
 
-  // ─── Status Helpers ────────────────────────────────────────────────────────
-
-  const statusColor = (status: string) => {
-    switch (status) {
-      case "READY": return "text-blue-400 bg-blue-500/10 border-blue-500/20";
-      case "RENDERING": return "text-amber-400 bg-amber-500/10 border-amber-500/20";
-      case "COMPLETED": return "text-emerald-400 bg-emerald-500/10 border-emerald-500/20";
-      case "FAILED": return "text-red-400 bg-red-500/10 border-red-500/20";
-      default: return "text-gray-500";
+      toast.success("Group deleted.");
+      setSelectedGroup(null);
+      await fetchData();
+    } catch (err: any) {
+      toast.error(err.message);
     }
   };
 
-  const itemIcon = (status: string) => {
-    switch (status) {
-      case "RENDERED": return <Check className="w-3.5 h-3.5 text-emerald-400" />;
-      case "RENDERING": return <Loader2 className="w-3.5 h-3.5 text-amber-400 animate-spin" />;
-      case "FAILED": return <X className="w-3.5 h-3.5 text-red-400" />;
-      default: return <div className="w-3.5 h-3.5 rounded-full border border-gray-600" />;
+  // Live output computation
+  const getEstimatedOutputs = () => {
+    if (!selectedGroup) return 0;
+    const vCount = selectedGroup.variations.length;
+    const hCount = selectedGroup.hooks.length;
+
+    if (mappingMode === "distribute") {
+      return hCount; // each hook distributed round-robin once
     }
+    return vCount * hCount; // M variations × H hooks
   };
 
-  // ─── Render ────────────────────────────────────────────────────────────────
+  const getStylePreviewSnippet = () => {
+    switch (styleId) {
+      case "breaking-headline":
+        return "★ BREAKING NEWS\n[UPPERCASE HEADLINE STATEMENT]";
+      case "subtitle-box":
+        return "[Clean Rounded Box Subtitle]";
+      case "quote-card":
+        return "“ [Testimonial statement / Quotation italic text] ”\n— Author Name";
+      case "news-lower-third":
+      default:
+        return "[Editorial news-bar headline text]";
+    }
+  };
 
   return (
-    <div className="space-y-8">
-      {/* Header */}
-      <div>
-        <h1 className="text-2xl font-bold text-white flex items-center gap-3">
-          <Layers className="w-7 h-7 text-cyan-400" />
-          Video Multiplier
-        </h1>
-        <p className="text-gray-500 mt-1 text-sm">
-          Upload one video + a CSV of text hooks → get N videos with different text overlays
-        </p>
-      </div>
-
-      {/* ─── Google Drive Connection ──────────────────────────────────────── */}
-      <div className="rounded-2xl border border-white/5 bg-[#111118] p-4 flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          {driveConnected ? (
-            <Cloud className="w-5 h-5 text-emerald-400" />
-          ) : (
-            <CloudOff className="w-5 h-5 text-gray-600" />
-          )}
-          <div>
-            <p className="text-sm font-medium text-white">
-              {driveConnected ? "Google Drive Connected" : "Google Drive Not Connected"}
-            </p>
-            {driveEmail && <p className="text-xs text-gray-500">{driveEmail}</p>}
-            {!driveConnected && <p className="text-xs text-gray-500">Connect Google Drive from the Manage section first</p>}
-          </div>
+    <div className="flex-1 bg-[#09090b] text-[#fafafa] min-h-screen p-8 flex flex-col font-sans select-none">
+      {/* Header section */}
+      <div className="flex justify-between items-center mb-8 border-b border-[#27272a] pb-6">
+        <div>
+          <h1 className="text-3xl font-extrabold tracking-tight flex items-center gap-3">
+            <Layers className="text-[#E11D48] w-8 h-8" />
+            Multiplier Setup Studio
+          </h1>
+          <p className="text-[#a1a1aa] text-sm mt-1">
+            Group-based batch video generator with transcription-once workflow and Remotion news card styles.
+          </p>
         </div>
-        {!driveConnected && (
-          <a href="/admin/accounts" className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-gradient-to-r from-blue-500 to-cyan-500 text-white text-xs font-medium hover:from-blue-400 hover:to-cyan-400 transition-all">
-            <LogIn className="w-3.5 h-3.5" /> Go to Manage
-          </a>
-        )}
-      </div>
 
-      {/* ─── Design Templates ─────────────────────────────────────────────── */}
-      <div className="rounded-2xl border border-white/5 bg-[#111118] p-5 space-y-4">
-        <div className="flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-white flex items-center gap-2">
-            <Palette className="w-4 h-4 text-violet-400" />
-            Design Templates
-          </h2>
+        {/* Tab Selection */}
+        <div className="bg-[#18181b] p-1 rounded-lg border border-[#27272a] flex gap-1">
           <button
-            onClick={() => openTemplateEditor()}
-            className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-violet-500/15 text-violet-300 border border-violet-500/20 text-xs font-medium hover:bg-violet-500/25 transition-all"
+            onClick={() => setActiveTab("builder")}
+            className={`px-4 py-2 text-sm font-semibold rounded-md transition-all ${
+              activeTab === "builder"
+                ? "bg-[#E11D48] text-white shadow-lg"
+                : "text-[#a1a1aa] hover:text-white"
+            }`}
           >
-            <Plus className="w-3 h-3" /> New Design
+            Group Builder
+          </button>
+          <button
+            onClick={() => setActiveTab("queue")}
+            className={`px-4 py-2 text-sm font-semibold rounded-md transition-all ${
+              activeTab === "queue"
+                ? "bg-[#E11D48] text-white shadow-lg"
+                : "text-[#a1a1aa] hover:text-white"
+            }`}
+          >
+            Queue Dashboard
           </button>
         </div>
-
-        {templates.length === 0 ? (
-          <p className="text-xs text-gray-600 text-center py-4">No design templates yet. Create one to apply different visual styles to your batches.</p>
-        ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
-            {templates.map((tmpl) => {
-              const isSelected = selectedTemplateIds.includes(tmpl.id);
-              // Build CSS preview style
-              const previewStyle: React.CSSProperties = {
-                fontFamily: getCssFontFamily(tmpl.fontFamily),
-                fontSize: Math.min(tmpl.fontSize * 0.35, 18),
-                color: tmpl.fontColor,
-                textTransform: tmpl.textCase === "UPPERCASE" ? "uppercase"
-                  : tmpl.textCase === "LOWERCASE" ? "lowercase"
-                  : tmpl.textCase === "CAPITALIZE" ? "capitalize" : "none",
-                letterSpacing: `${(tmpl.letterSpacing - 1) * 4}px`,
-                textAlign: (tmpl.textAlign || "CENTER").toLowerCase() as any,
-                ...(tmpl.strokeEnabled ? {
-                  WebkitTextStroke: `${tmpl.strokeWidth}px ${tmpl.strokeColor}`,
-                } : {}),
-                ...(tmpl.shadowEnabled ? {
-                  textShadow: `${tmpl.shadowX}px ${tmpl.shadowY}px 2px ${tmpl.shadowColor}`,
-                } : {}),
-                ...(tmpl.glowEnabled ? {
-                  textShadow: `0 0 ${tmpl.glowIntensity * 4}px ${tmpl.glowColor}, 0 0 ${tmpl.glowIntensity * 8}px ${tmpl.glowColor}`,
-                } : {}),
-              };
-              const stripStyle: React.CSSProperties = {
-                backgroundColor: `${tmpl.bgStripColor}${Math.round(tmpl.bgStripOpacity * 255).toString(16).padStart(2, "0")}`,
-                borderRadius: `${tmpl.borderRadius}px`,
-                padding: `${Math.min(tmpl.paddingY, 10) * 0.5}px ${Math.min(tmpl.paddingX, 10) * 0.5}px`,
-                ...(tmpl.stripBorderEnabled ? {
-                  border: `${tmpl.stripBorderWidth}px solid ${tmpl.stripBorderColor}`,
-                } : {}),
-                ...(tmpl.stripShadowEnabled ? {
-                  boxShadow: `${tmpl.stripShadowOffset}px ${tmpl.stripShadowOffset}px 8px ${tmpl.stripShadowColor}`,
-                } : {}),
-              };
-
-              return (
-                <div
-                  key={tmpl.id}
-                  className={`rounded-xl border overflow-hidden transition-all cursor-pointer ${
-                    isSelected
-                      ? "border-violet-500/50 shadow-lg shadow-violet-500/10 ring-1 ring-violet-500/30"
-                      : "border-white/5 hover:border-white/15"
-                  }`}
-                >
-                  {/* Visual Preview Area */}
-                  <div
-                    className="h-20 flex items-center justify-center relative"
-                    style={{ background: "linear-gradient(135deg, #1a1a2e 0%, #0d0d15 100%)" }}
-                    onClick={() => toggleTemplateSelection(tmpl.id)}
-                  >
-                    {tmpl.stripShape !== "NONE" && (
-                      <div style={{
-                        ...stripStyle,
-                        ...(tmpl.stripGradientEnabled ? {
-                          background: `linear-gradient(${tmpl.stripGradientAngle}deg, ${tmpl.bgStripColor}, ${tmpl.stripGradientColor2})`,
-                        } : {}),
-                        ...(tmpl.stripShape === "PILL" ? {
-                          borderRadius: "999px",
-                          padding: `${Math.min(tmpl.paddingY, 10) * 0.3}px ${Math.min(tmpl.paddingX, 10) * 0.8}px`,
-                        } : {}),
-                        ...(tmpl.backdropBlurEnabled ? {
-                          backdropFilter: `blur(${tmpl.backdropBlurRadius}px)`,
-                        } : {}),
-                      }}>
-                        <span style={previewStyle}>Sample Text</span>
-                      </div>
-                    )}
-                    {tmpl.stripShape === "NONE" && (
-                      <span style={previewStyle}>Sample Text</span>
-                    )}
-                    {tmpl.isPreset && (
-                      <span className="absolute top-1 right-1 text-[8px] bg-violet-500/20 text-violet-300 px-1.5 py-0.5 rounded-full">
-                        Preset
-                      </span>
-                    )}
-                  </div>
-
-                  {/* Template Info */}
-                  <div className="p-2.5 bg-[#0c0c12] flex items-center justify-between">
-                    <div className="flex items-center gap-2 min-w-0" onClick={() => toggleTemplateSelection(tmpl.id)}>
-                      <div className={`w-3.5 h-3.5 rounded border-2 flex items-center justify-center flex-shrink-0 transition-all ${
-                        isSelected ? "bg-violet-500 border-violet-500" : "border-gray-600"
-                      }`}>
-                        {isSelected && <Check className="w-2 h-2 text-white" />}
-                      </div>
-                      <p className="text-xs text-white font-medium truncate">{tmpl.name}</p>
-                    </div>
-                    <div className="flex items-center gap-0.5">
-                      <button
-                        onClick={(e) => { e.stopPropagation(); handleDuplicateTemplate(tmpl.id); }}
-                        className="p-1 rounded text-gray-600 hover:text-green-400 transition-all"
-                        title="Duplicate"
-                      >
-                        <Copy className="w-3 h-3" />
-                      </button>
-                      <button
-                        onClick={(e) => { e.stopPropagation(); openTemplateEditor(tmpl); }}
-                        className="p-1 rounded text-gray-600 hover:text-cyan-400 transition-all"
-                        title="Edit"
-                      >
-                        <Palette className="w-3 h-3" />
-                      </button>
-                      <button
-                        onClick={(e) => { e.stopPropagation(); handleDeleteTemplate(tmpl.id); }}
-                        className="p-1 rounded text-gray-600 hover:text-red-400 transition-all"
-                        title="Delete"
-                      >
-                        <Trash2 className="w-3 h-3" />
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-        {selectedTemplateIds.length > 0 && (
-          <p className="text-xs text-violet-300 font-medium">
-            ✓ {selectedTemplateIds.length} design{selectedTemplateIds.length > 1 ? "s" : ""} selected — designs cycle across hooks ({parsedHooks.length > 0 ? `${parsedHooks.length} videos, cycling ${selectedTemplateIds.length} designs` : "upload hooks to see total"})
-          </p>
-        )}
       </div>
 
-      {/* ─── Upload Section ──────────────────────────────────────────────── */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
-        <div className="rounded-2xl border border-white/5 bg-[#111118] p-5 space-y-4">
-          <h2 className="text-sm font-semibold text-white flex items-center gap-2">
-            <Upload className="w-4 h-4 text-cyan-400" />
-            Upload Files
-          </h2>
-          {/* Batch Name */}
-          <input
-            type="text"
-            value={batchName}
-            onChange={(e) => setBatchName(e.target.value)}
-            placeholder="Batch name (optional)"
-            className="w-full px-3.5 py-2 rounded-xl bg-white/5 border border-white/10 text-white placeholder:text-gray-600 focus:outline-none focus:border-cyan-500/50 text-sm"
-          />
-          {/* Video Upload */}
-          <div
-            onClick={() => videoInputRef.current?.click()}
-            className={`cursor-pointer rounded-xl border-2 border-dashed p-5 text-center transition-all ${
-              videoFile ? "border-cyan-500/40 bg-cyan-500/5" : "border-white/10 hover:border-white/20 bg-white/[0.02]"
-            }`}
-          >
-            <input ref={videoInputRef} type="file" accept="video/*" onChange={(e) => { const f = e.target.files?.[0]; if (f) setVideoFile(f); }} className="hidden" />
-            {videoFile ? (
-              <div className="flex items-center justify-center gap-3">
-                <Play className="w-4 h-4 text-cyan-400" />
-                <span className="text-cyan-300 text-sm font-medium truncate">{videoFile.name}</span>
-                <span className="text-gray-600 text-xs">({(videoFile.size / 1024 / 1024).toFixed(1)} MB)</span>
-              </div>
-            ) : (
-              <div><Upload className="w-6 h-6 mx-auto text-gray-600 mb-1" /><p className="text-gray-500 text-xs">Upload base video (MP4, MOV)</p></div>
-            )}
-          </div>
-          {/* CSV Upload */}
-          <div
-            onClick={() => csvInputRef.current?.click()}
-            className={`cursor-pointer rounded-xl border-2 border-dashed p-5 text-center transition-all ${
-              csvFile ? "border-emerald-500/40 bg-emerald-500/5" : "border-white/10 hover:border-white/20 bg-white/[0.02]"
-            }`}
-          >
-            <input ref={csvInputRef} type="file" accept=".csv,.txt" onChange={(e) => { const f = e.target.files?.[0]; if (f) handleCsvUpload(f); }} className="hidden" />
-            {csvFile ? (
-              <div className="flex items-center justify-center gap-3">
-                <FileText className="w-4 h-4 text-emerald-400" />
-                <span className="text-emerald-300 text-sm font-medium truncate">{csvFile.name}</span>
-                <span className="text-gray-600 text-xs">({parsedHooks.length} hooks)</span>
-              </div>
-            ) : (
-              <div><FileText className="w-6 h-6 mx-auto text-gray-600 mb-1" /><p className="text-gray-500 text-xs">Upload CSV / TXT (one hook per line)</p></div>
-            )}
-          </div>
-        </div>
-
-        {/* Parsed Hooks */}
-        <div className="rounded-2xl border border-white/5 bg-[#111118] p-5 flex flex-col">
-          <h2 className="text-sm font-semibold text-white mb-3">
-            Parsed Hooks {parsedHooks.length > 0 && <span className="text-gray-500 font-normal">({parsedHooks.length})</span>}
-          </h2>
-          {parsedHooks.length > 0 ? (
-            <div className="flex-1 max-h-64 overflow-y-auto rounded-xl bg-white/[0.02] border border-white/5 divide-y divide-white/5">
-              {parsedHooks.map((hook, i) => (
-                <div key={i} className="px-3.5 py-2 text-sm text-gray-300 flex items-start gap-2.5">
-                  <span className="text-gray-600 text-xs font-mono w-5 text-right flex-shrink-0 mt-0.5">{i + 1}</span>
-                  <span className="truncate">{hook}</span>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div className="flex-1 flex items-center justify-center text-gray-600 text-xs">
-              Upload a CSV to see hooks here
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* ─── Preview + Controls ──────────────────────────────────────────── */}
-      {showTemplateEditor && editingTemplate ? (
-        /* ═══ FULL INLINE DESIGN STUDIO ═══ */
-        <div className="space-y-4">
-          {/* Template Name + Actions Bar */}
-          <div className="flex items-center gap-3 bg-[#111118] rounded-xl border border-violet-500/20 p-3">
-            <Palette className="w-5 h-5 text-violet-400 flex-shrink-0" />
-            <input
-              type="text"
-              placeholder="Template name (e.g. Neon Pink, Bold Shadow)"
-              value={editingTemplate.name || ""}
-              onChange={(e) => updateEditingField("name", e.target.value)}
-              className="flex-1 px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white text-sm focus:outline-none focus:border-violet-500/50"
-            />
-            <button
-              onClick={() => { setShowTemplateEditor(false); setEditingTemplate(null); }}
-              className="px-3 py-2 rounded-lg text-gray-500 text-xs hover:text-white hover:bg-white/5 transition-all"
-            >
-              Cancel
-            </button>
-            <button
-              onClick={handleSaveTemplate}
-              disabled={savingTemplate}
-              className="px-5 py-2 rounded-lg bg-gradient-to-r from-violet-500 to-purple-600 text-white text-xs font-semibold hover:from-violet-400 hover:to-purple-500 transition-all disabled:opacity-50 flex items-center gap-1.5"
-            >
-              {savingTemplate ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
-              {editingTemplate.id ? "Update" : "Save"} Template
-            </button>
-          </div>
-
-          <div className="grid grid-cols-1 lg:grid-cols-[340px_1fr] gap-6">
-            {/* Left: Enhanced 9:16 Preview */}
-            <div className="space-y-3">
-              <h2 className="text-sm font-semibold text-white flex items-center gap-2">
-                <Sparkles className="w-4 h-4 text-violet-400" />
-                Design Preview
-                <span className="text-gray-600 text-[10px] font-normal ml-1">Drag to position</span>
-              </h2>
-              <div
-                ref={previewContainerRef}
-                className="relative rounded-2xl overflow-hidden border-2 border-violet-500/20 bg-black mx-auto select-none"
-                style={{ width: 300, height: 300 * (OUTPUT_H / OUTPUT_W) }}
+      {activeTab === "builder" ? (
+        <div className="grid grid-cols-1 lg:grid-cols-4 gap-8">
+          {/* Sidebar list of existing groups */}
+          <div className="lg:col-span-1 bg-[#18181b] rounded-xl border border-[#27272a] p-6 flex flex-col h-[calc(100vh-220px)] overflow-hidden">
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="font-bold text-sm text-[#a1a1aa] uppercase tracking-wider">Active Groups</h3>
+              <button
+                onClick={() => {
+                  setSelectedGroup(null);
+                  setGroupName("");
+                  setSelectedCampaignId("");
+                }}
+                className="text-xs font-semibold text-[#E11D48] hover:underline flex items-center gap-1"
               >
-                {/* Video Background */}
-                {videoObjectUrl ? (
-                  <video src={videoObjectUrl} muted loop autoPlay playsInline className="absolute inset-0 w-full h-full object-cover" />
-                ) : (
-                  <div className="absolute inset-0 bg-gradient-to-b from-gray-800 to-gray-900 flex items-center justify-center">
-                    <span className="text-gray-700 text-xs">Upload video to preview</span>
-                  </div>
-                )}
-
-                {/* Text Strip Overlay — uses editingTemplate values */}
-                {(editingTemplate.stripShape || "FULL") !== "NONE" && (
-                  <div
-                    onMouseDown={handlePreviewMouseDown}
-                    className="absolute left-0 right-0 flex items-center justify-center"
-                    style={{
-                      top: `${editingTemplate.positionYPercent ?? 5}%`,
-                      padding: `${Math.max(2, (editingTemplate.paddingY ?? 20) * (300 / OUTPUT_W))}px ${Math.max(6, (editingTemplate.paddingX ?? 20) * (300 / OUTPUT_W))}px`,
-                      marginLeft: `${(editingTemplate.marginX ?? 0) * (300 / OUTPUT_W)}px`,
-                      marginRight: `${(editingTemplate.marginX ?? 0) * (300 / OUTPUT_W)}px`,
-                      backgroundColor: editingTemplate.stripGradientEnabled
-                        ? undefined
-                        : `${editingTemplate.bgStripColor || "#000"}${Math.round((editingTemplate.bgStripOpacity ?? 1) * 255).toString(16).padStart(2, "0")}`,
-                      background: editingTemplate.stripGradientEnabled
-                        ? `linear-gradient(${editingTemplate.stripGradientAngle ?? 90}deg, ${editingTemplate.bgStripColor || "#000"}${Math.round((editingTemplate.bgStripOpacity ?? 1) * 255).toString(16).padStart(2, "0")}, ${editingTemplate.stripGradientColor2 || "#333"}${Math.round((editingTemplate.bgStripOpacity ?? 1) * 255).toString(16).padStart(2, "0")})`
-                        : undefined,
-                      borderRadius: (editingTemplate.stripShape || "FULL") === "PILL" ? "999px" : `${Math.max(0, (editingTemplate.borderRadius ?? 12) * (300 / OUTPUT_W))}px`,
-                      cursor: isDragging ? "grabbing" : "grab",
-                      transition: isDragging ? "none" : "top 0.15s ease-out",
-                      ...(editingTemplate.stripBorderEnabled ? { border: `${editingTemplate.stripBorderWidth}px solid ${editingTemplate.stripBorderColor}` } : {}),
-                      ...(editingTemplate.stripShadowEnabled ? { boxShadow: `${editingTemplate.stripShadowOffset}px ${editingTemplate.stripShadowOffset}px 8px ${editingTemplate.stripShadowColor}` } : {}),
-                      ...(editingTemplate.backdropBlurEnabled ? { backdropFilter: `blur(${editingTemplate.backdropBlurRadius ?? 10}px)` } : {}),
-                      overflow: "hidden",
-                    }}
-                  >
-                    <span
-                      className="text-center leading-tight"
-                      style={{
-                        color: editingTemplate.fontColor || "#FFF",
-                        fontSize: Math.max(8, (editingTemplate.fontSize ?? 42) * (300 / OUTPUT_W)),
-                        fontFamily: getCssFontFamily(editingTemplate.fontFamily || "Outfit-Bold"),
-                        fontWeight: "bold",
-                        textTransform: editingTemplate.textCase === "UPPERCASE" ? "uppercase" : editingTemplate.textCase === "LOWERCASE" ? "lowercase" : "none",
-                        letterSpacing: `${((editingTemplate.letterSpacing ?? 1) - 1) * 4}px`,
-                        wordBreak: "break-word",
-                        ...(editingTemplate.doubleTextEnabled ? {
-                          WebkitTextStroke: `${editingTemplate.doubleTextOutlineWidth ?? 4}px ${editingTemplate.doubleTextOutlineColor || "#000"}`,
-                          paintOrder: "stroke fill",
-                        } : editingTemplate.strokeEnabled ? {
-                          WebkitTextStroke: `${editingTemplate.strokeWidth}px ${editingTemplate.strokeColor}`,
-                        } : {}),
-                        ...(editingTemplate.glowEnabled ? {
-                          textShadow: `0 0 ${(editingTemplate.glowIntensity ?? 2) * 4}px ${editingTemplate.glowColor}, 0 0 ${(editingTemplate.glowIntensity ?? 2) * 8}px ${editingTemplate.glowColor}`,
-                        } : editingTemplate.shadowEnabled ? {
-                          textShadow: `${editingTemplate.shadowX}px ${editingTemplate.shadowY}px 2px ${editingTemplate.shadowColor}`,
-                        } : {}),
-                        ...(editingTemplate.textGradientEnabled ? {
-                          background: `linear-gradient(${editingTemplate.textGradientAngle ?? 180}deg, ${editingTemplate.textGradientColor1 || "#FFF"}, ${editingTemplate.textGradientColor2 || "#0FF"})`,
-                          WebkitBackgroundClip: "text",
-                          WebkitTextFillColor: "transparent",
-                          backgroundClip: "text",
-                        } : {}),
-                      }}
-                    >
-                      {previewText}
-                    </span>
-                  </div>
-                )}
-                {(editingTemplate.stripShape || "FULL") === "NONE" && (
-                  <div
-                    onMouseDown={handlePreviewMouseDown}
-                    className="absolute left-0 right-0 flex items-center justify-center"
-                    style={{
-                      top: `${editingTemplate.positionYPercent ?? 5}%`,
-                      padding: `8px ${Math.max(6, (editingTemplate.paddingX ?? 20) * (300 / OUTPUT_W))}px`,
-                      cursor: isDragging ? "grabbing" : "grab",
-                      transition: isDragging ? "none" : "top 0.15s ease-out",
-                    }}
-                  >
-                    <span
-                      className="text-center leading-tight"
-                      style={{
-                        color: editingTemplate.fontColor || "#FFF",
-                        fontSize: Math.max(8, (editingTemplate.fontSize ?? 42) * (300 / OUTPUT_W)),
-                        fontFamily: getCssFontFamily(editingTemplate.fontFamily || "Outfit-Bold"),
-                        fontWeight: "bold",
-                        textTransform: editingTemplate.textCase === "UPPERCASE" ? "uppercase" : editingTemplate.textCase === "LOWERCASE" ? "lowercase" : "none",
-                        wordBreak: "break-word",
-                        ...(editingTemplate.strokeEnabled ? { WebkitTextStroke: `${editingTemplate.strokeWidth}px ${editingTemplate.strokeColor}` } : {}),
-                        ...(editingTemplate.glowEnabled ? { textShadow: `0 0 ${(editingTemplate.glowIntensity ?? 2) * 4}px ${editingTemplate.glowColor}` } : {}),
-                        ...(editingTemplate.textGradientEnabled ? {
-                          background: `linear-gradient(${editingTemplate.textGradientAngle ?? 180}deg, ${editingTemplate.textGradientColor1 || "#FFF"}, ${editingTemplate.textGradientColor2 || "#0FF"})`,
-                          WebkitBackgroundClip: "text",
-                          WebkitTextFillColor: "transparent",
-                          backgroundClip: "text",
-                        } : {}),
-                      }}
-                    >
-                      {previewText}
-                    </span>
-                  </div>
-                )}
-
-                {/* Position indicator */}
-                <div className="absolute bottom-2 right-2 bg-black/70 text-gray-300 text-[9px] px-1.5 py-0.5 rounded font-mono">
-                  Y: {editingTemplate.positionYPercent ?? 5}%
-                </div>
-              </div>
-
-              {/* Quick position buttons */}
-              <div className="flex gap-1.5">
-                {[
-                  { label: "Top", value: 0 },
-                  { label: "25%", value: 25 },
-                  { label: "Center", value: 50 },
-                  { label: "75%", value: 75 },
-                  { label: "Bottom", value: 100 },
-                ].map((p) => (
-                  <button
-                    key={p.value}
-                    onClick={() => updateEditingField("positionYPercent", p.value)}
-                    className={`flex-1 py-1.5 rounded-lg text-[10px] font-medium transition-all border ${
-                      (editingTemplate.positionYPercent ?? 5) === p.value
-                        ? "bg-violet-500/15 text-violet-300 border-violet-500/30"
-                        : "bg-white/5 text-gray-600 border-white/5 hover:border-white/10 hover:text-gray-400"
-                    }`}
-                  >
-                    {p.label}
-                  </button>
-                ))}
-              </div>
+                <PlusCircle className="w-4 h-4" /> New Group
+              </button>
             </div>
 
-            {/* Right: Tabbed Controls */}
-            <div className="space-y-3">
-              {/* Tab Bar */}
-              <div className="flex gap-1 bg-[#0c0c12] rounded-xl p-1 border border-white/5">
-                {([
-                  { key: "typography" as const, label: "Typography", icon: "Aa" },
-                  { key: "effects" as const, label: "Effects", icon: "✦" },
-                  { key: "strip" as const, label: "Strip & Layout", icon: "▬" },
-                  { key: "animation" as const, label: "Animation", icon: "⚡" },
-                ]).map((tab) => (
-                  <button
-                    key={tab.key}
-                    onClick={() => setDesignTab(tab.key)}
-                    className={`flex-1 py-2 px-3 rounded-lg text-xs font-medium transition-all ${
-                      designTab === tab.key
-                        ? "bg-violet-500/15 text-violet-300 border border-violet-500/30"
-                        : "text-gray-500 hover:text-white border border-transparent"
-                    }`}
-                  >
-                    <span className="mr-1.5">{tab.icon}</span>
-                    {tab.label}
-                  </button>
-                ))}
+            {loadingGroups ? (
+              <div className="flex-1 flex items-center justify-center">
+                <Loader2 className="w-6 h-6 animate-spin text-[#E11D48]" />
               </div>
+            ) : groups.length === 0 ? (
+              <div className="flex-1 flex flex-col items-center justify-center text-center p-4 text-[#71717a]">
+                <Layers className="w-10 h-10 mb-2 opacity-30" />
+                <p className="text-xs">No active groups.</p>
+              </div>
+            ) : (
+              <div className="flex-1 overflow-y-auto space-y-2 pr-2 custom-scrollbar">
+                {groups.map((group) => {
+                  const isSel = selectedGroup?.id === group.id;
+                  return (
+                    <div
+                      key={group.id}
+                      onClick={() => handleSelectGroup(group)}
+                      className={`p-3 rounded-lg border cursor-pointer transition-all flex justify-between items-center ${
+                        isSel
+                          ? "bg-[#27272a] border-[#E11D48]"
+                          : "bg-[#09090b] border-[#27272a] hover:bg-[#18181b]"
+                      }`}
+                    >
+                      <div className="truncate flex-1">
+                        <p className="font-semibold text-sm truncate">{group.name}</p>
+                        <p className="text-xs text-[#71717a] truncate mt-0.5">
+                          {group.campaign?.title || "No Campaign"}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span
+                          className={`w-2.5 h-2.5 rounded-full ${
+                            group.status === "COMPLETED"
+                              ? "bg-green-500"
+                              : group.status === "FAILED"
+                              ? "bg-red-500"
+                              : group.status === "RENDERING" || group.status === "QUEUED"
+                              ? "bg-amber-500 animate-pulse"
+                              : "bg-gray-500"
+                          }`}
+                        />
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleDeleteGroup(group.id);
+                          }}
+                          className="text-[#71717a] hover:text-red-500 transition-colors p-1"
+                        >
+                          <Trash className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
 
-              {/* Tab Content */}
-              <div className="rounded-2xl border border-white/5 bg-[#111118] p-5">
+          {/* Group Editor / Setup Cockpit */}
+          <div className="lg:col-span-3 bg-[#18181b] rounded-xl border border-[#27272a] p-8 space-y-8 overflow-y-auto h-[calc(100vh-220px)] custom-scrollbar">
+            {/* Step 1: Base settings */}
+            <div>
+              <h2 className="text-xl font-bold mb-4 flex items-center gap-2">
+                <span className="bg-[#E11D48] text-white text-xs w-5 h-5 flex items-center justify-center rounded-full font-bold">1</span>
+                Group Setup
+              </h2>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div>
+                  <label className="block text-xs font-semibold uppercase tracking-wider text-[#a1a1aa] mb-2">Group Name</label>
+                  <input
+                    type="text"
+                    value={groupName}
+                    onChange={(e) => setGroupName(e.target.value)}
+                    placeholder="e.g. Political Clips Batch #12"
+                    className="w-full bg-[#09090b] border border-[#27272a] rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:border-[#E11D48]"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold uppercase tracking-wider text-[#a1a1aa] mb-2">Associated Campaign</label>
+                  {loadingCampaigns ? (
+                    <div className="h-10 flex items-center">
+                      <Loader2 className="w-4 h-4 animate-spin text-[#E11D48]" />
+                    </div>
+                  ) : (
+                    <select
+                      value={selectedCampaignId}
+                      onChange={(e) => setSelectedCampaignId(e.target.value)}
+                      className="w-full bg-[#09090b] border border-[#27272a] rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:border-[#E11D48] text-[#fafafa]"
+                    >
+                      <option value="">Select campaign context...</option>
+                      {campaigns.map((c) => (
+                        <option key={c.id} value={c.id}>
+                          {c.title} ({c.type})
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                </div>
+              </div>
+              {!selectedGroup && (
+                <button
+                  onClick={handleCreateNewGroup}
+                  className="mt-4 px-5 py-2.5 bg-[#E11D48] hover:bg-rose-700 text-white font-semibold rounded-lg text-sm transition-all"
+                >
+                  Create Group
+                </button>
+              )}
+            </div>
 
-                {/* ═══ TYPOGRAPHY TAB ═══ */}
-                {designTab === "typography" && (
-                  <div className="space-y-4">
+            {selectedGroup && (
+              <>
+                {/* Step 2: Upload Video variations */}
+                <div className="border-t border-[#27272a] pt-6">
+                  <h2 className="text-xl font-bold mb-4 flex items-center gap-2">
+                    <span className="bg-[#E11D48] text-white text-xs w-5 h-5 flex items-center justify-center rounded-full font-bold">2</span>
+                    Upload Edited Video Variations
+                  </h2>
+                  <div
+                    onClick={() => fileInputRef.current?.click()}
+                    className="border-2 border-dashed border-[#27272a] hover:border-[#E11D48] rounded-xl p-8 text-center cursor-pointer transition-all bg-[#09090b] flex flex-col items-center justify-center"
+                  >
+                    <Upload className="w-8 h-8 text-[#71717a] mb-2" />
+                    <p className="text-sm font-semibold">Click to browse or drop video files</p>
+                    <p className="text-xs text-[#71717a] mt-1">Accepts multiple .mp4 variations</p>
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      multiple
+                      accept="video/mp4"
+                      onChange={(e) => {
+                        if (e.target.files) {
+                          setFilesToUpload(Array.from(e.target.files));
+                        }
+                      }}
+                      className="hidden"
+                    />
+                  </div>
+
+                  {filesToUpload.length > 0 && (
+                    <div className="mt-4 p-4 bg-[#09090b] rounded-lg border border-[#27272a] flex flex-col gap-2">
+                      <div className="flex justify-between items-center">
+                        <span className="text-xs text-[#a1a1aa] font-semibold">
+                          Selected {filesToUpload.length} files:
+                        </span>
+                        <button
+                          onClick={() => setFilesToUpload([])}
+                          className="text-xs font-semibold text-[#E11D48] hover:underline"
+                        >
+                          Clear
+                        </button>
+                      </div>
+                      <div className="text-xs text-[#71717a] max-h-24 overflow-y-auto space-y-1">
+                        {filesToUpload.map((f, i) => (
+                          <div key={i} className="truncate">
+                            - {f.name} ({(f.size / (1024 * 1024)).toFixed(1)} MB)
+                          </div>
+                        ))}
+                      </div>
+                      <button
+                        onClick={handleUploadVariations}
+                        disabled={uploadingFiles}
+                        className="mt-2 w-full py-2 bg-[#E11D48] hover:bg-rose-700 text-white font-semibold rounded-lg text-xs transition-all flex items-center justify-center gap-1.5 disabled:opacity-50"
+                      >
+                        {uploadingFiles ? (
+                          <>
+                            <Loader2 className="w-4.5 h-4.5 animate-spin" /> Uploading...
+                          </>
+                        ) : (
+                          <>
+                            <Upload className="w-3.5 h-3.5" /> Confirm Upload Variations
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  )}
+
+                  {selectedGroup.variations.length > 0 && (
+                    <div className="mt-4">
+                      <p className="text-xs font-semibold text-[#a1a1aa] mb-2">Uploaded Variations ({selectedGroup.variations.length}):</p>
+                      <div className="flex flex-wrap gap-3">
+                        {selectedGroup.variations.map((v, i) => (
+                          <div key={v.id} className="relative bg-[#09090b] px-3 py-2 rounded-lg border border-[#27272a] flex items-center gap-2">
+                            <Video className="w-4 h-4 text-[#71717a]" />
+                            <span className="text-xs font-semibold text-[#fafafa]">Variation #{i + 1}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Step 3: Transcription */}
+                <div className="border-t border-[#27272a] pt-6">
+                  <h2 className="text-xl font-bold mb-4 flex items-center gap-2">
+                    <span className="bg-[#E11D48] text-white text-xs w-5 h-5 flex items-center justify-center rounded-full font-bold">3</span>
+                    Speech Transcription (Stable-ts / Whisper)
+                  </h2>
+                  <div className="bg-[#09090b] border border-[#27272a] rounded-xl p-6 flex items-start gap-4 justify-between">
+                    <div className="space-y-1">
+                      <p className="text-sm font-semibold">Runs transcription alignment once for the entire Group</p>
+                      <p className="text-xs text-[#71717a]">
+                        We transcribe only the first variation, saving execution costs. All hooks use this exact transcript alignment.
+                      </p>
+                      {selectedGroup.transcriptStatus === "TRANSCRIBED" && (
+                        <div className="mt-2 inline-flex items-center gap-1 text-xs text-green-500 bg-green-500/10 px-2.5 py-1 rounded-full font-semibold">
+                          <CheckCircle2 className="w-3.5 h-3.5" /> Alignment completed successfully
+                        </div>
+                      )}
+                      {selectedGroup.transcriptStatus === "TRANSCRIBING" && (
+                        <div className="mt-2 inline-flex items-center gap-1 text-xs text-amber-500 bg-amber-500/10 px-2.5 py-1 rounded-full font-semibold animate-pulse">
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" /> Transcribing source...
+                        </div>
+                      )}
+                      {selectedGroup.transcriptStatus === "FAILED" && (
+                        <div className="mt-2 inline-flex items-center gap-1 text-xs text-red-500 bg-red-500/10 px-2.5 py-1 rounded-full font-semibold">
+                          <AlertCircle className="w-3.5 h-3.5" /> Transcription failed
+                        </div>
+                      )}
+                    </div>
+
+                    <button
+                      onClick={handleTranscribeGroup}
+                      disabled={transcribing || selectedGroup.variations.length === 0 || selectedGroup.transcriptStatus === "TRANSCRIBING"}
+                      className="px-5 py-2.5 bg-zinc-800 hover:bg-zinc-700 text-white font-semibold rounded-lg text-sm transition-all disabled:opacity-50 flex items-center gap-2"
+                    >
+                      {transcribing ? (
+                        <>
+                          <Loader2 className="w-4 h-4 animate-spin text-[#E11D48]" /> Processing...
+                        </>
+                      ) : (
+                        <>
+                          <RefreshCw className="w-4 h-4" /> Run Alignment
+                        </>
+                      )}
+                    </button>
+                  </div>
+                </div>
+
+                {/* Step 4: Craft Hooks / Captions */}
+                <div className="border-t border-[#27272a] pt-6">
+                  <h2 className="text-xl font-bold mb-4 flex items-center gap-2">
+                    <span className="bg-[#E11D48] text-white text-xs w-5 h-5 flex items-center justify-center rounded-full font-bold">4</span>
+                    Caption Hooks List
+                  </h2>
+
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
+                    {/* AI Generator Box */}
+                    <div className="md:col-span-2 bg-[#09090b] border border-[#27272a] rounded-xl p-6 flex flex-col justify-between">
+                      <div>
+                        <p className="text-sm font-semibold flex items-center gap-1.5">
+                          <Sparkles className="w-4.5 h-4.5 text-[#E11D48]" /> Gemini AI Hook Generator
+                        </p>
+                        <p className="text-xs text-[#71717a] mt-1 mb-4">
+                          Synthesizes the transcript text with the campaign brief messaging context to draft premium news-style hooks.
+                        </p>
+                      </div>
+
+                      <div className="flex items-center gap-4">
+                        <div className="w-24">
+                          <label className="block text-[10px] text-[#71717a] uppercase font-bold mb-1">Hooks Count</label>
+                          <input
+                            type="number"
+                            min={1}
+                            max={20}
+                            value={aiHookCount}
+                            onChange={(e) => setAiHookCount(parseInt(e.target.value) || 5)}
+                            className="w-full bg-[#18181b] border border-[#27272a] rounded px-3 py-1.5 text-xs text-center focus:outline-none"
+                          />
+                        </div>
+                        <button
+                          onClick={handleGenerateAiHooks}
+                          disabled={generatingAiHooks || selectedGroup.transcriptStatus !== "TRANSCRIBED"}
+                          className="flex-1 py-2 bg-[#E11D48] hover:bg-rose-700 text-white font-semibold rounded-lg text-xs transition-all disabled:opacity-50 flex items-center justify-center gap-1.5"
+                        >
+                          {generatingAiHooks ? (
+                            <>
+                              <Loader2 className="w-4 h-4 animate-spin" /> Generating AI Hooks...
+                            </>
+                          ) : (
+                            <>
+                              <Sparkles className="w-3.5 h-3.5" /> Generate AI hooks with Campaign context
+                            </>
+                          )}
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* CSV / Manual Box */}
+                    <div className="bg-[#09090b] border border-[#27272a] rounded-xl p-6 flex flex-col justify-between">
+                      <div>
+                        <p className="text-sm font-semibold flex items-center gap-1.5">
+                          <FileSpreadsheet className="w-4.5 h-4.5 text-green-500" /> Import Hook CSV
+                        </p>
+                        <p className="text-xs text-[#71717a] mt-1">Select file to parse newline-separated text rows</p>
+                      </div>
+
+                      <div>
+                        <input
+                          type="file"
+                          accept=".csv,.txt"
+                          id="csv-file-input"
+                          onChange={handleCSVImport}
+                          className="hidden"
+                        />
+                        <button
+                          onClick={() => document.getElementById("csv-file-input")?.click()}
+                          className="w-full py-2 bg-zinc-800 hover:bg-zinc-700 text-white font-semibold rounded-lg text-xs transition-all"
+                        >
+                          Choose CSV File
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Manual add input */}
+                  <div className="flex gap-3 mb-6 bg-[#09090b] border border-[#27272a] p-3 rounded-xl">
+                    <input
+                      type="text"
+                      value={newHookText}
+                      onChange={(e) => setNewHookText(e.target.value)}
+                      placeholder="Add custom manual headline/hook caption..."
+                      className="flex-1 bg-[#18181b] border border-[#27272a] rounded-lg px-4 py-2 text-xs focus:outline-none"
+                    />
+                    <button
+                      onClick={handleAddManualHook}
+                      className="px-4 py-2 bg-[#E11D48] hover:bg-rose-700 text-white font-semibold rounded-lg text-xs transition-all flex items-center gap-1"
+                    >
+                      <Plus className="w-3.5 h-3.5" /> Add
+                    </button>
+                  </div>
+
+                  {/* Existing Hooks list */}
+                  {selectedGroup.hooks.length > 0 ? (
+                    <div className="space-y-2.5 max-h-60 overflow-y-auto pr-2 custom-scrollbar">
+                      {selectedGroup.hooks.map((h, i) => (
+                        <div
+                          key={h.id}
+                          className="bg-[#09090b] p-3 rounded-lg border border-[#27272a] flex justify-between items-center gap-4"
+                        >
+                          <div className="flex items-center gap-3">
+                            <span className="text-xs font-bold text-[#E11D48] bg-[#E11D48]/10 px-2 py-0.5 rounded">
+                              #{i + 1}
+                            </span>
+                            <span className="text-xs text-[#fafafa] font-medium">{h.text}</span>
+                          </div>
+                          <div className="flex items-center gap-3">
+                            <span className="text-[10px] uppercase font-bold text-[#71717a] bg-[#18181b] px-2 py-0.5 rounded border border-[#27272a]">
+                              {h.source}
+                            </span>
+                            <button
+                              onClick={() => handleDeleteHook(h.id)}
+                              className="text-[#71717a] hover:text-red-500 p-1"
+                            >
+                              <Trash className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="text-center p-8 bg-[#09090b] border border-[#27272a] rounded-xl text-[#71717a] text-xs">
+                      No caption hooks loaded yet.
+                    </div>
+                  )}
+                </div>
+
+                {/* Step 5: Caption Style Picker */}
+                <div className="border-t border-[#27272a] pt-6">
+                  <h2 className="text-xl font-bold mb-4 flex items-center gap-2">
+                    <span className="bg-[#E11D48] text-white text-xs w-5 h-5 flex items-center justify-center rounded-full font-bold">5</span>
+                    Select Editorial Still Caption Style
+                  </h2>
+
+                  <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+                    {(
+                      [
+                        { id: "news-lower-third", label: "News Lower-Third", desc: "Solid translucent bar spanning lower frame" },
+                        { id: "breaking-headline", label: "Breaking News Headline", desc: "Bold uppercase headline strip with warning star" },
+                        { id: "subtitle-box", label: "Subtitle Caption Box", desc: "Simple clean reader subtitle box" },
+                        { id: "quote-card", label: "Quote / Statement Card", desc: "Serif testimonial quotes layout" }
+                      ] as const
+                    ).map((style) => {
+                      const isSel = styleId === style.id;
+                      return (
+                        <div
+                          key={style.id}
+                          onClick={() => setStyleId(style.id)}
+                          className={`p-4 rounded-xl border cursor-pointer text-left transition-all ${
+                            isSel
+                              ? "bg-[#27272a] border-[#E11D48] ring-1 ring-[#E11D48]"
+                              : "bg-[#09090b] border-[#27272a] hover:bg-[#18181b]"
+                          }`}
+                        >
+                          <p className="font-semibold text-xs text-[#fafafa] mb-1">{style.label}</p>
+                          <p className="text-[10px] text-[#71717a]">{style.desc}</p>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {/* Settings tweaking sliders */}
+                  <div className="bg-[#09090b] border border-[#27272a] rounded-xl p-6 space-y-6">
+                    <div className="flex justify-between items-center cursor-pointer border-b border-[#27272a] pb-4" onClick={() => setShowAdvanced(!showAdvanced)}>
+                      <p className="text-sm font-semibold flex items-center gap-1">
+                        <Settings2 className="w-4 h-4" /> Layout Settings & Customizations
+                      </p>
+                      {showAdvanced ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                    </div>
+
+                    <div className={`grid grid-cols-1 md:grid-cols-2 gap-6 ${showAdvanced ? "" : "hidden"}`}>
+                      <div>
+                        <label className="block text-[10px] uppercase font-bold text-[#a1a1aa] mb-2">Font Size (px)</label>
+                        <input
+                          type="range"
+                          min={20}
+                          max={70}
+                          value={fontSize}
+                          onChange={(e) => setFontSize(parseInt(e.target.value))}
+                          className="w-full accent-[#E11D48] bg-[#18181b]"
+                        />
+                        <div className="flex justify-between text-[10px] text-[#71717a] mt-1">
+                          <span>20px</span>
+                          <span className="text-[#fafafa] font-semibold">{fontSize}px</span>
+                          <span>70px</span>
+                        </div>
+                      </div>
+
+                      <div>
+                        <label className="block text-[10px] uppercase font-bold text-[#a1a1aa] mb-2">Vertical Alignment (Percent Y)</label>
+                        <input
+                          type="range"
+                          min={10}
+                          max={90}
+                          value={positionYPercent}
+                          onChange={(e) => setPositionYPercent(parseInt(e.target.value))}
+                          className="w-full accent-[#E11D48] bg-[#18181b]"
+                        />
+                        <div className="flex justify-between text-[10px] text-[#71717a] mt-1">
+                          <span>10% (Top)</span>
+                          <span className="text-[#fafafa] font-semibold">{positionYPercent}%</span>
+                          <span>90% (Bottom)</span>
+                        </div>
+                      </div>
+
+                      <div>
+                        <label className="block text-[10px] uppercase font-bold text-[#a1a1aa] mb-2">Accent Strip Color</label>
+                        <div className="flex items-center gap-3">
+                          <input
+                            type="color"
+                            value={accentColor}
+                            onChange={(e) => setAccentColor(e.target.value)}
+                            className="bg-transparent border-0 w-8 h-8 rounded cursor-pointer"
+                          />
+                          <input
+                            type="text"
+                            value={accentColor}
+                            onChange={(e) => setAccentColor(e.target.value)}
+                            className="bg-[#18181b] border border-[#27272a] rounded px-3 py-1.5 text-xs text-center text-[#fafafa] w-28"
+                          />
+                        </div>
+                      </div>
+
+                      {styleId === "quote-card" && (
+                        <div>
+                          <label className="block text-[10px] uppercase font-bold text-[#a1a1aa] mb-2">Author Name</label>
+                          <input
+                            type="text"
+                            value={author}
+                            onChange={(e) => setAuthor(e.target.value)}
+                            placeholder="e.g. Ronald Reagan"
+                            className="w-full bg-[#18181b] border border-[#27272a] rounded-lg px-4 py-2 text-xs focus:outline-none"
+                          />
+                        </div>
+                      )}
+
+                      <div>
+                        <label className="block text-[10px] uppercase font-bold text-[#a1a1aa] mb-2">Text Color</label>
+                        <div className="flex items-center gap-3">
+                          <input
+                            type="color"
+                            value={fontColor}
+                            onChange={(e) => setFontColor(e.target.value)}
+                            className="bg-transparent border-0 w-8 h-8 rounded cursor-pointer"
+                          />
+                          <span className="text-xs font-semibold">{fontColor}</span>
+                        </div>
+                      </div>
+
+                      <div>
+                        <label className="block text-[10px] uppercase font-bold text-[#a1a1aa] mb-2">Background Card Color</label>
+                        <div className="flex items-center gap-3">
+                          <input
+                            type="color"
+                            value={bgStripColor}
+                            onChange={(e) => setBgStripColor(e.target.value)}
+                            className="bg-transparent border-0 w-8 h-8 rounded cursor-pointer"
+                          />
+                          <span className="text-xs font-semibold">{bgStripColor}</span>
+                        </div>
+                      </div>
+
+                      <div>
+                        <label className="block text-[10px] uppercase font-bold text-[#a1a1aa] mb-2">Card Opacity</label>
+                        <input
+                          type="range"
+                          min={0}
+                          max={100}
+                          value={Math.round(bgStripOpacity * 100)}
+                          onChange={(e) => setBgStripOpacity(parseFloat((parseInt(e.target.value) / 100).toFixed(2)))}
+                          className="w-full accent-[#E11D48] bg-[#18181b]"
+                        />
+                        <div className="flex justify-between text-[10px] text-[#71717a] mt-1">
+                          <span>Transparent</span>
+                          <span className="text-[#fafafa] font-semibold">{Math.round(bgStripOpacity * 100)}%</span>
+                          <span>Solid</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Quick Live Preview Box */}
+                    <div className="bg-[#18181b] border border-[#27272a] rounded-lg p-5">
+                      <p className="text-[10px] uppercase font-bold text-[#71717a] mb-2">Layout Preview Canvas (Stills)</p>
+                      <div className="aspect-[9/16] max-w-[200px] mx-auto bg-[#09090b] rounded border border-[#27272a] relative overflow-hidden flex flex-col justify-center">
+                        <div className="absolute inset-0 bg-neutral-900/10 flex items-center justify-center text-[10px] text-[#27272a] pointer-events-none">
+                          Background Video Frame
+                        </div>
+                        {/* Live CSS approximate preview */}
+                        <div
+                          style={{
+                            position: "absolute",
+                            top: `${positionYPercent}%`,
+                            left: "10px",
+                            right: "10px",
+                            transform: "translateY(-50%)",
+                            backgroundColor: bgStripColor,
+                            opacity: bgStripOpacity,
+                            borderLeft: styleId === "news-lower-third" || styleId === "breaking-headline" ? `3px solid ${accentColor}` : "none",
+                            borderRadius: styleId === "subtitle-box" ? "4px" : styleId === "quote-card" ? "6px" : "0",
+                            padding: "6px",
+                            boxShadow: "0 4px 10px rgba(0,0,0,0.3)",
+                          }}
+                        >
+                          <p
+                            style={{
+                              color: fontColor,
+                              fontSize: "8px",
+                              lineHeight: "1.2",
+                              fontWeight: "bold",
+                              textAlign: styleId === "subtitle-box" ? "center" : "left",
+                              fontFamily: styleId === "quote-card" ? "Georgia, serif" : "sans-serif",
+                              whiteSpace: "pre-wrap",
+                            }}
+                          >
+                            {getStylePreviewSnippet()}
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Step 6: Rendering Trigger */}
+                <div className="border-t border-[#27272a] pt-6 bg-[#E11D48]/5 -mx-8 -mb-8 p-8 rounded-b-xl border-t border-[#27272a]">
+                  <h2 className="text-xl font-bold mb-4 flex items-center gap-2">
+                    <span className="bg-[#E11D48] text-white text-xs w-5 h-5 flex items-center justify-center rounded-full font-bold">6</span>
+                    Render Queue Setup & Trigger
+                  </h2>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
                     <div>
-                      <label className="block text-[10px] text-gray-500 mb-1 uppercase tracking-wider">Font</label>
-                      <select value={editingTemplate.fontFamily || "Outfit-Bold"} onChange={(e) => updateEditingField("fontFamily", e.target.value)} className="w-full px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white text-sm focus:outline-none focus:border-violet-500/50">
-                        {FONT_OPTIONS.map((f) => <option key={f} value={f} className="bg-[#111]">{f}</option>)}
+                      <label className="block text-xs font-semibold uppercase tracking-wider text-[#a1a1aa] mb-2">Output Mapping Mode</label>
+                      <select
+                        value={mappingMode}
+                        onChange={(e) => setMappingMode(e.target.value as any)}
+                        className="w-full bg-[#09090b] border border-[#27272a] rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:border-[#E11D48] text-[#fafafa]"
+                      >
+                        <option value="each">Multiply: Render each hook onto each variation (M x H)</option>
+                        <option value="distribute">Distribute: Spread hooks round-robin across variations (H total)</option>
                       </select>
                     </div>
+
                     <div>
-                      <label className="block text-[10px] text-gray-500 mb-1 uppercase tracking-wider">Size: {editingTemplate.fontSize}px</label>
-                      <input type="range" min={16} max={120} value={editingTemplate.fontSize ?? 42} onChange={(e) => updateEditingField("fontSize", Number(e.target.value))} className="w-full accent-violet-500" />
+                      <label className="block text-xs font-semibold uppercase tracking-wider text-[#a1a1aa] mb-2">Overlay Duration (Seconds)</label>
+                      <input
+                        type="number"
+                        min={1}
+                        max={30}
+                        value={hookDuration}
+                        onChange={(e) => setHookDuration(parseInt(e.target.value) || 5)}
+                        className="w-full bg-[#09090b] border border-[#27272a] rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:border-[#E11D48]"
+                      />
                     </div>
+
                     <div>
-                      <label className="block text-[10px] text-gray-500 mb-1 uppercase tracking-wider">Color</label>
-                      <div className="flex items-center gap-2">
-                        <input type="color" value={editingTemplate.fontColor || "#FFFFFF"} onChange={(e) => updateEditingField("fontColor", e.target.value)} className="w-8 h-7 rounded cursor-pointer bg-transparent border border-white/10" />
-                        <input type="text" value={editingTemplate.fontColor || "#FFFFFF"} onChange={(e) => updateEditingField("fontColor", e.target.value)} className="flex-1 px-2.5 py-1.5 rounded-lg bg-white/5 border border-white/10 text-white text-xs font-mono" />
-                      </div>
+                      <label className="block text-xs font-semibold uppercase tracking-wider text-[#a1a1aa] mb-2">Animation Effect</label>
+                      <select
+                        value={animationType}
+                        onChange={(e) => setAnimationType(e.target.value as any)}
+                        className="w-full bg-[#09090b] border border-[#27272a] rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:border-[#E11D48]"
+                      >
+                        <option value="NONE">None: Instant static overlay</option>
+                        <option value="FADE_IN">Fade-In: Smooth transition</option>
+                        <option value="SLIDE_UP">Slide-Up: Fades and shifts upward</option>
+                      </select>
                     </div>
+
                     <div>
-                      <label className="block text-[10px] text-gray-500 mb-1 uppercase tracking-wider">Case</label>
-                      <div className="grid grid-cols-4 gap-1.5">
-                        {["UPPERCASE", "LOWERCASE", "CAPITALIZE", "NONE"].map((c) => (
-                          <button key={c} onClick={() => updateEditingField("textCase", c)} className={`py-1.5 rounded-lg text-[10px] font-medium transition-all border ${editingTemplate.textCase === c ? "bg-violet-500/15 text-violet-300 border-violet-500/30" : "bg-white/5 text-gray-500 border-white/5 hover:text-white"}`}>
-                            {c === "NONE" ? "As is" : c === "CAPITALIZE" ? "Abc" : c === "LOWERCASE" ? "abc" : "ABC"}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                    <div className="grid grid-cols-2 gap-3">
-                      <div>
-                        <label className="block text-[10px] text-gray-500 mb-1 uppercase tracking-wider">Letter Spacing: {editingTemplate.letterSpacing?.toFixed(1)}×</label>
-                        <input type="range" min={0.5} max={2} step={0.1} value={editingTemplate.letterSpacing ?? 1} onChange={(e) => updateEditingField("letterSpacing", Number(e.target.value))} className="w-full accent-violet-500" />
-                      </div>
-                      <div>
-                        <label className="block text-[10px] text-gray-500 mb-1 uppercase tracking-wider">Line Height: {editingTemplate.lineHeight?.toFixed(1)}×</label>
-                        <input type="range" min={1.0} max={2.5} step={0.1} value={editingTemplate.lineHeight ?? 1.4} onChange={(e) => updateEditingField("lineHeight", Number(e.target.value))} className="w-full accent-violet-500" />
-                      </div>
-                    </div>
-                    <div>
-                      <label className="block text-[10px] text-gray-500 mb-1 uppercase tracking-wider">Alignment</label>
-                      <div className="flex gap-1">
-                        {["LEFT", "CENTER", "RIGHT"].map((a) => (
-                          <button key={a} onClick={() => updateEditingField("textAlign", a)} className={`flex-1 py-1.5 rounded-lg text-xs font-medium transition-all ${editingTemplate.textAlign === a ? "bg-violet-500/20 text-violet-300 border border-violet-500/30" : "bg-white/5 text-gray-500 border border-white/5 hover:text-white"}`}>
-                            {a}
-                          </button>
-                        ))}
-                      </div>
+                      <label className="block text-xs font-semibold uppercase tracking-wider text-[#a1a1aa] mb-2">Animation Duration (Seconds)</label>
+                      <input
+                        type="number"
+                        step={0.1}
+                        min={0.1}
+                        max={2.0}
+                        value={animationDuration}
+                        onChange={(e) => setAnimationDuration(parseFloat(e.target.value) || 0.5)}
+                        className="w-full bg-[#09090b] border border-[#27272a] rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:border-[#E11D48]"
+                      />
                     </div>
                   </div>
-                )}
 
-                {/* ═══ EFFECTS TAB ═══ */}
-                {designTab === "effects" && (
-                  <div className="space-y-4">
-                    {/* Stroke */}
-                    <div className="rounded-xl border border-white/5 p-3 space-y-2">
-                      <label className="flex items-center gap-2 cursor-pointer">
-                        <input type="checkbox" checked={editingTemplate.strokeEnabled ?? false} onChange={(e) => updateEditingField("strokeEnabled", e.target.checked)} className="accent-violet-500" />
-                        <span className="text-xs text-white font-medium">Text Stroke / Outline</span>
-                      </label>
-                      {editingTemplate.strokeEnabled && (
-                        <div className="flex gap-2">
-                          <div className="flex-1">
-                            <label className="block text-[10px] text-gray-500 mb-1">Color</label>
-                            <div className="flex gap-1">
-                              <input type="color" value={editingTemplate.strokeColor || "#000000"} onChange={(e) => updateEditingField("strokeColor", e.target.value)} className="w-7 h-7 rounded cursor-pointer bg-transparent" />
-                              <input type="text" value={editingTemplate.strokeColor || "#000000"} onChange={(e) => updateEditingField("strokeColor", e.target.value)} className="flex-1 px-2 py-1 rounded-lg bg-white/5 border border-white/10 text-white text-xs font-mono" />
-                            </div>
-                          </div>
-                          <div className="w-24">
-                            <label className="block text-[10px] text-gray-500 mb-1">Width: {editingTemplate.strokeWidth}px</label>
-                            <input type="range" min={1} max={8} value={editingTemplate.strokeWidth ?? 2} onChange={(e) => updateEditingField("strokeWidth", Number(e.target.value))} className="w-full accent-violet-500" />
-                          </div>
-                        </div>
-                      )}
+                  <div className="flex justify-between items-center bg-[#09090b] p-4 rounded-xl border border-[#27272a]">
+                    <div>
+                      <p className="text-xs text-[#a1a1aa]">Estimated Batch Size:</p>
+                      <p className="text-xl font-black text-[#fafafa] flex items-center gap-1.5">
+                        <Video className="w-5 h-5 text-[#E11D48]" /> {getEstimatedOutputs()} Finished MP4s
+                      </p>
                     </div>
 
-                    {/* Shadow */}
-                    <div className="rounded-xl border border-white/5 p-3 space-y-2">
-                      <label className="flex items-center gap-2 cursor-pointer">
-                        <input type="checkbox" checked={editingTemplate.shadowEnabled ?? false} onChange={(e) => updateEditingField("shadowEnabled", e.target.checked)} className="accent-violet-500" />
-                        <span className="text-xs text-white font-medium">Drop Shadow</span>
-                      </label>
-                      {editingTemplate.shadowEnabled && (
-                        <div className="space-y-2">
-                          <div>
-                            <label className="block text-[10px] text-gray-500 mb-1">Color</label>
-                            <div className="flex gap-1">
-                              <input type="color" value={editingTemplate.shadowColor || "#000000"} onChange={(e) => updateEditingField("shadowColor", e.target.value)} className="w-7 h-7 rounded cursor-pointer bg-transparent" />
-                              <input type="text" value={editingTemplate.shadowColor || "#000000"} onChange={(e) => updateEditingField("shadowColor", e.target.value)} className="flex-1 px-2 py-1 rounded-lg bg-white/5 border border-white/10 text-white text-xs font-mono" />
-                            </div>
-                          </div>
-                          <div className="flex gap-2">
-                            <div className="flex-1">
-                              <label className="block text-[10px] text-gray-500 mb-1">X: {editingTemplate.shadowX}px</label>
-                              <input type="range" min={0} max={10} value={editingTemplate.shadowX ?? 2} onChange={(e) => updateEditingField("shadowX", Number(e.target.value))} className="w-full accent-violet-500" />
-                            </div>
-                            <div className="flex-1">
-                              <label className="block text-[10px] text-gray-500 mb-1">Y: {editingTemplate.shadowY}px</label>
-                              <input type="range" min={0} max={10} value={editingTemplate.shadowY ?? 2} onChange={(e) => updateEditingField("shadowY", Number(e.target.value))} className="w-full accent-violet-500" />
-                            </div>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-
-                    {/* Neon Glow */}
-                    <div className="rounded-xl border border-white/5 p-3 space-y-2">
-                      <label className="flex items-center gap-2 cursor-pointer">
-                        <input type="checkbox" checked={editingTemplate.glowEnabled ?? false} onChange={(e) => updateEditingField("glowEnabled", e.target.checked)} className="accent-violet-500" />
-                        <span className="text-xs text-white font-medium">Neon Glow</span>
-                      </label>
-                      {editingTemplate.glowEnabled && (
-                        <div className="flex gap-2">
-                          <div className="flex-1">
-                            <label className="block text-[10px] text-gray-500 mb-1">Color</label>
-                            <div className="flex gap-1">
-                              <input type="color" value={editingTemplate.glowColor || "#FF00FF"} onChange={(e) => updateEditingField("glowColor", e.target.value)} className="w-7 h-7 rounded cursor-pointer bg-transparent" />
-                              <input type="text" value={editingTemplate.glowColor || "#FF00FF"} onChange={(e) => updateEditingField("glowColor", e.target.value)} className="flex-1 px-2 py-1 rounded-lg bg-white/5 border border-white/10 text-white text-xs font-mono" />
-                            </div>
-                          </div>
-                          <div className="w-24">
-                            <label className="block text-[10px] text-gray-500 mb-1">Intensity: {editingTemplate.glowIntensity}</label>
-                            <input type="range" min={1} max={5} value={editingTemplate.glowIntensity ?? 2} onChange={(e) => updateEditingField("glowIntensity", Number(e.target.value))} className="w-full accent-violet-500" />
-                          </div>
-                        </div>
-                      )}
-                    </div>
-
-                    {/* Double Text */}
-                    <div className="rounded-xl border border-white/5 p-3 space-y-2">
-                      <label className="flex items-center gap-2 cursor-pointer">
-                        <input type="checkbox" checked={editingTemplate.doubleTextEnabled ?? false} onChange={(e) => updateEditingField("doubleTextEnabled", e.target.checked)} className="accent-violet-500" />
-                        <span className="text-xs text-white font-medium">Double Text (Outline + Fill)</span>
-                      </label>
-                      {editingTemplate.doubleTextEnabled && (
-                        <div className="flex gap-2">
-                          <div className="flex-1">
-                            <label className="block text-[10px] text-gray-500 mb-1">Outline Color</label>
-                            <div className="flex gap-1">
-                              <input type="color" value={editingTemplate.doubleTextOutlineColor || "#000000"} onChange={(e) => updateEditingField("doubleTextOutlineColor", e.target.value)} className="w-7 h-7 rounded cursor-pointer bg-transparent" />
-                              <input type="text" value={editingTemplate.doubleTextOutlineColor || "#000000"} onChange={(e) => updateEditingField("doubleTextOutlineColor", e.target.value)} className="flex-1 px-2 py-1 rounded-lg bg-white/5 border border-white/10 text-white text-xs font-mono" />
-                            </div>
-                          </div>
-                          <div className="w-24">
-                            <label className="block text-[10px] text-gray-500 mb-1">Outline: {editingTemplate.doubleTextOutlineWidth}px</label>
-                            <input type="range" min={1} max={10} value={editingTemplate.doubleTextOutlineWidth ?? 4} onChange={(e) => updateEditingField("doubleTextOutlineWidth", Number(e.target.value))} className="w-full accent-violet-500" />
-                          </div>
-                        </div>
-                      )}
-                    </div>
-
-                    {/* Text Gradient */}
-                    <div className="rounded-xl border border-white/5 p-3 space-y-2">
-                      <label className="flex items-center gap-2 cursor-pointer">
-                        <input type="checkbox" checked={editingTemplate.textGradientEnabled ?? false} onChange={(e) => updateEditingField("textGradientEnabled", e.target.checked)} className="accent-violet-500" />
-                        <span className="text-xs text-white font-medium">Text Gradient</span>
-                      </label>
-                      {editingTemplate.textGradientEnabled && (
-                        <div className="space-y-2">
-                          <div className="flex gap-2">
-                            <div className="flex-1">
-                              <label className="block text-[10px] text-gray-500 mb-1">Color 1</label>
-                              <div className="flex gap-1">
-                                <input type="color" value={editingTemplate.textGradientColor1 || "#FFFFFF"} onChange={(e) => updateEditingField("textGradientColor1", e.target.value)} className="w-7 h-7 rounded cursor-pointer bg-transparent" />
-                                <input type="text" value={editingTemplate.textGradientColor1 || "#FFFFFF"} onChange={(e) => updateEditingField("textGradientColor1", e.target.value)} className="flex-1 px-2 py-1 rounded-lg bg-white/5 border border-white/10 text-white text-xs font-mono" />
-                              </div>
-                            </div>
-                            <div className="flex-1">
-                              <label className="block text-[10px] text-gray-500 mb-1">Color 2</label>
-                              <div className="flex gap-1">
-                                <input type="color" value={editingTemplate.textGradientColor2 || "#00FFFF"} onChange={(e) => updateEditingField("textGradientColor2", e.target.value)} className="w-7 h-7 rounded cursor-pointer bg-transparent" />
-                                <input type="text" value={editingTemplate.textGradientColor2 || "#00FFFF"} onChange={(e) => updateEditingField("textGradientColor2", e.target.value)} className="flex-1 px-2 py-1 rounded-lg bg-white/5 border border-white/10 text-white text-xs font-mono" />
-                              </div>
-                            </div>
-                          </div>
-                          <div>
-                            <label className="block text-[10px] text-gray-500 mb-1">Angle: {editingTemplate.textGradientAngle}°</label>
-                            <input type="range" min={0} max={360} value={editingTemplate.textGradientAngle ?? 180} onChange={(e) => updateEditingField("textGradientAngle", Number(e.target.value))} className="w-full accent-violet-500" />
-                          </div>
-                        </div>
-                      )}
+                    <div className="flex gap-3">
+                      <button
+                        onClick={handleUpdateGroupSettings}
+                        className="px-5 py-2.5 bg-zinc-800 hover:bg-zinc-700 text-white font-semibold rounded-lg text-sm transition-all"
+                      >
+                        Save Configuration
+                      </button>
+                      <button
+                        onClick={handleStartRendering}
+                        disabled={selectedGroup.variations.length === 0 || selectedGroup.hooks.length === 0}
+                        className="px-6 py-2.5 bg-[#E11D48] hover:bg-rose-700 disabled:opacity-50 text-white font-semibold rounded-lg text-sm transition-all shadow-lg flex items-center gap-2"
+                      >
+                        <Play className="w-4 h-4" /> Start Rendering
+                      </button>
                     </div>
                   </div>
-                )}
-
-                {/* ═══ STRIP & LAYOUT TAB ═══ */}
-                {designTab === "strip" && (
-                  <div className="space-y-4">
-                    {/* Strip Shape */}
-                    <div>
-                      <label className="block text-[10px] text-gray-500 mb-1 uppercase tracking-wider">Strip Shape</label>
-                      <div className="flex gap-1">
-                        {["FULL", "PILL", "NONE"].map((s) => (
-                          <button key={s} onClick={() => updateEditingField("stripShape", s)} className={`flex-1 py-1.5 rounded-lg text-xs font-medium transition-all ${(editingTemplate.stripShape || "FULL") === s ? "bg-violet-500/20 text-violet-300 border border-violet-500/30" : "bg-white/5 text-gray-500 border border-white/5 hover:text-white"}`}>
-                            {s}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                    {/* Background Color */}
-                    <div>
-                      <label className="block text-[10px] text-gray-500 mb-1 uppercase tracking-wider">Background</label>
-                      <div className="flex items-center gap-2">
-                        <input type="color" value={editingTemplate.bgStripColor || "#000000"} onChange={(e) => updateEditingField("bgStripColor", e.target.value)} className="w-8 h-7 rounded border border-white/10 cursor-pointer bg-transparent" />
-                        <input type="text" value={editingTemplate.bgStripColor || "#000000"} onChange={(e) => updateEditingField("bgStripColor", e.target.value)} className="flex-1 px-2.5 py-1.5 rounded-lg bg-white/5 border border-white/10 text-white text-xs font-mono" />
-                      </div>
-                    </div>
-                    <div>
-                      <label className="block text-[10px] text-gray-500 mb-1 uppercase tracking-wider">Opacity: {Math.round((editingTemplate.bgStripOpacity ?? 1) * 100)}%</label>
-                      <input type="range" min={0} max={100} value={Math.round((editingTemplate.bgStripOpacity ?? 1) * 100)} onChange={(e) => updateEditingField("bgStripOpacity", Number(e.target.value) / 100)} className="w-full accent-violet-500" />
-                    </div>
-                    <div>
-                      <label className="block text-[10px] text-gray-500 mb-1 uppercase tracking-wider">Corner Radius: {editingTemplate.borderRadius}px</label>
-                      <input type="range" min={0} max={40} value={editingTemplate.borderRadius ?? 12} onChange={(e) => updateEditingField("borderRadius", Number(e.target.value))} className="w-full accent-violet-500" />
-                    </div>
-                    {/* Gradient Strip */}
-                    <div className="rounded-xl border border-white/5 p-3 space-y-2">
-                      <label className="flex items-center gap-2 cursor-pointer">
-                        <input type="checkbox" checked={editingTemplate.stripGradientEnabled ?? false} onChange={(e) => updateEditingField("stripGradientEnabled", e.target.checked)} className="accent-violet-500" />
-                        <span className="text-xs text-white font-medium">Gradient Strip</span>
-                      </label>
-                      {editingTemplate.stripGradientEnabled && (
-                        <div className="space-y-2">
-                          <div>
-                            <label className="block text-[10px] text-gray-500 mb-1">Color 2</label>
-                            <div className="flex gap-1">
-                              <input type="color" value={editingTemplate.stripGradientColor2 || "#333333"} onChange={(e) => updateEditingField("stripGradientColor2", e.target.value)} className="w-7 h-7 rounded cursor-pointer bg-transparent" />
-                              <input type="text" value={editingTemplate.stripGradientColor2 || "#333333"} onChange={(e) => updateEditingField("stripGradientColor2", e.target.value)} className="flex-1 px-2 py-1 rounded-lg bg-white/5 border border-white/10 text-white text-xs font-mono" />
-                            </div>
-                          </div>
-                          <div>
-                            <label className="block text-[10px] text-gray-500 mb-1">Angle: {editingTemplate.stripGradientAngle}°</label>
-                            <input type="range" min={0} max={360} value={editingTemplate.stripGradientAngle ?? 90} onChange={(e) => updateEditingField("stripGradientAngle", Number(e.target.value))} className="w-full accent-violet-500" />
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                    {/* Backdrop Blur */}
-                    <div className="rounded-xl border border-white/5 p-3 space-y-2">
-                      <label className="flex items-center gap-2 cursor-pointer">
-                        <input type="checkbox" checked={editingTemplate.backdropBlurEnabled ?? false} onChange={(e) => updateEditingField("backdropBlurEnabled", e.target.checked)} className="accent-violet-500" />
-                        <span className="text-xs text-white font-medium">Backdrop Blur</span>
-                      </label>
-                      {editingTemplate.backdropBlurEnabled && (
-                        <div>
-                          <label className="block text-[10px] text-gray-500 mb-1">Radius: {editingTemplate.backdropBlurRadius}px</label>
-                          <input type="range" min={2} max={30} value={editingTemplate.backdropBlurRadius ?? 10} onChange={(e) => updateEditingField("backdropBlurRadius", Number(e.target.value))} className="w-full accent-violet-500" />
-                        </div>
-                      )}
-                    </div>
-                    {/* Strip Border */}
-                    <div className="rounded-xl border border-white/5 p-3 space-y-2">
-                      <label className="flex items-center gap-2 cursor-pointer">
-                        <input type="checkbox" checked={editingTemplate.stripBorderEnabled ?? false} onChange={(e) => updateEditingField("stripBorderEnabled", e.target.checked)} className="accent-violet-500" />
-                        <span className="text-xs text-white font-medium">Strip Border</span>
-                      </label>
-                      {editingTemplate.stripBorderEnabled && (
-                        <div className="flex gap-2">
-                          <div className="flex-1">
-                            <label className="block text-[10px] text-gray-500 mb-1">Color</label>
-                            <div className="flex gap-1">
-                              <input type="color" value={editingTemplate.stripBorderColor || "#FFFFFF"} onChange={(e) => updateEditingField("stripBorderColor", e.target.value)} className="w-7 h-7 rounded cursor-pointer bg-transparent" />
-                              <input type="text" value={editingTemplate.stripBorderColor || "#FFFFFF"} onChange={(e) => updateEditingField("stripBorderColor", e.target.value)} className="flex-1 px-2 py-1 rounded-lg bg-white/5 border border-white/10 text-white text-xs font-mono" />
-                            </div>
-                          </div>
-                          <div className="w-20">
-                            <label className="block text-[10px] text-gray-500 mb-1">Width: {editingTemplate.stripBorderWidth}px</label>
-                            <input type="range" min={1} max={5} value={editingTemplate.stripBorderWidth ?? 1} onChange={(e) => updateEditingField("stripBorderWidth", Number(e.target.value))} className="w-full accent-violet-500" />
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                    {/* Strip Shadow */}
-                    <div className="rounded-xl border border-white/5 p-3 space-y-2">
-                      <label className="flex items-center gap-2 cursor-pointer">
-                        <input type="checkbox" checked={editingTemplate.stripShadowEnabled ?? false} onChange={(e) => updateEditingField("stripShadowEnabled", e.target.checked)} className="accent-violet-500" />
-                        <span className="text-xs text-white font-medium">Strip Shadow</span>
-                      </label>
-                      {editingTemplate.stripShadowEnabled && (
-                        <div className="flex gap-2">
-                          <div className="flex-1">
-                            <label className="block text-[10px] text-gray-500 mb-1">Color</label>
-                            <div className="flex gap-1">
-                              <input type="color" value={editingTemplate.stripShadowColor || "#000000"} onChange={(e) => updateEditingField("stripShadowColor", e.target.value)} className="w-7 h-7 rounded cursor-pointer bg-transparent" />
-                              <input type="text" value={editingTemplate.stripShadowColor || "#000000"} onChange={(e) => updateEditingField("stripShadowColor", e.target.value)} className="flex-1 px-2 py-1 rounded-lg bg-white/5 border border-white/10 text-white text-xs font-mono" />
-                            </div>
-                          </div>
-                          <div className="w-20">
-                            <label className="block text-[10px] text-gray-500 mb-1">Offset: {editingTemplate.stripShadowOffset}px</label>
-                            <input type="range" min={1} max={12} value={editingTemplate.stripShadowOffset ?? 4} onChange={(e) => updateEditingField("stripShadowOffset", Number(e.target.value))} className="w-full accent-violet-500" />
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                    {/* Layout Controls */}
-                    <div className="border-t border-white/5 pt-4 space-y-3">
-                      <h4 className="text-[10px] text-gray-500 uppercase tracking-wider font-bold">Position & Spacing</h4>
-                      <div>
-                        <label className="block text-[10px] text-gray-500 mb-1">Y Position: {editingTemplate.positionYPercent}%</label>
-                        <input type="range" min={0} max={100} value={editingTemplate.positionYPercent ?? 5} onChange={(e) => updateEditingField("positionYPercent", Number(e.target.value))} className="w-full accent-violet-500" />
-                      </div>
-                      <div>
-                        <label className="block text-[10px] text-gray-500 mb-1">Horizontal Margin: {editingTemplate.marginX}px</label>
-                        <input type="range" min={0} max={200} value={editingTemplate.marginX ?? 0} onChange={(e) => updateEditingField("marginX", Number(e.target.value))} className="w-full accent-violet-500" />
-                      </div>
-                      <div className="grid grid-cols-2 gap-3">
-                        <div>
-                          <label className="block text-[10px] text-gray-500 mb-1">Padding Y: {editingTemplate.paddingY}px</label>
-                          <input type="range" min={0} max={60} value={editingTemplate.paddingY ?? 20} onChange={(e) => updateEditingField("paddingY", Number(e.target.value))} className="w-full accent-violet-500" />
-                        </div>
-                        <div>
-                          <label className="block text-[10px] text-gray-500 mb-1">Padding X: {editingTemplate.paddingX}px</label>
-                          <input type="range" min={0} max={60} value={editingTemplate.paddingX ?? 20} onChange={(e) => updateEditingField("paddingX", Number(e.target.value))} className="w-full accent-violet-500" />
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-                {/* ═══ ANIMATION TAB ═══ */}
-                {designTab === "animation" && (
-                  <div className="space-y-4">
-                    <div>
-                      <label className="block text-[10px] text-gray-500 mb-1 uppercase tracking-wider">Entrance Type</label>
-                      <div className="grid grid-cols-4 gap-1.5">
-                        {["NONE", "FADE_IN", "SLIDE_UP", "SCALE_IN"].map((a) => (
-                          <button key={a} onClick={() => updateEditingField("animationType", a)} className={`py-2 rounded-lg text-[10px] font-medium transition-all border ${(editingTemplate.animationType || "NONE") === a ? "bg-amber-500/15 text-amber-300 border-amber-500/30" : "bg-white/5 text-gray-500 border-white/5 hover:text-white"}`}>
-                            {a.replace("_", " ")}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                    {editingTemplate.animationType && editingTemplate.animationType !== "NONE" && (
-                      <div>
-                        <label className="block text-[10px] text-gray-500 mb-1 uppercase tracking-wider">Duration: {editingTemplate.animationDuration?.toFixed(1)}s</label>
-                        <input type="range" min={0.2} max={1.5} step={0.1} value={editingTemplate.animationDuration ?? 0.5} onChange={(e) => updateEditingField("animationDuration", Number(e.target.value))} className="w-full accent-amber-500" />
-                      </div>
-                    )}
-                    <p className="text-[10px] text-gray-600">
-                      Animation controls how the text hook appears when the video plays. The effect is applied during FFmpeg rendering.
-                    </p>
-                  </div>
-                )}
-              </div>
-            </div>
+                </div>
+              </>
+            )}
           </div>
         </div>
       ) : (
-        /* ═══ NORMAL INLINE CONTROLS (no template editing) ═══ */
-        <div className="grid grid-cols-1 lg:grid-cols-[340px_1fr] gap-6">
-          {/* Left: Live Preview (9:16 phone frame) */}
-          <div className="space-y-3">
-            <h2 className="text-sm font-semibold text-white flex items-center gap-2">
-              <Move className="w-4 h-4 text-cyan-400" />
-              Live Preview
-              <span className="text-gray-600 text-[10px] font-normal ml-1">Drag strip to position</span>
+        /* Queue Dashboard Tab */
+        <div className="space-y-6">
+          <div className="flex justify-between items-center">
+            <h2 className="text-xl font-bold flex items-center gap-2">
+              <Layers className="text-[#E11D48] w-5 h-5" /> Rendering Batches Progress Board
             </h2>
-            <div
-              ref={previewContainerRef}
-              className="relative rounded-2xl overflow-hidden border-2 border-white/10 bg-black mx-auto select-none"
-              style={{
-                width: 300,
-                height: 300 * (OUTPUT_H / OUTPUT_W), // 9:16 aspect
-              }}
+            <button
+              onClick={fetchData}
+              className="p-2 bg-[#18181b] border border-[#27272a] rounded-lg hover:bg-[#27272a] transition-all"
             >
-              {/* Video Background */}
-              {videoObjectUrl ? (
-                <video
-                  src={videoObjectUrl}
-                  muted
-                  loop
-                  autoPlay
-                  playsInline
-                  className="absolute inset-0 w-full h-full object-cover"
-                />
-              ) : (
-                <div className="absolute inset-0 bg-gradient-to-b from-gray-800 to-gray-900 flex items-center justify-center">
-                  <span className="text-gray-700 text-xs">Upload video to preview</span>
-                </div>
-              )}
-
-              {/* Text Strip Overlay — Draggable */}
-              <div
-                onMouseDown={handlePreviewMouseDown}
-                className="absolute left-0 right-0 flex items-center justify-center"
-                style={{
-                  top: `${(stripGeometry.stripY / OUTPUT_H) * 100}%`,
-                  height: `${(stripGeometry.stripHeight / OUTPUT_H) * 100}%`,
-                  left: `${(stripGeometry.stripX / OUTPUT_W) * 100}%`,
-                  right: `${(stripGeometry.stripX / OUTPUT_W) * 100}%`,
-                  width: `${(stripGeometry.stripW / OUTPUT_W) * 100}%`,
-                  backgroundColor: bgStripColor,
-                  opacity: bgStripOpacity,
-                  cursor: isDragging ? "grabbing" : "grab",
-                  padding: `${Math.max(2, stripPaddingY * (300 / OUTPUT_W))}px ${Math.max(6, Math.max(stripPaddingY, 16) * (300 / OUTPUT_W))}px`,
-                  borderRadius: `${Math.max(0, borderRadius * (300 / OUTPUT_W))}px`,
-                  transition: isDragging ? "none" : "top 0.15s ease-out",
-                  overflow: "hidden",
-                }}
-              >
-                <span
-                  className="text-center leading-tight"
-                  style={{
-                    color: fontColor,
-                    fontSize: Math.max(8, fontSize * (300 / OUTPUT_W)),
-                    fontWeight: "bold",
-                    letterSpacing: "0.3px",
-                    wordBreak: "break-word",
-                  }}
-                >
-                  {previewText}
-                </span>
-              </div>
-
-              {/* Drag indicator lines */}
-              {isDragging && (
-                <>
-                  <div className="absolute left-2 right-2 border-t border-cyan-500/50 border-dashed" style={{ top: `${(stripGeometry.stripY / OUTPUT_H) * 100}%` }} />
-                  <div className="absolute left-2 right-2 border-t border-cyan-500/50 border-dashed" style={{ top: `${((stripGeometry.stripY + stripGeometry.stripHeight) / OUTPUT_H) * 100}%` }} />
-                </>
-              )}
-
-              {/* Position indicator */}
-              <div className="absolute bottom-2 right-2 bg-black/70 text-gray-300 text-[9px] px-1.5 py-0.5 rounded font-mono">
-                Y: {positionYPercent}%
-              </div>
-            </div>
-
-            {/* Quick position buttons */}
-            <div className="flex gap-1.5">
-              {[
-                { label: "Top", value: 0 },
-                { label: "25%", value: 25 },
-                { label: "Center", value: 50 },
-                { label: "75%", value: 75 },
-                { label: "Bottom", value: 100 },
-              ].map((p) => (
-                <button
-                  key={p.value}
-                  onClick={() => setPositionYPercent(p.value)}
-                  className={`flex-1 py-1.5 rounded-lg text-[10px] font-medium transition-all border ${
-                    positionYPercent === p.value
-                      ? "bg-cyan-500/15 text-cyan-300 border-cyan-500/30"
-                      : "bg-white/5 text-gray-600 border-white/5 hover:border-white/10 hover:text-gray-400"
-                  }`}
-                >
-                  {p.label}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* Right: Controls */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-            {/* Text Controls */}
-            <div className="rounded-2xl border border-white/5 bg-[#111118] p-5 space-y-4">
-              <h2 className="text-sm font-semibold text-white flex items-center gap-2">
-                <Palette className="w-4 h-4 text-cyan-400" />
-                Text
-              </h2>
-
-              {/* Font Family */}
-              <div>
-                <label className="block text-[10px] text-gray-500 mb-1 uppercase tracking-wider">Font</label>
-                <select
-                  value={fontFamily}
-                  onChange={(e) => setFontFamily(e.target.value)}
-                  className="w-full px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white text-sm focus:outline-none focus:border-cyan-500/50"
-                >
-                  {FONT_OPTIONS.map((f) => (<option key={f} value={f}>{f}</option>))}
-                </select>
-              </div>
-
-              {/* Font Size */}
-              <div>
-                <label className="block text-[10px] text-gray-500 mb-1 uppercase tracking-wider">Size: {fontSize}px</label>
-                <input type="range" min={18} max={72} value={fontSize} onChange={(e) => setFontSize(Number(e.target.value))} className="w-full accent-cyan-500" />
-              </div>
-
-              {/* Font Color */}
-              <div>
-                <label className="block text-[10px] text-gray-500 mb-1 uppercase tracking-wider">Color</label>
-                <div className="flex items-center gap-2">
-                  <input type="color" value={fontColor} onChange={(e) => setFontColor(e.target.value)} className="w-8 h-7 rounded border border-white/10 cursor-pointer bg-transparent" />
-                  <input type="text" value={fontColor} onChange={(e) => setFontColor(e.target.value)} className="flex-1 px-2.5 py-1.5 rounded-lg bg-white/5 border border-white/10 text-white text-xs font-mono" />
-                </div>
-              </div>
-
-              {/* Text Case */}
-              <div>
-                <label className="block text-[10px] text-gray-500 mb-1 uppercase tracking-wider">Case</label>
-                <div className="grid grid-cols-4 gap-1.5">
-                  {TEXT_CASE_OPTIONS.map((opt) => (
-                    <button
-                      key={opt.value}
-                      onClick={() => setTextCase(opt.value)}
-                      className={`px-2 py-1.5 rounded-lg text-[10px] font-medium transition-all border ${
-                        textCase === opt.value
-                          ? "bg-cyan-500/15 text-cyan-300 border-cyan-500/30"
-                          : "bg-white/5 text-gray-500 border-white/5 hover:border-white/10"
-                      }`}
-                    >
-                      {opt.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            </div>
-
-            {/* Strip & Position Controls */}
-            <div className="rounded-2xl border border-white/5 bg-[#111118] p-5 space-y-4">
-              <h2 className="text-sm font-semibold text-white flex items-center gap-2">
-                <Move className="w-4 h-4 text-cyan-400" />
-                Strip & Position
-              </h2>
-
-              {/* Background Color */}
-              <div>
-                <label className="block text-[10px] text-gray-500 mb-1 uppercase tracking-wider">Background</label>
-                <div className="flex items-center gap-2">
-                  <input type="color" value={bgStripColor} onChange={(e) => setBgStripColor(e.target.value)} className="w-8 h-7 rounded border border-white/10 cursor-pointer bg-transparent" />
-                  <input type="text" value={bgStripColor} onChange={(e) => setBgStripColor(e.target.value)} className="flex-1 px-2.5 py-1.5 rounded-lg bg-white/5 border border-white/10 text-white text-xs font-mono" />
-                </div>
-              </div>
-
-              {/* Opacity */}
-              <div>
-                <label className="block text-[10px] text-gray-500 mb-1 uppercase tracking-wider">Opacity: {Math.round(bgStripOpacity * 100)}%</label>
-                <input type="range" min={0} max={100} value={Math.round(bgStripOpacity * 100)} onChange={(e) => setBgStripOpacity(Number(e.target.value) / 100)} className="w-full accent-cyan-500" />
-              </div>
-
-              {/* Vertical Position */}
-              <div>
-                <label className="block text-[10px] text-gray-500 mb-1 uppercase tracking-wider">Y Position: {positionYPercent}%</label>
-                <input type="range" min={0} max={100} value={positionYPercent} onChange={(e) => setPositionYPercent(Number(e.target.value))} className="w-full accent-cyan-500" />
-              </div>
-
-              {/* Horizontal Margin */}
-              <div>
-                <label className="block text-[10px] text-gray-500 mb-1 uppercase tracking-wider">Horizontal Margin: {marginX}px</label>
-                <input type="range" min={0} max={200} value={marginX} onChange={(e) => setMarginX(Number(e.target.value))} className="w-full accent-cyan-500" />
-              </div>
-
-              {/* Inner Padding */}
-              <div>
-                <label className="block text-[10px] text-gray-500 mb-1 uppercase tracking-wider">Inner Padding: {stripPaddingY}px</label>
-                <input type="range" min={0} max={60} value={stripPaddingY} onChange={(e) => setStripPaddingY(Number(e.target.value))} className="w-full accent-cyan-500" />
-              </div>
-
-              {/* Border Radius */}
-              <div>
-                <label className="block text-[10px] text-gray-500 mb-1 uppercase tracking-wider">Corner Radius: {borderRadius}px</label>
-                <input type="range" min={0} max={40} value={borderRadius} onChange={(e) => setBorderRadius(Number(e.target.value))} className="w-full accent-cyan-500" />
-              </div>
-
-              {/* Hook Duration */}
-              <div>
-                <label className="block text-[10px] text-gray-500 mb-1 uppercase tracking-wider">Hook Duration: {hookDuration}s</label>
-                <input type="range" min={1} max={30} value={hookDuration} onChange={(e) => setHookDuration(Number(e.target.value))} className="w-full accent-cyan-500" />
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Create Button */}
-      <button
-        onClick={handleCreateBatch}
-        disabled={uploading || !videoFile || !csvFile || parsedHooks.length === 0}
-        className="w-full py-3.5 rounded-xl font-semibold text-sm transition-all disabled:opacity-40 disabled:cursor-not-allowed bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white shadow-lg shadow-cyan-500/20 flex items-center justify-center gap-2"
-      >
-        {uploading ? (
-          <><Loader2 className="w-4 h-4 animate-spin" /> Uploading...</>
-        ) : (
-          <><Layers className="w-4 h-4" /> Create Batch {parsedHooks.length > 0 && `(${parsedHooks.length} video${parsedHooks.length > 1 ? "s" : ""}${selectedTemplateIds.length > 1 ? `, cycling ${selectedTemplateIds.length} designs` : ""})`}</>
-        )}
-      </button>
-
-      {/* ─── Batches List ────────────────────────────────────────────────── */}
-      <div className="space-y-4">
-        <div className="flex items-center justify-between">
-          <h2 className="text-lg font-semibold text-white">Batch History</h2>
-          <div className="flex items-center gap-2">
-            {batches.length > 0 && (
-              <button
-                onClick={handleDeleteAllBatches}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/10 text-xs font-semibold transition-all"
-              >
-                <Trash2 className="w-3.5 h-3.5" />
-                Delete All Batches
-              </button>
-            )}
-            <button onClick={fetchBatches} className="p-2 rounded-lg hover:bg-white/5 text-gray-500 hover:text-white transition-all">
               <RefreshCw className="w-4 h-4" />
             </button>
           </div>
-        </div>
 
-        {loading ? (
-          <div className="flex items-center justify-center py-12"><Loader2 className="w-6 h-6 text-cyan-400 animate-spin" /></div>
-        ) : batches.length === 0 ? (
-          <div className="text-center py-12 text-gray-600">
-            <Layers className="w-12 h-12 mx-auto mb-3 opacity-30" />
-            <p className="text-sm">No multiplier batches yet</p>
-          </div>
-        ) : (
-          <div className="space-y-4">
-            {batches.map((batch) => {
-              const renderedCount = batch.items.filter((i) => i.status === "RENDERED").length;
-              const failedCount = batch.items.filter((i) => i.status === "FAILED").length;
-              const totalCount = batch.items.length;
-              const progress = totalCount > 0 ? Math.round((renderedCount / totalCount) * 100) : 0;
+          {loadingGroups ? (
+            <div className="flex justify-center p-12">
+              <Loader2 className="w-8 h-8 animate-spin text-[#E11D48]" />
+            </div>
+          ) : groups.length === 0 ? (
+            <div className="text-center p-12 bg-[#18181b] border border-[#27272a] rounded-xl text-[#71717a]">
+              No rendering queue batches running.
+            </div>
+          ) : (
+            <div className="space-y-6">
+              {groups.map((group) => {
+                const pendingOutputs = group.outputs.filter((o) => o.status === "PENDING" || o.status === "RENDERING");
+                const completedOutputs = group.outputs.filter((o) => o.status === "COMPLETED");
+                const failedOutputs = group.outputs.filter((o) => o.status === "FAILED");
+                const totalOutputs = group.outputs.length;
 
-              return (
-                <div key={batch.id} className="rounded-2xl border border-white/5 bg-[#111118] overflow-hidden">
-                  {/* Batch Header */}
-                  <div className="p-5 flex items-center justify-between">
-                    <div className="flex-1 min-w-0">
+                const percent = totalOutputs > 0 ? Math.round((completedOutputs.length / totalOutputs) * 100) : 0;
+
+                // Hide completely raw draft groups without outputs from queue dashboard unless they are transcribing
+                if (totalOutputs === 0 && group.status !== "RENDERING" && group.transcriptStatus !== "TRANSCRIBING") return null;
+
+                return (
+                  <div key={group.id} className="bg-[#18181b] rounded-xl border border-[#27272a] p-6 space-y-4">
+                    {/* Header */}
+                    <div className="flex justify-between items-start gap-4">
+                      <div>
+                        <h3 className="font-extrabold text-lg flex items-center gap-2">
+                          {group.name}
+                          <span className="text-xs text-[#a1a1aa] font-medium bg-[#27272a] px-2.5 py-0.5 rounded-full border border-[#27272a]">
+                            Campaign: {group.campaign?.title || "None"}
+                          </span>
+                        </h3>
+                        <p className="text-xs text-[#71717a] mt-1">
+                          Mode: {group.mappingMode === "each" ? "Multiply" : "Distribute"} | Preset: {group.styleId}
+                        </p>
+                      </div>
+
                       <div className="flex items-center gap-3">
-                        {renamingBatchId === batch.id ? (
-                          <input
-                            autoFocus
-                            className="bg-white/5 border border-white/10 rounded-lg px-2 py-0.5 text-white text-sm font-semibold outline-none focus:border-cyan-500/50 w-48"
-                            value={renamingBatchValue}
-                            onChange={(e) => setRenamingBatchValue(e.target.value)}
-                            onBlur={() => { if (renamingBatchValue.trim()) handleRenameBatch(batch.id, renamingBatchValue.trim()); else setRenamingBatchId(null); }}
-                            onKeyDown={(e) => { if (e.key === "Enter" && renamingBatchValue.trim()) handleRenameBatch(batch.id, renamingBatchValue.trim()); if (e.key === "Escape") setRenamingBatchId(null); }}
-                          />
-                        ) : (
-                          <h3
-                            className="text-white font-semibold text-sm truncate cursor-pointer hover:text-cyan-300 transition-colors"
-                            onDoubleClick={() => { setRenamingBatchId(batch.id); setRenamingBatchValue(batch.name || `Batch ${batch.id.substring(0, 8)}`); }}
-                            title="Double-click to rename"
-                          >
-                            {batch.name || `Batch ${batch.id.substring(0, 8)}`}
-                          </h3>
-                        )}
-                        <span className={`text-[10px] px-2 py-0.5 rounded-full border font-medium ${statusColor(batch.status)}`}>
-                          {batch.status}
+                        <span
+                          className={`text-xs font-semibold px-2.5 py-0.5 rounded-full ${
+                            group.status === "COMPLETED"
+                              ? "bg-green-500/10 text-green-500"
+                              : group.status === "FAILED"
+                              ? "bg-red-500/10 text-red-500"
+                              : "bg-amber-500/10 text-amber-500 animate-pulse"
+                          }`}
+                        >
+                          {group.status}
                         </span>
                       </div>
-                      <p className="text-gray-600 text-xs mt-1">
-                        {totalCount} hooks · {renderedCount} rendered
-                        {failedCount > 0 && ` · ${failedCount} failed`}
-                        {" · "}
-                        {new Date(batch.createdAt).toLocaleDateString()}
-                      </p>
                     </div>
-                    <div className="flex items-center gap-2">
-                      {(batch.status === "READY" || batch.status === "FAILED") && (
-                        <button onClick={() => handleStartRender(batch.id)} className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-gradient-to-r from-cyan-500 to-blue-600 text-white text-xs font-medium hover:from-cyan-400 hover:to-blue-500 transition-all">
-                          <Play className="w-3.5 h-3.5" /> {batch.status === "FAILED" ? "Resume Render" : "Render All"}
-                        </button>
-                      )}
-                      {batch.status === "COMPLETED" && failedCount > 0 && (
-                        <button onClick={() => handleRetryFailed(batch.id)} className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-gradient-to-r from-amber-500 to-orange-600 text-white text-xs font-medium hover:from-amber-400 hover:to-orange-500 transition-all">
-                          <RefreshCw className="w-3.5 h-3.5" /> Retry Failed ({failedCount})
-                        </button>
-                      )}
-                      {batch.status === "RENDERING" && (
-                        <button 
-                          onClick={() => handlePauseRender(batch.id)} 
-                          disabled={pausingBatchId !== null}
-                          className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-amber-500/15 text-amber-300 border border-amber-500/20 text-xs font-medium hover:bg-amber-500/25 transition-all disabled:opacity-50"
-                        >
-                          {pausingBatchId === batch.id ? (
-                            <>
-                              <Loader2 className="w-3.5 h-3.5 animate-spin" /> Pausing...
-                            </>
-                          ) : (
-                            <>
-                              <Pause className="w-3.5 h-3.5" /> Pause Render
-                            </>
-                          )}
-                        </button>
-                      )}
-                      {batch.status === "COMPLETED" && renderedCount > 0 && (
-                        <button 
-                          onClick={() => handleDownload(batch.id)} 
-                          disabled={batch.id in downloads}
-                          className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-emerald-500/15 text-emerald-300 border border-emerald-500/20 text-xs font-medium hover:bg-emerald-500/25 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-                        >
-                          {batch.id in downloads ? (
-                            <>
-                              <Loader2 className="w-3.5 h-3.5 animate-spin" /> Downloading...
-                            </>
-                          ) : (
-                            <>
-                              <Download className="w-3.5 h-3.5" /> Download All
-                            </>
-                          )}
-                        </button>
-                      )}
-                      {/* Drive Folders + Export */}
-                      {driveConnected && renderedCount > 0 && (
-                        <>
-                          <button
-                            onClick={() => { setMultiFolderPickerBatchId(batch.id); setMultiFolderSearch(""); setMultiFolderResults([]); searchMultiFolders(""); }}
-                            className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-blue-500/10 text-blue-300 border border-blue-500/20 text-xs font-medium hover:bg-blue-500/20 transition-all"
-                          >
-                            <FolderOpen className="w-3.5 h-3.5" />
-                            Select Folders
-                            {(batchSelectedFolders[batch.id]?.length || 0) > 0 && (
-                              <span className="ml-1 px-1.5 py-0.5 rounded-full bg-blue-500/30 text-[9px] font-bold">{batchSelectedFolders[batch.id].length}</span>
-                            )}
-                          </button>
-                          <button
-                            onClick={() => handleExportToDrive(batch.id)}
-                            disabled={exportingBatches.has(batch.id) || batch.driveExportStatus === "EXPORTING" || !batch.items.some((i: any) => i.driveFolderId || batch.driveFolderId)}
-                            className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium transition-all disabled:opacity-50 ${
-                              batch.driveExportStatus === "FAILED"
-                                ? "bg-red-500/10 text-red-300 border border-red-500/20 hover:bg-red-500/20"
-                                : "bg-cyan-500/10 text-cyan-300 border border-cyan-500/20 hover:bg-cyan-500/20"
-                            }`}
-                            title={batch.items.some((i: any) => i.driveFolderId || batch.driveFolderId) ? "Export all to assigned Drive folders" : "Assign Drive folders to items first"}
-                          >
-                            {exportingBatches.has(batch.id) || batch.driveExportStatus === "EXPORTING" ? (
-                              <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Exporting...</>
-                            ) : batch.driveExportStatus === "EXPORTED" ? (
-                              <><Check className="w-3.5 h-3.5" /> Exported</>
-                            ) : batch.driveExportStatus === "FAILED" ? (
-                              <><RefreshCw className="w-3.5 h-3.5" /> Retry Export</>
-                            ) : (
-                              <><Cloud className="w-3.5 h-3.5" /> Export All</>
-                            )}
-                          </button>
-                        </>
-                      )}
-                      <button onClick={() => handleDeleteBatch(batch.id)} className="p-2 rounded-lg text-gray-600 hover:text-red-400 hover:bg-red-500/10 transition-all">
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    </div>
-                  </div>
 
-                  {/* Download Progress Bar */}
-                  {batch.id in downloads && (
-                    <div className="px-5 pb-4 bg-emerald-500/5 border-t border-white/5 pt-3">
-                      <div className="flex justify-between items-center mb-1.5">
-                        <span className="text-[10px] font-black text-emerald-400 uppercase tracking-wider flex items-center gap-1.5 animate-pulse">
-                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                          Streaming Archive Chunks...
+                    {/* Progress Bar */}
+                    <div className="space-y-1">
+                      <div className="flex justify-between text-xs font-semibold">
+                        <span className="text-[#a1a1aa]">
+                          {completedOutputs.length} / {totalOutputs} Completed
+                          {failedOutputs.length > 0 && ` (${failedOutputs.length} Failed)`}
                         </span>
-                        <span className="text-[10px] text-gray-500 font-semibold uppercase">
-                          {downloads[batch.id].loadedSize} / {downloads[batch.id].totalSize}
-                        </span>
+                        <span>{percent}%</span>
                       </div>
-                      <div className="h-1.5 rounded-full bg-white/5 overflow-hidden">
-                        <div 
-                          className="h-full rounded-full bg-gradient-to-r from-emerald-500 to-teal-500 transition-all duration-300" 
-                          style={{ width: `${downloads[batch.id].progress || 5}%` }} 
+                      <div className="w-full bg-[#09090b] rounded-full h-2 overflow-hidden border border-[#27272a]">
+                        <div
+                          className="bg-[#E11D48] h-full transition-all duration-500"
+                          style={{ width: `${percent}%` }}
                         />
                       </div>
-                      <div className="flex justify-between items-center mt-1.5">
-                        <span className="text-[9px] text-gray-600 font-semibold uppercase">Do not close this tab</span>
-                        <span className="text-[10px] text-emerald-400 font-bold">{downloads[batch.id].progress}% Complete</span>
-                      </div>
                     </div>
-                  )}
 
-                  {/* Progress Bar */}
-                  {batch.status === "RENDERING" && (
-                    <div className="px-5 pb-3">
-                      <div className="h-1.5 rounded-full bg-white/5 overflow-hidden">
-                        <div className="h-full rounded-full bg-gradient-to-r from-cyan-500 to-blue-500 transition-all duration-500" style={{ width: `${progress}%` }} />
+                    {/* Group specific transcribing indicators */}
+                    {group.transcriptStatus === "TRANSCRIBING" && (
+                      <div className="text-xs text-amber-500 flex items-center gap-1.5 animate-pulse bg-amber-500/5 p-2 rounded">
+                        <Loader2 className="w-4.5 h-4.5 animate-spin" /> Whispering alignment transcription in progress...
                       </div>
-                      <p className="text-gray-600 text-[10px] mt-1.5 text-right">{progress}% complete</p>
-                    </div>
-                  )}
+                    )}
 
-                  {/* Items List */}
-                  <div className="border-t border-white/5 max-h-80 overflow-y-auto">
-                    {batch.items.map((item, idx) => (
-                      <div key={item.id} className="flex items-center gap-3 px-5 py-2.5 border-b border-white/[0.03] last:border-b-0 hover:bg-white/[0.02] transition-all">
-                        <span className="text-gray-700 text-xs font-mono w-6 text-right flex-shrink-0">{idx + 1}</span>
-                        {itemIcon(item.status)}
-                        <span className="text-gray-400 text-sm flex-1 truncate">{item.hookText}</span>
-                        {/* Per-item Drive folder selector */}
-                        {driveConnected && item.status === "RENDERED" && (
-                          <button
-                            onClick={() => { setFolderPickerTarget({ type: "item", id: item.id }); setFolderSearch(""); setDriveFolders([]); searchDriveFolders(""); }}
-                            className={`flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-medium transition-all flex-shrink-0 ${
-                              item.driveFolderId
-                                ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 hover:bg-emerald-500/20"
-                                : "bg-white/5 text-gray-500 border border-white/10 hover:bg-white/10 hover:text-gray-300"
-                            }`}
-                            title={item.driveFolderName || "Select Drive folder"}
-                          >
-                            <FolderOpen className="w-3 h-3" />
-                            {item.driveFolderName ? item.driveFolderName.substring(0, 12) : "Folder"}
-                          </button>
-                        )}
-                        {item.renderedVideoUrl && (
-                          <button onClick={() => setPreviewUrl(item.renderedVideoUrl)} className="text-cyan-500 hover:text-cyan-300 transition-all flex-shrink-0">
-                            <Play className="w-3.5 h-3.5" />
-                          </button>
-                        )}
-                        {item.status === "FAILED" && item.errorMessage && (
-                          <span className="text-red-500 text-[10px] truncate max-w-[200px]" title={item.errorMessage}>
-                            {item.errorMessage.substring(0, 40)}...
-                          </span>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
+                    {/* Outputs grid */}
+                    {group.outputs.length > 0 && (
+                      <div className="border-t border-[#27272a] pt-4 mt-2">
+                        <p className="text-xs font-bold text-[#a1a1aa] mb-3 uppercase tracking-wider">Output Compositions:</p>
+                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                          {group.outputs.map((out) => (
+                            <div
+                              key={out.id}
+                              className="bg-[#09090b] p-3 rounded-lg border border-[#27272a] flex flex-col justify-between gap-3 text-xs"
+                            >
+                              <div className="space-y-1">
+                                <p className="font-semibold truncate text-[#fafafa]">
+                                  Hook: "{out.hook?.text || "..."}"
+                                </p>
+                                <p className="text-[10px] text-[#71717a] truncate">
+                                  Source: {out.variation?.videoRef || "..."}
+                                </p>
+                              </div>
 
-      {/* ─── Video Preview Modal ──────────────────────────────────────────── */}
-      {previewUrl && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm" onClick={() => setPreviewUrl(null)}>
-          <div className="bg-[#16161f] rounded-2xl border border-white/10 p-4 max-w-lg w-full mx-4 shadow-2xl" onClick={(e) => e.stopPropagation()}>
-            <div className="flex items-center justify-between mb-3">
-              <h3 className="text-white text-sm font-medium">Video Preview</h3>
-              <button onClick={() => setPreviewUrl(null)} className="text-gray-500 hover:text-white"><X className="w-5 h-5" /></button>
-            </div>
-            <video src={`/api${previewUrl}`} controls autoPlay className="w-full rounded-xl" style={{ maxHeight: "70vh" }} />
-          </div>
-        </div>
-      )}
-      {/* ─── Folder Picker Modal ──────────────────────────────────────────── */}
-      {folderPickerTarget && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm" onClick={() => setFolderPickerTarget(null)}>
-          <div className="bg-[#16161f] rounded-2xl border border-white/10 p-5 max-w-md w-full mx-4 shadow-2xl space-y-4" onClick={(e) => e.stopPropagation()}>
-            <div className="flex items-center justify-between">
-              <h3 className="text-white text-sm font-semibold flex items-center gap-2">
-                <FolderOpen className="w-4 h-4 text-blue-400" /> Select Drive Folder
-                <span className="text-gray-600 text-[10px] font-normal">
-                  ({folderPickerTarget.type === "item" ? "for video" : "for batch"})
-                </span>
-              </h3>
-              <button onClick={() => setFolderPickerTarget(null)} className="text-gray-500 hover:text-white">
-                <X className="w-5 h-5" />
-              </button>
-            </div>
+                              <div className="flex justify-between items-center">
+                                <span
+                                  className={`px-2 py-0.5 rounded text-[10px] uppercase font-extrabold ${
+                                    out.status === "COMPLETED"
+                                      ? "bg-green-500/10 text-green-500"
+                                      : out.status === "FAILED"
+                                      ? "bg-red-500/10 text-red-500"
+                                      : "bg-amber-500/10 text-amber-500 animate-pulse"
+                                  }`}
+                                >
+                                  {out.status}
+                                </span>
 
-            <div className="flex gap-2">
-              <input
-                type="text"
-                placeholder="Search folders..."
-                value={folderSearch}
-                onChange={(e) => setFolderSearch(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && searchDriveFolders(folderSearch)}
-                className="flex-1 px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white text-sm focus:outline-none focus:border-blue-500/50"
-              />
-              <button
-                onClick={() => searchDriveFolders(folderSearch)}
-                disabled={searchingFolders}
-                className="px-3 py-2 rounded-lg bg-blue-500/15 text-blue-300 border border-blue-500/20 text-xs font-medium hover:bg-blue-500/25 transition-all disabled:opacity-50"
-              >
-                {searchingFolders ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
-              </button>
-            </div>
+                                <div className="flex gap-2">
+                                  {out.status === "FAILED" && (
+                                    <button
+                                      onClick={() => handleRetryOutput(group, out.id)}
+                                      className="px-2.5 py-1 bg-zinc-800 hover:bg-zinc-700 text-[#fafafa] font-semibold rounded text-[10px] transition-all"
+                                    >
+                                      Retry
+                                    </button>
+                                  )}
+                                  {out.status === "COMPLETED" && out.outputRef && (
+                                    <a
+                                      href={out.outputRef}
+                                      download
+                                      className="px-2.5 py-1 bg-[#E11D48] hover:bg-rose-700 text-white font-semibold rounded text-[10px] transition-all flex items-center gap-1"
+                                    >
+                                      Download <ExternalLink className="w-3 h-3" />
+                                    </a>
+                                  )}
+                                </div>
+                              </div>
 
-            <div className="max-h-64 overflow-y-auto space-y-1">
-              {driveFolders.length === 0 ? (
-                <p className="text-xs text-gray-600 text-center py-6">
-                  {searchingFolders ? "Searching..." : "Type to search for folders"}
-                </p>
-              ) : (
-                driveFolders.map((folder) => (
-                  <button
-                    key={folder.id}
-                    onClick={() => handleAssignFolder(folderPickerTarget.id, folder.id, folder.name)}
-                    className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-white/5 text-left transition-all group"
-                  >
-                    <FolderOpen className="w-4 h-4 text-blue-400 flex-shrink-0" />
-                    <span className="text-sm text-gray-300 group-hover:text-white truncate">{folder.name}</span>
-                  </button>
-                ))
-              )}
-            </div>
-          </div>
-        </div>
-      )}
-      {/* ─── Multi-Folder Picker Modal ──────────────────────────────────── */}
-      {multiFolderPickerBatchId && (() => {
-        const targetBatch = batches.find((b) => b.id === multiFolderPickerBatchId);
-        const renderedCount = targetBatch?.items.filter((i) => i.status === "RENDERED").length || 0;
-        const selectedFolders = batchSelectedFolders[multiFolderPickerBatchId] || [];
-        return (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm" onClick={() => setMultiFolderPickerBatchId(null)}>
-            <div className="bg-[#16161f] rounded-2xl border border-white/10 p-5 max-w-md w-full mx-4 shadow-2xl space-y-4" onClick={(e) => e.stopPropagation()}>
-              <div className="flex items-center justify-between">
-                <h3 className="text-white text-sm font-semibold flex items-center gap-2">
-                  <FolderOpen className="w-4 h-4 text-blue-400" /> Select Multiple Folders
-                </h3>
-                <button onClick={() => setMultiFolderPickerBatchId(null)} className="text-gray-500 hover:text-white">
-                  <X className="w-5 h-5" />
-                </button>
-              </div>
-
-              <p className="text-gray-500 text-[11px]">
-                Select folders and they will be distributed round-robin across {renderedCount} rendered videos.
-                {selectedFolders.length > 0 && (
-                  <span className="text-blue-400 ml-1">{selectedFolders.length} folder(s) selected</span>
-                )}
-              </p>
-
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  placeholder="Search folders..."
-                  value={multiFolderSearch}
-                  onChange={(e) => setMultiFolderSearch(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && searchMultiFolders(multiFolderSearch)}
-                  className="flex-1 px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white text-sm focus:outline-none focus:border-blue-500/50"
-                />
-                <button
-                  onClick={() => searchMultiFolders(multiFolderSearch)}
-                  disabled={searchingMultiFolders}
-                  className="px-3 py-2 rounded-lg bg-blue-500/15 text-blue-300 border border-blue-500/20 text-xs font-medium hover:bg-blue-500/25 transition-all disabled:opacity-50"
-                >
-                  {searchingMultiFolders ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
-                </button>
-              </div>
-
-              {/* Selected folders chips */}
-              {selectedFolders.length > 0 && (
-                <div className="flex flex-wrap gap-1.5">
-                  {selectedFolders.map((f, idx) => (
-                    <span
-                      key={f.id}
-                      className="flex items-center gap-1 px-2 py-1 rounded-md bg-blue-500/15 text-blue-300 text-[10px] font-medium border border-blue-500/20"
-                    >
-                      <span className="text-blue-500/50 font-mono">{idx + 1}.</span>
-                      {f.name.substring(0, 18)}
-                      <button onClick={() => handleBatchMultiFolderSelect(multiFolderPickerBatchId, f)} className="ml-0.5 text-blue-400/50 hover:text-red-400">
-                        <X className="w-3 h-3" />
-                      </button>
-                    </span>
-                  ))}
-                </div>
-              )}
-
-              <div className="max-h-48 overflow-y-auto space-y-1">
-                {multiFolderResults.length === 0 ? (
-                  <p className="text-xs text-gray-600 text-center py-6">
-                    {searchingMultiFolders ? "Searching..." : "Type to search for folders"}
-                  </p>
-                ) : (
-                  multiFolderResults.map((folder) => {
-                    const isSelected = selectedFolders.some((f) => f.id === folder.id);
-                    return (
-                      <button
-                        key={folder.id}
-                        onClick={() => handleBatchMultiFolderSelect(multiFolderPickerBatchId, folder)}
-                        className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-left transition-all group ${isSelected ? "bg-blue-500/10 border border-blue-500/20" : "hover:bg-white/5"}`}
-                      >
-                        <div className={`w-4 h-4 rounded border flex items-center justify-center flex-shrink-0 ${isSelected ? "bg-blue-500 border-blue-500" : "border-white/20"}`}>
-                          {isSelected && <Check className="w-3 h-3 text-white" />}
+                              {out.errorMessage && (
+                                <p className="text-[10px] text-red-500 bg-red-500/5 p-1.5 rounded break-words max-h-16 overflow-y-auto">
+                                  {out.errorMessage}
+                                </p>
+                              )}
+                            </div>
+                          ))}
                         </div>
-                        <FolderOpen className="w-4 h-4 text-blue-400 flex-shrink-0" />
-                        <span className={`text-sm truncate ${isSelected ? "text-white" : "text-gray-300 group-hover:text-white"}`}>{folder.name}</span>
-                      </button>
-                    );
-                  })
-                )}
-              </div>
-
-              {/* Assign button */}
-              <button
-                onClick={() => handleBatchMultiFolderAssign(multiFolderPickerBatchId)}
-                disabled={selectedFolders.length === 0}
-                className="w-full py-2.5 rounded-xl bg-gradient-to-r from-blue-500 to-cyan-500 text-white text-sm font-semibold hover:from-blue-400 hover:to-cyan-400 transition-all disabled:opacity-30 disabled:cursor-not-allowed"
-              >
-                Assign {selectedFolders.length} Folder{selectedFolders.length !== 1 ? "s" : ""} to {renderedCount} Videos
-              </button>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
-          </div>
-        );
-      })()}
+          )}
+        </div>
+      )}
     </div>
   );
 }

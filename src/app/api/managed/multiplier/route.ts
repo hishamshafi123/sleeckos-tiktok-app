@@ -3,12 +3,11 @@ import { NextResponse } from "next/server";
 import prisma from "@/lib/db";
 import { getSession } from "@/lib/session";
 import { can } from "@/lib/services/permissions";
+import { createGroup } from "@/lib/services/multiplier";
 import fs from "fs";
 import path from "path";
-import { Readable } from "stream";
-import { pipeline } from "stream/promises";
 
-// GET /api/managed/multiplier — List all multiplier batches
+// GET /api/managed/multiplier — List all multiplier groups
 export async function GET() {
   const session = await getSession();
   if (!session) {
@@ -19,33 +18,36 @@ export async function GET() {
   }
 
   try {
-    const batches = await prisma.multiplierBatch.findMany({
+    const groups = await prisma.multiplierGroup.findMany({
       orderBy: { createdAt: "desc" },
       include: {
-        _count: { select: { items: true } },
-        items: {
-          select: {
-            id: true,
-            hookText: true,
-            status: true,
-            renderedVideoUrl: true,
-            errorMessage: true,
-            driveFolderId: true,
-            driveFolderName: true,
-          },
+        campaign: {
+          select: { id: true, title: true },
+        },
+        variations: {
+          orderBy: { order: "asc" },
+        },
+        hooks: {
+          orderBy: { order: "asc" },
+        },
+        outputs: {
           orderBy: { createdAt: "asc" },
+          include: {
+            variation: { select: { videoRef: true } },
+            hook: { select: { text: true } },
+          },
         },
       },
     });
 
-    return NextResponse.json(batches);
-  } catch (err) {
-    console.error("[Multiplier API] Error fetching batches:", err);
-    return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
+    return NextResponse.json(groups);
+  } catch (err: any) {
+    console.error("[Multiplier Group GET API] Error:", err);
+    return NextResponse.json({ error: err.message || "Failed to fetch groups" }, { status: 500 });
   }
 }
 
-// POST /api/managed/multiplier — Upload video + CSV, create batch
+// POST /api/managed/multiplier — Create a new group
 export async function POST(req: Request) {
   const session = await getSession();
   if (!session) {
@@ -56,121 +58,30 @@ export async function POST(req: Request) {
   }
 
   try {
-    const formData = await req.formData();
+    const body = await req.json();
+    const { name, campaignId, styleId, mappingMode, settings } = body;
 
-    const videoFile = formData.get("video") as File | null;
-    const csvFile = formData.get("csv") as File | null;
-    const batchName = (formData.get("name") as string) || "";
-
-    // Styling options
-    const fontFamily = (formData.get("fontFamily") as string) || "Outfit-Bold";
-    const fontSize = parseInt(formData.get("fontSize") as string) || 42;
-    const fontColor = (formData.get("fontColor") as string) || "#FFFFFF";
-    const textCase = (formData.get("textCase") as string) || "UPPERCASE";
-    const bgStripColor = (formData.get("bgStripColor") as string) || "#000000";
-    const bgStripOpacity = parseFloat(formData.get("bgStripOpacity") as string) || 1.0;
-    const textPosition = (formData.get("textPosition") as string) || "TOP";
-    const stripPaddingY = parseInt(formData.get("stripPaddingY") as string) || 20;
-    const positionYPercent = parseInt(formData.get("positionYPercent") as string) || 5;
-    const marginX = parseInt(formData.get("marginX") as string) || 0;
-    const borderRadius = parseInt(formData.get("borderRadius") as string) ?? 12;
-    const hookDuration = parseInt(formData.get("hookDuration") as string) || 5;
-
-    if (!videoFile) {
-      return NextResponse.json({ error: "Please upload a video file" }, { status: 400 });
+    if (!name || !campaignId || !styleId) {
+      return NextResponse.json({ error: "Missing required parameters: name, campaignId, styleId" }, { status: 400 });
     }
 
-    // 1. Save the video file
-    const uploadsDir = path.join(process.cwd(), "public", "uploads", "multiplier");
-    if (!fs.existsSync(uploadsDir)) {
-      fs.mkdirSync(uploadsDir, { recursive: true });
-    }
-
-    const videoExt = path.extname(videoFile.name) || ".mp4";
-    const videoFileName = `source_${Date.now()}${videoExt}`;
-    const videoLocalPath = path.join(uploadsDir, videoFileName);
-    
-    // Save file using lightweight streaming to avoid Out of Memory (OOM) crashes with large videos
-    const writeStream = fs.createWriteStream(videoLocalPath);
-    const readableWebStream = videoFile.stream();
-    const nodeReadable = Readable.fromWeb(readableWebStream as any);
-    await pipeline(nodeReadable, writeStream);
-
-    const videoUrl = `/uploads/multiplier/${videoFileName}`;
-
-    // 2. Parse the CSV file (if provided)
-    let hooks: string[] = [];
-    if (csvFile) {
-      const csvText = await csvFile.text();
-      hooks = parseCSVHooks(csvText);
-    }
-
-    if (hooks.length === 0) {
-      // Clean up uploaded video
-      try { fs.unlinkSync(videoLocalPath); } catch {}
-      return NextResponse.json({ error: "No text hooks found in CSV." }, { status: 400 });
-    }
-
-    // 3. Parse design template IDs for random assignment to items
-    let designTemplateIds: string[] = [];
-    const templateIdsRaw = formData.get("templateIds") as string;
-    if (templateIdsRaw) {
-      try {
-        designTemplateIds = JSON.parse(templateIdsRaw) as string[];
-      } catch (e) {
-        console.warn("[Multiplier API] Failed to parse templateIds:", e);
-      }
-    }
-
-    // 4. Create batch items: one item per hook with round-robin template assignment.
-    //    Each hook gets ONE template, cycling through the selected templates.
-    //    e.g. 14 hooks × 3 templates → 14 videos (Hook1→TmplA, Hook2→TmplB, Hook3→TmplC, Hook4→TmplA, ...)
-    const itemsToCreate: { hookText: string; status: "PENDING"; templateId: string | null }[] = [];
-    for (let i = 0; i < hooks.length; i++) {
-      const tmplId = designTemplateIds.length > 0
-        ? designTemplateIds[i % designTemplateIds.length]
-        : null;
-      itemsToCreate.push({ hookText: hooks[i], status: "PENDING", templateId: tmplId });
-    }
-
-    const batch = await prisma.multiplierBatch.create({
-      data: {
-        name: batchName,
-        sourceVideoUrl: videoUrl,
-        totalItems: itemsToCreate.length,
-        status: "READY",
-        fontFamily,
-        fontSize,
-        fontColor,
-        textCase,
-        bgStripColor,
-        bgStripOpacity,
-        textPosition,
-        stripPaddingY,
-        positionYPercent,
-        marginX,
-        borderRadius,
-        hookDuration,
-        items: {
-          create: itemsToCreate,
-        },
-      },
-      include: {
-        items: {
-          orderBy: { createdAt: "asc" },
-        },
-      },
+    const group = await createGroup({
+      name,
+      campaignId,
+      styleId,
+      mappingMode,
+      settings,
+      createdBy: session.userId,
     });
 
-    console.log(`[Multiplier API] Created batch ${batch.id} with ${itemsToCreate.length} items (${hooks.length} hooks × ${designTemplateIds.length || 1} templates)`);
-    return NextResponse.json(batch);
-  } catch (err) {
-    console.error("[Multiplier API] Error creating batch:", err);
-    return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
+    return NextResponse.json(group);
+  } catch (err: any) {
+    console.error("[Multiplier Group POST API] Error:", err);
+    return NextResponse.json({ error: err.message || "Failed to create group" }, { status: 500 });
   }
 }
 
-// DELETE /api/managed/multiplier?batchId=...
+// DELETE /api/managed/multiplier?groupId=... — Delete a group and its files
 export async function DELETE(req: Request) {
   const session = await getSession();
   if (!session) {
@@ -181,169 +92,53 @@ export async function DELETE(req: Request) {
   }
 
   const { searchParams } = new URL(req.url);
-  const batchId = searchParams.get("batchId");
+  const groupId = searchParams.get("groupId");
 
-  if (!batchId) {
-    return NextResponse.json({ error: "Missing batchId" }, { status: 400 });
+  if (!groupId) {
+    return NextResponse.json({ error: "Missing groupId" }, { status: 400 });
   }
 
   try {
-    const uploadsDir = path.join(process.cwd(), "public");
-
-    if (batchId === "all") {
-      const batches = await prisma.multiplierBatch.findMany({
-        include: { items: true },
-      });
-
-      for (const batch of batches) {
-        // Delete source video
-        const sourcePath = path.join(uploadsDir, batch.sourceVideoUrl);
-        if (fs.existsSync(sourcePath)) {
-          try { fs.unlinkSync(sourcePath); } catch {}
-        }
-
-        // Delete rendered videos
-        for (const item of batch.items) {
-          if (item.renderedVideoUrl) {
-            const renderPath = path.join(uploadsDir, item.renderedVideoUrl);
-            if (fs.existsSync(renderPath)) {
-              try { fs.unlinkSync(renderPath); } catch {}
-            }
-          }
-        }
-      }
-
-      // Delete all batches from DB (cascade deletes items)
-      await prisma.multiplierBatch.deleteMany();
-
-      console.log(`[Multiplier API] Deleted all batches`);
-      return NextResponse.json({ success: true });
-    }
-
-    const batch = await prisma.multiplierBatch.findUnique({
-      where: { id: batchId },
-      include: { items: true },
+    const group = await prisma.multiplierGroup.findUnique({
+      where: { id: groupId },
+      include: {
+        variations: true,
+        outputs: true,
+      },
     });
 
-    if (!batch) {
-      return NextResponse.json({ error: "Batch not found" }, { status: 404 });
+    if (!group) {
+      return NextResponse.json({ error: "Group not found" }, { status: 404 });
     }
 
-    // Delete source video
-    const sourcePath = path.join(uploadsDir, batch.sourceVideoUrl);
-    if (fs.existsSync(sourcePath)) {
-      try { fs.unlinkSync(sourcePath); } catch {}
+    const publicDir = path.join(process.cwd(), "public");
+
+    // Clean up variations files
+    for (const v of group.variations) {
+      const vPath = path.join(publicDir, v.videoRef);
+      if (fs.existsSync(vPath)) {
+        try { fs.unlinkSync(vPath); } catch {}
+      }
     }
 
-    // Delete rendered videos
-    for (const item of batch.items) {
-      if (item.renderedVideoUrl) {
-        const renderPath = path.join(uploadsDir, item.renderedVideoUrl);
-        if (fs.existsSync(renderPath)) {
-          try { fs.unlinkSync(renderPath); } catch {}
+    // Clean up output files
+    for (const o of group.outputs) {
+      if (o.outputRef) {
+        const oPath = path.join(publicDir, o.outputRef);
+        if (fs.existsSync(oPath)) {
+          try { fs.unlinkSync(oPath); } catch {}
         }
       }
     }
 
-    // Delete from DB (cascade deletes items)
-    await prisma.multiplierBatch.delete({ where: { id: batchId } });
+    // Delete group (cascade deletes variations, hooks, outputs in DB)
+    await prisma.multiplierGroup.delete({
+      where: { id: groupId },
+    });
 
-    console.log(`[Multiplier API] Deleted batch ${batchId}`);
     return NextResponse.json({ success: true });
-  } catch (err) {
-    console.error("[Multiplier API] Error deleting batch:", err);
-    return NextResponse.json({ error: "Failed to delete batch" }, { status: 500 });
+  } catch (err: any) {
+    console.error("[Multiplier Group DELETE API] Error:", err);
+    return NextResponse.json({ error: err.message || "Failed to delete group" }, { status: 500 });
   }
-}
-
-// PATCH /api/managed/multiplier — Assign Drive folder to a batch
-export async function PATCH(req: Request) {
-  const session = await getSession();
-  if (!session) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-  if (!(await can(session.userId, "multiplier"))) {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-  }
-
-  try {
-    const body = await req.json();
-    const { batchId, itemId, driveFolderId, driveFolderName, name } = body;
-
-    // 1. Per-item folder assignment
-    if (itemId) {
-      const item = await prisma.multiplierItem.update({
-        where: { id: itemId },
-        data: {
-          driveFolderId: driveFolderId || null,
-          driveFolderName: driveFolderName || null,
-        },
-      });
-      return NextResponse.json({ success: true, item });
-    }
-
-    // 2. Batch-level updates (folder and/or rename)
-    if (!batchId) {
-      return NextResponse.json({ error: "Missing batchId or itemId" }, { status: 400 });
-    }
-
-    const updateData: any = {};
-    if (driveFolderId !== undefined) updateData.driveFolderId = driveFolderId || null;
-    if (driveFolderName !== undefined) updateData.driveFolderName = driveFolderName || null;
-    if (name !== undefined) updateData.name = name;
-
-    const batch = await prisma.multiplierBatch.update({
-      where: { id: batchId },
-      data: updateData,
-    });
-
-    return NextResponse.json({ success: true, batch });
-  } catch (err) {
-    console.error("[Multiplier API] PATCH error:", err);
-    return NextResponse.json({ error: "Failed to update" }, { status: 500 });
-  }
-}
-
-// ─── CSV Parser ──────────────────────────────────────────────────────────────
-
-function parseCSVHooks(csvText: string): string[] {
-  const lines = csvText
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
-
-  if (lines.length === 0) return [];
-
-  // Detect if first line is a header (common patterns)
-  const firstLine = lines[0].toLowerCase();
-  const isHeader =
-    firstLine === "hook" ||
-    firstLine === "text" ||
-    firstLine === "hooks" ||
-    firstLine === "hook_text" ||
-    firstLine === "hooktext" ||
-    firstLine === "caption" ||
-    firstLine === "title" ||
-    firstLine.includes("hook") ||
-    firstLine.includes("text");
-
-  const dataLines = isHeader ? lines.slice(1) : lines;
-
-  return dataLines
-    .map((line) => {
-      // Handle quoted CSV values: "some text, with commas"
-      if (line.startsWith('"') && line.endsWith('"')) {
-        return line.slice(1, -1).replace(/""/g, '"');
-      }
-      // If the line has commas, take the first column
-      if (line.includes(",")) {
-        const first = line.split(",")[0].trim();
-        if (first.startsWith('"') && first.endsWith('"')) {
-          return first.slice(1, -1).replace(/""/g, '"');
-        }
-        return first;
-      }
-      return line;
-    })
-    .filter((hook) => hook.length > 0);
 }

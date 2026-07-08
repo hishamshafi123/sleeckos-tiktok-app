@@ -2,6 +2,7 @@ import { registerRoot, Composition } from "remotion";
 import { BratComposition } from "./compositions/Brat";
 import { SpotifyLyricsComposition } from "./compositions/SpotifyLyrics";
 import { QuoteComposition } from "./compositions/Quote";
+import { EditorialCaption } from "./compositions/EditorialCaption";
 import React from "react";
 
 const RemotionRoot: React.FC = () => {
@@ -54,6 +55,28 @@ const RemotionRoot: React.FC = () => {
         bgColor: "transparent",
         fontSize: 28,
         animationSpeed: 1,
+      },
+    }),
+    React.createElement(Composition, {
+      id: "editorial-caption",
+      component: EditorialCaption,
+      durationInFrames: 30,
+      fps: 30,
+      width: 720,
+      height: 1280,
+      defaultProps: {
+        styleKey: "news-lower-third",
+        text: "STREET PROTESTS INTENSIFY AROUND CITIZEN CONCERNS",
+        fontSize: 32,
+        fontColor: "#FFFFFF",
+        bgStripColor: "#000000",
+        bgStripOpacity: 0.85,
+        positionYPercent: 75,
+        marginX: 40,
+        paddingY: 20,
+        paddingX: 20,
+        accentColor: "#E11D48",
+        author: "",
       },
     })
   );

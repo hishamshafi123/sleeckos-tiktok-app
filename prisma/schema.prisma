@@ -129,6 +129,7 @@ model Campaign {
   
   createdAt           DateTime       @default(now())
   updatedAt           DateTime       @updatedAt
+  multiplierGroups    MultiplierGroup[]
 }
 
 model CampaignResource {
@@ -722,6 +723,65 @@ model MultiplierTemplate {
 
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
+}
+
+// ─── Multiplier Group Models ──────────────────────────────────────────────────
+
+model MultiplierGroup {
+  id              String                    @id @default(uuid())
+  name            String
+  campaignId      String
+  campaign        Campaign                  @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  transcript      String?                   @db.Text
+  transcriptStatus String                    @default("PENDING") // PENDING | TRANSCRIBING | TRANSCRIBED | FAILED
+  styleId         String                    // template preset key or ID
+  mappingMode     String                    @default("each")    // each | distribute
+  settings        Json                      @default("{}")      // holds custom visual overrides
+  status          String                    @default("DRAFT")   // DRAFT | QUEUED | RENDERING | COMPLETED | FAILED
+  errorMessage    String?
+  createdBy       String?
+  createdAt       DateTime                  @default(now())
+  updatedAt       DateTime                  @updatedAt
+  variations      MultiplierGroupVariation[]
+  hooks           MultiplierHook[]
+  outputs         MultiplierOutput[]
+}
+
+model MultiplierGroupVariation {
+  id        String             @id @default(uuid())
+  groupId   String
+  group     MultiplierGroup    @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  videoRef  String             // File path in public/uploads/
+  order     Int                @default(0)
+  createdAt DateTime           @default(now())
+  outputs   MultiplierOutput[]
+}
+
+model MultiplierHook {
+  id        String             @id @default(uuid())
+  groupId   String
+  group     MultiplierGroup    @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  text      String
+  source    String             @default("manual") // ai | csv | manual
+  order     Int                @default(0)
+  createdAt DateTime           @default(now())
+  outputs   MultiplierOutput[]
+}
+
+model MultiplierOutput {
+  id            String                    @id @default(uuid())
+  groupId       String
+  group         MultiplierGroup           @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  variationId   String
+  variation     MultiplierGroupVariation  @relation(fields: [variationId], references: [id], onDelete: Cascade)
+  hookId        String
+  hook          MultiplierHook            @relation(fields: [hookId], references: [id], onDelete: Cascade)
+  status        String                    @default("PENDING") // PENDING | RENDERING | COMPLETED | FAILED
+  outputRef     String?                   // path to completed MP4 in public/uploads/
+  driveFolderId String?
+  errorMessage  String?
+  createdAt     DateTime                  @default(now())
+  updatedAt     DateTime                  @updatedAt
 }
 
 // ─── Global Google Drive Connection ──────────────────────────────────────────
