@@ -127,6 +127,7 @@ export default function ClientPage() {
   const [driveFolders, setDriveFolders] = useState<{ id: string; name: string }[]>([]);
   const [folderSearch, setFolderSearch] = useState("");
   const [searchingFolders, setSearchingFolders] = useState(false);
+  const [syncingOutputs, setSyncingOutputs] = useState<Set<string>>(new Set());
 
   // Fetch initial data
   const fetchData = async () => {
@@ -205,6 +206,37 @@ export default function ClientPage() {
       await fetchData();
     } catch (err: any) {
       toast.error(err.message || "Failed to save folder");
+    }
+  };
+
+  const handleSyncToDrive = async (group: MultiplierGroup, outId: string) => {
+    setSyncingOutputs((prev) => new Set([...prev, outId]));
+    const isLegacy = group.campaignId === "";
+    
+    try {
+      const res = await fetch("/api/managed/multiplier/export", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(
+          isLegacy ? { itemId: outId } : { outputId: outId }
+        ),
+      });
+
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || "Failed to upload");
+      }
+
+      toast.success("Successfully uploaded to Google Drive!");
+      await fetchData();
+    } catch (err: any) {
+      toast.error(err.message || "Failed to upload to Google Drive");
+    } finally {
+      setSyncingOutputs((prev) => {
+        const next = new Set(prev);
+        next.delete(outId);
+        return next;
+      });
     }
   };
 
@@ -1503,6 +1535,20 @@ export default function ClientPage() {
                                       className="px-2.5 py-1 bg-zinc-800 hover:bg-zinc-700 text-[#fafafa] font-semibold rounded text-[10px] transition-all"
                                     >
                                       Retry
+                                    </button>
+                                  )}
+                                  {driveConnected && out.status === "COMPLETED" && out.outputRef && (
+                                    <button
+                                      onClick={() => handleSyncToDrive(group, out.id)}
+                                      disabled={syncingOutputs.has(out.id)}
+                                      className="px-2.5 py-1 bg-zinc-800 hover:bg-zinc-700 text-[#fafafa] font-semibold rounded text-[10px] transition-all flex items-center gap-1 disabled:opacity-50"
+                                    >
+                                      {syncingOutputs.has(out.id) ? (
+                                        <Loader2 className="w-3 h-3 animate-spin" />
+                                      ) : (
+                                        <FolderOpen className="w-3 h-3 text-rose-500" />
+                                      )}
+                                      {syncingOutputs.has(out.id) ? "Syncing..." : "Sync Drive"}
                                     </button>
                                   )}
                                   {out.status === "COMPLETED" && out.outputRef && (

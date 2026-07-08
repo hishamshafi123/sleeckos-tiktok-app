@@ -38,10 +38,112 @@ export async function POST(req: Request) {
   }
 
   try {
-    const { batchId } = await req.json();
+    const { batchId, outputId, itemId } = await req.json();
+
+    // 1. Single Output manual export
+    if (outputId) {
+      const output = await prisma.multiplierOutput.findUnique({
+        where: { id: outputId },
+        include: {
+          variation: { select: { videoRef: true } },
+          hook: { select: { text: true } },
+          group: { select: { campaignId: true, settings: true } },
+        },
+      });
+
+      if (!output) {
+        return NextResponse.json({ error: "Output not found" }, { status: 404 });
+      }
+
+      if (output.status !== "COMPLETED" || !output.outputRef) {
+        return NextResponse.json({ error: "Output video is not rendered yet" }, { status: 400 });
+      }
+
+      const settings = typeof output.group.settings === "string"
+        ? JSON.parse(output.group.settings)
+        : (output.group.settings || {});
+
+      const finalFolderId = output.driveFolderId || settings.driveFolderId;
+      if (!finalFolderId) {
+        return NextResponse.json({ error: "No Drive folder assigned to this variation or group. Select a folder first." }, { status: 400 });
+      }
+
+      const drive = await getMultiplierDriveClient();
+      if (!drive) {
+        return NextResponse.json({ error: "Google Drive not connected. Connect in Manage section first." }, { status: 400 });
+      }
+
+      const localFilePath = path.join(process.cwd(), "public", output.outputRef);
+      if (!fs.existsSync(localFilePath)) {
+        return NextResponse.json({ error: "Rendered video file not found on disk" }, { status: 400 });
+      }
+
+      const cleanHookSlug = output.hook.text.replace(/[^a-zA-Z0-9 ]/g, "").trim().replace(/\s+/g, "_").substring(0, 40);
+      const fileName = `multi_${output.id}_${cleanHookSlug}.mp4`;
+
+      const result = await uploadWithRetry(drive, localFilePath, fileName, finalFolderId);
+      if (!result.success) {
+        return NextResponse.json({ error: result.error || "Failed to upload to Google Drive" }, { status: 500 });
+      }
+
+      // Update output folder status in DB
+      await prisma.multiplierOutput.update({
+        where: { id: output.id },
+        data: { driveFolderId: finalFolderId },
+      });
+
+      return NextResponse.json({ success: true, message: "Video uploaded successfully to Drive" });
+    }
+
+    // 2. Legacy Item manual export
+    if (itemId) {
+      const item = await prisma.multiplierItem.findUnique({
+        where: { id: itemId },
+        include: { batch: true },
+      });
+
+      if (!item) {
+        return NextResponse.json({ error: "Item not found" }, { status: 404 });
+      }
+
+      if (item.status !== "RENDERED" || !item.renderedVideoUrl) {
+        return NextResponse.json({ error: "Video is not rendered yet" }, { status: 400 });
+      }
+
+      const finalFolderId = item.driveFolderId || item.batch.driveFolderId;
+      if (!finalFolderId) {
+        return NextResponse.json({ error: "No Drive folder assigned to this video. Select a folder first." }, { status: 400 });
+      }
+
+      const drive = await getMultiplierDriveClient();
+      if (!drive) {
+        return NextResponse.json({ error: "Google Drive not connected. Connect in Manage section first." }, { status: 400 });
+      }
+
+      const localFilePath = path.join(process.cwd(), "public", item.renderedVideoUrl);
+      if (!fs.existsSync(localFilePath)) {
+        return NextResponse.json({ error: "Rendered video file not found on disk" }, { status: 400 });
+      }
+
+      const cleanHookSlug = item.hookText.replace(/[^a-zA-Z0-9 ]/g, "").trim().replace(/\s+/g, "_").substring(0, 40);
+      const fileName = `multi_${item.id}_${cleanHookSlug}.mp4`;
+
+      const result = await uploadWithRetry(drive, localFilePath, fileName, finalFolderId);
+      if (!result.success) {
+        return NextResponse.json({ error: result.error || "Failed to upload to Google Drive" }, { status: 500 });
+      }
+
+      // Update item in DB
+      await prisma.multiplierItem.update({
+        where: { id: item.id },
+        data: { driveFolderId: finalFolderId },
+      });
+
+      return NextResponse.json({ success: true, message: "Video uploaded successfully to Drive" });
+    }
 
     if (!batchId) {
-      return NextResponse.json({ error: "Missing batchId" }, { status: 400 });
+      return NextResponse.json({ error: "Missing batchId, outputId, or itemId" }, { status: 400 });
     }
 
     const batch = await prisma.multiplierBatch.findUnique({
