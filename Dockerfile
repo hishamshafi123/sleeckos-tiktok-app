@@ -102,25 +102,8 @@ RUN mkdir -p public/uploads public/fonts && \
 # Prisma: config + schema + migrations + generated client
 COPY --from=builder --chown=nextjs:nodejs /app/prisma.config.ts ./
 COPY --from=builder --chown=nextjs:nodejs /app/prisma ./prisma
-COPY --from=builder --chown=nextjs:nodejs /app/node_modules/.prisma ./node_modules/.prisma
-COPY --from=builder --chown=nextjs:nodejs /app/node_modules/@prisma ./node_modules/@prisma
-
-# Copy puppeteer-core and its runtime dependencies
-COPY --from=builder --chown=nextjs:nodejs /app/node_modules/puppeteer-core ./node_modules/puppeteer-core
-COPY --from=builder --chown=nextjs:nodejs /app/node_modules/chromium-bidi ./node_modules/chromium-bidi
-COPY --from=builder --chown=nextjs:nodejs /app/node_modules/devtools-protocol ./node_modules/devtools-protocol
-COPY --from=builder --chown=nextjs:nodejs /app/node_modules/@puppeteer ./node_modules/@puppeteer
-COPY --from=builder --chown=nextjs:nodejs /app/node_modules/typed-query-selector ./node_modules/typed-query-selector
-COPY --from=builder --chown=nextjs:nodejs /app/node_modules/webdriver-bidi-protocol ./node_modules/webdriver-bidi-protocol
-COPY --from=builder --chown=nextjs:nodejs /app/node_modules/ws ./node_modules/ws
-COPY --from=builder --chown=nextjs:nodejs /app/node_modules/mitt ./node_modules/mitt
-COPY --from=builder --chown=nextjs:nodejs /app/node_modules/debug ./node_modules/debug
-COPY --from=builder --chown=nextjs:nodejs /app/node_modules/ms ./node_modules/ms
-
-# Copy remotion and rspack packages for composition building at runtime
-COPY --from=builder --chown=nextjs:nodejs /app/node_modules/@remotion ./node_modules/@remotion
-COPY --from=builder --chown=nextjs:nodejs /app/node_modules/remotion ./node_modules/remotion
-COPY --from=builder --chown=nextjs:nodejs /app/node_modules/@rspack ./node_modules/@rspack
+# Copy full node_modules to guarantee all runtime webpack/remotion dependencies resolve correctly
+COPY --from=builder --chown=nextjs:nodejs /app/node_modules ./node_modules
 
 # Entrypoint runs migrations then starts the app
 COPY --chown=nextjs:nodejs docker-entrypoint.sh ./

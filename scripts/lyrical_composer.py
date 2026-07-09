@@ -1090,6 +1090,10 @@ def create_lyrical_video(input_path, background_path, output_path, **kwargs):
     print(f"[+] Grouped text into {len(chunks)} kinetic subtitle segments.")
     
     # 3. Render Caption Overlay Clips
+    clean_kwargs = kwargs.copy()
+    for key in ["chunks", "width", "height", "font_path", "font_size", "active_color", "stroke_width", "stroke_color", "y_position"]:
+        clean_kwargs.pop(key, None)
+
     caption_overlays = build_lyrical_overlay_clips(
         chunks=chunks,
         width=bg_width,
@@ -1100,7 +1104,7 @@ def create_lyrical_video(input_path, background_path, output_path, **kwargs):
         stroke_width=stroke_width,
         stroke_color=stroke_color,
         y_position=target_y,
-        **kwargs
+        **clean_kwargs
     )
     
     fps = kwargs.get("fps", 60)
