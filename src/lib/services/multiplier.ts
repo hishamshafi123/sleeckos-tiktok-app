@@ -386,6 +386,7 @@ export async function renderCaptionStill(
     serveUrl: bundleLocation,
     id: "editorial-caption",
     inputProps,
+    browserExecutable: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
   });
 
   const stillFileName = `still_${outputId}.png`;

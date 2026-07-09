@@ -23,6 +23,8 @@ services:
   app:
     build: .
     restart: unless-stopped
+    cap_add:
+      - SYS_ADMIN
     shm_size: '256m'
     env_file: .env
     environment:
