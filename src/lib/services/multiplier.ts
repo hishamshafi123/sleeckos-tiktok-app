@@ -2,8 +2,6 @@ import prisma from "@/lib/db";
 import { getMultiplierDriveClient } from "@/app/api/managed/multiplier/google/drive-helper";
 import { GoogleGenAI } from "@google/genai";
 import crypto from "crypto";
-import { bundle } from "@remotion/bundler";
-import { renderStill, selectComposition } from "@remotion/renderer";
 import { spawn, exec } from "child_process";
 import fs from "fs";
 import path from "path";
@@ -345,17 +343,6 @@ export async function previewOutputCount(groupId: string): Promise<number> {
   return vCount * hCount; // each hook on each variation
 }
 
-// Global cached bundle location for Remotion
-let cachedBundleLocation: string | null = null;
-async function getRemotionBundle() {
-  if (cachedBundleLocation && fs.existsSync(cachedBundleLocation)) {
-    return cachedBundleLocation;
-  }
-  const entryPoint = path.join(process.cwd(), "src", "remotion", "index.ts");
-  cachedBundleLocation = await bundle(entryPoint);
-  return cachedBundleLocation;
-}
-
 export async function renderCaptionStill(
   styleId: string,
   hookText: string,
@@ -363,50 +350,54 @@ export async function renderCaptionStill(
   outputId: string
 ): Promise<string> {
   ensureDirsExist();
-  const bundleLocation = await getRemotionBundle();
-
-  // Merge presets default settings based on styleId
-  const customProps = settings || {};
-  const inputProps = {
-    styleKey: styleId,
-    text: hookText,
-    fontSize: customProps.fontSize ?? 32,
-    fontColor: customProps.fontColor ?? "#FFFFFF",
-    bgStripColor: customProps.bgStripColor ?? "#000000",
-    bgStripOpacity: customProps.bgStripOpacity ?? 0.85,
-    positionYPercent: customProps.positionYPercent ?? 75,
-    marginX: customProps.marginX ?? 40,
-    paddingY: customProps.paddingY ?? 20,
-    paddingX: customProps.paddingX ?? 20,
-    accentColor: customProps.accentColor ?? "#E11D48",
-    author: customProps.author || "",
-  };
-
-  const chromiumOptions = {
-    args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
-  } as any;
-
-  const composition = await selectComposition({
-    serveUrl: bundleLocation,
-    id: "editorial-caption",
-    inputProps,
-    browserExecutable: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
-    chromiumOptions,
-  });
-
   const stillFileName = `still_${outputId}.png`;
   const stillPath = path.join(STILLS_DIR, stillFileName);
 
-  await renderStill({
-    composition,
-    serveUrl: bundleLocation,
-    output: stillPath,
-    inputProps,
-    browserExecutable: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
-    chromiumOptions,
-  });
+  // Merge presets default settings based on styleId
+  const customProps = settings || {};
+  const fontSize = customProps.fontSize ?? 32;
+  const fontColor = customProps.fontColor ?? "#FFFFFF";
+  const bgStripColor = customProps.bgStripColor ?? "#000000";
+  const bgStripOpacity = customProps.bgStripOpacity ?? 0.85;
+  const positionYPercent = customProps.positionYPercent ?? 75;
+  const accentColor = customProps.accentColor ?? "#E11D48";
+  const author = customProps.author || "";
 
-  return stillPath;
+  const pythonExecutable = fs.existsSync(path.join(process.cwd(), "venv", "bin", "python3"))
+    ? "./venv/bin/python3"
+    : "python3";
+
+  const pythonArgs = [
+    "scripts/generate_still.py",
+    "--text", hookText,
+    "--font-size", String(fontSize),
+    "--font-color", fontColor,
+    "--bg-color", bgStripColor,
+    "--bg-opacity", String(bgStripOpacity),
+    "--position-y", String(positionYPercent),
+    "--style", styleId,
+    "--accent-color", accentColor,
+    "--author", author,
+    "--output", stillPath,
+  ];
+
+  return new Promise<string>((resolve, reject) => {
+    const { spawn } = require("child_process");
+    const proc = spawn(pythonExecutable, pythonArgs);
+
+    let stderr = "";
+    proc.stderr.on("data", (data: any) => {
+      stderr += data.toString();
+    });
+
+    proc.on("close", (code: number) => {
+      if (code === 0 && fs.existsSync(stillPath)) {
+        resolve(stillPath);
+      } else {
+        reject(new Error(`Pillow generating overlay failed with code ${code}. Stderr: ${stderr}`));
+      }
+    });
+  });
 }
 
 export async function composeOutput(
