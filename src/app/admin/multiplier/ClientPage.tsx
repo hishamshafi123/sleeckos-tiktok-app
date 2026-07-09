@@ -533,8 +533,22 @@ export default function ClientPage() {
       });
 
       if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.error || "Failed to upload variations");
+        let errMsg = `Upload failed (${res.status})`;
+        try {
+          const contentType = res.headers.get("content-type");
+          if (contentType && contentType.includes("application/json")) {
+            const err = await res.json();
+            errMsg = err.error || errMsg;
+          } else {
+            const text = await res.text();
+            if (res.status === 413) {
+              errMsg = "File is too large (413 Payload Too Large). Please make sure Nginx 'client_max_body_size' is configured to allow large video uploads (e.g. 250m).";
+            } else {
+              errMsg = text.substring(0, 150) || errMsg;
+            }
+          }
+        } catch {}
+        throw new Error(errMsg);
       }
 
       toast.success("Video variations uploaded and processed successfully.");
