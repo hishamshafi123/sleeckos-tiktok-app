@@ -382,11 +382,16 @@ export async function renderCaptionStill(
     author: customProps.author || "",
   };
 
+  const chromiumOptions = {
+    args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
+  } as any;
+
   const composition = await selectComposition({
     serveUrl: bundleLocation,
     id: "editorial-caption",
     inputProps,
     browserExecutable: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
+    chromiumOptions,
   });
 
   const stillFileName = `still_${outputId}.png`;
@@ -398,6 +403,7 @@ export async function renderCaptionStill(
     output: stillPath,
     inputProps,
     browserExecutable: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
+    chromiumOptions,
   });
 
   return stillPath;
