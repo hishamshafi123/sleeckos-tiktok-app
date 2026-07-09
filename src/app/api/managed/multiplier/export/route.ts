@@ -38,9 +38,50 @@ export async function POST(req: Request) {
   }
 
   try {
-    const { batchId, outputId, itemId } = await req.json();
+    const { batchId, groupId, outputId, itemId } = await req.json();
 
-    // 1. Single Output manual export
+    // 1. Group bulk export
+    if (groupId) {
+      const group = await prisma.multiplierGroup.findUnique({
+        where: { id: groupId },
+        include: {
+          outputs: {
+            where: { status: "COMPLETED" },
+            include: {
+              hook: { select: { text: true } },
+            },
+          },
+        },
+      });
+
+      if (!group) {
+        return NextResponse.json({ error: "Group not found" }, { status: 404 });
+      }
+
+      const settings = typeof group.settings === "string"
+        ? JSON.parse(group.settings)
+        : (group.settings || {});
+
+      // Filter outputs to only those that have an assigned drive folder (either direct or group fallback)
+      const exportableOutputs = group.outputs.filter((out) => {
+        return out.driveFolderId || settings.driveFolderId;
+      });
+
+      if (exportableOutputs.length === 0) {
+        return NextResponse.json({ error: "No completed videos in this group have a Drive folder assigned. Set a folder first." }, { status: 400 });
+      }
+
+      exportGroupOutputsToDriveInBackground(groupId, exportableOutputs, settings.driveFolderId).catch((err) => {
+        console.error(`[Export Worker] Group background export failed:`, err);
+      });
+
+      return NextResponse.json({ 
+        success: true, 
+        message: `Queued export for ${exportableOutputs.length} videos. Skipping ${group.outputs.length - exportableOutputs.length} videos without assigned folders.` 
+      });
+    }
+
+    // 2. Single Output manual export
     if (outputId) {
       const output = await prisma.multiplierOutput.findUnique({
         where: { id: outputId },
@@ -419,4 +460,52 @@ async function exportToDriveInBackground(batchId: string) {
       data: { driveExportStatus: "FAILED", errorMessage: errMsg.substring(0, 500) },
     });
   }
+}
+
+async function exportGroupOutputsToDriveInBackground(groupId: string, outputs: any[], defaultFolderId: string | null) {
+  console.log(`[Export Worker] Starting group bulk export for group: ${groupId} (${outputs.length} outputs)`);
+  
+  const drive = await getMultiplierDriveClient();
+  if (!drive) {
+    console.error("[Export Worker] Drive not connected");
+    return;
+  }
+
+  const publicDir = path.join(process.cwd(), "public");
+
+  for (let i = 0; i < outputs.length; i++) {
+    const out = outputs[i];
+    const finalFolderId = out.driveFolderId || defaultFolderId;
+    if (!finalFolderId || !out.outputRef) continue;
+
+    const localFilePath = path.join(publicDir, out.outputRef);
+    if (!fs.existsSync(localFilePath)) {
+      console.warn(`[Export Worker] File not found: ${localFilePath}`);
+      continue;
+    }
+
+    const cleanHookSlug = out.hook.text.replace(/[^a-zA-Z0-9 ]/g, "").trim().replace(/\s+/g, "_").substring(0, 40);
+    const fileName = `multi_${out.id}_${cleanHookSlug}.mp4`;
+
+    console.log(`[Export Worker] Uploading ${i + 1}/${outputs.length}: ${fileName} to folder ${finalFolderId}`);
+    const result = await uploadWithRetry(drive, localFilePath, fileName, finalFolderId);
+    
+    if (result.success) {
+      await prisma.multiplierOutput.update({
+        where: { id: out.id },
+        data: { driveFolderId: finalFolderId },
+      });
+    } else {
+      console.error(`[Export Worker] Failed uploading output ${out.id}: ${result.error}`);
+      if (result.error?.includes("Auth error")) {
+        break;
+      }
+    }
+
+    if (i < outputs.length - 1) {
+      await delay(2000);
+    }
+  }
+
+  console.log(`[Export Worker] Finished group bulk export for group: ${groupId}`);
 }

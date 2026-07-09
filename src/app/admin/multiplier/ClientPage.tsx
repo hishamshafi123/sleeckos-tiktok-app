@@ -131,6 +131,7 @@ export default function ClientPage() {
   const [syncingOutputs, setSyncingOutputs] = useState<Set<string>>(new Set());
   const [selectedPickerFolders, setSelectedPickerFolders] = useState<{ id: string; name: string }[]>([]);
   const [downloads, setDownloads] = useState<Record<string, { progress: number; message: string }>>({});
+  const [exportingGroups, setExportingGroups] = useState<Set<string>>(new Set());
 
   // Fetch initial data
   const fetchData = async () => {
@@ -303,6 +304,51 @@ export default function ClientPage() {
       setSyncingOutputs((prev) => {
         const next = new Set(prev);
         next.delete(outId);
+        return next;
+      });
+    }
+  };
+
+  const handleExportGroupToDrive = async (group: MultiplierGroup) => {
+    const isLegacy = group.campaignId === "";
+    const settingsObj: any = typeof group.settings === "string"
+      ? JSON.parse(group.settings)
+      : (group.settings || {});
+
+    // Filter outputs to check if any have an assigned folder (or fallback to group default)
+    const exportableOutputs = group.outputs.filter((out) => {
+      return out.driveFolderId || settingsObj.driveFolderId;
+    });
+
+    if (exportableOutputs.length === 0) {
+      toast.error("No videos in this batch have a Drive folder assigned. Select a folder first.");
+      return;
+    }
+
+    setExportingGroups((prev) => new Set([...prev, group.id]));
+    try {
+      const res = await fetch("/api/managed/multiplier/export", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(
+          isLegacy ? { batchId: group.id } : { groupId: group.id }
+        ),
+      });
+
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || "Failed to trigger bulk export");
+      }
+
+      const data = await res.json();
+      toast.success(data.message || "Bulk export successfully queued in the background!");
+      await fetchData();
+    } catch (err: any) {
+      toast.error(err.message || "Failed to run export");
+    } finally {
+      setExportingGroups((prev) => {
+        const next = new Set(prev);
+        next.delete(group.id);
         return next;
       });
     }
@@ -1641,6 +1687,26 @@ export default function ClientPage() {
                               <>
                                 <Download className="w-3 h-3" />
                                 Download All ({completedOutputs.length})
+                              </>
+                            )}
+                          </button>
+                        )}
+                        {driveConnected && completedOutputs.length > 0 && (
+                          <button
+                            onClick={() => handleExportGroupToDrive(group)}
+                            disabled={exportingGroups.has(group.id)}
+                            className="px-2.5 py-1 bg-cyan-600 hover:bg-cyan-700 text-white font-semibold rounded text-[10px] transition-all flex items-center gap-1 shadow-sm disabled:opacity-50"
+                            title="Export all videos with assigned Drive folders to Google Drive"
+                          >
+                            {exportingGroups.has(group.id) ? (
+                              <>
+                                <Loader2 className="w-3 h-3 animate-spin" />
+                                Exporting...
+                              </>
+                            ) : (
+                              <>
+                                <FolderOpen className="w-3 h-3 text-cyan-200" />
+                                Export All Drive
                               </>
                             )}
                           </button>
