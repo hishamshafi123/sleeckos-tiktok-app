@@ -23,7 +23,8 @@ import {
   ChevronDown,
   ChevronUp,
   FolderOpen,
-  Search
+  Search,
+  Download
 } from "lucide-react";
 
 interface Campaign {
@@ -129,6 +130,7 @@ export default function ClientPage() {
   const [searchingFolders, setSearchingFolders] = useState(false);
   const [syncingOutputs, setSyncingOutputs] = useState<Set<string>>(new Set());
   const [selectedPickerFolders, setSelectedPickerFolders] = useState<{ id: string; name: string }[]>([]);
+  const [downloads, setDownloads] = useState<Record<string, { progress: number; message: string }>>({});
 
   // Fetch initial data
   const fetchData = async () => {
@@ -732,6 +734,76 @@ export default function ClientPage() {
       await fetchData();
     } catch (err: any) {
       toast.error(err.message || "Failed to delete batches");
+    }
+  };
+
+  const handleDownloadArchive = async (groupId: string) => {
+    try {
+      setDownloads((prev) => ({
+        ...prev,
+        [groupId]: { progress: 0, message: "Preparing archive..." }
+      }));
+
+      let isPrepared = false;
+      let statusData: any = null;
+
+      while (!isPrepared) {
+        const res = await fetch(`/api/managed/multiplier/download?groupId=${groupId}`);
+        if (!res.ok) {
+          const errText = await res.text();
+          throw new Error(errText || "Failed to prepare download");
+        }
+
+        statusData = await res.json();
+
+        if (statusData.status === "COMPLETED") {
+          isPrepared = true;
+          break;
+        } else if (statusData.status === "FAILED") {
+          throw new Error(statusData.message || "Archive preparation failed");
+        } else if (statusData.status === "PREPARING") {
+          setDownloads((prev) => ({
+            ...prev,
+            [groupId]: {
+              progress: statusData.progress || 10,
+              message: statusData.message || "Processing..."
+            }
+          }));
+          await new Promise((resolve) => setTimeout(resolve, 2500));
+        } else {
+          await new Promise((resolve) => setTimeout(resolve, 2500));
+        }
+      }
+
+      if (statusData && statusData.downloadUrl) {
+        setDownloads((prev) => ({
+          ...prev,
+          [groupId]: { progress: 100, message: "Starting download..." }
+        }));
+
+        const link = document.createElement("a");
+        link.href = `/api${statusData.downloadUrl}`;
+        link.download = statusData.downloadUrl.split("/").pop() || `archive_${groupId}.tar`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+
+        toast.success("Download started!");
+        setTimeout(() => {
+          setDownloads((prev) => {
+            const next = { ...prev };
+            delete next[groupId];
+            return next;
+          });
+        }, 3000);
+      }
+    } catch (err: any) {
+      toast.error(err.message || "Failed to download archive");
+      setDownloads((prev) => {
+        const next = { ...prev };
+        delete next[groupId];
+        return next;
+      });
     }
   };
 
@@ -1551,6 +1623,26 @@ export default function ClientPage() {
                                 : (group.settings || {});
                               return s.driveFolderName || "Group Default Drive Folder";
                             })()}
+                          </button>
+                        )}
+                        {completedOutputs.length > 0 && (
+                          <button
+                            onClick={() => handleDownloadArchive(group.id)}
+                            disabled={!!downloads[group.id]}
+                            className="px-2.5 py-1 bg-[#E11D48] hover:bg-rose-700 text-white font-semibold rounded text-[10px] transition-all flex items-center gap-1 shadow-sm disabled:opacity-50"
+                            title="Download all videos as a Tar Archive"
+                          >
+                            {downloads[group.id] ? (
+                              <>
+                                <Loader2 className="w-3 h-3 animate-spin" />
+                                {downloads[group.id].progress}%
+                              </>
+                            ) : (
+                              <>
+                                <Download className="w-3 h-3" />
+                                Download All ({completedOutputs.length})
+                              </>
+                            )}
                           </button>
                         )}
                         <span

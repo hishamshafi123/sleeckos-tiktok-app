@@ -19,36 +19,51 @@ export async function GET(req: Request) {
   }
 
   const { searchParams } = new URL(req.url);
-  const batchId = searchParams.get("batchId");
+  const rawId = searchParams.get("batchId") || searchParams.get("groupId");
   const force = searchParams.get("force") === "true";
 
-  if (!batchId) {
-    return NextResponse.json({ error: "Missing batchId" }, { status: 400 });
+  if (!rawId) {
+    return NextResponse.json({ error: "Missing batchId or groupId" }, { status: 400 });
   }
 
   try {
-    // 1. Fetch batch details and count rendered items
-    const batch = await prisma.multiplierBatch.findUnique({
-      where: { id: batchId },
+    let renderedCount = 0;
+    
+    // Check if it is a new group or legacy batch
+    const group = await prisma.multiplierGroup.findUnique({
+      where: { id: rawId },
       include: {
-        items: {
-          where: { status: "RENDERED" },
+        outputs: {
+          where: { status: "COMPLETED" },
         },
       },
     });
 
-    if (!batch) {
-      return NextResponse.json({ error: "Batch not found" }, { status: 404 });
+    if (group) {
+      renderedCount = group.outputs.length;
+    } else {
+      const batch = await prisma.multiplierBatch.findUnique({
+        where: { id: rawId },
+        include: {
+          items: {
+            where: { status: "RENDERED" },
+          },
+        },
+      });
+      if (batch) {
+        renderedCount = batch.items.length;
+      } else {
+        return NextResponse.json({ error: "Batch or Group not found" }, { status: 404 });
+      }
     }
 
-    const renderedCount = batch.items.length;
     if (renderedCount === 0) {
-      return NextResponse.json({ error: "No rendered videos available for download" }, { status: 400 });
+      return NextResponse.json({ error: "No completed videos available for download" }, { status: 400 });
     }
 
     const archivesDir = path.join(process.cwd(), "public", "uploads", "multiplier", "archives");
-    const statusPath = path.join(archivesDir, `status_${batchId}.json`);
-    const archiveName = `multiplier_${batchId}_archive.tar`;
+    const statusPath = path.join(archivesDir, `status_${rawId}.json`);
+    const archiveName = `multiplier_${rawId}_archive.tar`;
     const archivePath = path.join(archivesDir, archiveName);
 
     let startPrep = false;
@@ -101,8 +116,8 @@ export async function GET(req: Request) {
       fs.writeFileSync(statusPath, JSON.stringify(statusData, null, 2));
 
       // Trigger background preparation (asynchronously, does not block the HTTP response)
-      prepareArchiveInBackground(batchId, renderedCount).catch((err) => {
-        console.error(`[Multiplier Download API] Background trigger failed for ${batchId}:`, err);
+      prepareArchiveInBackground(rawId, renderedCount).catch((err) => {
+        console.error(`[Multiplier Download API] Background trigger failed for ${rawId}:`, err);
       });
     }
 
@@ -115,17 +130,17 @@ export async function GET(req: Request) {
 
 // ─── Background Preparation Worker ───────────────────────────────────────────
 
-async function prepareArchiveInBackground(batchId: string, renderedCount: number) {
-  console.log(`[Multiplier Download Worker] Starting background archive prep for batch: ${batchId}`);
+async function prepareArchiveInBackground(rawId: string, renderedCount: number) {
+  console.log(`[Multiplier Download Worker] Starting background archive prep for target: ${rawId}`);
   
   const archivesDir = path.join(process.cwd(), "public", "uploads", "multiplier", "archives");
   const tempDir = path.join(process.cwd(), "public", "uploads", "multiplier", "temp");
   const publicDir = path.join(process.cwd(), "public");
 
-  const statusPath = path.join(archivesDir, `status_${batchId}.json`);
-  const archiveName = `multiplier_${batchId}_archive.tar`;
+  const statusPath = path.join(archivesDir, `status_${rawId}.json`);
+  const archiveName = `multiplier_${rawId}_archive.tar`;
   const archivePath = path.join(archivesDir, archiveName);
-  const linkDir = path.join(tempDir, `dl_${batchId}`);
+  const linkDir = path.join(tempDir, `dl_${rawId}`);
 
   const updateStatus = async (data: Partial<{
     status: "PREPARING" | "COMPLETED" | "FAILED";
@@ -159,44 +174,82 @@ async function prepareArchiveInBackground(batchId: string, renderedCount: number
     if (!fs.existsSync(archivesDir)) fs.mkdirSync(archivesDir, { recursive: true });
     if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
 
-    await updateStatus({ status: "PREPARING", progress: 5, message: "Fetching batch details..." });
+    await updateStatus({ status: "PREPARING", progress: 5, message: "Fetching target details..." });
 
     // 2. Fetch rendered items
-    const batch = await prisma.multiplierBatch.findUnique({
-      where: { id: batchId },
+    const group = await prisma.multiplierGroup.findUnique({
+      where: { id: rawId },
       include: {
-        items: {
-          where: { status: "RENDERED" },
+        outputs: {
+          where: { status: "COMPLETED" },
+          include: {
+            hook: { select: { text: true } },
+          },
           orderBy: { createdAt: "asc" },
         },
       },
     });
 
-    if (!batch || batch.items.length === 0) {
-      throw new Error("No rendered videos found for this batch");
-    }
+    let filePaths: { absPath: string; name: string }[] = [];
 
-    await updateStatus({ status: "PREPARING", progress: 10, message: "Collecting video files..." });
+    if (group) {
+      await updateStatus({ status: "PREPARING", progress: 10, message: "Collecting video files from group..." });
 
-    // 3. Match database items to actual public video files
-    const filePaths: { absPath: string; name: string }[] = [];
-    for (let i = 0; i < batch.items.length; i++) {
-      const item = batch.items[i];
-      const absPath = path.join(publicDir, item.renderedVideoUrl!);
-      if (!fs.existsSync(absPath)) {
-        const key = `uploads/multiplier/renders/multi_${item.id}.mp4`;
-        await downloadFromR2(key, absPath);
+      for (let i = 0; i < group.outputs.length; i++) {
+        const out = group.outputs[i];
+        if (!out.outputRef) continue;
+        const absPath = path.join(publicDir, out.outputRef);
+        if (!fs.existsSync(absPath)) {
+          const key = `uploads/multiplier/renders/multi_${out.id}.mp4`;
+          await downloadFromR2(key, absPath);
+        }
+        if (fs.existsSync(absPath)) {
+          const hookSlug = (out.hook?.text || "video")
+            .replace(/[^a-zA-Z0-9 ]/g, "")
+            .trim()
+            .replace(/\s+/g, "_")
+            .substring(0, 40);
+          filePaths.push({
+            absPath,
+            name: `${String(i + 1).padStart(3, "0")}_${hookSlug}.mp4`,
+          });
+        }
       }
-      if (fs.existsSync(absPath)) {
-        const hookSlug = item.hookText
-          .replace(/[^a-zA-Z0-9 ]/g, "")
-          .trim()
-          .replace(/\s+/g, "_")
-          .substring(0, 40);
-        filePaths.push({
-          absPath,
-          name: `${String(i + 1).padStart(3, "0")}_${hookSlug}.mp4`,
-        });
+    } else {
+      const batch = await prisma.multiplierBatch.findUnique({
+        where: { id: rawId },
+        include: {
+          items: {
+            where: { status: "RENDERED" },
+            orderBy: { createdAt: "asc" },
+          },
+        },
+      });
+
+      if (!batch || batch.items.length === 0) {
+        throw new Error("No rendered videos found for this target");
+      }
+
+      await updateStatus({ status: "PREPARING", progress: 10, message: "Collecting video files from legacy batch..." });
+
+      for (let i = 0; i < batch.items.length; i++) {
+        const item = batch.items[i];
+        const absPath = path.join(publicDir, item.renderedVideoUrl!);
+        if (!fs.existsSync(absPath)) {
+          const key = `uploads/multiplier/renders/multi_${item.id}.mp4`;
+          await downloadFromR2(key, absPath);
+        }
+        if (fs.existsSync(absPath)) {
+          const hookSlug = item.hookText
+            .replace(/[^a-zA-Z0-9 ]/g, "")
+            .trim()
+            .replace(/\s+/g, "_")
+            .substring(0, 40);
+          filePaths.push({
+            absPath,
+            name: `${String(i + 1).padStart(3, "0")}_${hookSlug}.mp4`,
+          });
+        }
       }
     }
 
@@ -262,9 +315,9 @@ async function prepareArchiveInBackground(batchId: string, renderedCount: number
       size: archiveSize,
     });
 
-    console.log(`[Multiplier Download Worker] Batch ${batchId} archive completed successfully! (${archiveSize} bytes)`);
+    console.log(`[Multiplier Download Worker] Batch ${rawId} archive completed successfully! (${archiveSize} bytes)`);
   } catch (err: any) {
-    console.error(`[Multiplier Download Worker] Failed to prepare archive for batch ${batchId}:`, err);
+    console.error(`[Multiplier Download Worker] Failed to prepare archive for batch ${rawId}:`, err);
     // Cleanup temporary files
     try { if (fs.existsSync(linkDir)) fs.rmSync(linkDir, { recursive: true }); } catch {}
     // Cleanup failed archive
