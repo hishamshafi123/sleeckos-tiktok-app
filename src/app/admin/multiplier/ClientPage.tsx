@@ -517,12 +517,12 @@ export default function ClientPage() {
   };
 
   // Upload video variations
-  const handleUploadVariations = async () => {
-    if (!selectedGroup || filesToUpload.length === 0) return;
+  const handleUploadVariationsDirectly = async (files: File[]) => {
+    if (!selectedGroup || files.length === 0) return;
 
     setUploadingFiles(true);
     const formData = new FormData();
-    filesToUpload.forEach((f) => {
+    files.forEach((f) => {
       formData.append("file", f);
     });
 
@@ -537,8 +537,7 @@ export default function ClientPage() {
         throw new Error(err.error || "Failed to upload variations");
       }
 
-      toast.success("Video variations uploaded successfully.");
-      setFilesToUpload([]);
+      toast.success("Video variations uploaded and processed successfully.");
       await fetchData();
       const updated = groups.find((g) => g.id === selectedGroup.id);
       if (updated) setSelectedGroup(updated);
@@ -1054,63 +1053,57 @@ export default function ClientPage() {
                     Upload Edited Video Variations
                   </h2>
                   <div
-                    onClick={() => fileInputRef.current?.click()}
-                    className="border-2 border-dashed border-[#27272a] hover:border-[#E11D48] rounded-xl p-8 text-center cursor-pointer transition-all bg-[#09090b] flex flex-col items-center justify-center"
+                    onClick={() => !uploadingFiles && fileInputRef.current?.click()}
+                    onDragOver={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                    }}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      if (uploadingFiles) return;
+                      if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+                        const mp4Files = Array.from(e.dataTransfer.files).filter((f) => f.type === "video/mp4" || f.name.endsWith(".mp4"));
+                        if (mp4Files.length > 0) {
+                          handleUploadVariationsDirectly(mp4Files);
+                        } else {
+                          toast.error("Please drop MP4 video files only.");
+                        }
+                      }
+                    }}
+                    className={`border-2 border-dashed rounded-xl p-8 text-center transition-all bg-[#09090b] flex flex-col items-center justify-center ${
+                      uploadingFiles
+                        ? "border-[#E11D48]/30 cursor-not-allowed opacity-60"
+                        : "border-[#27272a] hover:border-[#E11D48] cursor-pointer"
+                    }`}
                   >
-                    <Upload className="w-8 h-8 text-[#71717a] mb-2" />
-                    <p className="text-sm font-semibold">Click to browse or drop video files</p>
-                    <p className="text-xs text-[#71717a] mt-1">Accepts multiple .mp4 variations</p>
+                    {uploadingFiles ? (
+                      <>
+                        <Loader2 className="w-8 h-8 text-[#E11D48] mb-2 animate-spin" />
+                        <p className="text-sm font-semibold">Uploading and processing video variations...</p>
+                        <p className="text-xs text-[#71717a] mt-1">Videos over 20MB will be automatically compressed for optimal rendering speed</p>
+                      </>
+                    ) : (
+                      <>
+                        <Upload className="w-8 h-8 text-[#71717a] mb-2" />
+                        <p className="text-sm font-semibold">Click to browse or drop video files</p>
+                        <p className="text-xs text-[#71717a] mt-1">Accepts multiple .mp4 variations</p>
+                      </>
+                    )}
                     <input
                       ref={fileInputRef}
                       type="file"
                       multiple
                       accept="video/mp4"
+                      disabled={uploadingFiles}
                       onChange={(e) => {
-                        if (e.target.files) {
-                          setFilesToUpload(Array.from(e.target.files));
+                        if (e.target.files && e.target.files.length > 0) {
+                          handleUploadVariationsDirectly(Array.from(e.target.files));
                         }
                       }}
                       className="hidden"
                     />
                   </div>
-
-                  {filesToUpload.length > 0 && (
-                    <div className="mt-4 p-4 bg-[#09090b] rounded-lg border border-[#27272a] flex flex-col gap-2">
-                      <div className="flex justify-between items-center">
-                        <span className="text-xs text-[#a1a1aa] font-semibold">
-                          Selected {filesToUpload.length} files:
-                        </span>
-                        <button
-                          onClick={() => setFilesToUpload([])}
-                          className="text-xs font-semibold text-[#E11D48] hover:underline"
-                        >
-                          Clear
-                        </button>
-                      </div>
-                      <div className="text-xs text-[#71717a] max-h-24 overflow-y-auto space-y-1">
-                        {filesToUpload.map((f, i) => (
-                          <div key={i} className="truncate">
-                            - {f.name} ({(f.size / (1024 * 1024)).toFixed(1)} MB)
-                          </div>
-                        ))}
-                      </div>
-                      <button
-                        onClick={handleUploadVariations}
-                        disabled={uploadingFiles}
-                        className="mt-2 w-full py-2 bg-[#E11D48] hover:bg-rose-700 text-white font-semibold rounded-lg text-xs transition-all flex items-center justify-center gap-1.5 disabled:opacity-50"
-                      >
-                        {uploadingFiles ? (
-                          <>
-                            <Loader2 className="w-4.5 h-4.5 animate-spin" /> Uploading...
-                          </>
-                        ) : (
-                          <>
-                            <Upload className="w-3.5 h-3.5" /> Confirm Upload Variations
-                          </>
-                        )}
-                      </button>
-                    </div>
-                  )}
 
                   {selectedGroup.variations.length > 0 && (
                     <div className="mt-4">
