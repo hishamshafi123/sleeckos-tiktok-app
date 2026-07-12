@@ -67,6 +67,8 @@ export async function GET(
       return {
         id: row.id,
         order: row.order,
+        height: row.height,
+        color: row.color,
         cells: sanitizedCells,
       };
     });
@@ -79,10 +81,60 @@ export async function GET(
       folder: sheet.folder,
       columns: sheet.columns,
       rows: sanitizedRows,
+      frozenRows: sheet.frozenRows,
+      frozenCols: sheet.frozenCols,
+      colorRules: sheet.colorRules,
+      viewState: sheet.viewState,
     });
   } catch (err: any) {
     console.error("[Vault Sheet GET] Error:", err);
     return NextResponse.json({ error: err.message || "Failed to fetch sheet" }, { status: 500 });
+  }
+}
+
+// PATCH: update sheet metadata / settings
+export async function PATCH(
+  req: NextRequest,
+  { params }: { params: Promise<{ sheetId: string }> }
+) {
+  const session = await getSession();
+  if (!session) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  const { sheetId } = await params;
+
+  try {
+    const body = await req.json();
+    const sheet = await prisma.sheet.findUnique({
+      where: { id: sheetId },
+    });
+    if (!sheet) {
+      return NextResponse.json({ error: "Sheet not found" }, { status: 404 });
+    }
+
+    const permission = await getFolderPermission(session.userId, sheet.folderId);
+    if (!permission || permission === "view") {
+      return NextResponse.json({ error: "Forbidden: edit/manage access required" }, { status: 403 });
+    }
+
+    const updateData: any = {};
+    if (body.name !== undefined) updateData.name = body.name;
+    if (body.frozenRows !== undefined) updateData.frozenRows = body.frozenRows;
+    if (body.frozenCols !== undefined) updateData.frozenCols = body.frozenCols;
+    if (body.colorRules !== undefined) updateData.colorRules = body.colorRules;
+    if (body.viewState !== undefined) updateData.viewState = body.viewState;
+
+    const updated = await prisma.sheet.update({
+      where: { id: sheetId },
+      data: updateData,
+    });
+
+    await logVaultAction(session.userId, "update_sheet_settings", `Sheet: "${updated.name}" (${sheetId})`);
+    return NextResponse.json(updated);
+  } catch (err: any) {
+    console.error("[Vault Sheet PATCH] Error:", err);
+    return NextResponse.json({ error: err.message || "Failed to update sheet settings" }, { status: 500 });
   }
 }
 

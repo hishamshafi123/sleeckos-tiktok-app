@@ -1,0 +1,15 @@
+-- AlterTable
+ALTER TABLE "Sheet" ADD COLUMN     "colorRules" JSONB,
+ADD COLUMN     "frozenCols" INTEGER NOT NULL DEFAULT 0,
+ADD COLUMN     "frozenRows" INTEGER NOT NULL DEFAULT 0,
+ADD COLUMN     "viewState" JSONB;
+
+-- AlterTable
+ALTER TABLE "SheetColumn" ADD COLUMN     "config" JSONB,
+ADD COLUMN     "hidden" BOOLEAN NOT NULL DEFAULT false,
+ADD COLUMN     "pinned" BOOLEAN NOT NULL DEFAULT false,
+ADD COLUMN     "width" INTEGER NOT NULL DEFAULT 150;
+
+-- AlterTable
+ALTER TABLE "SheetRow" ADD COLUMN     "color" TEXT,
+ADD COLUMN     "height" INTEGER NOT NULL DEFAULT 34;

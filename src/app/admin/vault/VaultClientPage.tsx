@@ -1,5 +1,5 @@
 "use client";
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import {
   Folder,
   FolderPlus,
@@ -25,9 +25,21 @@ import {
   Clock,
   ExternalLink,
   Loader2,
-  Sparkles
+  Sparkles,
+  Search
 } from "lucide-react";
 import { toast } from "sonner";
+import {
+  DataEditor,
+  GridColumn,
+  GridCell,
+  GridCellKind,
+  GridSelection,
+  EditableGridCell,
+  Rectangle,
+  CompactSelection
+} from "@glideapps/glide-data-grid";
+import "@glideapps/glide-data-grid/dist/index.css";
 
 interface FolderNode {
   id: string;
@@ -45,10 +57,16 @@ interface SheetData {
   name: string;
   folderId: string;
   permission: "view" | "edit" | "manage";
-  columns: { id: string; name: string; type: string; order: number }[];
+  frozenRows: number;
+  frozenCols: number;
+  colorRules: any;
+  viewState: any;
+  columns: { id: string; name: string; type: string; order: number; width?: number; hidden?: boolean; pinned?: boolean; config?: any }[];
   rows: {
     id: string;
     order: number;
+    height?: number;
+    color?: string | null;
     cells: {
       id: string;
       rowId: string;
@@ -94,6 +112,46 @@ export default function VaultClientPage({
   const [editValue, setEditValue] = useState("");
   const [revealedCells, setRevealedCells] = useState<Record<string, string>>({}); // cellId -> decrypted plaintext
   const [revealingCellId, setRevealingCellId] = useState<string | null>(null);
+
+  // Sheets 2.0 State
+  const containerRef = useRef<HTMLDivElement>(null);
+  const gridRef = useRef<any>(null);
+  const [gridSelection, setGridSelection] = useState<GridSelection>({
+    current: undefined,
+    rows: CompactSelection.empty(),
+    columns: CompactSelection.empty(),
+  });
+  
+  const [activeDropdown, setActiveDropdown] = useState<{
+    rowId: string;
+    columnId: string;
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    options: Array<{ id: string; label: string; color: string }>;
+    isTags: boolean;
+    value: string;
+  } | null>(null);
+
+  const [headerMenu, setHeaderMenu] = useState<{
+    colIdx: number;
+    bounds: Rectangle;
+  } | null>(null);
+
+  // Undo/Redo Stacks
+  const [undoStack, setUndoStack] = useState<any[]>([]);
+  const [redoStack, setRedoStack] = useState<any[]>([]);
+
+  // Search State
+  const [searchTerm, setSearchTerm] = useState("");
+  const [globalSearchQuery, setGlobalSearchQuery] = useState("");
+  const [globalSearchResults, setGlobalSearchResults] = useState<any[]>([]);
+  const [pendingFocusCell, setPendingFocusCell] = useState<{ rowId: string; columnId: string } | null>(null);
+
+  // Options configuration modal
+  const [showConfigModal, setShowConfigModal] = useState<string | null>(null); // columnId
+  const [configOptions, setConfigOptions] = useState<Array<{ id: string; label: string; color: string }>>([]);
 
   // Sharing & Metadata Lists
   const [usersList, setUsersList] = useState<UserListItem[]>([]);
@@ -760,6 +818,931 @@ export default function VaultClientPage({
     );
   };
 
+  // ── SPREADSHEET 2.0 UTILITIES ──────────────────────────────────────────────
+
+  const pushHistory = (prevState: { columns: any[]; rows: any[]; frozenRows: number; frozenCols: number }) => {
+    setUndoStack((prev) => [...prev, prevState]);
+    setRedoStack([]);
+  };
+
+  const persistGridStateToDb = async (state: any) => {
+    if (!selectedSheetId) return;
+    try {
+      const updates = [];
+      for (const row of state.rows) {
+        for (const cell of row.cells) {
+          updates.push({
+            rowId: row.id,
+            columnId: cell.columnId,
+            value: cell.value,
+          });
+        }
+      }
+      if (updates.length > 0) {
+        await fetch(`/api/managed/vault/sheets/${selectedSheetId}/rows/bulk`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ updates }),
+        });
+      }
+      for (const col of state.columns) {
+        await fetch(`/api/managed/vault/sheets/${selectedSheetId}/columns`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            columnId: col.id,
+            width: col.width,
+            order: col.order,
+            hidden: col.hidden,
+            pinned: col.pinned,
+            config: col.config,
+            type: col.type,
+          }),
+        });
+      }
+    } catch (e) {
+      console.error("Failed to persist grid state to database:", e);
+    }
+  };
+
+  const handleUndo = useCallback(() => {
+    if (undoStack.length === 0 || !sheetData) return;
+    const prev = undoStack[undoStack.length - 1];
+
+    setRedoStack((stack) => [
+      ...stack,
+      {
+        columns: sheetData.columns,
+        rows: sheetData.rows,
+        frozenRows: sheetData.frozenRows,
+        frozenCols: sheetData.frozenCols,
+      },
+    ]);
+
+    setSheetData((prevData: any) => ({
+      ...prevData,
+      columns: prev.columns,
+      rows: prev.rows,
+      frozenRows: prev.frozenRows,
+      frozenCols: prev.frozenCols,
+    }));
+
+    setUndoStack((stack) => stack.slice(0, -1));
+    toast.success("Undo action applied");
+    persistGridStateToDb(prev);
+  }, [undoStack, sheetData, selectedSheetId]);
+
+  const handleRedo = useCallback(() => {
+    if (redoStack.length === 0 || !sheetData) return;
+    const next = redoStack[redoStack.length - 1];
+
+    setUndoStack((stack) => [
+      ...stack,
+      {
+        columns: sheetData.columns,
+        rows: sheetData.rows,
+        frozenRows: sheetData.frozenRows,
+        frozenCols: sheetData.frozenCols,
+      },
+    ]);
+
+    setSheetData((prevData: any) => ({
+      ...prevData,
+      columns: next.columns,
+      rows: next.rows,
+      frozenRows: next.frozenRows,
+      frozenCols: next.frozenCols,
+    }));
+
+    setRedoStack((stack) => stack.slice(0, -1));
+    toast.success("Redo action applied");
+    persistGridStateToDb(next);
+  }, [redoStack, sheetData, selectedSheetId]);
+
+  // keydown listeners for undo/redo
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
+        e.preventDefault();
+        if (e.shiftKey) {
+          handleRedo();
+        } else {
+          handleUndo();
+        }
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "y") {
+        e.preventDefault();
+        handleRedo();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [sheetData, undoStack, redoStack, handleUndo, handleRedo]);
+
+  // Global Search matcher focus scroll handler
+  useEffect(() => {
+    if (selectedSheetId && sheetData && pendingFocusCell) {
+      const { rowId, columnId } = pendingFocusCell;
+      const colIdx = sheetData.columns.findIndex((c) => c.id === columnId);
+      const rowIdx = sheetData.rows.findIndex((r) => r.id === rowId);
+
+      if (colIdx !== -1 && rowIdx !== -1) {
+        setGridSelection({
+          current: {
+            cell: [colIdx, rowIdx] as any,
+            range: { x: colIdx, y: rowIdx, width: 1, height: 1 },
+            rangeStack: [],
+          },
+          rows: CompactSelection.empty(),
+          columns: CompactSelection.empty(),
+        });
+        
+        setTimeout(() => {
+          gridRef.current?.scrollTo?.(colIdx, rowIdx);
+        }, 150);
+      }
+      setPendingFocusCell(null);
+    }
+  }, [sheetData, selectedSheetId, pendingFocusCell]);
+
+  const handleGlobalSearch = async (val: string) => {
+    setGlobalSearchQuery(val);
+    if (!val.trim()) {
+      setGlobalSearchResults([]);
+      return;
+    }
+    try {
+      const res = await fetch(`/api/managed/vault/search?q=${encodeURIComponent(val)}`);
+      const data = await res.json();
+      if (res.ok) {
+        setGlobalSearchResults(data.results || []);
+      }
+    } catch (e) {
+      console.warn("Global search error:", e);
+    }
+  };
+
+  const handleSelectSearchResult = (result: any) => {
+    setSelectedSheetId(result.sheetId);
+    if (result.rowId && result.columnId) {
+      setPendingFocusCell({
+        rowId: result.rowId,
+        columnId: result.columnId,
+      });
+    }
+  };
+
+  const getSelectedRowIds = useCallback((): string[] => {
+    if (!sheetData) return [];
+    const rowIds: string[] = [];
+    for (const idx of gridSelection.rows) {
+      const r = sheetData.rows[idx];
+      if (r) rowIds.push(r.id);
+    }
+    if (rowIds.length === 0 && gridSelection.current) {
+      const r = sheetData.rows[gridSelection.current.cell[1]];
+      if (r) rowIds.push(r.id);
+    }
+    return rowIds;
+  }, [sheetData, gridSelection]);
+
+  const handleUpdateSelectedRowsColor = async (color: string) => {
+    if (!selectedSheetId || !sheetData) return;
+    const rowIds = getSelectedRowIds();
+    if (rowIds.length === 0) {
+      toast.warning("No rows selected");
+      return;
+    }
+    try {
+      setSheetData((prev: any) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          rows: prev.rows.map((r: any) =>
+            rowIds.includes(r.id) ? { ...r, color } : r
+          ),
+        };
+      });
+      for (const rowId of rowIds) {
+        await fetch(`/api/managed/vault/sheets/${selectedSheetId}/rows`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ rowId, color }),
+        });
+      }
+      toast.success("Rows color updated");
+    } catch (err: any) {
+      toast.error("Failed to update row color");
+    }
+  };
+
+  const handleUpdateSelectedRowsHeight = async (height: number) => {
+    if (!selectedSheetId || !sheetData) return;
+    const rowIds = getSelectedRowIds();
+    if (rowIds.length === 0) {
+      toast.warning("No rows selected");
+      return;
+    }
+    try {
+      setSheetData((prev: any) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          rows: prev.rows.map((r: any) =>
+            rowIds.includes(r.id) ? { ...r, height } : r
+          ),
+        };
+      });
+      for (const rowId of rowIds) {
+        await fetch(`/api/managed/vault/sheets/${selectedSheetId}/rows`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ rowId, height }),
+        });
+      }
+      toast.success("Rows height updated");
+    } catch (err: any) {
+      toast.error("Failed to update row height");
+    }
+  };
+
+  const handleRenameColumn = async (columnId: string, newName: string) => {
+    if (!selectedSheetId) return;
+    try {
+      const res = await fetch(`/api/managed/vault/sheets/${selectedSheetId}/columns`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ columnId, name: newName }),
+      });
+      if (!res.ok) throw new Error("Rename failed");
+      toast.success("Column renamed");
+      fetchSheet(selectedSheetId);
+    } catch (err: any) {
+      toast.error(err.message || "Failed to rename column");
+    }
+  };
+
+  const handleTogglePinColumn = async (columnId: string, pinned: boolean) => {
+    if (!selectedSheetId) return;
+    try {
+      const res = await fetch(`/api/managed/vault/sheets/${selectedSheetId}/columns`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ columnId, pinned }),
+      });
+      if (!res.ok) throw new Error("Pin update failed");
+      toast.success(pinned ? "Column pinned" : "Column unpinned");
+      fetchSheet(selectedSheetId);
+    } catch (err: any) {
+      toast.error(err.message || "Failed to update pin");
+    }
+  };
+
+  const handleToggleHideColumn = async (columnId: string, hidden: boolean) => {
+    if (!selectedSheetId) return;
+    try {
+      const res = await fetch(`/api/managed/vault/sheets/${selectedSheetId}/columns`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ columnId, hidden }),
+      });
+      if (!res.ok) throw new Error("Hide update failed");
+      toast.success(hidden ? "Column hidden" : "Column shown");
+      fetchSheet(selectedSheetId);
+    } catch (err: any) {
+      toast.error(err.message || "Failed to update hidden state");
+    }
+  };
+
+  const handleUpdateSheetSettings = async (settings: any) => {
+    if (!selectedSheetId) return;
+    try {
+      const res = await fetch(`/api/managed/vault/sheets/${selectedSheetId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(settings),
+      });
+      if (!res.ok) throw new Error("Failed to update sheet settings");
+      toast.success("Sheet view settings saved");
+      fetchSheet(selectedSheetId);
+    } catch (err: any) {
+      toast.error(err.message || "Failed to update sheet settings");
+    }
+  };
+
+  const handleSaveColumnConfig = async (columnId: string, options: any[]) => {
+    if (!selectedSheetId) return;
+    try {
+      const res = await fetch(`/api/managed/vault/sheets/${selectedSheetId}/columns`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          columnId,
+          config: { options },
+        }),
+      });
+      if (!res.ok) throw new Error("Config save failed");
+      toast.success("Column options updated");
+      setShowConfigModal(null);
+      fetchSheet(selectedSheetId);
+    } catch (err: any) {
+      toast.error(err.message || "Failed to update options config");
+    }
+  };
+
+  const openConfigModal = (columnId: string) => {
+    const col = sheetData?.columns.find((c) => c.id === columnId);
+    if (col) {
+      const config = col.config as any;
+      setConfigOptions(config?.options || []);
+      setShowConfigModal(columnId);
+    }
+  };
+
+  // ── OPTIMISTIC GRID WRITES ────────────────────────────────────────────────
+
+  const handleUpdateCellOptimistic = async (rowId: string, columnId: string, value: string) => {
+    if (!sheetData || !selectedSheetId) return;
+
+    const prevRows = JSON.parse(JSON.stringify(sheetData.rows));
+    pushHistory({
+      columns: sheetData.columns,
+      rows: prevRows,
+      frozenRows: sheetData.frozenRows,
+      frozenCols: sheetData.frozenCols,
+    });
+
+    setSheetData((prev: any) => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        rows: prev.rows.map((r: any) => {
+          if (r.id !== rowId) return r;
+          
+          let cellExists = false;
+          const updatedCells = r.cells.map((c: any) => {
+            if (c.columnId !== columnId) return c;
+            cellExists = true;
+            const column = prev.columns.find((col: any) => col.id === columnId);
+            const isSecret = column?.type === "secret";
+            return {
+              ...c,
+              value: isSecret ? "••••••" : value,
+              isSecret,
+              hasValue: value.trim() !== "",
+            };
+          });
+
+          if (!cellExists) {
+            const column = prev.columns.find((col: any) => col.id === columnId);
+            const isSecret = !!(column?.type === "secret");
+            updatedCells.push({
+              id: `temp-${rowId}-${columnId}`,
+              rowId,
+              columnId,
+              value: isSecret ? "••••••" : value,
+              isSecret,
+              hasValue: value.trim() !== "",
+            });
+          }
+
+          return {
+            ...r,
+            cells: updatedCells,
+          };
+        }),
+      };
+    });
+
+    try {
+      const res = await fetch(`/api/managed/vault/sheets/${selectedSheetId}/cells`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          rowId,
+          columnId,
+          value,
+        }),
+      });
+      if (!res.ok) throw new Error("Failed to save");
+    } catch (err) {
+      toast.error("Failed to save cell value");
+      setSheetData((prev: any) => {
+        if (!prev) return prev;
+        return { ...prev, rows: prevRows };
+      });
+    }
+  };
+
+  const handleCellEdited = useCallback(
+    (cell: readonly [number, number], newValue: EditableGridCell) => {
+      if (!sheetData || sheetData.permission === "view") return;
+      const [colIdx, rowIdx] = cell;
+      const col = sheetData.columns[colIdx];
+      const row = sheetData.rows[rowIdx];
+      if (!col || !row) return;
+
+      if (newValue.kind === GridCellKind.Text) {
+        handleUpdateCellOptimistic(row.id, col.id, newValue.data);
+      }
+    },
+    [sheetData, selectedSheetId]
+  );
+
+  const handleColumnResize = useCallback(
+    (column: GridColumn, newSize: number) => {
+      if (!selectedSheetId) return;
+      setSheetData((prev: any) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          columns: prev.columns.map((c: any) =>
+            c.id === column.id ? { ...c, width: newSize } : c
+          ),
+        };
+      });
+      fetch(`/api/managed/vault/sheets/${selectedSheetId}/columns`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          columnId: column.id,
+          width: newSize,
+        }),
+      });
+    },
+    [selectedSheetId]
+  );
+
+  const handleColumnMoved = useCallback(
+    (startIndex: number, endIndex: number) => {
+      if (!sheetData || !selectedSheetId) return;
+      const newCols = [...sheetData.columns];
+      const [removed] = newCols.splice(startIndex, 1);
+      newCols.splice(endIndex, 0, removed);
+      
+      const updatedCols = newCols.map((c, idx) => ({ ...c, order: idx }));
+      
+      setSheetData((prev: any) => {
+        if (!prev) return prev;
+        return { ...prev, columns: updatedCols };
+      });
+
+      for (const col of updatedCols) {
+        fetch(`/api/managed/vault/sheets/${selectedSheetId}/columns`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            columnId: col.id,
+            order: col.order,
+          }),
+        });
+      }
+    },
+    [sheetData, selectedSheetId]
+  );
+
+  const handleFillPattern = useCallback(
+    (args: any) => {
+      if (!sheetData || sheetData.permission === "view") return;
+      const { patternSource, fillDestination } = args;
+
+      args.preventDefault();
+
+      const updates: Array<{ rowId: string; columnId: string; value: string }> = [];
+      const updatedRows = [...sheetData.rows];
+
+      for (let x = fillDestination.x; x < fillDestination.x + fillDestination.width; x++) {
+        const col = sheetData.columns[x];
+        if (!col) continue;
+
+        const sourceColIdx = patternSource.x + ((x - fillDestination.x) % patternSource.width);
+        const sourceCol = sheetData.columns[sourceColIdx];
+        if (!sourceCol) continue;
+
+        for (let y = fillDestination.y; y < fillDestination.y + fillDestination.height; y++) {
+          const row = sheetData.rows[y];
+          if (!row) continue;
+
+          const sourceRowIdx = patternSource.y + ((y - fillDestination.y) % patternSource.height);
+          const sourceRow = sheetData.rows[sourceRowIdx];
+          if (!sourceRow) continue;
+
+          const sourceCell = sourceRow.cells.find((c: any) => c.columnId === sourceCol.id);
+          const val = sourceCell?.value || "";
+
+          updates.push({
+            rowId: row.id,
+            columnId: col.id,
+            value: val,
+          });
+
+          const rowIndex = updatedRows.findIndex((r) => r.id === row.id);
+          if (rowIndex !== -1) {
+            const cells = [...updatedRows[rowIndex].cells];
+            const cellIdx = cells.findIndex((c) => c.columnId === col.id);
+            const isSecret = col.type === "secret";
+            if (cellIdx !== -1) {
+              cells[cellIdx] = { ...cells[cellIdx], value: isSecret ? "••••••" : val, isSecret, hasValue: val.trim() !== "" };
+            } else {
+              cells.push({
+                id: `temp-${row.id}-${col.id}`,
+                rowId: row.id,
+                columnId: col.id,
+                value: isSecret ? "••••••" : val,
+                isSecret,
+                hasValue: val.trim() !== "",
+              });
+            }
+            updatedRows[rowIndex] = { ...updatedRows[rowIndex], cells };
+          }
+        }
+      }
+
+      setSheetData((prev: any) => {
+        if (!prev) return prev;
+        return { ...prev, rows: updatedRows };
+      });
+
+      fetch(`/api/managed/vault/sheets/${selectedSheetId}/rows/bulk`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ updates }),
+      }).catch((e) => {
+        toast.error("Failed to persist drag-fill values");
+      });
+    },
+    [sheetData, selectedSheetId]
+  );
+
+  const handleCopyWithSecrets = async () => {
+    if (!sheetData || !selectedSheetId) return;
+
+    let range = gridSelection.current?.range;
+    if (!range) {
+      toast.warning("Please select a range of cells first");
+      return;
+    }
+
+    const cellIds: string[] = [];
+    for (let x = range.x; x < range.x + range.width; x++) {
+      const col = sheetData.columns[x];
+      if (!col) continue;
+      for (let y = range.y; y < range.y + range.height; y++) {
+        const row = sheetData.rows[y];
+        if (!row) continue;
+        const cell = row.cells.find((c) => c.columnId === col.id);
+        if (cell?.id) {
+          cellIds.push(cell.id);
+        }
+      }
+    }
+
+    if (cellIds.length === 0) {
+      toast.warning("No cell data selected");
+      return;
+    }
+
+    try {
+      const res = await fetch(`/api/managed/vault/sheets/${selectedSheetId}/copy-secrets`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cellIds }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to copy secrets");
+
+      const decrypted = data.decryptedCells;
+
+      let tsvLines = [];
+      for (let y = range.y; y < range.y + range.height; y++) {
+        const row = sheetData.rows[y];
+        if (!row) continue;
+        let tsvRow = [];
+        for (let x = range.x; x < range.x + range.width; x++) {
+          const col = sheetData.columns[x];
+          if (!col) continue;
+          const cell = row.cells.find((c) => c.columnId === col.id);
+          const val = cell ? (decrypted[cell.id] ?? cell.value ?? "") : "";
+          tsvRow.push(val);
+        }
+        tsvLines.push(tsvRow.join("\t"));
+      }
+
+      const tsvString = tsvLines.join("\n");
+      await navigator.clipboard.writeText(tsvString);
+      toast.success("Copied to clipboard (including decrypted secrets)");
+    } catch (err: any) {
+      toast.error(err.message || "Failed to copy secrets");
+    }
+  };
+
+  const handlePaste = useCallback(
+    (target: readonly [number, number], values: readonly (readonly string[])[]) => {
+      if (!sheetData || !selectedSheetId || sheetData.permission === "view") return false;
+
+      const [startCol, startRow] = target;
+      const updates: Array<{ rowId: string; columnId: string; value: string }> = [];
+      const updatedRows = [...sheetData.rows];
+
+      const finalRequiredRowsCount = startRow + values.length;
+      const neededRowsCount = finalRequiredRowsCount - updatedRows.length;
+
+      const runPasteSync = async () => {
+        if (neededRowsCount > 0) {
+          await fetch(`/api/managed/vault/sheets/${selectedSheetId}/rows/bulk`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ addRowsCount: neededRowsCount }),
+          });
+          await fetchSheet(selectedSheetId);
+          return;
+        }
+
+        for (let r = 0; r < values.length; r++) {
+          const rowIdx = startRow + r;
+          const row = sheetData.rows[rowIdx];
+          if (!row) continue;
+
+          for (let c = 0; c < values[r].length; c++) {
+            const colIdx = startCol + c;
+            const col = sheetData.columns[colIdx];
+            if (!col) continue;
+
+            const val = values[r][c];
+            updates.push({
+              rowId: row.id,
+              columnId: col.id,
+              value: val,
+            });
+
+            const rowIndex = updatedRows.findIndex((item) => item.id === row.id);
+            if (rowIndex !== -1) {
+              const cells = [...updatedRows[rowIndex].cells];
+              const cellIdx = cells.findIndex((cellItem) => cellItem.columnId === col.id);
+              const isSecret = col.type === "secret";
+              if (cellIdx !== -1) {
+                cells[cellIdx] = { ...cells[cellIdx], value: isSecret ? "••••••" : val, isSecret, hasValue: val.trim() !== "" };
+              } else {
+                cells.push({
+                  id: `temp-${row.id}-${col.id}`,
+                  rowId: row.id,
+                  columnId: col.id,
+                  value: isSecret ? "••••••" : val,
+                  isSecret,
+                  hasValue: val.trim() !== "",
+                });
+              }
+              updatedRows[rowIndex] = { ...updatedRows[rowIndex], cells };
+            }
+          }
+        }
+
+        setSheetData((prev: any) => {
+          if (!prev) return prev;
+          return { ...prev, rows: updatedRows };
+        });
+
+        await fetch(`/api/managed/vault/sheets/${selectedSheetId}/rows/bulk`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ updates }),
+        });
+      };
+
+      runPasteSync().catch(() => {
+        toast.error("Failed to paste data values");
+      });
+
+      return false;
+    },
+    [sheetData, selectedSheetId]
+  );
+
+  const handleCellClicked = useCallback(
+    (cell: readonly [number, number], event: any) => {
+      if (!sheetData) return;
+      const [colIdx, rowIdx] = cell;
+      const col = sheetData.columns[colIdx];
+      const row = sheetData.rows[rowIdx];
+      if (!col || !row) return;
+
+      const cellData = row.cells.find((c) => c.columnId === col.id);
+      const cellId = cellData?.id || `new-${row.id}-${col.id}`;
+
+      if (col.type === "secret" && cellData?.hasValue) {
+        const clickX = event.localX;
+        if (clickX > event.bounds.width - 32) {
+          handleRevealSecret(cellId);
+          return;
+        }
+      }
+
+      if ((col.type === "status" || col.type === "tags") && sheetData.permission !== "view") {
+        const config = col.config as any;
+        const options = config?.options || [];
+        
+        setActiveDropdown({
+          rowId: row.id,
+          columnId: col.id,
+          x: event.bounds.x,
+          y: event.bounds.y,
+          width: event.bounds.width,
+          height: event.bounds.height,
+          options,
+          isTags: col.type === "tags",
+          value: cellData?.value || "",
+        });
+      }
+    },
+    [sheetData, handleRevealSecret]
+  );
+
+  const getRowHeight = useCallback((rowIdx: number): number => {
+    if (!sheetData) return 34;
+    return sheetData.rows[rowIdx]?.height || 34;
+  }, [sheetData]);
+
+  const gridColumns = useMemo<GridColumn[]>(() => {
+    if (!sheetData) return [];
+    return sheetData.columns.filter((c) => !c.hidden).map((col) => ({
+      title: col.name,
+      width: col.width || 150,
+      id: col.id,
+      hasMenu: true,
+    }));
+  }, [sheetData]);
+
+  const getCellContent = useCallback(
+    (cell: readonly [number, number]): GridCell => {
+      const [colIdx, rowIdx] = cell;
+      if (!sheetData) {
+        return {
+          kind: GridCellKind.Loading,
+          allowOverlay: false,
+        };
+      }
+      
+      const col = sheetData.columns.filter((c) => !c.hidden)[colIdx];
+      const row = sheetData.rows[rowIdx];
+      if (!col || !row) {
+        return {
+          kind: GridCellKind.Loading,
+          allowOverlay: false,
+        };
+      }
+
+      const cellData = row.cells.find((c) => c.columnId === col.id);
+      const isSecret = col.type === "secret";
+      const cellId = cellData?.id || `new-${row.id}-${col.id}`;
+      const isRevealed = !!revealedCells[cellId];
+      const hasValue = cellData?.hasValue;
+
+      let displayVal = "";
+      if (isSecret && hasValue) {
+        displayVal = isRevealed ? (revealedCells[cellId] || "") : "••••••";
+      } else {
+        displayVal = cellData?.value || "";
+      }
+
+      const isMatch = searchTerm && displayVal.toLowerCase().includes(searchTerm.toLowerCase());
+
+      return {
+        kind: GridCellKind.Text,
+        data: displayVal,
+        displayData: displayVal,
+        allowOverlay: true,
+        readonly: sheetData.permission === "view",
+        themeOverride: isMatch ? {
+          bgCell: "#fef08a",
+          textDark: "#854d0e",
+        } : undefined,
+      };
+    },
+    [sheetData, revealedCells, searchTerm]
+  );
+
+  const handleDrawCell = useCallback(
+    (args: any, drawContent: () => void) => {
+      const { ctx, rect, col, row } = args;
+      if (!sheetData) return drawContent();
+
+      const columnsList = sheetData.columns.filter((c) => !c.hidden);
+      const column = columnsList[col];
+      const rowData = sheetData.rows[row];
+      if (!column || !rowData) return drawContent();
+
+      if (rowData.color) {
+        ctx.fillStyle = rowData.color + "1a";
+        ctx.fillRect(rect.x, rect.y, rect.width, rect.height);
+      }
+
+      const cellData = rowData.cells.find((c: any) => c.columnId === column.id);
+      const cellId = cellData?.id || `new-${rowData.id}-${column.id}`;
+
+      if (column.type === "status" && cellData?.value) {
+        const config = column.config as any;
+        const option = config?.options?.find((opt: any) => opt.id === cellData.value || opt.label === cellData.value);
+        if (option) {
+          ctx.save();
+          ctx.beginPath();
+          const padX = 8;
+          const padY = 5;
+          const x = rect.x + padX;
+          const y = rect.y + padY;
+          const w = rect.width - padX * 2;
+          const h = rect.height - padY * 2;
+          const radius = 6;
+          
+          if (ctx.roundRect) {
+            ctx.roundRect(x, y, w, h, radius);
+          } else {
+            ctx.rect(x, y, w, h);
+          }
+          ctx.fillStyle = option.color + "22";
+          ctx.fill();
+
+          ctx.strokeStyle = option.color + "44";
+          ctx.lineWidth = 1;
+          ctx.stroke();
+
+          ctx.fillStyle = option.color;
+          ctx.font = "bold 11px Inter, sans-serif";
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          ctx.fillText(option.label, x + w / 2, y + h / 2);
+          ctx.restore();
+          return;
+        }
+      }
+
+      if (column.type === "tags" && cellData?.value) {
+        const config = column.config as any;
+        const selectedIds = cellData.value.split(",").map((s: string) => s.trim()).filter(Boolean);
+        if (selectedIds.length > 0) {
+          ctx.save();
+          let currentX = rect.x + 6;
+          const padY = 5;
+          const h = rect.height - padY * 2;
+          const radius = 4;
+
+          for (const id of selectedIds) {
+            const option = config?.options?.find((opt: any) => opt.id === id || opt.label === id);
+            if (!option) continue;
+
+            ctx.font = "bold 10px Inter, sans-serif";
+            const textWidth = ctx.measureText(option.label).width;
+            const w = textWidth + 12;
+
+            if (currentX + w > rect.x + rect.width - 6) break;
+
+            ctx.beginPath();
+            if (ctx.roundRect) {
+              ctx.roundRect(currentX, rect.y + padY, w, h, radius);
+            } else {
+              ctx.rect(currentX, rect.y + padY, w, h);
+            }
+            ctx.fillStyle = option.color + "22";
+            ctx.fill();
+            ctx.strokeStyle = option.color + "33";
+            ctx.stroke();
+
+            ctx.fillStyle = option.color;
+            ctx.textAlign = "center";
+            ctx.textBaseline = "middle";
+            ctx.fillText(option.label, currentX + w / 2, rect.y + padY + h / 2);
+
+            currentX += w + 4;
+          }
+          ctx.restore();
+          return;
+        }
+      }
+
+      if (column.type === "secret") {
+        const isRevealed = !!revealedCells[cellId];
+        const hasValue = cellData?.hasValue;
+
+        if (hasValue) {
+          ctx.save();
+          ctx.fillStyle = isRevealed ? "#d4d4d8" : "#52525b";
+          ctx.font = isRevealed ? "12px Inter, sans-serif" : "bold 16px Inter, sans-serif";
+          ctx.textBaseline = "middle";
+          const text = isRevealed ? (revealedCells[cellId] || "") : "••••••";
+          ctx.fillText(text, rect.x + 12, rect.y + rect.height / 2);
+
+          const iconX = rect.x + rect.width - 24;
+          ctx.fillStyle = isRevealed ? "#3b82f6" : "#71717a";
+          ctx.font = "11px Inter, sans-serif";
+          ctx.fillText(isRevealed ? "👁️" : "👁️‍🗨️", iconX, rect.y + rect.height / 2);
+          ctx.restore();
+          return;
+        }
+      }
+
+      drawContent();
+    },
+    [sheetData, revealedCells]
+  );
+
   return (
     <div className="flex h-[calc(100vh-80px)] w-full gap-4 text-zinc-200">
       
@@ -783,22 +1766,70 @@ export default function VaultClientPage({
           </button>
         </div>
 
-        <div className="flex-1 overflow-y-auto space-y-2 select-none pr-1">
-          {loadingFolders ? (
-            <div className="flex flex-col items-center justify-center h-40 space-y-2">
-              <Loader2 className="w-5 h-5 text-blue-500 animate-spin" />
-              <p className="text-[10px] text-zinc-500 font-semibold uppercase">Loading directory...</p>
-            </div>
-          ) : folders.length === 0 ? (
-            <div className="text-center p-4">
-              <Folder className="w-8 h-8 text-zinc-700 mx-auto mb-2" />
-              <p className="text-xs text-zinc-500 font-bold">No Folders Configured</p>
-              <p className="text-[10px] text-zinc-600 mt-1">Create a root directory using the button above.</p>
-            </div>
-          ) : (
-            renderFolderTree(null)
+        <div className="relative">
+          <input
+            type="text"
+            placeholder="Search vault..."
+            value={globalSearchQuery}
+            onChange={(e) => handleGlobalSearch(e.target.value)}
+            className="w-full bg-[#111] border border-zinc-800 rounded-lg pl-8 pr-3 py-1.5 text-xs text-white focus:outline-none focus:border-blue-500/50"
+          />
+          <Search className="w-3.5 h-3.5 text-zinc-500 absolute left-2.5 top-1/2 -translate-y-1/2" />
+          {globalSearchQuery && (
+            <button
+              onClick={() => {
+                setGlobalSearchQuery("");
+                setGlobalSearchResults([]);
+              }}
+              className="text-zinc-500 hover:text-white absolute right-2.5 top-1/2 -translate-y-1/2 text-xs font-bold"
+            >
+              ×
+            </button>
           )}
         </div>
+
+        {globalSearchQuery ? (
+          <div className="flex-1 overflow-y-auto space-y-2 pr-1">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-[10px] font-bold text-zinc-500 uppercase tracking-wider">Search Results ({globalSearchResults.length})</span>
+            </div>
+            {globalSearchResults.length === 0 ? (
+              <p className="text-xs text-zinc-500 italic p-2 text-center">No matches found</p>
+            ) : (
+              globalSearchResults.map((res: any, idx: number) => (
+                <div
+                  key={idx}
+                  onClick={() => handleSelectSearchResult(res)}
+                  className="p-2.5 rounded-lg border border-zinc-850 bg-zinc-950/40 hover:bg-zinc-900/60 transition-all cursor-pointer space-y-1 text-[11px]"
+                >
+                  <div className="flex items-center justify-between font-bold text-[9px] text-zinc-500 uppercase">
+                    <span>{res.matchType}</span>
+                    <span className="text-blue-500">{res.folderName}</span>
+                  </div>
+                  <p className="font-semibold text-white truncate">{res.sheetName}</p>
+                  <p className="text-[10px] text-zinc-400 italic font-mono truncate">{res.snippet}</p>
+                </div>
+              ))
+            )}
+          </div>
+        ) : (
+          <div className="flex-1 overflow-y-auto space-y-2 select-none pr-1">
+            {loadingFolders ? (
+              <div className="flex flex-col items-center justify-center h-40 space-y-2">
+                <Loader2 className="w-5 h-5 text-blue-500 animate-spin" />
+                <p className="text-[10px] text-zinc-500 font-semibold uppercase">Loading directory...</p>
+              </div>
+            ) : folders.length === 0 ? (
+              <div className="text-center p-4">
+                <Folder className="w-8 h-8 text-zinc-700 mx-auto mb-2" />
+                <p className="text-xs text-zinc-500 font-bold">No Folders Configured</p>
+                <p className="text-[10px] text-zinc-600 mt-1">Create a root directory using the button above.</p>
+              </div>
+            ) : (
+              renderFolderTree(null)
+            )}
+          </div>
+        )}
 
         {selectedFolderId && (
           <button
@@ -815,7 +1846,7 @@ export default function VaultClientPage({
       </div>
 
       {/* ── RIGHT PANEL: MAIN SPREADSHEET workspace ──────────────────────────── */}
-      <div className="flex-1 bg-[#09090b] border border-[#27272a] rounded-xl flex flex-col overflow-hidden">
+      <div className="flex-1 bg-[#09090b] border border-[#27272a] rounded-xl flex flex-col overflow-hidden" ref={containerRef}>
         {loadingSheet ? (
           <div className="flex-1 flex flex-col items-center justify-center space-y-3">
             <Loader2 className="w-8 h-8 text-blue-500 animate-spin" />
@@ -834,7 +1865,7 @@ export default function VaultClientPage({
             </div>
           </div>
         ) : (
-          <div className="flex-1 flex flex-col overflow-hidden">
+          <div className="flex-1 flex flex-col overflow-hidden relative">
             {/* Header Toolbar */}
             <div className="flex items-center justify-between border-b border-[#27272a] px-5 py-4 bg-[#09090b]">
               <div className="space-y-1">
@@ -844,10 +1875,30 @@ export default function VaultClientPage({
                     Role: {sheetData.permission}
                   </span>
                 </div>
-                <p className="text-[10px] text-zinc-500 uppercase tracking-wider font-bold">Project Management Spreadsheet Workspace</p>
+                <p className="text-[10px] text-zinc-500 uppercase tracking-wider font-bold">Spreadsheet Grid Workspace</p>
               </div>
 
               <div className="flex items-center gap-2">
+                {/* Inline search bar */}
+                <div className="relative flex items-center">
+                  <input
+                    type="text"
+                    placeholder="Search in sheet..."
+                    value={searchTerm}
+                    onChange={(e) => setSearchTerm(e.target.value)}
+                    className="bg-[#111] border border-zinc-800 rounded-lg pl-8 pr-3 py-1.5 text-xs text-white focus:outline-none focus:border-blue-500/50 w-40"
+                  />
+                  <Search className="w-3.5 h-3.5 text-zinc-500 absolute left-2.5" />
+                  {searchTerm && (
+                    <button
+                      onClick={() => setSearchTerm("")}
+                      className="text-zinc-500 hover:text-white absolute right-2.5 text-xs font-bold font-mono"
+                    >
+                      ×
+                    </button>
+                  )}
+                </div>
+
                 {sheetData.permission !== "view" && (
                   <>
                     <button
@@ -864,6 +1915,48 @@ export default function VaultClientPage({
                       <Plus className="w-3.5 h-3.5 text-emerald-500" />
                       Add Row
                     </button>
+                    
+                    {/* Row formatting actions */}
+                    <div className="relative group">
+                      <button className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-zinc-900 border border-zinc-800 text-zinc-300 hover:bg-zinc-800 hover:text-white transition-all text-xs font-bold">
+                        <Sparkles className="w-3.5 h-3.5 text-amber-500" />
+                        Row Format
+                      </button>
+                      <div className="absolute top-full right-0 mt-1 hidden group-hover:flex flex-col bg-[#09090b] border border-zinc-800 rounded-xl shadow-2xl p-1.5 w-48 z-30 text-xs text-zinc-300">
+                        <span className="px-2.5 py-1 text-[9px] font-bold text-zinc-500 uppercase tracking-wider">Row Background Color</span>
+                        <div className="grid grid-cols-5 gap-1 p-1">
+                          {[
+                            { label: "Clear", hex: "" },
+                            { label: "Red", hex: "#ef4444" },
+                            { label: "Green", hex: "#10b981" },
+                            { label: "Blue", hex: "#3b82f6" },
+                            { label: "Yellow", hex: "#f59e0b" },
+                          ].map((c) => (
+                            <button
+                              key={c.label}
+                              onClick={() => handleUpdateSelectedRowsColor(c.hex)}
+                              style={{ backgroundColor: c.hex || "#27272a" }}
+                              title={c.label}
+                              className="w-6 h-6 rounded-full border border-white/5 hover:scale-110 active:scale-95 transition-all"
+                            />
+                          ))}
+                        </div>
+                        <div className="border-t border-zinc-900 my-1.5" />
+                        <button
+                          onClick={() => {
+                            const heightStr = prompt("Enter row height in px (default 34):", "34");
+                            if (heightStr) {
+                              const h = parseInt(heightStr);
+                              if (!isNaN(h)) handleUpdateSelectedRowsHeight(h);
+                            }
+                          }}
+                          className="w-full text-left px-2.5 py-1.5 rounded hover:bg-zinc-900 transition-all font-semibold"
+                        >
+                          Set Custom Height...
+                        </button>
+                      </div>
+                    </div>
+
                     <button
                       onClick={() => setShowImportModal(true)}
                       className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-zinc-900 border border-zinc-800 text-zinc-300 hover:bg-zinc-800 hover:text-white transition-all text-xs font-bold"
@@ -895,6 +1988,31 @@ export default function VaultClientPage({
                   )}
                 </div>
 
+                {/* Pin/Frozen column view settings */}
+                <div className="flex items-center bg-zinc-900 border border-zinc-800 rounded-lg px-2 text-xs text-zinc-400 gap-1.5">
+                  <span className="font-bold text-[9px] uppercase">Freeze:</span>
+                  <select
+                    value={sheetData.frozenCols}
+                    onChange={(e) => handleUpdateSheetSettings({ frozenCols: parseInt(e.target.value) })}
+                    className="bg-[#111] border border-zinc-800 rounded px-1.5 py-0.5 text-xs text-zinc-300 focus:outline-none"
+                  >
+                    <option value={0}>0 Cols</option>
+                    <option value={1}>1 Col</option>
+                    <option value={2}>2 Cols</option>
+                    <option value={3}>3 Cols</option>
+                  </select>
+                </div>
+
+                {/* Copy with Secrets audited button */}
+                <button
+                  onClick={handleCopyWithSecrets}
+                  className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-zinc-900 border border-zinc-800 text-zinc-300 hover:bg-zinc-800 hover:text-amber-400 transition-all text-xs font-bold"
+                  title="Copy selection including plaintext passwords (audited)"
+                >
+                  <Lock className="w-3.5 h-3.5 text-amber-500 animate-pulse" />
+                  Copy with Secrets
+                </button>
+
                 <button
                   onClick={openAuditLogs}
                   className="p-1.5 rounded-lg bg-zinc-900 border border-zinc-800 text-zinc-400 hover:text-white hover:bg-zinc-800 transition-all"
@@ -906,7 +2024,7 @@ export default function VaultClientPage({
             </div>
 
             {/* spreadsheet Grid Container */}
-            <div className="flex-1 overflow-auto bg-[#040406] pr-1 pb-1">
+            <div className="flex-1 w-full bg-[#040406] overflow-hidden">
               {sheetData.columns.length === 0 ? (
                 <div className="flex flex-col items-center justify-center h-64 text-center">
                   <Database className="w-8 h-8 text-zinc-800 mb-2" />
@@ -916,151 +2034,199 @@ export default function VaultClientPage({
                   </p>
                 </div>
               ) : (
-                <table className="w-full text-left border-collapse border-spacing-0 select-text">
-                  <thead>
-                    <tr className="bg-zinc-900/60 sticky top-0 z-10 border-b border-zinc-800">
-                      {/* Left delete row handle header */}
-                      <th className="w-10 border-r border-zinc-800 text-center text-[10px] text-zinc-500 font-bold uppercase py-2">
-                        #
-                      </th>
-                      {sheetData.columns.map((col) => (
-                        <th
-                          key={col.id}
-                          className="px-4 py-2.5 text-xs font-bold text-zinc-300 uppercase tracking-wider border-r border-b border-zinc-800 min-w-[150px] relative group"
-                        >
-                          <div className="flex items-center justify-between gap-2">
-                            <span className="truncate">{col.name}</span>
-                            <span className="text-[9px] lowercase font-normal px-1.5 py-0.5 rounded bg-black/45 border border-white/5 text-zinc-500">
-                              {col.type}
-                            </span>
-                          </div>
-                          {sheetData.permission !== "view" && (
-                            <button
-                              onClick={() => handleDeleteColumn(col.id)}
-                              className="absolute top-1/2 -translate-y-1/2 right-2 hidden group-hover:block text-zinc-500 hover:text-red-400 p-0.5 rounded hover:bg-zinc-800 transition-all"
-                              title="Delete Column"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </button>
-                          )}
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {sheetData.rows.length === 0 ? (
-                      <tr>
-                        <td
-                          colSpan={sheetData.columns.length + 1}
-                          className="text-center py-10 text-xs text-zinc-600 font-bold uppercase tracking-wider"
-                        >
-                          Spreadsheet is empty. Click "Add Row" to append.
-                        </td>
-                      </tr>
-                    ) : (
-                      sheetData.rows.map((row, rowIdx) => (
-                        <tr
-                          key={row.id}
-                          className="hover:bg-zinc-900/20 border-b border-zinc-850 group transition-all"
-                        >
-                          {/* Left delete action column */}
-                          <td className="border-r border-zinc-800 text-center text-xs font-bold text-zinc-600 bg-zinc-950/45 py-2">
-                            <div className="flex items-center justify-center">
-                              {sheetData.permission !== "view" ? (
-                                <button
-                                  onClick={() => handleDeleteRow(row.id)}
-                                  className="opacity-0 group-hover:opacity-100 text-zinc-600 hover:text-red-400 p-0.5 rounded hover:bg-zinc-800 transition-all"
-                                  title="Delete Row"
-                                >
-                                  <Trash2 className="w-3 h-3" />
-                                </button>
-                              ) : (
-                                <span>{rowIdx + 1}</span>
-                              )}
-                            </div>
-                          </td>
+                <div className="w-full h-full relative">
+                  <DataEditor
+                    ref={gridRef}
+                    width="100%"
+                    height="100%"
+                    columns={gridColumns}
+                    rows={sheetData.rows.length}
+                    getCellContent={getCellContent}
+                    onCellEdited={handleCellEdited}
+                    onColumnResize={handleColumnResize}
+                    onColumnMoved={handleColumnMoved}
+                    onCellClicked={handleCellClicked}
+                    onHeaderMenuClick={useCallback((col: number, bounds: Rectangle) => setHeaderMenu({ colIdx: col, bounds }), [])}
+                    onPaste={handlePaste}
+                    onFillPattern={handleFillPattern}
+                    fillHandle={true}
+                    rowMarkers="number"
+                    rowHeight={getRowHeight}
+                    freezeColumns={sheetData.frozenCols}
+                    drawCell={handleDrawCell}
+                    gridSelection={gridSelection}
+                    onGridSelectionChange={setGridSelection}
+                    theme={{
+                      accentColor: "#3b82f6",
+                      accentLight: "#3b82f61a",
+                      textDark: "#d4d4d8",
+                      bgCell: "#09090b",
+                      bgHeader: "#18181b",
+                      bgHeaderHasFocus: "#27272a",
+                      bgHeaderHovered: "#27272a",
+                      textHeader: "#a1a1aa",
+                      borderColor: "#27272a",
+                      fontFamily: "Inter, system-ui, sans-serif",
+                    }}
+                  />
 
-                          {sheetData.columns.map((col) => {
-                            const cell = row.cells.find((c) => c.columnId === col.id);
-                            const isEditing =
-                              editingCell?.rowId === row.id && editingCell?.columnId === col.id;
+                  {/* Absolute overlays inside coordinate context */}
+                  
+                  {/* Status & tags dropdown selector */}
+                  {activeDropdown && (
+                    <>
+                      <div className="fixed inset-0 z-40" onClick={() => setActiveDropdown(null)} />
+                      <div
+                        style={{
+                          position: "absolute",
+                          top: activeDropdown.y + activeDropdown.height + 4,
+                          left: activeDropdown.x,
+                          minWidth: activeDropdown.width,
+                          zIndex: 50,
+                        }}
+                        className="bg-[#09090b] border border-zinc-800 rounded-xl shadow-2xl p-1.5 max-h-60 overflow-y-auto flex flex-col gap-0.5 text-xs text-zinc-300"
+                      >
+                        {activeDropdown.options.length === 0 ? (
+                          <span className="px-3 py-2 text-zinc-500 italic">No options. Open column menu to configure.</span>
+                        ) : (
+                          activeDropdown.options.map((opt) => {
+                            const isSelected = activeDropdown.isTags
+                              ? activeDropdown.value.split(",").map((s) => s.trim()).includes(opt.id)
+                              : activeDropdown.value === opt.id || activeDropdown.value === opt.label;
                             
-                            const cellId = cell?.id || `new-${row.id}-${col.id}`;
-                            const isRevealed = !!revealedCells[cellId];
-                            const isSecret = col.type === "secret";
-                            const hasValue = cell?.hasValue;
-
                             return (
-                              <td
-                                key={col.id}
-                                className={`px-4 py-2 border-r border-zinc-850 text-xs text-zinc-300 relative min-w-[150px] ${
-                                  isEditing ? "bg-zinc-900/60 p-0" : ""
+                              <button
+                                key={opt.id}
+                                onClick={() => {
+                                  let newVal = "";
+                                  if (activeDropdown.isTags) {
+                                    const currentTags = activeDropdown.value.split(",").map((s) => s.trim()).filter(Boolean);
+                                    if (currentTags.includes(opt.id)) {
+                                      newVal = currentTags.filter((t) => t !== opt.id).join(",");
+                                    } else {
+                                      newVal = [...currentTags, opt.id].join(",");
+                                    }
+                                  } else {
+                                    newVal = opt.id;
+                                  }
+
+                                  handleUpdateCellOptimistic(activeDropdown.rowId, activeDropdown.columnId, newVal);
+                                  if (activeDropdown.isTags) {
+                                    setActiveDropdown((prev) => prev ? { ...prev, value: newVal } : null);
+                                  } else {
+                                    setActiveDropdown(null);
+                                  }
+                                }}
+                                className={`flex items-center justify-between px-3 py-2 rounded-lg hover:bg-zinc-900 transition-all font-semibold ${
+                                  isSelected ? "text-white bg-zinc-900/60" : "text-zinc-400"
                                 }`}
-                                onDoubleClick={() =>
-                                  handleStartEditCell(row.id, col.id, cell?.value ?? null)
-                                }
                               >
-                                {isEditing ? (
-                                  <div className="flex items-center w-full h-full">
-                                    <input
-                                      type={isSecret ? "text" : col.type === "date" ? "date" : "text"}
-                                      value={editValue}
-                                      onChange={(e) => setEditValue(e.target.value)}
-                                      onBlur={() => handleSaveCell(row.id, col.id)}
-                                      onKeyDown={(e) => {
-                                        if (e.key === "Enter") handleSaveCell(row.id, col.id);
-                                        if (e.key === "Escape") setEditingCell(null);
-                                      }}
-                                      autoFocus
-                                      className="w-full bg-[#111] text-white px-4 py-2 outline-none border border-blue-500 rounded-sm focus:ring-1 focus:ring-blue-500 font-medium"
-                                    />
-                                  </div>
-                                ) : (
-                                  <div className="flex items-center justify-between gap-2 min-h-[1.5rem]">
-                                    <span
-                                      className={`truncate max-w-[85%] font-medium ${
-                                        isSecret && !isRevealed && hasValue
-                                          ? "text-zinc-600 font-mono tracking-widest"
-                                          : ""
-                                      }`}
-                                    >
-                                      {isSecret && hasValue
-                                        ? isRevealed
-                                          ? revealedCells[cellId]
-                                          : "••••••"
-                                        : cell?.value || ""}
-                                    </span>
-
-                                    {isSecret && hasValue && (
-                                      <button
-                                        onClick={() => handleRevealSecret(cellId)}
-                                        className="text-zinc-500 hover:text-blue-400 p-0.5 rounded hover:bg-zinc-800 transition-all flex-shrink-0"
-                                        title={isRevealed ? "Hide Password" : "Reveal Decrypted Password"}
-                                        disabled={revealingCellId === cellId}
-                                      >
-                                        {revealingCellId === cellId ? (
-                                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                                        ) : isRevealed ? (
-                                          <EyeOff className="w-3.5 h-3.5 text-blue-500" />
-                                        ) : (
-                                          <Eye className="w-3.5 h-3.5" />
-                                        )}
-                                      </button>
-                                    )}
-
-                                    {isSecret && !hasValue && (
-                                      <Lock className="w-3.5 h-3.5 text-zinc-800 flex-shrink-0" />
-                                    )}
-                                  </div>
-                                )}
-                              </td>
+                                <span
+                                  style={{ backgroundColor: opt.color + "22", color: opt.color, borderColor: opt.color + "44" }}
+                                  className="px-2 py-0.5 rounded border text-[10px] font-bold"
+                                >
+                                  {opt.label}
+                                </span>
+                                {isSelected && <Check className="w-3.5 h-3.5 text-blue-500" />}
+                              </button>
                             );
-                          })}
-                        </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
+                          })
+                        )}
+                      </div>
+                    </>
+                  )}
+
+                  {/* Header menu context dropdown */}
+                  {headerMenu && (
+                    <>
+                      <div className="fixed inset-0 z-40" onClick={() => setHeaderMenu(null)} />
+                      <div
+                        style={{
+                          position: "absolute",
+                          top: headerMenu.bounds.y + headerMenu.bounds.height + 4,
+                          left: Math.min(
+                            headerMenu.bounds.x,
+                            (containerRef.current?.clientWidth || 0) - 160
+                          ),
+                          zIndex: 50,
+                        }}
+                        className="bg-[#09090b] border border-zinc-800 rounded-xl shadow-2xl p-1 w-40 flex flex-col text-xs"
+                      >
+                        <button
+                          onClick={() => {
+                            const columnsList = sheetData?.columns.filter((c) => !c.hidden);
+                            const col = columnsList?.[headerMenu.colIdx];
+                            if (col) {
+                              const newName = prompt("Enter new column name:", col.name);
+                              if (newName && newName.trim()) {
+                                handleRenameColumn(col.id, newName.trim());
+                              }
+                            }
+                            setHeaderMenu(null);
+                          }}
+                          className="px-3 py-2 text-left hover:bg-zinc-900 rounded-lg text-zinc-300 hover:text-white font-medium"
+                        >
+                          Rename Column
+                        </button>
+                        <button
+                          onClick={() => {
+                            const columnsList = sheetData?.columns.filter((c) => !c.hidden);
+                            const col = columnsList?.[headerMenu.colIdx];
+                            if (col) {
+                              handleDeleteColumn(col.id);
+                            }
+                            setHeaderMenu(null);
+                          }}
+                          className="px-3 py-2 text-left hover:bg-red-950/30 hover:text-red-400 rounded-lg text-zinc-400 font-medium"
+                        >
+                          Delete Column
+                        </button>
+                        <button
+                          onClick={() => {
+                            const columnsList = sheetData?.columns.filter((c) => !c.hidden);
+                            const col = columnsList?.[headerMenu.colIdx];
+                            if (col) {
+                              handleTogglePinColumn(col.id, !col.pinned);
+                            }
+                            setHeaderMenu(null);
+                          }}
+                          className="px-3 py-2 text-left hover:bg-zinc-900 rounded-lg text-zinc-300 hover:text-white font-medium"
+                        >
+                          {sheetData?.columns.filter((c) => !c.hidden)[headerMenu.colIdx]?.pinned ? "Unpin Column" : "Pin Column"}
+                        </button>
+                        <button
+                          onClick={() => {
+                            const columnsList = sheetData?.columns.filter((c) => !c.hidden);
+                            const col = columnsList?.[headerMenu.colIdx];
+                            if (col) {
+                              handleToggleHideColumn(col.id, true);
+                            }
+                            setHeaderMenu(null);
+                          }}
+                          className="px-3 py-2 text-left hover:bg-zinc-900 rounded-lg text-zinc-300 hover:text-white font-medium"
+                        >
+                          Hide Column
+                        </button>
+                        {(sheetData?.columns.filter((c) => !c.hidden)[headerMenu.colIdx]?.type === "status" ||
+                          sheetData?.columns.filter((c) => !c.hidden)[headerMenu.colIdx]?.type === "tags") && (
+                          <button
+                            onClick={() => {
+                              const columnsList = sheetData?.columns.filter((c) => !c.hidden);
+                              const col = columnsList?.[headerMenu.colIdx];
+                              if (col) {
+                                openConfigModal(col.id);
+                              }
+                              setHeaderMenu(null);
+                            }}
+                            className="px-3 py-2 text-left hover:bg-zinc-900 rounded-lg text-zinc-300 hover:text-white font-medium border-t border-zinc-900 mt-1"
+                          >
+                            Configure Options
+                          </button>
+                        )}
+                      </div>
+                    </>
+                  )}
+                </div>
               )}
             </div>
           </div>
@@ -1621,6 +2787,91 @@ export default function VaultClientPage({
                   ))}
                 </div>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 7. Column options config modal */}
+      {showConfigModal && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-fadeIn">
+          <div className="bg-[#09090b] border border-[#27272a] rounded-2xl w-full max-w-sm overflow-hidden shadow-2xl">
+            <div className="px-5 py-4 border-b border-[#27272a] flex items-center justify-between">
+              <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                <Database className="w-4 h-4 text-purple-500" />
+                Configure Column Options
+              </h3>
+              <button
+                onClick={() => setShowConfigModal(null)}
+                className="text-zinc-500 hover:text-white transition-all"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="p-5 space-y-4 max-h-[70vh] overflow-y-auto">
+              <div className="space-y-2">
+                {configOptions.map((opt, idx) => (
+                  <div key={opt.id} className="flex items-center gap-2 bg-zinc-950 p-2 rounded-lg border border-zinc-850">
+                    <input
+                      type="text"
+                      value={opt.label}
+                      onChange={(e) => {
+                        const updated = [...configOptions];
+                        updated[idx].label = e.target.value;
+                        setConfigOptions(updated);
+                      }}
+                      placeholder="Option label"
+                      className="flex-1 bg-[#111] border border-zinc-800 rounded px-2.5 py-1.5 text-xs text-white focus:outline-none"
+                    />
+                    <select
+                      value={opt.color}
+                      onChange={(e) => {
+                        const updated = [...configOptions];
+                        updated[idx].color = e.target.value;
+                        setConfigOptions(updated);
+                      }}
+                      className="bg-[#111] border border-zinc-800 rounded px-2 py-1 text-xs text-zinc-300 focus:outline-none"
+                    >
+                      <option value="#ef4444">Red</option>
+                      <option value="#f97316">Orange</option>
+                      <option value="#f59e0b">Yellow</option>
+                      <option value="#10b981">Green</option>
+                      <option value="#14b8a6">Teal</option>
+                      <option value="#3b82f6">Blue</option>
+                      <option value="#6366f1">Indigo</option>
+                      <option value="#8b5cf6">Purple</option>
+                      <option value="#ec4899">Pink</option>
+                      <option value="#71717a">Gray</option>
+                    </select>
+                    <button
+                      onClick={() => {
+                        setConfigOptions(configOptions.filter((o) => o.id !== opt.id));
+                      }}
+                      className="p-1 hover:text-red-400 transition-all text-zinc-500"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+              <button
+                onClick={() => {
+                  setConfigOptions([
+                    ...configOptions,
+                    { id: `opt-${Date.now()}`, label: `Option ${configOptions.length + 1}`, color: "#3b82f6" },
+                  ]);
+                }}
+                className="w-full flex items-center justify-center gap-1.5 py-2 border border-dashed border-zinc-800 hover:border-zinc-700 rounded-lg text-xs font-bold text-zinc-400 hover:text-white transition-all bg-zinc-950/20"
+              >
+                <Plus className="w-3.5 h-3.5 text-blue-500" />
+                Add New Option
+              </button>
+              <button
+                onClick={() => handleSaveColumnConfig(showConfigModal, configOptions)}
+                className="w-full py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-bold transition-all mt-4"
+              >
+                Save Option List
+              </button>
             </div>
           </div>
         </div>

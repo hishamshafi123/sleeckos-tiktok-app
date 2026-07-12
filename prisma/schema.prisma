@@ -1164,14 +1164,18 @@ model VaultFolderAccess {
 }
 
 model Sheet {
-  id        String        @id @default(uuid())
-  folderId  String
-  folder    VaultFolder   @relation(fields: [folderId], references: [id], onDelete: Cascade)
-  name      String
-  createdAt DateTime      @default(now())
-  updatedAt DateTime      @updatedAt
-  columns   SheetColumn[]
-  rows      SheetRow[]
+  id         String        @id @default(uuid())
+  folderId   String
+  folder     VaultFolder   @relation(fields: [folderId], references: [id], onDelete: Cascade)
+  name       String
+  frozenRows Int           @default(0)
+  frozenCols Int           @default(0)
+  colorRules Json?
+  viewState  Json?
+  createdAt  DateTime      @default(now())
+  updatedAt  DateTime      @updatedAt
+  columns    SheetColumn[]
+  rows       SheetRow[]
 }
 
 model SheetColumn {
@@ -1180,7 +1184,11 @@ model SheetColumn {
   sheet     Sheet       @relation(fields: [sheetId], references: [id], onDelete: Cascade)
   name      String
   order     Int
-  type      String      // "text" | "email" | "number" | "url" | "secret" | "date"
+  type      String      // "text" | "email" | "number" | "url" | "secret" | "date" | "status" | "tags"
+  width     Int         @default(150)
+  hidden    Boolean     @default(false)
+  pinned    Boolean     @default(false)
+  config    Json?
   cells     SheetCell[]
   createdAt DateTime    @default(now())
   updatedAt DateTime    @updatedAt
@@ -1193,6 +1201,8 @@ model SheetRow {
   sheetId   String
   sheet     Sheet       @relation(fields: [sheetId], references: [id], onDelete: Cascade)
   order     Int
+  height    Int         @default(34)
+  color     String?
   cells     SheetCell[]
   createdAt DateTime    @default(now())
   updatedAt DateTime    @updatedAt
