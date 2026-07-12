@@ -4,19 +4,7 @@ import { can } from "@/lib/services/permissions";
 import { redirect } from "next/navigation";
 import AccessDenied from "@/components/AccessDenied";
 import prisma from "@/lib/db";
-import nextDynamic from "next/dynamic";
-
-const VaultClientPage = nextDynamic(() => import("./VaultClientPage"), {
-  ssr: false,
-  loading: () => (
-    <div className="flex items-center justify-center h-screen bg-[#09090b] text-zinc-400">
-      <div className="flex flex-col items-center gap-3">
-        <div className="animate-spin h-8 w-8 border-2 border-blue-500 border-t-transparent rounded-full" />
-        <span>Loading Data Vault…</span>
-      </div>
-    </div>
-  ),
-});
+import VaultClientWrapper from "./VaultClientWrapper";
 
 export const dynamic = "force-dynamic";
 
@@ -36,5 +24,5 @@ export default async function VaultPage() {
 
   if (!currentUser) redirect("/login");
 
-  return <VaultClientPage currentUserId={session.userId} userRole={currentUser.role.key} />;
+  return <VaultClientWrapper currentUserId={session.userId} userRole={currentUser.role.key} />;
 }
