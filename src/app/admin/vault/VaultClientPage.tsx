@@ -865,6 +865,10 @@ export default function VaultClientPage({
     }
   };
 
+  const handleHeaderMenuClick = useCallback((col: number, bounds: Rectangle) => {
+    setHeaderMenu({ colIdx: col, bounds });
+  }, []);
+
   const handleUndo = useCallback(() => {
     if (undoStack.length === 0 || !sheetData) return;
     const prev = undoStack[undoStack.length - 1];
@@ -2051,7 +2055,7 @@ export default function VaultClientPage({
                     onColumnResize={handleColumnResize}
                     onColumnMoved={handleColumnMoved}
                     onCellClicked={handleCellClicked}
-                    onHeaderMenuClick={useCallback((col: number, bounds: Rectangle) => setHeaderMenu({ colIdx: col, bounds }), [])}
+                    onHeaderMenuClick={handleHeaderMenuClick}
                     onPaste={handlePaste}
                     onFillPattern={handleFillPattern}
                     fillHandle={true}
