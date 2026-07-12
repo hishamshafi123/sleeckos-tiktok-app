@@ -1237,7 +1237,8 @@ export default function VaultClientPage({
     (cell: readonly [number, number], newValue: EditableGridCell) => {
       if (!sheetData || sheetData.permission === "view") return;
       const [colIdx, rowIdx] = cell;
-      const col = sheetData.columns[colIdx];
+      const visibleCols = sheetData.columns.filter((c) => !c.hidden);
+      const col = visibleCols[colIdx];
       const row = sheetData.rows[rowIdx];
       if (!col || !row) return;
 
@@ -1311,11 +1312,12 @@ export default function VaultClientPage({
       const updatedRows = [...sheetData.rows];
 
       for (let x = fillDestination.x; x < fillDestination.x + fillDestination.width; x++) {
-        const col = sheetData.columns[x];
+        const visibleCols = sheetData.columns.filter((c) => !c.hidden);
+        const col = visibleCols[x];
         if (!col) continue;
 
         const sourceColIdx = patternSource.x + ((x - fillDestination.x) % patternSource.width);
-        const sourceCol = sheetData.columns[sourceColIdx];
+        const sourceCol = visibleCols[sourceColIdx];
         if (!sourceCol) continue;
 
         for (let y = fillDestination.y; y < fillDestination.y + fillDestination.height; y++) {
@@ -1382,9 +1384,10 @@ export default function VaultClientPage({
       return;
     }
 
+    const visibleCols = sheetData.columns.filter((c) => !c.hidden);
     const cellIds: string[] = [];
     for (let x = range.x; x < range.x + range.width; x++) {
-      const col = sheetData.columns[x];
+      const col = visibleCols[x];
       if (!col) continue;
       for (let y = range.y; y < range.y + range.height; y++) {
         const row = sheetData.rows[y];
@@ -1418,7 +1421,7 @@ export default function VaultClientPage({
         if (!row) continue;
         let tsvRow = [];
         for (let x = range.x; x < range.x + range.width; x++) {
-          const col = sheetData.columns[x];
+          const col = visibleCols[x];
           if (!col) continue;
           const cell = row.cells.find((c) => c.columnId === col.id);
           const val = cell ? (decrypted[cell.id] ?? cell.value ?? "") : "";
@@ -1464,7 +1467,8 @@ export default function VaultClientPage({
 
           for (let c = 0; c < values[r].length; c++) {
             const colIdx = startCol + c;
-            const col = sheetData.columns[colIdx];
+            const visibleCols = sheetData.columns.filter((co) => !co.hidden);
+            const col = visibleCols[colIdx];
             if (!col) continue;
 
             const val = values[r][c];
@@ -1521,7 +1525,8 @@ export default function VaultClientPage({
     (cell: readonly [number, number], event: any) => {
       if (!sheetData) return;
       const [colIdx, rowIdx] = cell;
-      const col = sheetData.columns[colIdx];
+      const visibleCols = sheetData.columns.filter((c) => !c.hidden);
+      const col = visibleCols[colIdx];
       const row = sheetData.rows[rowIdx];
       if (!col || !row) return;
 
