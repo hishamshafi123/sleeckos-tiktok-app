@@ -946,7 +946,8 @@ export default function VaultClientPage({
   useEffect(() => {
     if (selectedSheetId && sheetData && pendingFocusCell) {
       const { rowId, columnId } = pendingFocusCell;
-      const colIdx = sheetData.columns.findIndex((c) => c.id === columnId);
+      const visibleCols = sheetData.columns.filter((c) => !c.hidden);
+      const colIdx = visibleCols.findIndex((c) => c.id === columnId);
       const rowIdx = sheetData.rows.findIndex((r) => r.id === rowId);
 
       if (colIdx !== -1 && rowIdx !== -1) {
@@ -987,6 +988,7 @@ export default function VaultClientPage({
 
   const handleSelectSearchResult = (result: any) => {
     setSelectedSheetId(result.sheetId);
+    setSearchTerm(globalSearchQuery);
     if (result.rowId && result.columnId) {
       setPendingFocusCell({
         rowId: result.rowId,
