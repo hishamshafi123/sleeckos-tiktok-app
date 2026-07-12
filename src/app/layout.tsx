@@ -15,6 +15,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en" className="dark">
       <body className={`${inter.className} min-h-screen bg-[#0a0a0f] text-white antialiased`}>
         {children}
+        <div id="portal" />
         <Toaster theme="dark" />
       </body>
     </html>

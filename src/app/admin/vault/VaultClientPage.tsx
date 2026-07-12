@@ -2051,6 +2051,7 @@ export default function VaultClientPage({
                     columns={gridColumns}
                     rows={sheetData.rows.length}
                     getCellContent={getCellContent}
+                    getCellsForSelection={true}
                     onCellEdited={handleCellEdited}
                     onColumnResize={handleColumnResize}
                     onColumnMoved={handleColumnMoved}
