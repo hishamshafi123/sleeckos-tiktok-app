@@ -1,11 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSession } from "@/lib/session";
+import prisma from "@/lib/db";
 import {
   createFolder,
   renameFolder,
   moveFolder,
   deleteFolder,
   listAccessibleFolders,
+  setFolderOwner,
+  scaffoldGeneratorFolder,
 } from "@/lib/services/vault";
 
 export const dynamic = "force-dynamic";
@@ -41,6 +44,14 @@ export async function POST(req: NextRequest) {
     }
 
     const folder = await createFolder(session.userId, name, parentFolderId);
+
+    if (parentFolderId) {
+      const parent = await prisma.vaultFolder.findUnique({ where: { id: parentFolderId } });
+      if (parent && parent.name === "Acc Generators" && parent.parentFolderId === null) {
+        await scaffoldGeneratorFolder(folder.id, session.userId);
+      }
+    }
+
     return NextResponse.json(folder);
   } catch (err: any) {
     console.error("[Vault Folders POST] Error:", err);
@@ -48,7 +59,7 @@ export async function POST(req: NextRequest) {
   }
 }
 
-// PATCH: rename or move a folder
+// PATCH: rename, move, or assign owner to a folder
 export async function PATCH(req: NextRequest) {
   const session = await getSession();
   if (!session) {
@@ -57,7 +68,7 @@ export async function PATCH(req: NextRequest) {
 
   try {
     const body = await req.json();
-    const { folderId, name, parentFolderId } = body;
+    const { folderId, name, parentFolderId, ownerUserId } = body;
     if (!folderId) {
       return NextResponse.json({ error: "Missing folderId" }, { status: 400 });
     }
@@ -67,6 +78,8 @@ export async function PATCH(req: NextRequest) {
       updated = await renameFolder(session.userId, folderId, name);
     } else if (parentFolderId !== undefined) {
       updated = await moveFolder(session.userId, folderId, parentFolderId);
+    } else if (ownerUserId !== undefined) {
+      updated = await setFolderOwner(session.userId, folderId, ownerUserId);
     } else {
       return NextResponse.json({ error: "No update parameters provided" }, { status: 400 });
     }

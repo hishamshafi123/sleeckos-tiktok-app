@@ -483,6 +483,8 @@ export async function updateCell(
     },
   });
 
+  await recordOutcome(userId, sheetId, rowId, columnId, value);
+
   return cell;
 }
 
@@ -870,5 +872,167 @@ export async function getUserVaultAccess(targetUserId: string) {
   }
 
   return results;
+}
+
+export async function setFolderOwner(userId: string, folderId: string, ownerUserId: string | null) {
+  const perm = await getFolderPermission(userId, folderId);
+  if (perm !== "manage") {
+    const isGlobalAdmin = await can(userId, "users_access");
+    if (!isGlobalAdmin) {
+      throw new Error("Forbidden: folder manage access required");
+    }
+  }
+
+  return await prisma.vaultFolder.update({
+    where: { id: folderId },
+    data: { ownerUserId },
+  });
+}
+
+export async function scaffoldGeneratorFolder(folderId: string, creatorUserId: string) {
+  // 1. Create Multilogin sheet
+  const multiloginSheet = await prisma.sheet.create({
+    data: {
+      folderId,
+      name: "Multilogin",
+    },
+  });
+
+  const mlSuccessId = `opt-${Date.now()}-ml-success`;
+  const mlFailId = `opt-${Date.now()}-ml-fail`;
+
+  await prisma.sheetColumn.createMany({
+    data: [
+      { sheetId: multiloginSheet.id, name: "Username", type: "text", order: 0 },
+      { sheetId: multiloginSheet.id, name: "Email", type: "email", order: 1 },
+      { sheetId: multiloginSheet.id, name: "Password", type: "secret", order: 2 },
+      { sheetId: multiloginSheet.id, name: "Proxy", type: "text", order: 3 },
+      { sheetId: multiloginSheet.id, name: "Profile ID", type: "text", order: 4 },
+      {
+        sheetId: multiloginSheet.id,
+        name: "Status",
+        type: "tags",
+        order: 5,
+        config: {
+          options: [
+            { id: mlSuccessId, label: "Success", color: "#10b981", order: 0 },
+            { id: mlFailId, label: "Fail", color: "#ef4444", order: 1 },
+          ],
+        },
+        trackConfig: {
+          enabled: true,
+          successOptionIds: [mlSuccessId],
+          failOptionIds: [mlFailId],
+        },
+      },
+    ],
+  });
+
+  // 2. Create Outlook email sheet
+  const outlookSheet = await prisma.sheet.create({
+    data: {
+      folderId,
+      name: "Outlook email",
+    },
+  });
+
+  const outSuccessId = `opt-${Date.now()}-out-success`;
+  const outFailId = `opt-${Date.now()}-out-fail`;
+
+  await prisma.sheetColumn.createMany({
+    data: [
+      { sheetId: outlookSheet.id, name: "Email", type: "email", order: 0 },
+      { sheetId: outlookSheet.id, name: "Password", type: "secret", order: 1 },
+      {
+        sheetId: outlookSheet.id,
+        name: "Status",
+        type: "tags",
+        order: 2,
+        config: {
+          options: [
+            { id: outSuccessId, label: "Success", color: "#10b981", order: 0 },
+            { id: outFailId, label: "Fail", color: "#ef4444", order: 1 },
+          ],
+        },
+        trackConfig: {
+          enabled: true,
+          successOptionIds: [outSuccessId],
+          failOptionIds: [outFailId],
+        },
+      },
+    ],
+  });
+}
+
+export async function recordOutcome(
+  userId: string,
+  sheetId: string,
+  rowId: string,
+  columnId: string,
+  newValue: string | null
+) {
+  const column = await prisma.sheetColumn.findUnique({ where: { id: columnId } });
+  if (!column) return;
+
+  const trackConfig = column.trackConfig as any;
+  if (!trackConfig || !trackConfig.enabled) return;
+
+  const successOptionIds = trackConfig.successOptionIds || [];
+  const failOptionIds = trackConfig.failOptionIds || [];
+
+  if (successOptionIds.length === 0 && failOptionIds.length === 0) return;
+
+  const selectedIds = newValue
+    ? newValue
+        .split(",")
+        .map((id) => id.trim())
+        .filter(Boolean)
+    : [];
+
+  let status: "success" | "fail" | null = null;
+  if (selectedIds.some((id) => successOptionIds.includes(id))) {
+    status = "success";
+  } else if (selectedIds.some((id) => failOptionIds.includes(id))) {
+    status = "fail";
+  }
+
+  if (!status) return;
+
+  const row = await prisma.sheetRow.findUnique({ where: { id: rowId } });
+  if (!row) return;
+
+  if (row.outcomeStatus === "success") {
+    return;
+  }
+
+  if (status === "success" || (status === "fail" && row.outcomeStatus !== "fail")) {
+    const sheet = await prisma.sheet.findUnique({
+      where: { id: sheetId },
+      include: { folder: true },
+    });
+    if (!sheet) return;
+
+    await prisma.$transaction([
+      prisma.sheetRow.update({
+        where: { id: rowId },
+        data: {
+          outcomeStatus: status,
+          outcomeSetAt: new Date(),
+        },
+      }),
+      prisma.accountGenerationEvent.create({
+        data: {
+          folderId: sheet.folderId,
+          sheetId,
+          rowId,
+          columnId,
+          ownerUserId: sheet.folder.ownerUserId,
+          status,
+          occurredAt: new Date(),
+          setByUserId: userId,
+        },
+      }),
+    ]);
+  }
 }
 

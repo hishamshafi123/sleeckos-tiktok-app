@@ -51,6 +51,7 @@ interface FolderNode {
   permission: "view" | "edit" | "manage";
   sheets: { id: string; name: string; createdAt: string }[];
   accessList?: any[];
+  ownerUserId?: string | null;
 }
 
 interface SheetData {
@@ -157,6 +158,9 @@ export default function VaultClientPage({
   // Options configuration modal
   const [showConfigModal, setShowConfigModal] = useState<string | null>(null); // columnId
   const [configOptions, setConfigOptions] = useState<Array<{ id: string; label: string; color: string }>>([]);
+  const [trackEnabled, setTrackEnabled] = useState(false);
+  const [successOptionIds, setSuccessOptionIds] = useState<string[]>([]);
+  const [failOptionIds, setFailOptionIds] = useState<string[]>([]);
 
   // Sharing & Metadata Lists
   const [usersList, setUsersList] = useState<UserListItem[]>([]);
@@ -588,6 +592,26 @@ export default function VaultClientPage({
       setShowShareModal(false);
     } catch (err: any) {
       toast.error(err.message || "Revocation failed");
+    }
+  };
+
+  const handleSetFolderOwner = async (folderId: string, ownerUserId: string | null) => {
+    try {
+      const res = await fetch("/api/managed/vault/folders", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          folderId,
+          ownerUserId,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to assign owner");
+
+      toast.success("Folder owner updated successfully");
+      fetchFolders();
+    } catch (err: any) {
+      toast.error(err.message || "Failed to update folder owner");
     }
   };
 
@@ -1188,10 +1212,15 @@ export default function VaultClientPage({
         body: JSON.stringify({
           columnId,
           config: { options },
+          trackConfig: {
+            enabled: trackEnabled,
+            successOptionIds,
+            failOptionIds,
+          },
         }),
       });
       if (!res.ok) throw new Error("Config save failed");
-      toast.success("Column options updated");
+      toast.success("Column options and tracking updated");
       setShowConfigModal(null);
       fetchSheet(selectedSheetId);
     } catch (err: any) {
@@ -1203,7 +1232,11 @@ export default function VaultClientPage({
     const col = sheetData?.columns.find((c) => c.id === columnId);
     if (col) {
       const config = col.config as any;
+      const track = (col as any).trackConfig as any;
       setConfigOptions(config?.options || []);
+      setTrackEnabled(track?.enabled || false);
+      setSuccessOptionIds(track?.successOptionIds || []);
+      setFailOptionIds(track?.failOptionIds || []);
       setShowConfigModal(columnId);
     }
   };
@@ -2658,6 +2691,25 @@ export default function VaultClientPage({
                   </div>
                 </div>
               </form>
+
+              {/* Folder Owner (KPI Attribution) */}
+              <div className="border-t border-[#27272a] pt-4 space-y-2">
+                <label className="block text-[10px] uppercase font-bold text-zinc-500">Folder Owner (KPI Attribution)</label>
+                <div className="flex gap-2">
+                  <select
+                    value={folders.find((f: any) => f.id === shareModalFolderId)?.ownerUserId || ""}
+                    onChange={(e) => handleSetFolderOwner(shareModalFolderId!, e.target.value || null)}
+                    className="w-full bg-[#111] border border-zinc-800 rounded-lg px-3 py-2.5 text-xs font-bold text-zinc-300 focus:outline-none focus:border-blue-500/50"
+                  >
+                    <option value="">-- No Owner (Unassigned) --</option>
+                    {usersList.map((u: any) => (
+                      <option key={u.id} value={u.id}>
+                        {u.name || "Unknown"} ({u.email})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -3193,6 +3245,93 @@ export default function VaultClientPage({
                 <Plus className="w-3.5 h-3.5 text-blue-500" />
                 Add New Option
               </button>
+
+              {/* Zoned Outcomes KPI Tracking */}
+              <div className="border-t border-zinc-900/60 pt-4 space-y-3">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-semibold text-zinc-300">Track KPI Outcomes</label>
+                  <label className="relative inline-flex items-center cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={trackEnabled}
+                      onChange={(e) => setTrackEnabled(e.target.checked)}
+                      className="sr-only peer"
+                    />
+                    <div className="w-7 h-4 bg-zinc-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-zinc-400 after:border-zinc-350 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-purple-650"></div>
+                  </label>
+                </div>
+
+                {trackEnabled && (
+                  <div className="space-y-3 bg-zinc-950 p-3 rounded-xl border border-zinc-900 animate-fadeIn">
+                    <div>
+                      <label className="block text-[9px] uppercase font-bold text-zinc-500 mb-1.5">Success Outcomes</label>
+                      <div className="flex flex-wrap gap-1.5">
+                        {configOptions.length === 0 ? (
+                          <p className="text-[10px] text-zinc-650 italic">Add options above first.</p>
+                        ) : (
+                          configOptions.map((opt) => {
+                            const isChecked = successOptionIds.includes(opt.id);
+                            return (
+                              <button
+                                key={opt.id}
+                                onClick={() => {
+                                  if (isChecked) {
+                                    setSuccessOptionIds(successOptionIds.filter((id) => id !== opt.id));
+                                  } else {
+                                    setSuccessOptionIds([...successOptionIds, opt.id]);
+                                    setFailOptionIds(failOptionIds.filter((id) => id !== opt.id));
+                                  }
+                                }}
+                                className={`px-2 py-1 rounded text-[10px] font-bold border transition-all ${
+                                  isChecked
+                                    ? "bg-emerald-950/40 border-emerald-500/50 text-emerald-400"
+                                    : "bg-zinc-900/40 border-zinc-800 text-zinc-450 hover:border-zinc-700"
+                                }`}
+                              >
+                                {opt.label}
+                              </button>
+                            );
+                          })
+                        )}
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="block text-[9px] uppercase font-bold text-zinc-500 mb-1.5">Fail Outcomes</label>
+                      <div className="flex flex-wrap gap-1.5">
+                        {configOptions.length === 0 ? (
+                          <p className="text-[10px] text-zinc-650 italic">Add options above first.</p>
+                        ) : (
+                          configOptions.map((opt) => {
+                            const isChecked = failOptionIds.includes(opt.id);
+                            return (
+                              <button
+                                key={opt.id}
+                                onClick={() => {
+                                  if (isChecked) {
+                                    setFailOptionIds(failOptionIds.filter((id) => id !== opt.id));
+                                  } else {
+                                    setFailOptionIds([...failOptionIds, opt.id]);
+                                    setSuccessOptionIds(successOptionIds.filter((id) => id !== opt.id));
+                                  }
+                                }}
+                                className={`px-2 py-1 rounded text-[10px] font-bold border transition-all ${
+                                  isChecked
+                                    ? "bg-red-950/40 border-red-500/50 text-red-400"
+                                    : "bg-zinc-900/40 border-zinc-800 text-zinc-450 hover:border-zinc-700"
+                                }`}
+                              >
+                                {opt.label}
+                              </button>
+                            );
+                          })
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+
               <button
                 onClick={() => handleSaveColumnConfig(showConfigModal, configOptions)}
                 className="w-full py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-bold transition-all mt-4"

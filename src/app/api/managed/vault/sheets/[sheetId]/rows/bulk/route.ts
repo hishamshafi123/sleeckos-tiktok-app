@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSession } from "@/lib/session";
 import prisma from "@/lib/db";
-import { getFolderPermission, logVaultAction, encrypt } from "@/lib/services/vault";
+import { getFolderPermission, logVaultAction, encrypt, recordOutcome } from "@/lib/services/vault";
 
 export const dynamic = "force-dynamic";
 
@@ -91,6 +91,8 @@ export async function POST(
             managedAccountId: isAccountLink ? (managedAccountId || null) : null,
           },
         });
+
+        await recordOutcome(session.userId, sheetId, rowId, columnId, value);
       }
       await logVaultAction(session.userId, "bulk_edit_cells", `Updated ${body.updates.length} cells in Sheet ${sheetId}`);
     }

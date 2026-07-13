@@ -54,6 +54,11 @@ model User {
 
   // Agent audit relations
   agentAuditLogs     AgentAuditLog[]
+
+  // Vault Ownership & KPI relations
+  ownedFolders       VaultFolder[]            @relation("FolderOwnership")
+  ownedEvents        AccountGenerationEvent[] @relation("EventOwnerUser")
+  setEvents          AccountGenerationEvent[] @relation("EventSetByUser")
 }
 
 model Role {
@@ -1146,6 +1151,8 @@ model VaultFolder {
   createdBy      String?
   createdAt      DateTime            @default(now())
   updatedAt      DateTime            @updatedAt
+  ownerUserId    String?
+  ownerUser      User?               @relation("FolderOwnership", fields: [ownerUserId], references: [id], onDelete: SetNull)
   sheets         Sheet[]
   accessList     VaultFolderAccess[]
 }
@@ -1190,6 +1197,7 @@ model SheetColumn {
   hidden    Boolean     @default(false)
   pinned    Boolean     @default(false)
   config    Json?
+  trackConfig Json?
   cells     SheetCell[]
   createdAt DateTime    @default(now())
   updatedAt DateTime    @updatedAt
@@ -1198,15 +1206,17 @@ model SheetColumn {
 }
 
 model SheetRow {
-  id        String      @id @default(uuid())
-  sheetId   String
-  sheet     Sheet       @relation(fields: [sheetId], references: [id], onDelete: Cascade)
-  order     Int
-  height    Int         @default(34)
-  color     String?
-  cells     SheetCell[]
-  createdAt DateTime    @default(now())
-  updatedAt DateTime    @updatedAt
+  id            String      @id @default(uuid())
+  sheetId       String
+  sheet         Sheet       @relation(fields: [sheetId], references: [id], onDelete: Cascade)
+  order         Int
+  height        Int         @default(34)
+  color         String?
+  outcomeStatus String?
+  outcomeSetAt  DateTime?
+  cells         SheetCell[]
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
 }
 
 model SheetCell {
@@ -1232,5 +1242,24 @@ model VaultAuditLog {
   action    String   // "reveal" | "edit" | "export" | "import" | "grant" | "revoke"
   target    String   // target details e.g. "Folder: X", "Cell: Y", etc.
   createdAt DateTime @default(now())
+}
+
+model AppSetting {
+  key   String @id
+  value String
+}
+
+model AccountGenerationEvent {
+  id          String   @id @default(uuid())
+  folderId    String
+  sheetId     String
+  rowId       String
+  columnId    String
+  ownerUserId String?
+  ownerUser   User?    @relation("EventOwnerUser", fields: [ownerUserId], references: [id], onDelete: SetNull)
+  status      String   // "success" | "fail"
+  occurredAt  DateTime @default(now())
+  setByUserId String?
+  setByUser   User?    @relation("EventSetByUser", fields: [setByUserId], references: [id], onDelete: SetNull)
 }
 

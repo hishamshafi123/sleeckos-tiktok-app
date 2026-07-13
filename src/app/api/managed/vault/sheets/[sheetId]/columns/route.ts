@@ -101,6 +101,7 @@ export async function PATCH(
     if (body.hidden !== undefined) updateData.hidden = body.hidden;
     if (body.pinned !== undefined) updateData.pinned = body.pinned;
     if (body.config !== undefined) updateData.config = body.config;
+    if (body.trackConfig !== undefined) updateData.trackConfig = body.trackConfig;
 
     // Handle column type changes and migrate existing cell values
     if (body.type !== undefined && body.type !== col.type) {
