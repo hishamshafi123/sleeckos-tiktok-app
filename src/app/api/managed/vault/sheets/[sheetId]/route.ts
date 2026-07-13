@@ -32,7 +32,19 @@ export async function GET(
         rows: {
           orderBy: { order: "asc" },
           include: {
-            cells: true,
+            cells: {
+              include: {
+                managedAccount: {
+                  select: {
+                    id: true,
+                    tiktokUsername: true,
+                    tiktokDisplayName: true,
+                    tiktokAvatarUrl: true,
+                    isActive: true,
+                  },
+                },
+              },
+            },
           },
         },
       },
@@ -53,14 +65,23 @@ export async function GET(
       const sanitizedCells = row.cells.map((cell) => {
         const column = sheet.columns.find((c) => c.id === cell.columnId);
         const isSecret = column?.type === "secret";
+        const isAccountLink = column?.type === "account_link";
         
+        const cellValue = isSecret && cell.valueEncrypted
+          ? "••••••"
+          : (isAccountLink
+              ? (cell.managedAccount ? `@${cell.managedAccount.tiktokUsername}` : "")
+              : cell.value);
+
         return {
           id: cell.id,
           rowId: cell.rowId,
           columnId: cell.columnId,
-          value: isSecret && cell.valueEncrypted ? "••••••" : cell.value,
+          value: cellValue,
           isSecret,
-          hasValue: isSecret ? !!cell.valueEncrypted : !!cell.value,
+          hasValue: isSecret ? !!cell.valueEncrypted : (isAccountLink ? !!cell.managedAccountId : !!cell.value),
+          managedAccountId: cell.managedAccountId,
+          managedAccount: cell.managedAccount,
         };
       });
 

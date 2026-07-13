@@ -435,7 +435,8 @@ export async function updateCell(
   sheetId: string,
   rowId: string,
   columnId: string,
-  value: string | null
+  value: string | null,
+  managedAccountId?: string | null
 ) {
   const sheet = await prisma.sheet.findUnique({ where: { id: sheetId } });
   if (!sheet) throw new Error("Sheet not found");
@@ -462,6 +463,8 @@ export async function updateCell(
     }
   }
 
+  const isAccountLink = column.type === "account_link";
+
   const cell = await prisma.sheetCell.upsert({
     where: {
       rowId_columnId: { rowId, columnId },
@@ -469,12 +472,14 @@ export async function updateCell(
     update: {
       value: finalValue,
       valueEncrypted: finalValueEncrypted,
+      managedAccountId: isAccountLink ? (managedAccountId || null) : null,
     },
     create: {
       rowId,
       columnId,
       value: finalValue,
       valueEncrypted: finalValueEncrypted,
+      managedAccountId: isAccountLink ? (managedAccountId || null) : null,
     },
   });
 

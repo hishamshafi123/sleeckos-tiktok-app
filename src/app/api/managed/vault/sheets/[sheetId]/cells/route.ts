@@ -18,12 +18,12 @@ export async function PATCH(
 
   try {
     const body = await req.json();
-    const { rowId, columnId, value } = body;
+    const { rowId, columnId, value, managedAccountId } = body;
     if (!rowId || !columnId) {
       return NextResponse.json({ error: "Missing rowId or columnId parameters" }, { status: 400 });
     }
 
-    const cell = await updateCell(session.userId, sheetId, rowId, columnId, value === undefined ? null : value);
+    const cell = await updateCell(session.userId, sheetId, rowId, columnId, value === undefined ? null : value, managedAccountId);
     return NextResponse.json(cell);
   } catch (err: any) {
     console.error("[Vault Cell PATCH] Error:", err);

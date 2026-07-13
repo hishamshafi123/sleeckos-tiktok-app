@@ -70,13 +70,19 @@ const VaultClientPage = nextDynamic(() => import("./VaultClientPage"), {
 export default function VaultClientWrapper({
   currentUserId,
   userRole,
+  hasAccountsEditAccess,
 }: {
   currentUserId: string;
   userRole: string;
+  hasAccountsEditAccess: boolean;
 }) {
   return (
     <ErrorBoundary>
-      <VaultClientPage currentUserId={currentUserId} userRole={userRole} />
+      <VaultClientPage
+        currentUserId={currentUserId}
+        userRole={userRole}
+        hasAccountsEditAccess={hasAccountsEditAccess}
+      />
     </ErrorBoundary>
   );
 }

@@ -64,13 +64,13 @@ export async function POST(
       const columns = await prisma.sheetColumn.findMany({
         where: { sheetId },
       });
-
       for (const update of body.updates) {
-        const { rowId, columnId, value } = update;
+        const { rowId, columnId, value, managedAccountId } = update;
         const col = columns.find((c) => c.id === columnId);
         if (!col) continue;
 
         const isSecret = col.type === "secret";
+        const isAccountLink = col.type === "account_link";
         const valEncrypted = isSecret ? encrypt(value || "") : null;
         const valPlain = isSecret ? null : value;
 
@@ -81,12 +81,14 @@ export async function POST(
           update: {
             value: valPlain,
             valueEncrypted: valEncrypted,
+            managedAccountId: isAccountLink ? (managedAccountId || null) : null,
           },
           create: {
             rowId,
             columnId,
             value: valPlain,
             valueEncrypted: valEncrypted,
+            managedAccountId: isAccountLink ? (managedAccountId || null) : null,
           },
         });
       }

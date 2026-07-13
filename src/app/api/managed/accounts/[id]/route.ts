@@ -106,7 +106,7 @@ export async function GET(
   if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
-  if (!(await can(session.userId, "accounts"))) {
+  if (!(await can(session.userId, "accounts")) && !(await can(session.userId, "data_vault"))) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 

@@ -1,5 +1,6 @@
 "use client";
 import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import ManagedAccountEditForm from "@/components/ManagedAccountEditForm";
 import {
   Folder,
   FolderPlus,
@@ -74,6 +75,8 @@ interface SheetData {
       value: string | null;
       isSecret: boolean;
       hasValue: boolean;
+      managedAccountId?: string | null;
+      managedAccount?: any | null;
     }[];
   }[];
 }
@@ -93,10 +96,12 @@ interface RoleListItem {
 
 export default function VaultClientPage({
   currentUserId,
-  userRole
+  userRole,
+  hasAccountsEditAccess,
 }: {
   currentUserId: string;
   userRole: string;
+  hasAccountsEditAccess: boolean;
 }) {
   // Navigation / Directory States
   const [folders, setFolders] = useState<FolderNode[]>([]);
@@ -182,6 +187,45 @@ export default function VaultClientPage({
   const [importMapping, setImportMapping] = useState<Record<string, { columnId?: string; isNew: boolean; newName: string; newType: string }>>({});
   const [importMode, setImportMode] = useState<"append" | "replace">("append");
   const [importing, setImporting] = useState(false);
+
+  // Account popup & picker states
+  const [activeAccountPopup, setActiveAccountPopup] = useState<{
+    rowId: string;
+    columnId: string;
+    accountId: string;
+    cellId: string;
+  } | null>(null);
+
+  const [activeAccountPicker, setActiveAccountPicker] = useState<{
+    rowId: string;
+    columnId: string;
+    cellId: string;
+  } | null>(null);
+
+  const [allManagedAccounts, setAllManagedAccounts] = useState<any[]>([]);
+  const [loadingAccounts, setLoadingAccounts] = useState(false);
+  const [accountPickerSearch, setAccountPickerSearch] = useState("");
+
+  // Fetch managed accounts when picker is opened
+  useEffect(() => {
+    if (activeAccountPicker) {
+      const fetchAccounts = async () => {
+        setLoadingAccounts(true);
+        try {
+          const res = await fetch("/api/managed/accounts/all");
+          if (res.ok) {
+            const data = await res.json();
+            setAllManagedAccounts(data || []);
+          }
+        } catch (err) {
+          console.warn("Failed to load managed accounts for picker:", err);
+        } finally {
+          setLoadingAccounts(false);
+        }
+      };
+      fetchAccounts();
+    }
+  }, [activeAccountPicker]);
 
   const [showAuditLogs, setShowAuditLogs] = useState(false);
   const [auditLogs, setAuditLogs] = useState<any[]>([]);
@@ -1563,8 +1607,28 @@ export default function VaultClientPage({
           value: cellData?.value || "",
         });
       }
+
+      if (col.type === "account_link") {
+        const hasAccount = cellData?.managedAccountId;
+        if (hasAccount) {
+          setActiveAccountPopup({
+            rowId: row.id,
+            columnId: col.id,
+            accountId: cellData.managedAccountId as string,
+            cellId,
+          });
+        } else {
+          if (sheetData.permission !== "view") {
+            setActiveAccountPicker({
+              rowId: row.id,
+              columnId: col.id,
+              cellId,
+            });
+          }
+        }
+      }
     },
-    [sheetData, handleRevealSecret]
+    [sheetData, handleRevealSecret, setActiveAccountPopup, setActiveAccountPicker]
   );
 
   const getRowHeight = useCallback((rowIdx: number): number => {
@@ -1620,8 +1684,8 @@ export default function VaultClientPage({
         kind: GridCellKind.Text,
         data: displayVal,
         displayData: displayVal,
-        allowOverlay: true,
-        readonly: sheetData.permission === "view",
+        allowOverlay: col.type !== "account_link" && col.type !== "tags" && col.type !== "status",
+        readonly: sheetData.permission === "view" || col.type === "account_link" || col.type === "tags" || col.type === "status",
         themeOverride: isMatch ? {
           bgCell: "#fef08a",
           textDark: "#854d0e",
@@ -1726,6 +1790,64 @@ export default function VaultClientPage({
           ctx.restore();
           return;
         }
+      }
+
+      if (column.type === "account_link") {
+        ctx.save();
+        const hasAccount = cellData?.managedAccountId;
+        const username = cellData?.value || "";
+
+        const padY = 5;
+        const h = rect.height - padY * 2;
+        const radius = 6;
+        
+        ctx.beginPath();
+        const pillWidth = rect.width - 32;
+        if (ctx.roundRect) {
+          ctx.roundRect(rect.x + 8, rect.y + padY, pillWidth, h, radius);
+        } else {
+          ctx.rect(rect.x + 8, rect.y + padY, pillWidth, h);
+        }
+        
+        if (hasAccount) {
+          ctx.fillStyle = "#8b5cf615";
+          ctx.fill();
+          ctx.strokeStyle = "#8b5cf630";
+          ctx.stroke();
+
+          ctx.fillStyle = "#a78bfa";
+          ctx.font = "bold 11px Inter, sans-serif";
+          ctx.textAlign = "left";
+          ctx.textBaseline = "middle";
+          let displayUser = username;
+          if (ctx.measureText(displayUser).width > pillWidth - 16) {
+            while (displayUser.length > 0 && ctx.measureText(displayUser + "...").width > pillWidth - 16) {
+              displayUser = displayUser.slice(0, -1);
+            }
+            displayUser += "...";
+          }
+          ctx.fillText(displayUser, rect.x + 16, rect.y + rect.height / 2);
+        } else {
+          ctx.fillStyle = "#3f3f4615";
+          ctx.fill();
+          ctx.strokeStyle = "#3f3f4630";
+          ctx.stroke();
+
+          ctx.fillStyle = "#a1a1aa";
+          ctx.font = "italic 11px Inter, sans-serif";
+          ctx.textAlign = "left";
+          ctx.textBaseline = "middle";
+          ctx.fillText("Link account...", rect.x + 16, rect.y + rect.height / 2);
+        }
+
+        ctx.fillStyle = hasAccount ? "#3b82f6" : "#10b981";
+        ctx.font = "bold 10px Inter, sans-serif";
+        ctx.textAlign = "right";
+        ctx.textBaseline = "middle";
+        ctx.fillText(hasAccount ? "Edit" : "Link", rect.x + rect.width - 8, rect.y + rect.height / 2);
+
+        ctx.restore();
+        return;
       }
 
       if (column.type === "secret") {
@@ -2366,6 +2488,9 @@ export default function VaultClientPage({
                   <option value="url">URL Links</option>
                   <option value="secret">Secret (AES Encrypted)</option>
                   <option value="date">Date picker</option>
+                  <option value="status">Status Dropdown</option>
+                  <option value="tags">Tags (Multi-select)</option>
+                  <option value="account_link">Linked Managed Account</option>
                 </select>
               </div>
               <button
@@ -2669,6 +2794,9 @@ export default function VaultClientPage({
                                     <option value="url">URL Link</option>
                                     <option value="secret">Secret (AES Encrypted)</option>
                                     <option value="date">Date</option>
+                                    <option value="status">Status Dropdown</option>
+                                    <option value="tags">Tags (Multi-select)</option>
+                                    <option value="account_link">Linked Managed Account</option>
                                   </select>
                                 </div>
                               </div>
@@ -2805,6 +2933,193 @@ export default function VaultClientPage({
       )}
 
       {/* 7. Column options config modal */}
+
+      {/* Helper function and modals for Linked Managed Accounts */}
+      {(() => {
+        const handleLinkAccount = async (rowId: string, columnId: string, accountId: string | null) => {
+          if (!selectedSheetId || !sheetData) return;
+
+          const prevRows = JSON.parse(JSON.stringify(sheetData.rows));
+          setSheetData((prev: any) => {
+            if (!prev) return prev;
+            return {
+              ...prev,
+              rows: prev.rows.map((r: any) => {
+                if (r.id !== rowId) return r;
+                
+                let cellExists = false;
+                const updatedCells = r.cells.map((c: any) => {
+                  if (c.columnId !== columnId) return c;
+                  cellExists = true;
+                  return {
+                    ...c,
+                    value: accountId ? `@${allManagedAccounts.find(a => a.id === accountId)?.tiktokUsername || ""}` : "",
+                    hasValue: !!accountId,
+                    managedAccountId: accountId,
+                  };
+                });
+
+                if (!cellExists) {
+                  updatedCells.push({
+                    id: `temp-${rowId}-${columnId}`,
+                    rowId,
+                    columnId,
+                    value: accountId ? `@${allManagedAccounts.find(a => a.id === accountId)?.tiktokUsername || ""}` : "",
+                    hasValue: !!accountId,
+                    managedAccountId: accountId,
+                  });
+                }
+
+                return { ...r, cells: updatedCells };
+              }),
+            };
+          });
+
+          try {
+            const res = await fetch(`/api/managed/vault/sheets/${selectedSheetId}/cells`, {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                rowId,
+                columnId,
+                value: accountId ? `@${allManagedAccounts.find(a => a.id === accountId)?.tiktokUsername || ""}` : "",
+                managedAccountId: accountId,
+              }),
+            });
+            if (!res.ok) throw new Error("Failed to link account");
+            toast.success(accountId ? "Account linked successfully" : "Account unlinked successfully");
+            fetchSheet(selectedSheetId);
+          } catch (err: any) {
+            toast.error(err.message || "Failed to update account link");
+            setSheetData((prev: any) => {
+              if (!prev) return prev;
+              return { ...prev, rows: prevRows };
+            });
+          } finally {
+            setActiveAccountPicker(null);
+          }
+        };
+
+        return (
+          <>
+            {/* Account Link Picker Modal */}
+            {activeAccountPicker && (
+              <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-fadeIn">
+                <div className="bg-[#09090b] border border-[#27272a] rounded-2xl w-full max-w-md overflow-hidden shadow-2xl flex flex-col max-h-[80vh]">
+                  <div className="px-5 py-4 border-b border-[#27272a] flex items-center justify-between">
+                    <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                      <UserPlus className="w-4 h-4 text-purple-400" />
+                      Link Managed Account
+                    </h3>
+                    <button
+                      onClick={() => setActiveAccountPicker(null)}
+                      className="text-zinc-500 hover:text-white transition-all"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+                  <div className="p-4 border-b border-[#27272a] bg-[#11111c]/30">
+                    <input
+                      type="text"
+                      placeholder="Search accounts by username, display name..."
+                      value={accountPickerSearch}
+                      onChange={(e) => setAccountPickerSearch(e.target.value)}
+                      className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-3 py-2 text-xs font-semibold text-white focus:outline-none focus:border-purple-500/50"
+                      autoFocus
+                    />
+                  </div>
+                  <div className="flex-1 overflow-y-auto p-4 space-y-2">
+                    {loadingAccounts ? (
+                      <div className="flex items-center justify-center py-8">
+                        <Loader2 className="w-5 h-5 text-purple-400 animate-spin" />
+                      </div>
+                    ) : allManagedAccounts.filter(a =>
+                      a.tiktokUsername.toLowerCase().includes(accountPickerSearch.toLowerCase()) ||
+                      a.tiktokDisplayName.toLowerCase().includes(accountPickerSearch.toLowerCase())
+                    ).length === 0 ? (
+                      <p className="text-zinc-500 text-xs italic text-center py-4">No matching accounts found.</p>
+                    ) : (
+                      allManagedAccounts.filter(a =>
+                        a.tiktokUsername.toLowerCase().includes(accountPickerSearch.toLowerCase()) ||
+                        a.tiktokDisplayName.toLowerCase().includes(accountPickerSearch.toLowerCase())
+                      ).map(acc => (
+                        <div key={acc.id} className="flex items-center justify-between p-2 rounded-xl bg-zinc-950 border border-zinc-900 hover:border-zinc-800 transition-all">
+                          <div className="flex items-center gap-2.5 min-w-0">
+                            {acc.tiktokAvatarUrl ? (
+                              <img src={acc.tiktokAvatarUrl} alt="" className="w-8 h-8 rounded-full bg-zinc-800 flex-shrink-0" />
+                            ) : (
+                              <div className="w-8 h-8 rounded-full bg-zinc-800 flex items-center justify-center text-xs font-bold text-purple-400 flex-shrink-0">
+                                @
+                              </div>
+                            )}
+                            <div className="min-w-0">
+                              <p className="text-xs font-bold text-white truncate">@{acc.tiktokUsername}</p>
+                              <p className="text-[10px] text-zinc-500 truncate">{acc.tiktokDisplayName || "TikTok Creator"}</p>
+                            </div>
+                          </div>
+                          <button
+                            onClick={() => handleLinkAccount(activeAccountPicker.rowId, activeAccountPicker.columnId, acc.id)}
+                            className="px-3 py-1.5 bg-purple-600 hover:bg-purple-500 text-white rounded-lg text-xs font-bold transition-all"
+                          >
+                            Link
+                          </button>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Account Settings Popup Editor Modal */}
+            {activeAccountPopup && (
+              <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-fadeIn">
+                <div className="bg-[#09090b] border border-[#27272a] rounded-2xl w-full max-w-lg overflow-hidden shadow-2xl flex flex-col max-h-[90vh]">
+                  <div className="px-5 py-4 border-b border-[#27272a] flex items-center justify-between bg-zinc-950/30">
+                    <div className="flex items-center gap-2">
+                      <div className="w-2.5 h-2.5 rounded-full bg-purple-500 animate-pulse" />
+                      <h3 className="text-sm font-bold text-white">
+                        Account Settings & Schedule
+                      </h3>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {sheetData?.permission !== "view" && (
+                        <button
+                          onClick={() => {
+                            if (confirm("Are you sure you want to unlink this managed account from this cell?")) {
+                              handleLinkAccount(activeAccountPopup.rowId, activeAccountPopup.columnId, null);
+                              setActiveAccountPopup(null);
+                            }
+                          }}
+                          className="px-2.5 py-1 bg-red-950 border border-red-900/50 hover:bg-red-900/30 text-red-300 text-[10px] font-bold rounded-lg transition-all"
+                          title="Remove this account reference from the cell without deleting the account itself"
+                        >
+                          Unlink Account
+                        </button>
+                      )}
+                      <button
+                        onClick={() => setActiveAccountPopup(null)}
+                        className="text-zinc-500 hover:text-white transition-all ml-1"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+                  <div className="p-5 overflow-y-auto">
+                    <ManagedAccountEditForm
+                      accountId={activeAccountPopup.accountId}
+                      isReadOnly={sheetData?.permission === "view" || !hasAccountsEditAccess}
+                      onClose={() => setActiveAccountPopup(null)}
+                      onSave={() => fetchSheet(selectedSheetId!)}
+                    />
+                  </div>
+                </div>
+              </div>
+            )}
+          </>
+        );
+      })()}
+      
       {showConfigModal && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-fadeIn">
           <div className="bg-[#09090b] border border-[#27272a] rounded-2xl w-full max-w-sm overflow-hidden shadow-2xl">

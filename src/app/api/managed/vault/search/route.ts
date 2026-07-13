@@ -79,31 +79,83 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    // 5. Match non-secret cell values
+    // Find column options that match the query
+    const columnsWithMatchingTags = await prisma.sheetColumn.findMany({
+      where: {
+        sheetId: { in: accessibleSheetIds },
+        type: "tags",
+      },
+    });
+
+    const matchingTagColumnIds: string[] = [];
+    for (const col of columnsWithMatchingTags) {
+      const config = col.config as any;
+      const matchingOptions = config?.options?.filter((opt: any) =>
+        opt.label.toLowerCase().includes(queryLower)
+      );
+      if (matchingOptions && matchingOptions.length > 0) {
+        matchingTagColumnIds.push(col.id);
+      }
+    }
+
+    // 5. Match non-secret cell values (including tags and account links)
     const matchingCells = await prisma.sheetCell.findMany({
       where: {
         column: {
           sheetId: { in: accessibleSheetIds },
-          type: { not: "secret" }, // CRITICAL: Never search encrypted secrets
+          type: { not: "secret" },
         },
-        value: { contains: query, mode: "insensitive" },
+        OR: [
+          { value: { contains: query, mode: "insensitive" } },
+          { columnId: { in: matchingTagColumnIds } },
+          {
+            managedAccount: {
+              OR: [
+                { tiktokUsername: { contains: query, mode: "insensitive" } },
+                { tiktokDisplayName: { contains: query, mode: "insensitive" } },
+              ],
+            },
+          },
+        ],
       },
       include: {
         row: true,
         column: true,
+        managedAccount: true,
       },
     });
 
     for (const cell of matchingCells) {
       const sheet = accessibleSheetsMap.get(cell.column.sheetId);
       if (sheet) {
+        let displayVal = cell.value || "";
+        if (cell.column.type === "account_link" && cell.managedAccount) {
+          displayVal = `@${cell.managedAccount.tiktokUsername}`;
+        } else if (cell.column.type === "tags" && cell.value) {
+          const config = cell.column.config as any;
+          const selectedIds = cell.value.split(",").map((s) => s.trim()).filter(Boolean);
+          const labels = selectedIds
+            .map((id) => config?.options?.find((opt: any) => opt.id === id)?.label)
+            .filter(Boolean);
+          displayVal = labels.join(", ");
+
+          // Validate that it actually has the matched tag
+          const hasMatchingTag = selectedIds.some((id) => {
+            const label = config?.options?.find((opt: any) => opt.id === id)?.label || "";
+            return label.toLowerCase().includes(queryLower);
+          });
+          if (!hasMatchingTag && !displayVal.toLowerCase().includes(queryLower)) {
+            continue;
+          }
+        }
+
         results.push({
           type: "cell",
           sheetId: sheet.id,
           sheetName: sheet.name,
           folderName: sheet.folder.name,
           matchType: "Cell Value",
-          snippet: `Row #${cell.row.order + 1}, Column "${cell.column.name}": "${cell.value}"`,
+          snippet: `Row #${cell.row.order + 1}, Column "${cell.column.name}": "${displayVal}"`,
           rowId: cell.rowId,
           columnId: cell.columnId,
         });

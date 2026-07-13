@@ -24,5 +24,13 @@ export default async function VaultPage() {
 
   if (!currentUser) redirect("/login");
 
-  return <VaultClientWrapper currentUserId={session.userId} userRole={currentUser.role.key} />;
+  const hasAccountsEditAccess = await can(session.userId, "accounts");
+
+  return (
+    <VaultClientWrapper
+      currentUserId={session.userId}
+      userRole={currentUser.role.key}
+      hasAccountsEditAccess={hasAccountsEditAccess}
+    />
+  );
 }

@@ -245,6 +245,7 @@ model ManagedAccount {
   backgroundVideos      AccountBackgroundVideo[]
   genreBatchItems       GenreBatchItem[]
   clipMixerItems        ClipMixerItem[]
+  sheetCells            SheetCell[]
 }
 
 enum PostStatus {
@@ -1216,8 +1217,10 @@ model SheetCell {
   column         SheetColumn @relation(fields: [columnId], references: [id], onDelete: Cascade)
   value          String?     @db.Text
   valueEncrypted String?     @db.Text
-  createdAt      DateTime    @default(now())
-  updatedAt      DateTime    @updatedAt
+  createdAt        DateTime    @default(now())
+  updatedAt        DateTime    @updatedAt
+  managedAccountId String?
+  managedAccount   ManagedAccount? @relation(fields: [managedAccountId], references: [id], onDelete: SetNull)
 
   @@unique([rowId, columnId])
 }
