@@ -25,7 +25,13 @@ export async function GET() {
       group: {
         select: {
           name: true,
-          section: { select: { name: true } },
+          slug: true,
+          section: {
+            select: {
+              name: true,
+              slug: true,
+            }
+          },
         },
       },
     },

@@ -1,5 +1,5 @@
 "use client";
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import Link from "next/link";
 import { toast } from "sonner";
 import {
@@ -18,6 +18,7 @@ import {
   ExternalLink,
   ChevronDown,
   ChevronUp,
+  ChevronRight,
   Calendar,
   Hash,
 } from "lucide-react";
@@ -226,6 +227,11 @@ export default function AccountsPage() {
   const [createColor, setCreateColor] = useState("#8b5cf6");
   const [creating, setCreating] = useState(false);
 
+  // Search accounts states
+  const [searchQuery, setSearchQuery] = useState("");
+  const [allAccounts, setAllAccounts] = useState<any[]>([]);
+  const [loadingAccounts, setLoadingAccounts] = useState(false);
+
   const fetchSections = useCallback(async () => {
     try {
       const res = await fetch("/api/managed/sections");
@@ -238,6 +244,31 @@ export default function AccountsPage() {
   useEffect(() => {
     fetchSections();
   }, [fetchSections]);
+
+  useEffect(() => {
+    const fetchAllAccounts = async () => {
+      setLoadingAccounts(true);
+      try {
+        const res = await fetch("/api/managed/accounts/all");
+        if (res.ok) setAllAccounts(await res.json());
+      } catch (err) {
+        console.error("Failed to load accounts list for search", err);
+      } finally {
+        setLoadingAccounts(false);
+      }
+    };
+    fetchAllAccounts();
+  }, []);
+
+  const filteredAccounts = useMemo(() => {
+    if (!searchQuery.trim()) return [];
+    const query = searchQuery.toLowerCase().trim();
+    return allAccounts.filter(
+      (acc) =>
+        acc.tiktokUsername.toLowerCase().includes(query) ||
+        acc.tiktokDisplayName.toLowerCase().includes(query)
+    );
+  }, [allAccounts, searchQuery]);
 
   const handleCreate = async () => {
     if (!createName.trim()) return;
@@ -303,6 +334,69 @@ export default function AccountsPage() {
           New Section
         </button>
       </div>
+
+      {/* Search accounts */}
+      <div className="relative max-w-md">
+        <input
+          type="text"
+          placeholder="Search accounts by username or display name..."
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          className="w-full bg-white/5 border border-white/10 rounded-xl pl-10 pr-4 py-2.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-purple-500 transition-colors"
+        />
+        <Search className="w-4 h-4 text-gray-500 absolute left-3.5 top-1/2 -translate-y-1/2" />
+        {searchQuery && (
+          <button
+            onClick={() => setSearchQuery("")}
+            className="text-gray-500 hover:text-white absolute right-3.5 top-1/2 -translate-y-1/2 text-xs font-bold font-mono"
+          >
+            ×
+          </button>
+        )}
+      </div>
+
+      {/* Search Results */}
+      {searchQuery && (
+        <div className="glass border border-white/5 rounded-2xl p-6 space-y-4">
+          <h2 className="text-sm font-semibold uppercase tracking-wider text-gray-500">
+            Account Search Results ({filteredAccounts.length})
+          </h2>
+          {filteredAccounts.length === 0 ? (
+            <p className="text-sm text-gray-400 italic">No matching TikTok accounts found</p>
+          ) : (
+            <div className="grid gap-3 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4">
+              {filteredAccounts.map((acc) => (
+                <Link
+                  key={acc.id}
+                  href={`/admin/accounts/${acc.group.section.slug}/${acc.group.slug}`}
+                  className="flex items-center gap-3 p-3 rounded-xl bg-white/3 hover:bg-white/5 border border-white/5 hover:border-white/10 transition-all group"
+                >
+                  <img
+                    src={acc.tiktokAvatarUrl || "https://www.tiktok.com/favicon.ico"}
+                    alt={acc.tiktokDisplayName}
+                    className="w-10 h-10 rounded-full object-cover border border-white/10"
+                    onError={(e) => {
+                      (e.target as HTMLImageElement).src = "https://www.tiktok.com/favicon.ico";
+                    }}
+                  />
+                  <div className="min-w-0 flex-1">
+                    <h3 className="text-sm font-bold text-white truncate group-hover:text-purple-400 transition-colors">
+                      @{acc.tiktokUsername}
+                    </h3>
+                    <p className="text-xs text-gray-400 truncate">{acc.tiktokDisplayName}</p>
+                    <div className="flex items-center gap-1.5 mt-1">
+                      <span className="text-[9px] font-semibold text-gray-500 truncate">
+                        {acc.group.section.name} / {acc.group.name}
+                      </span>
+                    </div>
+                  </div>
+                  <ChevronRight className="w-4 h-4 text-gray-600 group-hover:text-purple-400 group-hover:translate-x-0.5 transition-all flex-shrink-0" />
+                </Link>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Create Section Dialog */}
       {showCreate && (
