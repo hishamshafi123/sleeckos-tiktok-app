@@ -2252,7 +2252,7 @@ export default function VaultClientPage({
                       <div className="fixed inset-0 z-40" onClick={() => setActiveDropdown(null)} />
                       <div
                         style={{
-                          position: "absolute",
+                          position: "fixed",
                           top: activeDropdown.y + activeDropdown.height + 4,
                           left: activeDropdown.x,
                           minWidth: activeDropdown.width,
@@ -2316,11 +2316,11 @@ export default function VaultClientPage({
                       <div className="fixed inset-0 z-40" onClick={() => setHeaderMenu(null)} />
                       <div
                         style={{
-                          position: "absolute",
+                          position: "fixed",
                           top: headerMenu.bounds.y + headerMenu.bounds.height + 4,
                           left: Math.min(
                             headerMenu.bounds.x,
-                            (containerRef.current?.clientWidth || 0) - 160
+                            window.innerWidth - 180
                           ),
                           zIndex: 50,
                         }}
