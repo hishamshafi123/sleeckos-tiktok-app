@@ -1527,25 +1527,29 @@ export default function VaultClientPage({
 
       const [startCol, startRow] = target;
       const updates: Array<{ rowId: string; columnId: string; value: string }> = [];
-      const updatedRows = [...sheetData.rows];
 
       const finalRequiredRowsCount = startRow + values.length;
-      const neededRowsCount = finalRequiredRowsCount - updatedRows.length;
+      const neededRowsCount = finalRequiredRowsCount - sheetData.rows.length;
 
       const runPasteSync = async () => {
+        let activeRows = sheetData.rows;
         if (neededRowsCount > 0) {
-          await fetch(`/api/managed/vault/sheets/${selectedSheetId}/rows/bulk`, {
+          const res = await fetch(`/api/managed/vault/sheets/${selectedSheetId}/rows/bulk`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ addRowsCount: neededRowsCount }),
           });
-          await fetchSheet(selectedSheetId);
-          return;
+          if (!res.ok) throw new Error("Failed to auto-create missing rows");
+          const updatedSheet = await res.json();
+          setSheetData(updatedSheet);
+          activeRows = updatedSheet.rows;
         }
+
+        const updatedRows = JSON.parse(JSON.stringify(activeRows));
 
         for (let r = 0; r < values.length; r++) {
           const rowIdx = startRow + r;
-          const row = sheetData.rows[rowIdx];
+          const row = activeRows[rowIdx];
           if (!row) continue;
 
           for (let c = 0; c < values[r].length; c++) {
@@ -1561,10 +1565,10 @@ export default function VaultClientPage({
               value: val,
             });
 
-            const rowIndex = updatedRows.findIndex((item) => item.id === row.id);
+            const rowIndex = updatedRows.findIndex((item: any) => item.id === row.id);
             if (rowIndex !== -1) {
               const cells = [...updatedRows[rowIndex].cells];
-              const cellIdx = cells.findIndex((cellItem) => cellItem.columnId === col.id);
+              const cellIdx = cells.findIndex((cellItem: any) => cellItem.columnId === col.id);
               const isSecret = col.type === "secret";
               if (cellIdx !== -1) {
                 cells[cellIdx] = { ...cells[cellIdx], value: isSecret ? "••••••" : val, isSecret, hasValue: val.trim() !== "" };
@@ -1588,18 +1592,21 @@ export default function VaultClientPage({
           return { ...prev, rows: updatedRows };
         });
 
-        await fetch(`/api/managed/vault/sheets/${selectedSheetId}/rows/bulk`, {
+        const saveRes = await fetch(`/api/managed/vault/sheets/${selectedSheetId}/rows/bulk`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ updates }),
         });
+        if (!saveRes.ok) throw new Error("Failed to save values");
+        const finalSheet = await saveRes.json();
+        setSheetData(finalSheet);
       };
 
-      runPasteSync().catch(() => {
-        toast.error("Failed to paste data values");
+      runPasteSync().catch((err: any) => {
+        toast.error(err.message || "Failed to paste data values");
       });
 
-      return false;
+      return true;
     },
     [sheetData, selectedSheetId]
   );

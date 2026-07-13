@@ -331,6 +331,25 @@ export async function createSheet(userId: string, folderId: string, name: string
     },
   });
 
+  // Scaffold default column
+  await prisma.sheetColumn.create({
+    data: {
+      sheetId: sheet.id,
+      name: "Column 1",
+      type: "text",
+      order: 0,
+    },
+  });
+
+  // Scaffold 20 empty rows
+  const rows = Array.from({ length: 20 }, (_, i) => ({
+    sheetId: sheet.id,
+    order: i,
+  }));
+  await prisma.sheetRow.createMany({
+    data: rows,
+  });
+
   await logVaultAction(userId, "create_sheet", `Sheet: "${sheet.name}" under Folder ID ${folderId}`);
   return sheet;
 }

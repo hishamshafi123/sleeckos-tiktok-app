@@ -97,7 +97,91 @@ export async function POST(
       await logVaultAction(session.userId, "bulk_edit_cells", `Updated ${body.updates.length} cells in Sheet ${sheetId}`);
     }
 
-    return NextResponse.json({ success: true });
+    // Fetch updated sheet details
+    const updatedSheet = await prisma.sheet.findUnique({
+      where: { id: sheetId },
+      include: {
+        folder: {
+          select: {
+            id: true,
+            name: true,
+            accessList: true,
+          },
+        },
+        columns: { orderBy: { order: "asc" } },
+        rows: {
+          orderBy: { order: "asc" },
+          include: {
+            cells: {
+              include: {
+                managedAccount: {
+                  select: {
+                    id: true,
+                    tiktokUsername: true,
+                    tiktokDisplayName: true,
+                    tiktokAvatarUrl: true,
+                    isActive: true,
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    });
+
+    if (!updatedSheet) {
+      return NextResponse.json({ error: "Sheet not found" }, { status: 404 });
+    }
+
+    const permission = await getFolderPermission(session.userId, updatedSheet.folderId);
+    
+    const sanitizedRows = updatedSheet.rows.map((row) => {
+      const sanitizedCells = row.cells.map((cell) => {
+        const column = updatedSheet.columns.find((c) => c.id === cell.columnId);
+        const isSecret = column?.type === "secret";
+        const isAccountLink = column?.type === "account_link";
+        
+        const cellValue = isSecret && cell.valueEncrypted
+          ? "••••••"
+          : (isAccountLink
+              ? (cell.managedAccount ? `@${cell.managedAccount.tiktokUsername}` : "")
+              : cell.value);
+
+        return {
+          id: cell.id,
+          rowId: cell.rowId,
+          columnId: cell.columnId,
+          value: cellValue,
+          isSecret,
+          hasValue: isSecret ? !!cell.valueEncrypted : (isAccountLink ? !!cell.managedAccountId : !!cell.value),
+          managedAccountId: cell.managedAccountId,
+          managedAccount: cell.managedAccount,
+        };
+      });
+
+      return {
+        id: row.id,
+        order: row.order,
+        height: row.height,
+        color: row.color,
+        cells: sanitizedCells,
+      };
+    });
+
+    return NextResponse.json({
+      id: updatedSheet.id,
+      name: updatedSheet.name,
+      folderId: updatedSheet.folderId,
+      permission,
+      folder: updatedSheet.folder,
+      columns: updatedSheet.columns,
+      rows: sanitizedRows,
+      frozenRows: updatedSheet.frozenRows,
+      frozenCols: updatedSheet.frozenCols,
+      colorRules: updatedSheet.colorRules,
+      viewState: updatedSheet.viewState,
+    });
   } catch (err: any) {
     console.error("[Vault Bulk POST] Error:", err);
     return NextResponse.json({ error: err.message || "Failed to process bulk actions" }, { status: 500 });
