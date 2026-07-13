@@ -7,6 +7,8 @@ import {
   FolderOpen,
   Save,
   AlertCircle,
+  Search,
+  X,
 } from "lucide-react";
 
 type Account = {
@@ -73,6 +75,7 @@ export default function ManagedAccountEditForm({
   const [foldersList, setFoldersList] = useState<{ id: string; name: string }[]>([]);
   const [loadingFolders, setLoadingFolders] = useState(false);
   const [selectedFolderId, setSelectedFolderId] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
 
   const fetchAccount = useCallback(async () => {
     setLoading(true);
@@ -100,11 +103,15 @@ export default function ManagedAccountEditForm({
     }
   }, [accountId]);
 
-  const fetchFolders = async () => {
+  const fetchFolders = async (query?: string) => {
     setLoadingFolders(true);
     setFoldersList([]);
     try {
-      const res = await fetch(`/api/managed/accounts/${accountId}/drive-folders`);
+      let url = `/api/managed/accounts/${accountId}/drive-folders`;
+      if (query && query.trim()) {
+        url += `?search=${encodeURIComponent(query.trim())}`;
+      }
+      const res = await fetch(url);
       if (res.ok) {
         const data = await res.json();
         setFoldersList(data.folders || []);
@@ -445,18 +452,63 @@ export default function ManagedAccountEditForm({
 
         {!isReadOnly && (
           <div className="space-y-3 pt-2">
-            {/* Folder Picker Dropdown */}
-            {foldersList.length > 0 && (
-              <div className="space-y-2 bg-[#111] p-3 border border-white/5 rounded-xl">
+            {/* Folder Picker Card */}
+            <div className="space-y-2 bg-[#111] p-3 border border-white/5 rounded-xl">
+              <div className="flex items-center justify-between">
                 <label className="block text-[10px] uppercase text-zinc-500 font-bold tracking-wider">Select Folder from Account Drive</label>
-                <div className="flex gap-2">
+                {loadingFolders && <Loader2 className="w-3.5 h-3.5 animate-spin text-blue-500" />}
+              </div>
+
+              {/* Search Bar */}
+              <div className="relative flex items-center gap-1.5 mt-1">
+                <div className="relative flex-1">
+                  <input
+                    type="text"
+                    placeholder="Search folder by name..."
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        fetchFolders(searchQuery);
+                      }
+                    }}
+                    className="w-full bg-black/40 border border-white/10 rounded-lg pl-8 pr-7 py-1.5 text-xs text-white placeholder-zinc-600 focus:outline-none focus:border-blue-500"
+                  />
+                  <Search className="w-3.5 h-3.5 text-zinc-500 absolute left-2.5 top-1/2 -translate-y-1/2" />
+                  {searchQuery && (
+                    <button
+                      onClick={() => {
+                        setSearchQuery("");
+                        fetchFolders("");
+                      }}
+                      className="text-zinc-500 hover:text-white absolute right-2.5 top-1/2 -translate-y-1/2 text-xs font-bold font-mono"
+                    >
+                      ×
+                    </button>
+                  )}
+                </div>
+                <button
+                  onClick={() => fetchFolders(searchQuery)}
+                  disabled={loadingFolders}
+                  className="bg-zinc-900 border border-zinc-800 hover:bg-zinc-800 text-zinc-300 hover:text-white text-xs font-semibold px-3 py-1.5 rounded-lg transition-all"
+                >
+                  Search
+                </button>
+              </div>
+
+              {/* Dropdown Select & Link Button */}
+              {foldersList.length > 0 ? (
+                <div className="flex gap-2 mt-2">
                   <select
                     value={selectedFolderId}
                     onChange={(e) => setSelectedFolderId(e.target.value)}
                     className="flex-1 bg-black/40 border border-white/10 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-blue-500"
                   >
-                    {foldersList.map(f => (
-                      <option key={f.id} value={f.id}>{f.name}</option>
+                    {foldersList.map((f) => (
+                      <option key={f.id} value={f.id}>
+                        {f.name}
+                      </option>
                     ))}
                   </select>
                   <button
@@ -467,8 +519,12 @@ export default function ManagedAccountEditForm({
                     Link Selection
                   </button>
                 </div>
-              </div>
-            )}
+              ) : (
+                <p className="text-[11px] text-zinc-500 italic mt-2 text-center py-2 bg-black/20 rounded-lg border border-zinc-950">
+                  {loadingFolders ? "Searching folders..." : "No folders found in this account."}
+                </p>
+              )}
+            </div>
 
             {/* Manual Link Input */}
             <div className="space-y-2 bg-[#111] p-3 border border-white/5 rounded-xl">

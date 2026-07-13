@@ -7,7 +7,7 @@ import { getOAuth2ClientForAccount } from "@/lib/google";
 import { google } from "googleapis";
 
 export async function GET(
-  _req: NextRequest,
+  req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   const session = await getSession();
@@ -19,6 +19,8 @@ export async function GET(
   }
 
   const { id } = await params;
+  const { searchParams } = new URL(req.url);
+  const search = searchParams.get("search");
 
   try {
     const account = await prisma.managedAccount.findUnique({
@@ -49,9 +51,15 @@ export async function GET(
 
     const drive = google.drive({ version: "v3", auth });
 
-    // List all folders in user's Google Drive
+    let query = "mimeType = 'application/vnd.google-apps.folder' and trashed = false";
+    if (search && search.trim()) {
+      const escapedSearch = search.trim().replace(/'/g, "\\'");
+      query += ` and name contains '${escapedSearch}'`;
+    }
+
+    // List folders in user's Google Drive matching the query
     const response = await drive.files.list({
-      q: "mimeType = 'application/vnd.google-apps.folder' and trashed = false",
+      q: query,
       orderBy: "name",
       fields: "files(id, name)",
       pageSize: 150,
