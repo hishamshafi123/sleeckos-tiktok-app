@@ -1052,6 +1052,34 @@ export async function recordOutcome(
         },
       }),
     ]);
+
+    // Emit ActivityEvent for KPI tracking if folder owner exists
+    if (status === "success" && sheet.folder.ownerUserId) {
+      await prisma.activityEvent.create({
+        data: {
+          userId: sheet.folder.ownerUserId,
+          functionType: "generator",
+          count: 1,
+          source: "auto",
+          meta: { sheetId, rowId, columnId },
+          createdBy: userId,
+          approved: true,
+        },
+      });
+
+      // Auto-enroll linked ManagedAccount if present in this row
+      const linkedCell = await prisma.sheetCell.findFirst({
+        where: { rowId, managedAccountId: { not: null } },
+      });
+      if (linkedCell && linkedCell.managedAccountId) {
+        try {
+          const { enrollWarmup } = require("./kpi_system");
+          await enrollWarmup(linkedCell.managedAccountId, undefined, sheet.folder.ownerUserId);
+        } catch (err) {
+          console.warn("Failed to auto-enroll managed account in warmup:", err);
+        }
+      }
+    }
   }
 }
 

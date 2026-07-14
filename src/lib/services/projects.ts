@@ -438,6 +438,23 @@ export async function approveCuratorSubmission(userId: string, submissionId: str
     data: { status: "approved" },
   });
 
+  // Create ActivityEvent for Curator KPI
+  try {
+    await prisma.activityEvent.create({
+      data: {
+        userId: submission.curatorId,
+        functionType: "curator",
+        count: 1,
+        source: "auto",
+        meta: { submissionId, campaignId: submission.campaignId },
+        createdBy: userId,
+        approved: true
+      }
+    });
+  } catch (err) {
+    console.warn("Failed to create curator ActivityEvent:", err);
+  }
+
   // Notify curator
   await notifyTelegram(
     submission.curatorId,

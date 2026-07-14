@@ -56,9 +56,13 @@ model User {
   agentAuditLogs     AgentAuditLog[]
 
   // Vault Ownership & KPI relations
-  ownedFolders       VaultFolder[]            @relation("FolderOwnership")
-  ownedEvents        AccountGenerationEvent[] @relation("EventOwnerUser")
-  setEvents          AccountGenerationEvent[] @relation("EventSetByUser")
+  ownedFolders        VaultFolder[]            @relation("FolderOwnership")
+  ownedEvents         AccountGenerationEvent[] @relation("EventOwnerUser")
+  setEvents           AccountGenerationEvent[] @relation("EventSetByUser")
+  functionAssignments FunctionAssignment[]
+  kpiGoals            KpiGoal[]
+  activityEvents      ActivityEvent[]          @relation("UserActivityEvent")
+  warmupEnrollments   WarmupEnrollment[]       @relation("WarmerEnrollment")
 }
 
 model Role {
@@ -135,6 +139,7 @@ model Campaign {
   createdAt           DateTime       @default(now())
   updatedAt           DateTime       @updatedAt
   multiplierGroups    MultiplierGroup[]
+  activityEvents      ActivityEvent[]
 }
 
 model CampaignResource {
@@ -251,6 +256,7 @@ model ManagedAccount {
   genreBatchItems       GenreBatchItem[]
   clipMixerItems        ClipMixerItem[]
   sheetCells            SheetCell[]
+  warmupEnrollment      WarmupEnrollment?
 }
 
 enum PostStatus {
@@ -1261,5 +1267,83 @@ model AccountGenerationEvent {
   occurredAt  DateTime @default(now())
   setByUserId String?
   setByUser   User?    @relation("EventSetByUser", fields: [setByUserId], references: [id], onDelete: SetNull)
+}
+
+model FunctionAssignment {
+  id           String    @id @default(uuid())
+  userId       String
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  functionType String    // "generator", "warmup", "scheduler", "editor", "curator"
+  startDate    DateTime
+  endDate      DateTime?
+  active       Boolean   @default(true)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@index([userId])
+}
+
+model KpiGoal {
+  id           String    @id @default(uuid())
+  userId       String
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  functionType String    // "generator", "warmup", "scheduler", "editor", "curator"
+  period       String    // "day", "week", "month"
+  target       Int
+  startDate    DateTime
+  endDate      DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@index([userId])
+}
+
+model ActivityEvent {
+  id           String         @id @default(uuid())
+  userId       String         // The credited employee user
+  user         User           @relation("UserActivityEvent", fields: [userId], references: [id], onDelete: Cascade)
+  functionType String         // "generator", "warmup", "scheduler", "editor", "curator"
+  count        Int            @default(1)
+  occurredAt   DateTime       @default(now())
+  campaignId   String?
+  campaign     Campaign?      @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  source       String         // "auto" | "manual"
+  meta         Json?          // arbitrary metadata
+  createdBy    String         @default("system") // Can be userId or "system"
+  approved     Boolean        @default(true) // Manager approval status
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+
+  @@index([userId])
+  @@index([occurredAt])
+}
+
+model WarmupProtocol {
+  id           String             @id @default(uuid())
+  name         String
+  type         String             // "initial" | "maintenance"
+  config       Json               // List of initial day protocols: [{day: 1, activeMinutes: 30, posts: 0}] or maintenance params {intervalDays: 2, activeMinutes: 10, posts: 2}
+  createdAt    DateTime           @default(now())
+  updatedAt    DateTime           @updatedAt
+  enrollments  WarmupEnrollment[]
+}
+
+model WarmupEnrollment {
+  id                String         @id @default(uuid())
+  managedAccountId  String         @unique
+  managedAccount    ManagedAccount @relation(fields: [managedAccountId], references: [id], onDelete: Cascade)
+  protocolId        String
+  protocol          WarmupProtocol @relation(fields: [protocolId], references: [id], onDelete: Cascade)
+  type              String         // "initial" | "maintenance"
+  currentDay        Int?           // For initial protocol: current day of 6-day initial ramp (1-6)
+  nextDueDate       DateTime       // Zoned next due date/time (stored as UTC timestamp)
+  status            String         @default("active") // "active" | "completed" | "paused"
+  assignedWarmerId  String?
+  assignedWarmer    User?          @relation("WarmerEnrollment", fields: [assignedWarmerId], references: [id], onDelete: SetNull)
+  lastActionAt      DateTime?
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+
+  @@index([assignedWarmerId])
 }
 
