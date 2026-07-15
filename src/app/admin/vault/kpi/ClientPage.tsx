@@ -91,8 +91,9 @@ export default function KpiClientPage({ currentUserId, userRole, orgTimezone }: 
         fetch("/api/campaigns")
       ]);
       if (usersRes.ok) {
-        const users = await usersRes.json();
-        setUsersList(users || []);
+        const data = await usersRes.json();
+        const users = Array.isArray(data) ? data : (data.users || []);
+        setUsersList(users);
       }
       if (campaignsRes.ok) {
         const campaigns = await campaignsRes.json();

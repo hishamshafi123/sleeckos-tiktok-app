@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getSession } from "@/lib/session";
 import prisma from "@/lib/db";
 import { getSelfKpi, getManagerKpi, logManualActivity, exportKpiCsv } from "@/lib/services/kpi_system";
+import { getOrgTimezone, getZonedFutureStartOfDay } from "@/lib/services/timezone";
 
 export const dynamic = "force-dynamic";
 
@@ -15,6 +16,7 @@ export async function GET(req: NextRequest) {
   const mode = searchParams.get("mode") || "self"; // "self" | "manager"
   const fromStr = searchParams.get("from");
   const toStr = searchParams.get("to");
+  const range = searchParams.get("range");
   const functionType = searchParams.get("functionType") || undefined;
   const campaignId = searchParams.get("campaignId") || undefined;
   const exportFormat = searchParams.get("export");
@@ -34,8 +36,21 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
-    const from = fromStr ? new Date(fromStr) : undefined;
-    const to = toStr ? new Date(toStr) : undefined;
+    const tz = await getOrgTimezone();
+    let from = fromStr ? new Date(fromStr) : undefined;
+    let to = toStr ? new Date(toStr) : undefined;
+
+    if (!from && range) {
+      if (range === "day" || range === "today") {
+        from = getZonedFutureStartOfDay(tz, 0);
+      } else if (range === "week" || range === "this-week") {
+        from = getZonedFutureStartOfDay(tz, -((new Date().getDay() + 6) % 7));
+      } else if (range === "month" || range === "this-month") {
+        from = getZonedFutureStartOfDay(tz, -(new Date().getDate() - 1));
+      } else if (range === "all" || range === "all-time") {
+        from = new Date(0);
+      }
+    }
 
     const managerData = await getManagerKpi({ from, to, functionType, campaignId });
 
