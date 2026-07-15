@@ -1,5 +1,5 @@
 export const dynamic = "force-dynamic";
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/db";
 import { getSession } from "@/lib/session";
 import { can } from "@/lib/services/permissions";
@@ -100,6 +100,8 @@ export async function GET() {
             status: item.status === "RENDERED" ? "COMPLETED" : item.status === "FAILED" ? "FAILED" : item.status === "RENDERING" ? "RENDERING" : "PENDING",
             outputRef: item.renderedVideoUrl,
             driveFolderId: item.driveFolderId || b.driveFolderId,
+            driveFolderName: item.driveFolderName || b.driveFolderName,
+            googleEmail: item.googleEmail || b.googleEmail,
             errorMessage: item.errorMessage,
             variation: { videoRef: b.sourceVideoUrl },
             hook: { text: item.hookText },
@@ -124,7 +126,7 @@ export async function GET() {
 }
 
 // POST /api/managed/multiplier — Create a new group
-export async function POST(req: Request) {
+export async function POST(req: NextRequest) {
   const session = await getSession();
   if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -158,7 +160,7 @@ export async function POST(req: Request) {
 }
 
 // DELETE /api/managed/multiplier?groupId=... — Delete a group/batch and its files
-export async function DELETE(req: Request) {
+export async function DELETE(req: NextRequest) {
   const session = await getSession();
   if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -285,7 +287,7 @@ export async function DELETE(req: Request) {
 }
 
 // PATCH /api/managed/multiplier — Assign Drive folders to Groups, Outputs, Legacy Batches/Items
-export async function PATCH(req: Request) {
+export async function PATCH(req: NextRequest) {
   const session = await getSession();
   if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -296,26 +298,77 @@ export async function PATCH(req: Request) {
 
   try {
     const body = await req.json();
-    const { groupId, outputId, batchId, itemId, driveFolderId, driveFolderName, assignments } = body;
+    const { groupId, outputId, batchId, itemId, driveFolderId, driveFolderName, googleEmail, assignments } = body;
 
     // 0. Bulk assignments (Multi-folder round-robin distribution)
     if (assignments && Array.isArray(assignments)) {
       console.log(`[Multiplier PATCH] Performing bulk update for ${assignments.length} items...`);
+      
+      const txs: any[] = [];
+
+      // Update parent group/batch default folder if provided
+      if (groupId) {
+        const group = await prisma.multiplierGroup.findUnique({ where: { id: groupId } });
+        if (group) {
+          const currentSettings = typeof group.settings === "string" 
+            ? JSON.parse(group.settings) 
+            : (group.settings || {});
+          
+          const newSettings = { 
+            ...currentSettings, 
+            driveFolderId: driveFolderId || null,
+            driveFolderName: driveFolderName || null,
+            googleEmail: googleEmail || null
+          };
+
+          txs.push(
+            prisma.multiplierGroup.update({
+              where: { id: groupId },
+              data: { settings: newSettings },
+            })
+          );
+        }
+      } else if (batchId) {
+        txs.push(
+          prisma.multiplierBatch.update({
+            where: { id: batchId },
+            data: { 
+              driveFolderId: driveFolderId || null,
+              driveFolderName: driveFolderName || null,
+              googleEmail: googleEmail || null
+            },
+          })
+        );
+      }
+
       for (const a of assignments) {
         if (a.outputId) {
-          await prisma.multiplierOutput.update({
-            where: { id: a.outputId },
-            data: { driveFolderId: a.driveFolderId || null },
-          });
+          txs.push(
+            prisma.multiplierOutput.update({
+              where: { id: a.outputId },
+              data: { 
+                driveFolderId: a.driveFolderId || null,
+                driveFolderName: a.driveFolderName || null,
+                googleEmail: a.googleEmail || null
+              },
+            })
+          );
         } else if (a.itemId) {
-          await prisma.multiplierItem.update({
-            where: { id: a.itemId },
-            data: { 
-              driveFolderId: a.driveFolderId || null,
-              driveFolderName: a.driveFolderName || null,
-            },
-          });
+          txs.push(
+            prisma.multiplierItem.update({
+              where: { id: a.itemId },
+              data: { 
+                driveFolderId: a.driveFolderId || null,
+                driveFolderName: a.driveFolderName || null,
+                googleEmail: a.googleEmail || null
+              },
+            })
+          );
         }
+      }
+
+      if (txs.length > 0) {
+        await prisma.$transaction(txs);
       }
       return NextResponse.json({ success: true, message: "Distributed folders successfully" });
     }
@@ -332,7 +385,8 @@ export async function PATCH(req: Request) {
       const newSettings = { 
         ...currentSettings, 
         driveFolderId: driveFolderId || null,
-        driveFolderName: driveFolderName || null
+        driveFolderName: driveFolderName || null,
+        googleEmail: googleEmail || null
       };
 
       await prisma.multiplierGroup.update({
@@ -348,6 +402,8 @@ export async function PATCH(req: Request) {
         where: { id: outputId },
         data: { 
           driveFolderId: driveFolderId || null,
+          driveFolderName: driveFolderName || null,
+          googleEmail: googleEmail || null
         },
       });
       return NextResponse.json({ success: true, output });
@@ -359,7 +415,8 @@ export async function PATCH(req: Request) {
         where: { id: itemId },
         data: { 
           driveFolderId: driveFolderId || null,
-          driveFolderName: driveFolderName || null
+          driveFolderName: driveFolderName || null,
+          googleEmail: googleEmail || null
         },
       });
       return NextResponse.json({ success: true, item });
@@ -371,7 +428,8 @@ export async function PATCH(req: Request) {
         where: { id: batchId },
         data: { 
           driveFolderId: driveFolderId || null,
-          driveFolderName: driveFolderName || null
+          driveFolderName: driveFolderName || null,
+          googleEmail: googleEmail || null
         },
       });
       return NextResponse.json({ success: true, batch });

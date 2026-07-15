@@ -42,6 +42,7 @@ def main():
     parser.add_argument("--style", default="news-lower-third", choices=["news-lower-third", "breaking-headline", "subtitle-box", "quote-card"], help="Style key")
     parser.add_argument("--accent-color", default="#E11D48", help="Accent color hex")
     parser.add_argument("--author", default="", help="Author name (for quote-card)")
+    parser.add_argument("--font-family", default="", help="Font family name (e.g. Inter, Oswald, Roboto)")
     parser.add_argument("--width", type=int, default=720, help="Canvas width")
     parser.add_argument("--height", type=int, default=1280, help="Canvas height")
     parser.add_argument("--output", required=True, help="Output path for the PNG")
@@ -64,8 +65,33 @@ def main():
         "subtitle-box": "Inter-Bold.ttf",
         "quote-card": "Lora-Bold.ttf"
     }
+
+    family_map = {
+        "Inter": ("Inter-Regular.ttf", "Inter-Bold.ttf"),
+        "IBM Plex Sans": ("IBMPlexSans-Regular.ttf", "IBMPlexSans-Bold.ttf"),
+        "Source Sans 3": ("SourceSans3-Regular.ttf", "SourceSans3-Bold.ttf"),
+        "Libre Franklin": ("LibreFranklin-Regular.ttf", "LibreFranklin-Bold.ttf"),
+        "Archivo": ("Archivo-Regular.ttf", "Archivo-Bold.ttf"),
+        "Barlow": ("Barlow-Regular.ttf", "Barlow-Bold.ttf"),
+        "Barlow Condensed": ("BarlowCondensed-Regular.ttf", "BarlowCondensed-Bold.ttf"),
+        "Roboto": ("Roboto-Regular.ttf", "Roboto-Bold.ttf"),
+        "Roboto Condensed": ("RobotoCondensed-Regular.ttf", "RobotoCondensed-Bold.ttf"),
+        "Oswald": ("Oswald-Regular.ttf", "Oswald-Bold.ttf"),
+        "Anton": ("Anton-Regular.ttf", "Anton-Regular.ttf"),
+        "Public Sans": ("PublicSans-Regular.ttf", "PublicSans-Bold.ttf"),
+        "Lora": ("Lora-Regular.ttf", "Lora-Bold.ttf"),
+    }
     
-    selected_font_file = font_map.get(args.style, "Inter-Bold.ttf")
+    selected_font_file = None
+    subtext_font_file = "Inter-Regular.ttf"
+
+    if args.font_family in family_map:
+        reg_file, bold_file = family_map[args.font_family]
+        selected_font_file = bold_file
+        subtext_font_file = reg_file
+    else:
+        selected_font_file = font_map.get(args.style, "Inter-Bold.ttf")
+
     font_path = os.path.join(font_dir, selected_font_file)
     if not os.path.exists(font_path):
         # fallback to any available .ttf in directory

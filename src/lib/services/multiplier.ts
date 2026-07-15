@@ -353,8 +353,27 @@ export async function renderCaptionStill(
   const stillFileName = `still_${outputId}.png`;
   const stillPath = path.join(STILLS_DIR, stillFileName);
 
-  // Merge presets default settings based on styleId
-  const customProps = settings || {};
+  let finalStyleId = styleId;
+  let customProps = settings || {};
+
+  // If styleId is a SavedStyle UUID, resolve it
+  if (styleId.length > 20) {
+    const savedStyle = await prisma.savedStyle.findUnique({
+      where: { id: styleId }
+    });
+    if (savedStyle) {
+      finalStyleId = savedStyle.templateKey;
+      const savedParams = typeof savedStyle.params === "string" 
+        ? JSON.parse(savedStyle.params) 
+        : (savedStyle.params || {});
+      customProps = {
+        ...savedParams,
+        ...customProps
+      };
+    }
+  }
+
+  // Merge presets default settings based on finalStyleId
   const fontSize = customProps.fontSize ?? 32;
   const fontColor = customProps.fontColor ?? "#FFFFFF";
   const bgStripColor = customProps.bgStripColor ?? "#000000";
@@ -367,6 +386,8 @@ export async function renderCaptionStill(
     ? "./venv/bin/python3"
     : "python3";
 
+  const fontFamily = customProps.fontFamily || "";
+
   const pythonArgs = [
     "scripts/generate_still.py",
     "--text", hookText,
@@ -375,9 +396,10 @@ export async function renderCaptionStill(
     "--bg-color", bgStripColor,
     "--bg-opacity", String(bgStripOpacity),
     "--position-y", String(positionYPercent),
-    "--style", styleId,
+    "--style", finalStyleId,
     "--accent-color", accentColor,
     "--author", author,
+    "--font-family", fontFamily,
     "--output", stillPath,
   ];
 

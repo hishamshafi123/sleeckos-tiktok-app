@@ -14,6 +14,7 @@ export interface EditorialCaptionProps {
   paddingX?: number;
   accentColor?: string;
   author?: string;
+  fontFamily?: string;
 }
 
 export const EditorialCaption: React.FC<EditorialCaptionProps> = ({
@@ -29,11 +30,13 @@ export const EditorialCaption: React.FC<EditorialCaptionProps> = ({
   paddingX = 20,
   accentColor = "#E11D48", // Editorial Red
   author = "",
+  fontFamily = "",
 }) => {
   // Common styling calculations
   const leftX = marginX;
   const widthVal = 720 - marginX * 2;
   const opacityVal = Math.max(0, Math.min(1, bgStripOpacity));
+  const mainFont = fontFamily ? `'${fontFamily}', sans-serif` : undefined;
 
   // Render different presets
   const renderCard = () => {
@@ -73,7 +76,7 @@ export const EditorialCaption: React.FC<EditorialCaptionProps> = ({
             <div
               style={{
                 color: fontColor,
-                fontFamily: "'Oswald', 'Impact', sans-serif",
+                fontFamily: mainFont || "'Oswald', 'Impact', sans-serif",
                 fontSize: `${fontSize}px`,
                 fontWeight: "bold",
                 lineHeight: "1.2",
@@ -110,7 +113,7 @@ export const EditorialCaption: React.FC<EditorialCaptionProps> = ({
             <div
               style={{
                 color: fontColor,
-                fontFamily: "'Inter', sans-serif",
+                fontFamily: mainFont || "'Inter', sans-serif",
                 fontSize: `${fontSize}px`,
                 fontWeight: "600",
                 lineHeight: "1.4",
@@ -162,7 +165,7 @@ export const EditorialCaption: React.FC<EditorialCaptionProps> = ({
             <div
               style={{
                 color: fontColor,
-                fontFamily: "'Georgia', 'Lora', serif",
+                fontFamily: mainFont || "'Georgia', 'Lora', serif",
                 fontSize: `${fontSize}px`,
                 fontStyle: "italic",
                 lineHeight: "1.4",
@@ -216,7 +219,7 @@ export const EditorialCaption: React.FC<EditorialCaptionProps> = ({
             <div
               style={{
                 color: fontColor,
-                fontFamily: "'Inter', 'Helvetica Neue', Arial, sans-serif",
+                fontFamily: mainFont || "'Inter', 'Helvetica Neue', Arial, sans-serif",
                 fontSize: `${fontSize}px`,
                 fontWeight: "800",
                 lineHeight: "1.3",

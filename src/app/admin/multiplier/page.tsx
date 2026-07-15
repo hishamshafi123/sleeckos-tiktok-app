@@ -14,5 +14,5 @@ export default async function Page(props: any) {
     return <AccessDenied tool="Multiplier" />;
   }
 
-  return <ClientPage {...props} />;
+  return <ClientPage session={{ userId: session.userId, role: session.role }} {...props} />;
 }

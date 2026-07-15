@@ -55,6 +55,8 @@ interface MultiplierOutput {
   status: "PENDING" | "RENDERING" | "COMPLETED" | "FAILED";
   outputRef: string | null;
   driveFolderId: string | null;
+  driveFolderName: string | null;
+  googleEmail: string | null;
   errorMessage: string | null;
   variation: { videoRef: string };
   hook: { text: string };
@@ -78,7 +80,14 @@ interface MultiplierGroup {
   createdAt: string;
 }
 
-export default function ClientPage() {
+interface ClientPageProps {
+  session?: {
+    userId: string;
+    role: string;
+  };
+}
+
+export default function ClientPage({ session }: ClientPageProps = {}) {
   const [activeTab, setActiveTab] = useState<"builder" | "queue">("builder");
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [groups, setGroups] = useState<MultiplierGroup[]>([]);
@@ -100,6 +109,15 @@ export default function ClientPage() {
   const [positionYPercent, setPositionYPercent] = useState(75);
   const [accentColor, setAccentColor] = useState("#E11D48");
   const [author, setAuthor] = useState("");
+  const [fontFamily, setFontFamily] = useState("Inter");
+
+  // Template/Style Preset CRUD state
+  const [savedStyles, setSavedStyles] = useState<any[]>([]);
+  const [selectedSavedStyleId, setSelectedSavedStyleId] = useState<string>("");
+  const [newTemplateName, setNewTemplateName] = useState<string>("");
+  const [showTemplateSaveModal, setShowTemplateSaveModal] = useState<boolean>(false);
+  const [isSavingTemplate, setIsSavingTemplate] = useState<boolean>(false);
+  const [showWarnInUseDialog, setShowWarnInUseDialog] = useState<boolean>(false);
 
   // Rendering Settings
   const [hookDuration, setHookDuration] = useState(5);
@@ -128,6 +146,7 @@ export default function ClientPage() {
   const [driveFolders, setDriveFolders] = useState<{ id: string; name: string }[]>([]);
   const [folderSearch, setFolderSearch] = useState("");
   const [searchingFolders, setSearchingFolders] = useState(false);
+  const [currentPickerEmail, setCurrentPickerEmail] = useState<string | null>(null);
   const [syncingOutputs, setSyncingOutputs] = useState<Set<string>>(new Set());
   const [selectedPickerFolders, setSelectedPickerFolders] = useState<{ id: string; name: string }[]>([]);
   const [downloads, setDownloads] = useState<Record<string, { progress: number; message: string }>>({});
@@ -170,6 +189,16 @@ export default function ClientPage() {
     } catch (err) {
       console.error("Error loading drive status:", err);
     }
+
+    try {
+      const stylesRes = await fetch("/api/managed/style-studio/saved-styles");
+      if (stylesRes.ok) {
+        const data = await stylesRes.json();
+        setSavedStyles(data || []);
+      }
+    } catch (err) {
+      console.error("Error loading saved styles:", err);
+    }
   };
 
   const searchDriveFolders = async (query: string) => {
@@ -179,6 +208,7 @@ export default function ClientPage() {
       if (res.ok) {
         const data = await res.json();
         setDriveFolders(data.folders || []);
+        setCurrentPickerEmail(data.googleEmail || null);
       }
     } catch {
       toast.error("Failed to query Google Drive folders");
@@ -221,6 +251,7 @@ export default function ClientPage() {
               itemId: item.id,
               driveFolderId: folder.id,
               driveFolderName: folder.name,
+              googleEmail: currentPickerEmail || null,
             });
           });
         } else {
@@ -230,6 +261,7 @@ export default function ClientPage() {
               outputId: item.id,
               driveFolderId: folder.id,
               driveFolderName: folder.name,
+              googleEmail: currentPickerEmail || null,
             });
           });
         }
@@ -245,6 +277,7 @@ export default function ClientPage() {
             batchId: isLegacy ? targetId : undefined,
             driveFolderId: firstFolderId,
             driveFolderName: displayNames,
+            googleEmail: currentPickerEmail || null,
             assignments,
           }),
         });
@@ -263,6 +296,7 @@ export default function ClientPage() {
             itemId: type === "item" ? targetId : undefined,
             driveFolderId: folderId,
             driveFolderName: folderName,
+            googleEmail: currentPickerEmail || null,
           }),
         });
 
@@ -362,6 +396,13 @@ export default function ClientPage() {
     };
   }, []);
 
+  // Auto-query folders on opening folder picker modal
+  useEffect(() => {
+    if (folderPickerTarget) {
+      searchDriveFolders("");
+    }
+  }, [folderPickerTarget]);
+
   // Poll active rendering groups
   useEffect(() => {
     const activeGroups = groups.filter(
@@ -418,9 +459,16 @@ export default function ClientPage() {
     setPositionYPercent(s.positionYPercent ?? 75);
     setAccentColor(s.accentColor ?? "#E11D48");
     setAuthor(s.author ?? "");
+    setFontFamily(s.fontFamily ?? "Inter");
     setHookDuration(s.hookDuration ?? 5);
     setAnimationType(s.animationType ?? "NONE");
     setAnimationDuration(s.animationDuration ?? 0.5);
+
+    if (savedStyles.some(style => style.id === group.styleId)) {
+      setSelectedSavedStyleId(group.styleId);
+    } else {
+      setSelectedSavedStyleId("");
+    }
 
     setFilesToUpload([]);
   };
@@ -443,6 +491,7 @@ export default function ClientPage() {
       positionYPercent,
       accentColor,
       author,
+      fontFamily,
       hookDuration,
       animationType,
       animationDuration,
@@ -455,7 +504,7 @@ export default function ClientPage() {
         body: JSON.stringify({
           name: groupName,
           campaignId: selectedCampaignId,
-          styleId,
+          styleId: selectedSavedStyleId || styleId,
           mappingMode,
           settings: settingsObj,
         }),
@@ -486,6 +535,7 @@ export default function ClientPage() {
       positionYPercent,
       accentColor,
       author,
+      fontFamily,
       hookDuration,
       animationType,
       animationDuration,
@@ -497,7 +547,7 @@ export default function ClientPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           mappingMode,
-          styleId,
+          styleId: selectedSavedStyleId || styleId,
           settings: settingsObj,
         }),
       });
@@ -512,6 +562,145 @@ export default function ClientPage() {
       // Reload updated info
       const updated = groups.find((g) => g.id === selectedGroup.id);
       if (updated) setSelectedGroup(updated);
+    } catch (err: any) {
+      toast.error(err.message);
+    }
+  };
+
+  // Template CRUD Operations
+  const handleSaveNewPreset = async () => {
+    if (!newTemplateName.trim()) {
+      toast.error("Please enter a name for the new style preset");
+      return;
+    }
+
+    setIsSavingTemplate(true);
+    try {
+      const paramsObj = {
+        fontSize,
+        fontColor,
+        bgStripColor,
+        bgStripOpacity,
+        positionYPercent,
+        accentColor,
+        author,
+        fontFamily,
+      };
+
+      const res = await fetch("/api/managed/style-studio/saved-styles", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          templateKey: styleId,
+          name: newTemplateName,
+          params: JSON.stringify(paramsObj),
+          tags: ["multiplier"],
+        }),
+      });
+
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || "Failed to save style preset");
+      }
+
+      const created = await res.json();
+      toast.success("Style preset saved successfully!");
+      setShowTemplateSaveModal(false);
+      
+      // Refresh presets
+      const listRes = await fetch("/api/managed/style-studio/saved-styles");
+      if (listRes.ok) {
+        const data = await listRes.json();
+        setSavedStyles(data || []);
+      }
+      setSelectedSavedStyleId(created.id);
+    } catch (err: any) {
+      toast.error(err.message);
+    } finally {
+      setIsSavingTemplate(false);
+    }
+  };
+
+  const handlePromptUpdatePreset = () => {
+    // Check if in use by active groups
+    const inUse = groups.some(
+      (g) => g.styleId === selectedSavedStyleId && g.status !== "COMPLETED" && g.status !== "FAILED"
+    );
+    if (inUse) {
+      setShowWarnInUseDialog(true);
+    } else {
+      handleUpdatePresetConfirm();
+    }
+  };
+
+  const handleUpdatePresetConfirm = async () => {
+    setShowWarnInUseDialog(false);
+    setIsSavingTemplate(true);
+    try {
+      const paramsObj = {
+        fontSize,
+        fontColor,
+        bgStripColor,
+        bgStripOpacity,
+        positionYPercent,
+        accentColor,
+        author,
+        fontFamily,
+      };
+
+      const res = await fetch("/api/managed/style-studio/saved-styles", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: selectedSavedStyleId,
+          name: savedStyles.find(s => s.id === selectedSavedStyleId)?.name,
+          params: JSON.stringify(paramsObj),
+          tags: ["multiplier"],
+        }),
+      });
+
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || "Failed to update style preset");
+      }
+
+      toast.success("Style preset updated successfully!");
+      
+      // Refresh presets
+      const listRes = await fetch("/api/managed/style-studio/saved-styles");
+      if (listRes.ok) {
+        const data = await listRes.json();
+        setSavedStyles(data || []);
+      }
+    } catch (err: any) {
+      toast.error(err.message);
+    } finally {
+      setIsSavingTemplate(false);
+    }
+  };
+
+  const handleDeletePreset = async () => {
+    if (!confirm("Are you sure you want to delete this style preset?")) return;
+
+    try {
+      const res = await fetch(`/api/managed/style-studio/saved-styles?id=${selectedSavedStyleId}`, {
+        method: "DELETE",
+      });
+
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || "Failed to delete style preset");
+      }
+
+      toast.success("Style preset deleted successfully!");
+      setSelectedSavedStyleId("");
+      
+      // Refresh presets
+      const listRes = await fetch("/api/managed/style-studio/saved-styles");
+      if (listRes.ok) {
+        const data = await listRes.json();
+        setSavedStyles(data || []);
+      }
     } catch (err: any) {
       toast.error(err.message);
     }
@@ -1322,6 +1511,77 @@ export default function ClientPage() {
                     Select Editorial Still Caption Style
                   </h2>
 
+                  {/* Load/CRUD Presets Panel */}
+                  <div className="flex flex-wrap items-center gap-4 mb-6 p-4 bg-[#18181b] rounded-xl border border-[#27272a]">
+                    <div className="flex-1 min-w-[200px]">
+                      <label className="block text-[10px] uppercase font-bold text-[#a1a1aa] mb-1">Load Style Preset</label>
+                      <select
+                        value={selectedSavedStyleId}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setSelectedSavedStyleId(val);
+                          if (val === "") return;
+                          const found = savedStyles.find(s => s.id === val);
+                          if (found) {
+                            setStyleId(found.templateKey as any);
+                            const p = typeof found.params === "string" ? JSON.parse(found.params) : (found.params || {});
+                            setFontSize(p.fontSize ?? 32);
+                            setFontColor(p.fontColor ?? "#FFFFFF");
+                            setBgStripColor(p.bgStripColor ?? "#000000");
+                            setBgStripOpacity(p.bgStripOpacity ?? 0.85);
+                            setPositionYPercent(p.positionYPercent ?? 75);
+                            setAccentColor(p.accentColor ?? "#E11D48");
+                            setAuthor(p.author ?? "");
+                            setFontFamily(p.fontFamily ?? "Inter");
+                          }
+                        }}
+                        className="w-full bg-[#09090b] border border-[#27272a] rounded px-3 py-1.5 text-xs text-[#fafafa] focus:outline-none"
+                      >
+                        <option value="">-- Custom Settings (No Preset Loaded) --</option>
+                        {savedStyles.map((style) => (
+                          <option key={style.id} value={style.id}>
+                            {style.name} ({style.templateKey})
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    {(session?.role === "admin" || session?.role === "team_lead") && (
+                      <div className="flex gap-2 self-end">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setNewTemplateName("");
+                            setShowTemplateSaveModal(true);
+                          }}
+                          className="px-3 py-1.5 text-[11px] font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded flex items-center gap-1 transition-colors"
+                        >
+                          <PlusCircle className="w-3.5 h-3.5" /> Save As Preset
+                        </button>
+
+                        {selectedSavedStyleId && (
+                          <button
+                            type="button"
+                            onClick={handlePromptUpdatePreset}
+                            className="px-3 py-1.5 text-[11px] font-semibold text-white bg-[#E11D48] hover:bg-[#E11D48]/90 rounded flex items-center gap-1 transition-colors"
+                          >
+                            <RefreshCw className="w-3.5 h-3.5" /> Update Preset
+                          </button>
+                        )}
+
+                        {selectedSavedStyleId && (
+                          <button
+                            type="button"
+                            onClick={handleDeletePreset}
+                            className="px-3 py-1.5 text-[11px] font-semibold text-white bg-rose-600 hover:bg-rose-700 rounded flex items-center gap-1 transition-colors"
+                          >
+                            <Trash className="w-3.5 h-3.5" /> Delete
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
                   <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
                     {(
                       [
@@ -1359,6 +1619,29 @@ export default function ClientPage() {
                     </div>
 
                     <div className={`grid grid-cols-1 md:grid-cols-2 gap-6 ${showAdvanced ? "" : "hidden"}`}>
+                      <div>
+                        <label className="block text-[10px] uppercase font-bold text-[#a1a1aa] mb-2">Font Family</label>
+                        <select
+                          value={fontFamily}
+                          onChange={(e) => setFontFamily(e.target.value)}
+                          className="w-full bg-[#18181b] border border-[#27272a] rounded-lg px-4 py-2 text-xs text-[#fafafa] focus:outline-none"
+                        >
+                          <option value="Inter">Inter</option>
+                          <option value="IBM Plex Sans">IBM Plex Sans</option>
+                          <option value="Source Sans 3">Source Sans 3</option>
+                          <option value="Libre Franklin">Libre Franklin</option>
+                          <option value="Archivo">Archivo</option>
+                          <option value="Barlow">Barlow</option>
+                          <option value="Barlow Condensed">Barlow Condensed</option>
+                          <option value="Roboto">Roboto</option>
+                          <option value="Roboto Condensed">Roboto Condensed</option>
+                          <option value="Oswald">Oswald</option>
+                          <option value="Anton">Anton</option>
+                          <option value="Public Sans">Public Sans</option>
+                          <option value="Lora">Lora</option>
+                        </select>
+                      </div>
+
                       <div>
                         <label className="block text-[10px] uppercase font-bold text-[#a1a1aa] mb-2">Font Size (px)</label>
                         <input
@@ -1498,7 +1781,7 @@ export default function ClientPage() {
                               lineHeight: "1.2",
                               fontWeight: "bold",
                               textAlign: styleId === "subtitle-box" ? "center" : "left",
-                              fontFamily: styleId === "quote-card" ? "Georgia, serif" : "sans-serif",
+                              fontFamily: fontFamily ? `'${fontFamily}', sans-serif` : (styleId === "quote-card" ? "Georgia, serif" : "sans-serif"),
                               whiteSpace: "pre-wrap",
                             }}
                           >
@@ -1837,25 +2120,39 @@ export default function ClientPage() {
                               </div>
 
                               {driveConnected && (
-                                  <div className="mt-1 flex items-center justify-between gap-2 border-t border-[#27272a]/40 pt-2 text-[10px] text-[#71717a]">
-                                    <span className="truncate flex items-center gap-1">
-                                      <FolderOpen className="w-3.5 h-3.5 text-rose-500/80" />
-                                      {out.driveFolderId ? "Synced Override" : "No Folder Override"}
-                                    </span>
-                                    <button
-                                      onClick={() => {
-                                        const isLegacy = group.campaignId === "";
-                                        setFolderPickerTarget({
-                                          type: isLegacy ? "item" : "output",
-                                          id: out.id
-                                        });
-                                        setFolderSearch("");
-                                        setDriveFolders([]);
-                                      }}
-                                      className="px-2 py-0.5 bg-[#18181b] hover:bg-[#27272a] text-[#e4e4e7] hover:text-[#fafafa] rounded font-semibold transition-all border border-[#27272a]"
-                                    >
-                                      {out.driveFolderId ? "Change" : "Select Folder"}
-                                    </button>
+                                  <div className="mt-1 flex flex-col gap-1 border-t border-[#27272a]/40 pt-2 text-[10px] text-[#71717a]">
+                                    <div className="flex items-center justify-between gap-2">
+                                      <span className="truncate flex items-center gap-1.5 font-medium max-w-[70%]">
+                                        <FolderOpen className="w-3.5 h-3.5 text-rose-500/80 flex-shrink-0" />
+                                        {out.driveFolderId ? (
+                                          <span className="truncate text-rose-400 font-semibold" title={out.driveFolderName || "Override folder"}>
+                                            {out.driveFolderName || "Override folder"}
+                                          </span>
+                                        ) : (
+                                          <span>No Override Folder</span>
+                                        )}
+                                      </span>
+                                      <button
+                                        onClick={() => {
+                                          const isLegacy = group.campaignId === "";
+                                          setFolderPickerTarget({
+                                            type: isLegacy ? "item" : "output",
+                                            id: out.id
+                                          });
+                                          setFolderSearch("");
+                                          setDriveFolders([]);
+                                        }}
+                                        className="px-2 py-0.5 bg-[#18181b] hover:bg-[#27272a] text-[#e4e4e7] hover:text-[#fafafa] rounded font-semibold transition-all border border-[#27272a]"
+                                      >
+                                        {out.driveFolderId ? "Change" : "Select Folder"}
+                                      </button>
+                                    </div>
+                                    {out.driveFolderId && (
+                                      <div className="text-[9px] text-[#a1a1aa] flex items-center gap-1.5 pl-5">
+                                        <span className="w-1 h-1 rounded-full bg-rose-500"></span>
+                                        <span>Account: {out.googleEmail || "Global / Shared"}</span>
+                                      </div>
+                                    )}
                                   </div>
                               )}
 
@@ -1890,13 +2187,20 @@ export default function ClientPage() {
               onClick={(e) => e.stopPropagation()}
             >
               <div className="flex items-center justify-between">
-                <h3 className="text-[#fafafa] text-sm font-semibold flex items-center gap-2">
-                  <FolderOpen className="w-4 h-4 text-[#E11D48]" /> 
-                  {isBulk ? "Select Multiple Folders" : "Select Google Drive Folder"}
-                  <span className="text-[#71717a] text-[10px] font-normal">
-                    ({isBulk ? "group round-robin" : "per video variation"})
-                  </span>
-                </h3>
+                <div className="flex flex-col gap-0.5">
+                  <h3 className="text-[#fafafa] text-sm font-semibold flex items-center gap-2">
+                    <FolderOpen className="w-4 h-4 text-[#E11D48]" /> 
+                    {isBulk ? "Select Multiple Folders" : "Select Google Drive Folder"}
+                    <span className="text-[#71717a] text-[10px] font-normal">
+                      ({isBulk ? "group round-robin" : "per video variation"})
+                    </span>
+                  </h3>
+                  {currentPickerEmail && (
+                    <p className="text-[10px] text-[#a1a1aa] pl-6 font-medium">
+                      Drive Account: <span className="text-[#E11D48]">{currentPickerEmail}</span>
+                    </p>
+                  )}
+                </div>
                 <button
                   onClick={() => setFolderPickerTarget(null)}
                   className="text-[#71717a] hover:text-[#fafafa] transition-all"
@@ -2019,6 +2323,91 @@ export default function ClientPage() {
       })()}
 
       {/* Video Preview Modal */}
+      {/* Save Template Modal */}
+      {showTemplateSaveModal && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-[#09090b] border border-[#27272a] rounded-xl max-w-md w-full p-6 shadow-2xl space-y-4">
+            <div className="flex justify-between items-center border-b border-[#27272a] pb-3">
+              <h3 className="text-[#fafafa] text-base font-semibold">Save Style Preset</h3>
+              <button
+                type="button"
+                onClick={() => setShowTemplateSaveModal(false)}
+                className="text-[#71717a] hover:text-[#fafafa] transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="space-y-2">
+              <label className="block text-[11px] uppercase font-bold text-[#a1a1aa]">Preset Name</label>
+              <input
+                type="text"
+                value={newTemplateName}
+                onChange={(e) => setNewTemplateName(e.target.value)}
+                placeholder="e.g. Red Lower Third Bold"
+                className="w-full bg-[#18181b] border border-[#27272a] rounded-lg px-4 py-2.5 text-sm focus:outline-none text-[#fafafa]"
+                autoFocus
+              />
+            </div>
+            <div className="flex justify-end gap-3 pt-2">
+              <button
+                type="button"
+                onClick={() => setShowTemplateSaveModal(false)}
+                className="px-4 py-2 rounded-lg text-xs font-semibold bg-[#18181b] text-[#fafafa] hover:bg-[#27272a] transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleSaveNewPreset}
+                disabled={isSavingTemplate}
+                className="px-4 py-2 rounded-lg text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 transition-colors flex items-center gap-1.5"
+              >
+                {isSavingTemplate && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                Save Preset
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Warn In Use Modal */}
+      {showWarnInUseDialog && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-[#09090b] border border-[#f59e0b]/30 rounded-xl max-w-md w-full p-6 shadow-2xl space-y-4">
+            <div className="flex items-start gap-3">
+              <div className="p-2 bg-[#f59e0b]/10 text-[#f59e0b] rounded-lg">
+                <AlertCircle className="w-6 h-6" />
+              </div>
+              <div className="space-y-1 flex-1">
+                <h3 className="text-[#fafafa] text-base font-semibold">Active Template in Use</h3>
+                <p className="text-xs text-[#71717a] leading-relaxed">
+                  This style template is currently in use by one or more active render groups.
+                  Updating it now will change the styling of future renders for those groups.
+                </p>
+              </div>
+            </div>
+            <div className="flex justify-end gap-3 pt-2">
+              <button
+                type="button"
+                onClick={() => setShowWarnInUseDialog(false)}
+                className="px-4 py-2 rounded-lg text-xs font-semibold bg-[#18181b] text-[#fafafa] hover:bg-[#27272a] transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleUpdatePresetConfirm}
+                disabled={isSavingTemplate}
+                className="px-4 py-2 rounded-lg text-xs font-semibold text-white bg-[#f59e0b] hover:bg-[#f59e0b]/90 disabled:opacity-50 transition-colors flex items-center gap-1.5"
+              >
+                {isSavingTemplate && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                Update Preset
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {previewVideoUrl && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/90 backdrop-blur-sm"

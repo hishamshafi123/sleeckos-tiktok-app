@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getSession } from "@/lib/session";
 import { can } from "@/lib/services/permissions";
 import { getMultiplierDriveClient } from "../drive-helper";
+import prisma from "@/lib/db";
 
 // GET /api/managed/multiplier/google/folders?q=search — List/search Drive folders
 export async function GET(req: NextRequest) {
@@ -42,7 +43,16 @@ export async function GET(req: NextRequest) {
       name: f.name,
     }));
 
-    return NextResponse.json({ folders });
+    const account = await prisma.managedAccount.findFirst({
+      where: { driveConnected: true, googleAccessToken: { not: null } },
+      select: { driveFolderName: true, tiktokUsername: true }
+    });
+
+    const googleEmail = account?.driveFolderName
+      ? account.driveFolderName.replace(/^Sleeckos Videos \(/, "").replace(/\)$/, "")
+      : (account?.tiktokUsername ? `@${account.tiktokUsername}` : null);
+
+    return NextResponse.json({ folders, googleEmail });
   } catch (err) {
     console.error("[Multiplier Folders] Error:", err);
     return NextResponse.json({ error: "Failed to list folders" }, { status: 500 });

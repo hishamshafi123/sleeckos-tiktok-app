@@ -53,6 +53,62 @@ const defaultTemplates: { key: string; name: string; engine: string; paramSchema
       { key: "fontSize", label: "Font Size (px)", type: "number", defaultValue: 28, min: 14, max: 60 },
       { key: "animationSpeed", label: "Animation Speed (x)", type: "number", defaultValue: 1, min: 0.5, max: 2.0 },
     ]),
+  },
+  {
+    key: "news-lower-third",
+    name: "News Lower Third",
+    engine: "remotion",
+    paramSchema: JSON.stringify([
+      { key: "fontSize", label: "Font Size (px)", type: "number", defaultValue: 32, min: 20, max: 70 },
+      { key: "fontColor", label: "Font Color", type: "color", defaultValue: "#FFFFFF" },
+      { key: "bgStripColor", label: "Background Card Color", type: "color", defaultValue: "#000000" },
+      { key: "bgStripOpacity", label: "Card Opacity", type: "number", defaultValue: 0.85, min: 0.0, max: 1.0 },
+      { key: "positionYPercent", label: "Vertical Alignment (Percent Y)", type: "number", defaultValue: 75, min: 10, max: 90 },
+      { key: "accentColor", label: "Accent Strip Color", type: "color", defaultValue: "#E11D48" },
+      { key: "fontFamily", label: "Font Family", type: "text", defaultValue: "Inter" }
+    ]),
+  },
+  {
+    key: "breaking-headline",
+    name: "Breaking News Headline",
+    engine: "remotion",
+    paramSchema: JSON.stringify([
+      { key: "fontSize", label: "Font Size (px)", type: "number", defaultValue: 32, min: 20, max: 70 },
+      { key: "fontColor", label: "Font Color", type: "color", defaultValue: "#FFFFFF" },
+      { key: "bgStripColor", label: "Background Card Color", type: "color", defaultValue: "#000000" },
+      { key: "bgStripOpacity", label: "Card Opacity", type: "number", defaultValue: 0.85, min: 0.0, max: 1.0 },
+      { key: "positionYPercent", label: "Vertical Alignment (Percent Y)", type: "number", defaultValue: 75, min: 10, max: 90 },
+      { key: "accentColor", label: "Accent Strip Color", type: "color", defaultValue: "#E11D48" },
+      { key: "fontFamily", label: "Font Family", type: "text", defaultValue: "Oswald" }
+    ]),
+  },
+  {
+    key: "subtitle-box",
+    name: "Subtitle Caption Box",
+    engine: "remotion",
+    paramSchema: JSON.stringify([
+      { key: "fontSize", label: "Font Size (px)", type: "number", defaultValue: 32, min: 20, max: 70 },
+      { key: "fontColor", label: "Font Color", type: "color", defaultValue: "#FFFFFF" },
+      { key: "bgStripColor", label: "Background Card Color", type: "color", defaultValue: "#000000" },
+      { key: "bgStripOpacity", label: "Card Opacity", type: "number", defaultValue: 0.85, min: 0.0, max: 1.0 },
+      { key: "positionYPercent", label: "Vertical Alignment (Percent Y)", type: "number", defaultValue: 75, min: 10, max: 90 },
+      { key: "fontFamily", label: "Font Family", type: "text", defaultValue: "Inter" }
+    ]),
+  },
+  {
+    key: "quote-card",
+    name: "Quote / Statement Card",
+    engine: "remotion",
+    paramSchema: JSON.stringify([
+      { key: "fontSize", label: "Font Size (px)", type: "number", defaultValue: 32, min: 20, max: 70 },
+      { key: "fontColor", label: "Font Color", type: "color", defaultValue: "#FFFFFF" },
+      { key: "bgStripColor", label: "Background Card Color", type: "color", defaultValue: "#000000" },
+      { key: "bgStripOpacity", label: "Card Opacity", type: "number", defaultValue: 0.85, min: 0.0, max: 1.0 },
+      { key: "positionYPercent", label: "Vertical Alignment (Percent Y)", type: "number", defaultValue: 75, min: 10, max: 90 },
+      { key: "accentColor", label: "Accent Strip Color", type: "color", defaultValue: "#E11D48" },
+      { key: "author", label: "Author Name", type: "text", defaultValue: "" },
+      { key: "fontFamily", label: "Font Family", type: "text", defaultValue: "Lora" }
+    ]),
   }
 ];
 

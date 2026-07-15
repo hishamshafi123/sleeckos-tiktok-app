@@ -630,6 +630,7 @@ model MultiplierBatch {
   driveExportStatus String?               // EXPORTING | EXPORTED | FAILED | null
 
   errorMessage    String?
+  googleEmail     String?
   createdAt       DateTime              @default(now())
   updatedAt       DateTime              @updatedAt
   items           MultiplierItem[]
@@ -646,6 +647,7 @@ model MultiplierItem {
   templateId       String?              // which design template was used
   driveFolderId    String?              // per-item Drive folder override
   driveFolderName  String?              // per-item folder display name
+  googleEmail      String?              // per-item Google Drive account email
   createdAt        DateTime             @default(now())
   updatedAt        DateTime             @updatedAt
 }
@@ -791,6 +793,8 @@ model MultiplierOutput {
   status        String                    @default("PENDING") // PENDING | RENDERING | COMPLETED | FAILED
   outputRef     String?                   // path to completed MP4 in public/uploads/
   driveFolderId String?
+  driveFolderName String?
+  googleEmail     String?
   errorMessage  String?
   createdAt     DateTime                  @default(now())
   updatedAt     DateTime                  @updatedAt
