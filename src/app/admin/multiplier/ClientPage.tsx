@@ -110,6 +110,12 @@ export default function ClientPage({ session }: ClientPageProps = {}) {
   const [accentColor, setAccentColor] = useState("#E11D48");
   const [author, setAuthor] = useState("");
   const [fontFamily, setFontFamily] = useState("Inter");
+  const [previewVariationIndex, setPreviewVariationIndex] = useState<number>(0);
+
+  // Reset selected variation preview on group switch
+  useEffect(() => {
+    setPreviewVariationIndex(0);
+  }, [selectedGroup?.id]);
 
   // Template/Style Preset CRUD state
   const [savedStyles, setSavedStyles] = useState<any[]>([]);
@@ -1755,9 +1761,21 @@ export default function ClientPage({ session }: ClientPageProps = {}) {
                     <div className="bg-[#18181b] border border-[#27272a] rounded-lg p-5">
                       <p className="text-[10px] uppercase font-bold text-[#71717a] mb-2">Layout Preview Canvas (Stills)</p>
                       <div className="aspect-[9/16] max-w-[200px] mx-auto bg-[#09090b] rounded border border-[#27272a] relative overflow-hidden flex flex-col justify-center">
-                        <div className="absolute inset-0 bg-neutral-900/10 flex items-center justify-center text-[10px] text-[#27272a] pointer-events-none">
-                          Background Video Frame
-                        </div>
+                        {selectedGroup?.variations && selectedGroup.variations.length > 0 ? (
+                          <video
+                            key={selectedGroup.variations[previewVariationIndex]?.videoRef}
+                            src={selectedGroup.variations[previewVariationIndex]?.videoRef}
+                            className="absolute inset-0 w-full h-full object-cover"
+                            autoPlay
+                            muted
+                            loop
+                            playsInline
+                          />
+                        ) : (
+                          <div className="absolute inset-0 bg-neutral-900/10 flex items-center justify-center text-[10px] text-[#27272a] pointer-events-none">
+                            Background Video Frame
+                          </div>
+                        )}
                         {/* Live CSS approximate preview */}
                         <div
                           style={{
@@ -1789,6 +1807,24 @@ export default function ClientPage({ session }: ClientPageProps = {}) {
                           </p>
                         </div>
                       </div>
+
+                      {/* Variation Selector if multiple variations are present */}
+                      {selectedGroup?.variations && selectedGroup.variations.length > 1 && (
+                        <div className="mt-3 flex items-center justify-between text-xs text-[#a1a1aa] bg-[#09090b] border border-[#27272a] rounded-lg p-2">
+                          <span>Preview Variation:</span>
+                          <select
+                            value={previewVariationIndex}
+                            onChange={(e) => setPreviewVariationIndex(parseInt(e.target.value))}
+                            className="bg-[#18181b] border border-[#27272a] rounded px-2.5 py-1 text-xs focus:outline-none text-[#fafafa] font-semibold"
+                          >
+                            {selectedGroup.variations.map((v: any, idx: number) => (
+                              <option key={v.id} value={idx}>
+                                Variation #{idx + 1}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      )}
                     </div>
                   </div>
                 </div>
