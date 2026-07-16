@@ -34,6 +34,8 @@ export async function GET(
               followerCount: true,
               isActive: true,
               driveConnected: true,
+              driveFolderId: true,
+              driveFolderName: true,
               postTimeHour: true,
               postTimeMinute: true,
               postTimezone: true,
@@ -50,5 +52,17 @@ export async function GET(
     return NextResponse.json({ error: "Section not found" }, { status: 404 });
   }
 
-  return NextResponse.json(section);
+  // Sort each group's accounts list naturally by driveFolderName
+  const sectionObj = JSON.parse(JSON.stringify(section));
+  for (const group of sectionObj.groups || []) {
+    if (group.accounts && Array.isArray(group.accounts)) {
+      group.accounts.sort((a: any, b: any) => {
+        const nameA = a.driveFolderName || "";
+        const nameB = b.driveFolderName || "";
+        return nameA.localeCompare(nameB, undefined, { numeric: true, sensitivity: 'base' });
+      });
+    }
+  }
+
+  return NextResponse.json(sectionObj);
 }

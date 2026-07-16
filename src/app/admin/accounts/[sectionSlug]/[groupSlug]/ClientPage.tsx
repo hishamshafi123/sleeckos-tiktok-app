@@ -1,5 +1,5 @@
 "use client";
-import { useState, useEffect, useCallback, useRef, use } from "react";
+import { useState, useEffect, useCallback, useRef, use, useMemo } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import ManagedAccountEditForm from "@/components/ManagedAccountEditForm";
@@ -18,6 +18,7 @@ import {
   AlertCircle,
   Zap,
   Pencil,
+  Search,
 } from "lucide-react";
 
 type Account = {
@@ -83,6 +84,20 @@ export default function GroupPage({
   const [addForm, setAddForm] = useState({ tiktokUsername: "", postpeerAccountId: "" });
   const [addingAccount, setAddingAccount] = useState(false);
   const [clockTick, setClockTick] = useState(0);
+
+  // Search accounts state
+  const [searchQuery, setSearchQuery] = useState("");
+
+  const filteredAccounts = useMemo(() => {
+    if (!group) return [];
+    if (!searchQuery.trim()) return group.accounts;
+    const query = searchQuery.toLowerCase().trim();
+    return group.accounts.filter(
+      (acc) =>
+        acc.tiktokUsername.toLowerCase().includes(query) ||
+        acc.tiktokDisplayName.toLowerCase().includes(query)
+    );
+  }, [group, searchQuery]);
   const clockRef = useRef<ReturnType<typeof setInterval>>(undefined);
 
   // Tick the clock every second for live timezone display
@@ -341,7 +356,28 @@ export default function GroupPage({
         </div>
       )}
 
-      {/* Accounts List */}
+      {/* Search and Accounts List */}
+      {group.accounts.length > 0 && (
+        <div className="relative max-w-md">
+          <input
+            type="text"
+            placeholder="Search accounts in this group..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="w-full bg-white/5 border border-white/10 rounded-xl pl-10 pr-4 py-2.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-purple-500 transition-colors"
+          />
+          <Search className="w-4 h-4 text-gray-500 absolute left-3.5 top-1/2 -translate-y-1/2" />
+          {searchQuery && (
+            <button
+              onClick={() => setSearchQuery("")}
+              className="text-gray-500 hover:text-white absolute right-3.5 top-1/2 -translate-y-1/2 text-xs font-bold font-mono"
+            >
+              ×
+            </button>
+          )}
+        </div>
+      )}
+
       {group.accounts.length === 0 ? (
         <div className="glass border border-white/5 rounded-2xl p-12 text-center">
           <Plus className="w-12 h-12 text-gray-600 mx-auto mb-4" />
@@ -361,7 +397,12 @@ export default function GroupPage({
         </div>
       ) : (
         <div className="space-y-3">
-          {group.accounts.map((acc) => (
+          {filteredAccounts.length === 0 ? (
+            <div className="glass border border-white/5 rounded-2xl p-8 text-center text-gray-500 text-sm">
+              No matching accounts found for "{searchQuery}"
+            </div>
+          ) : (
+            filteredAccounts.map((acc) => (
             <div
               key={acc.id}
               className="glass border border-white/5 rounded-2xl overflow-hidden hover:border-white/10 transition-all"
@@ -534,7 +575,7 @@ export default function GroupPage({
                 )}
               </div>
             </div>
-          ))}
+          )))}
         </div>
       )}
     </div>

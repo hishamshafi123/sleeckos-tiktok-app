@@ -1,5 +1,5 @@
 "use client";
-import { useState, useEffect, useCallback, use } from "react";
+import { useState, useEffect, useCallback, use, useMemo } from "react";
 import Link from "next/link";
 import { toast } from "sonner";
 import {
@@ -14,6 +14,7 @@ import {
   Save,
   ToggleLeft,
   ToggleRight,
+  Search,
 } from "lucide-react";
 
 type Account = {
@@ -83,6 +84,32 @@ export default function SectionPage({
   // Group-level description editing
   const [editingGroupDesc, setEditingGroupDesc] = useState<string | null>(null);
   const [groupDescValue, setGroupDescValue] = useState("");
+
+  // Search accounts & groups state
+  const [searchQuery, setSearchQuery] = useState("");
+
+  const filteredGroups = useMemo(() => {
+    if (!section) return [];
+    if (!searchQuery.trim()) return section.groups;
+    const query = searchQuery.toLowerCase().trim();
+    return section.groups.map(group => {
+      // Filter accounts matching search
+      const matchingAccounts = group.accounts.filter(
+        acc =>
+          acc.tiktokUsername.toLowerCase().includes(query) ||
+          acc.tiktokDisplayName.toLowerCase().includes(query)
+      );
+      // Group matches if its name matches OR it has matching accounts
+      const groupMatches = group.name.toLowerCase().includes(query);
+      if (groupMatches || matchingAccounts.length > 0) {
+        return {
+          ...group,
+          accounts: matchingAccounts.length > 0 ? matchingAccounts : group.accounts
+        };
+      }
+      return null;
+    }).filter((g): g is NonNullable<typeof g> => g !== null);
+  }, [section, searchQuery]);
 
   const fetchSection = useCallback(async () => {
     try {
@@ -486,7 +513,28 @@ export default function SectionPage({
         </div>
       )}
 
-      {/* Groups List */}
+      {/* Search and Groups List */}
+      {section.groups.length > 0 && (
+        <div className="relative max-w-md">
+          <input
+            type="text"
+            placeholder="Search accounts or groups in this section..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="w-full bg-white/5 border border-white/10 rounded-xl pl-10 pr-4 py-2.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-purple-500 transition-colors"
+          />
+          <Search className="w-4 h-4 text-gray-500 absolute left-3.5 top-1/2 -translate-y-1/2" />
+          {searchQuery && (
+            <button
+              onClick={() => setSearchQuery("")}
+              className="text-gray-500 hover:text-white absolute right-3.5 top-1/2 -translate-y-1/2 text-xs font-bold font-mono"
+            >
+              ×
+            </button>
+          )}
+        </div>
+      )}
+
       {section.groups.length === 0 && !showCreateGroup ? (
         <div className="glass border border-white/5 rounded-2xl p-12 text-center">
           <Users className="w-12 h-12 text-gray-600 mx-auto mb-4" />
@@ -506,7 +554,12 @@ export default function SectionPage({
         </div>
       ) : (
         <div className="space-y-4">
-          {section.groups.map((group) => (
+          {filteredGroups.length === 0 ? (
+            <div className="glass border border-white/5 rounded-2xl p-8 text-center text-gray-500 text-sm">
+              No matching accounts or groups found for "{searchQuery}"
+            </div>
+          ) : (
+            filteredGroups.map((group) => (
             <div
               key={group.id}
               className={`glass border border-white/5 rounded-2xl overflow-hidden hover:border-white/10 transition-all ${
@@ -664,7 +717,7 @@ export default function SectionPage({
                 )}
               </div>
             </div>
-          ))}
+          )))}
         </div>
       )}
     </div>

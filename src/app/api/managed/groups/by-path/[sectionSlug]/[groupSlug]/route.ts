@@ -58,6 +58,13 @@ export async function GET(
     };
   });
 
+  // Sort naturally by driveFolderName
+  sanitizedAccounts.sort((a: any, b: any) => {
+    const nameA = a.driveFolderName || "";
+    const nameB = b.driveFolderName || "";
+    return nameA.localeCompare(nameB, undefined, { numeric: true, sensitivity: 'base' });
+  });
+
   return NextResponse.json({
     ...group,
     accounts: sanitizedAccounts,
