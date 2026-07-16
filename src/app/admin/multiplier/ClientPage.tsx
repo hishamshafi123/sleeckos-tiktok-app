@@ -178,6 +178,12 @@ export default function ClientPage({ session }: ClientPageProps = {}) {
       if (groupRes.ok) {
         const data = await groupRes.json();
         setGroups(data);
+        // Sync selectedGroup with the new data
+        setSelectedGroup((prev) => {
+          if (!prev) return null;
+          const updated = data.find((g: any) => g.id === prev.id);
+          return updated || prev;
+        });
       }
     } catch (err) {
       console.error("Error loading groups:", err);
@@ -2155,17 +2161,28 @@ export default function ClientPage({ session }: ClientPageProps = {}) {
                                 </div>
                               </div>
 
-                              {driveConnected && (
+                              {driveConnected && (() => {
+                                const settingsObj: any = typeof group.settings === "string" 
+                                  ? JSON.parse(group.settings) 
+                                  : (group.settings || {});
+                                const effectiveFolderId = out.driveFolderId || settingsObj.driveFolderId;
+                                const effectiveFolderName = out.driveFolderId ? out.driveFolderName : settingsObj.driveFolderName;
+                                const effectiveEmail = out.driveFolderId ? out.googleEmail : settingsObj.googleEmail;
+                                return (
                                   <div className="mt-1 flex flex-col gap-1 border-t border-[#27272a]/40 pt-2 text-[10px] text-[#71717a]">
                                     <div className="flex items-center justify-between gap-2">
                                       <span className="truncate flex items-center gap-1.5 font-medium max-w-[70%]">
                                         <FolderOpen className="w-3.5 h-3.5 text-rose-500/80 flex-shrink-0" />
                                         {out.driveFolderId ? (
-                                          <span className="truncate text-rose-400 font-semibold" title={out.driveFolderName || "Override folder"}>
-                                            {out.driveFolderName || "Override folder"}
+                                          <span className="truncate text-rose-400 font-semibold" title={`Override Folder: ${effectiveFolderName}`}>
+                                            Override: {effectiveFolderName}
+                                          </span>
+                                        ) : settingsObj.driveFolderId ? (
+                                          <span className="truncate text-rose-500/60 font-semibold" title={`Group Default: ${effectiveFolderName}`}>
+                                            Default: {effectiveFolderName}
                                           </span>
                                         ) : (
-                                          <span>No Override Folder</span>
+                                          <span>No Folder Linked</span>
                                         )}
                                       </span>
                                       <button
@@ -2183,14 +2200,15 @@ export default function ClientPage({ session }: ClientPageProps = {}) {
                                         {out.driveFolderId ? "Change" : "Select Folder"}
                                       </button>
                                     </div>
-                                    {out.driveFolderId && (
+                                    {effectiveFolderId && (
                                       <div className="text-[9px] text-[#a1a1aa] flex items-center gap-1.5 pl-5">
                                         <span className="w-1 h-1 rounded-full bg-rose-500"></span>
-                                        <span>Account: {out.googleEmail || "Global / Shared"}</span>
+                                        <span>Account: {effectiveEmail || "Global / Shared"}</span>
                                       </div>
                                     )}
                                   </div>
-                              )}
+                                );
+                              })()}
 
                               {out.errorMessage && (
                                 <p className="text-[10px] text-red-500 bg-red-500/5 p-1.5 rounded break-words max-h-16 overflow-y-auto">
