@@ -90,6 +90,12 @@ export async function GET(req: NextRequest) {
         continue;
       }
 
+      // Check account health
+      if (account.connectionState !== "healthy") {
+        results[accountKey] = `skipped_unhealthy_${account.connectionState}`;
+        continue;
+      }
+
       // Check section and group active status (hierarchical toggle)
       if (!account.group.section.isActive) {
         results[accountKey] = "skipped_section_disabled";

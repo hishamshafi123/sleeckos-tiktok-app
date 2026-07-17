@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/db";
 import { getSession } from "@/lib/session";
 import { can } from "@/lib/services/permissions";
+import { validatePostPeerAccount } from "@/lib/services/accounts";
 
 // POST /api/managed/accounts/add-manual — add account without TikTok OAuth
 export async function POST(req: NextRequest) {
@@ -26,6 +27,17 @@ export async function POST(req: NextRequest) {
       { error: "Group ID and TikTok username are required." },
       { status: 400 }
     );
+  }
+
+  // Validate PostPeer Account ID on connect-time
+  if (postpeerAccountId && postpeerAccountId.trim() !== "") {
+    const isValid = await validatePostPeerAccount(postpeerAccountId);
+    if (!isValid) {
+      return NextResponse.json(
+        { error: `PostPeer Account ID "${postpeerAccountId}" could not be verified against PostPeer. Please check the ID and try again.` },
+        { status: 400 }
+      );
+    }
   }
 
   // Verify group exists

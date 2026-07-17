@@ -2,6 +2,7 @@ export const dynamic = "force-dynamic";
 import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import prisma from "@/lib/db";
+import { safeEncrypt } from "@/lib/services/accounts";
 
 export async function GET(request: Request) {
   const url = new URL(request.url);
@@ -100,8 +101,8 @@ export async function GET(request: Request) {
         tiktokUsername: username,
         tiktokDisplayName: tiktokUser.display_name || "Unknown",
         tiktokAvatarUrl: tiktokUser.avatar_url || "",
-        tiktokAccessToken: tokenData.access_token,
-        tiktokRefreshToken: tokenData.refresh_token || "",
+        tiktokAccessToken: safeEncrypt(tokenData.access_token),
+        tiktokRefreshToken: safeEncrypt(tokenData.refresh_token || ""),
         tokenExpiresAt: new Date(
           Date.now() + (tokenData.expires_in ?? 86400) * 1000
         ),
@@ -123,8 +124,8 @@ export async function GET(request: Request) {
         tiktokUsername: username,
         tiktokDisplayName: tiktokUser.display_name || "Unknown",
         tiktokAvatarUrl: tiktokUser.avatar_url || "",
-        tiktokAccessToken: tokenData.access_token,
-        tiktokRefreshToken: tokenData.refresh_token || "",
+        tiktokAccessToken: safeEncrypt(tokenData.access_token),
+        tiktokRefreshToken: safeEncrypt(tokenData.refresh_token || ""),
         tokenExpiresAt: new Date(
           Date.now() + (tokenData.expires_in ?? 86400) * 1000
         ),

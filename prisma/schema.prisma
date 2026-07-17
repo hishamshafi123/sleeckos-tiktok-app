@@ -243,6 +243,11 @@ model ManagedAccount {
   // Caption source: FILENAME | TXT_FILE | DEFAULT
   captionSource         String       @default("FILENAME")
 
+  // Health and Token status tracking
+  connectionState       String       @default("healthy") // healthy | needs_reauth | not_found | checking
+  lastCheckedAt         DateTime?
+  lastError             String?
+
   connectedAt           DateTime     @default(now())
   revokedAt             DateTime?
   createdAt             DateTime     @default(now())

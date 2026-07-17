@@ -140,6 +140,32 @@ export async function uploadAndPublish(jobId: string, captionOverride?: string) 
   if (!job) throw new Error("Job not found");
   if (job.state !== "CLAIMED") throw new Error(`Cannot post job in state ${job.state}`);
 
+  // Health assertion check
+  if (job.account.connectionState !== "healthy") {
+    const errorMsg = `Account connection state is unhealthy (${job.account.connectionState}). Error: ${job.account.lastError || "Needs re-authentication."}`;
+    console.warn(`[Posting Pipeline] ${errorMsg}`);
+
+    await prisma.postJob.update({
+      where: { id: jobId },
+      data: {
+        state: "FAILED",
+        failureReason: errorMsg,
+        lockedAt: null,
+        lockedBy: null,
+      },
+    });
+
+    await prisma.scheduledPost.updateMany({
+      where: { driveFileId: job.driveFileId, accountId: job.accountId },
+      data: {
+        status: "FAILED",
+        errorMessage: errorMsg,
+      },
+    });
+
+    throw new Error(errorMsg);
+  }
+
   // Transition state to UPLOADING
   await prisma.postJob.update({
     where: { id: jobId },

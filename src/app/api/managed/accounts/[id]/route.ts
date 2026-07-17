@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/db";
 import { getSession } from "@/lib/session";
 import { can } from "@/lib/services/permissions";
+import { validatePostPeerAccount } from "@/lib/services/accounts";
 
 // PATCH /api/managed/accounts/[id] — update account settings
 export async function PATCH(
@@ -29,7 +30,21 @@ export async function PATCH(
   if (body.postDays !== undefined) data.postDays = body.postDays;
   if (body.postMode !== undefined) data.postMode = body.postMode;
   if (body.postTimeSlots !== undefined) data.postTimeSlots = body.postTimeSlots;
-  if (body.postpeerAccountId !== undefined) data.postpeerAccountId = body.postpeerAccountId;
+  
+  if (body.postpeerAccountId !== undefined) {
+    if (body.postpeerAccountId && body.postpeerAccountId.trim() !== "") {
+      const isValid = await validatePostPeerAccount(body.postpeerAccountId);
+      if (!isValid) {
+        return NextResponse.json(
+          { error: `PostPeer Account ID "${body.postpeerAccountId}" could not be verified against PostPeer. Please check the ID and try again.` },
+          { status: 400 }
+        );
+      }
+    }
+    data.postpeerAccountId = body.postpeerAccountId?.trim() || null;
+    data.connectionState = body.postpeerAccountId?.trim() ? "healthy" : "needs_reauth";
+  }
+  
   if (body.isActive !== undefined) data.isActive = body.isActive;
 
   // Caption settings

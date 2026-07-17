@@ -16,6 +16,7 @@ import {
   Settings,
   ExternalLink,
   AlertCircle,
+  CheckCircle2,
   Zap,
   Pencil,
   Search,
@@ -48,6 +49,9 @@ type Account = {
   tokenExpiresAt: string;
   _count: { scheduledPosts: number };
   googleOAuthConnected?: boolean;
+  connectionState?: string;
+  lastCheckedAt?: string | null;
+  lastError?: string | null;
 };
 
 type Group = {
@@ -431,11 +435,61 @@ export default function GroupPage({
                         {acc.isVerified && (
                           <span className="text-blue-400 text-xs">✓</span>
                         )}
-                        {isTokenExpired(acc.tokenExpiresAt) && (
-                          <span className="flex items-center gap-1 text-xs text-red-400 bg-red-400/10 px-2 py-0.5 rounded-full">
-                            <AlertCircle className="w-3 h-3" />
-                            Token expired
+                        {acc.connectionState === "needs_reauth" && (
+                          <div className="flex items-center gap-1.5">
+                            <span className="flex items-center gap-1 text-[10px] text-red-400 bg-red-400/10 px-2 py-0.5 rounded-full">
+                              <AlertCircle className="w-3.5 h-3.5" />
+                              Needs Re-auth
+                            </span>
+                            <a
+                              href={`/api/managed/tiktok/auth?groupId=${group.id}`}
+                              className="text-[10px] text-purple-400 hover:text-purple-300 bg-purple-500/10 border border-purple-500/20 px-2 py-0.5 rounded-full transition-all font-semibold"
+                              title="Reconnect this TikTok account"
+                            >
+                              Reconnect
+                            </a>
+                          </div>
+                        )}
+                        {acc.connectionState === "not_found" && (
+                          <div className="flex items-center gap-1.5">
+                            <span className="flex items-center gap-1 text-[10px] text-red-400 bg-red-400/10 px-2 py-0.5 rounded-full" title={acc.lastError || ""}>
+                              <AlertCircle className="w-3.5 h-3.5" />
+                              Not Found
+                            </span>
+                            <button
+                              onClick={() => startEdit(acc)}
+                              className="text-[10px] text-amber-400 hover:text-amber-300 bg-amber-500/10 border border-amber-500/20 px-2 py-0.5 rounded-full transition-all font-semibold"
+                              title="Open Settings to update PostPeer ID"
+                            >
+                              Fix ID
+                            </button>
+                          </div>
+                        )}
+                        {acc.connectionState === "checking" && (
+                          <span className="flex items-center gap-1 text-[10px] text-amber-400 bg-amber-400/10 px-2 py-0.5 rounded-full animate-pulse">
+                            <Loader2 className="w-3 h-3 animate-spin" />
+                            Checking...
                           </span>
+                        )}
+                        {(acc.connectionState === "healthy" || (!acc.connectionState && !isTokenExpired(acc.tokenExpiresAt))) && (
+                          <span className="flex items-center gap-1 text-[10px] text-green-400 bg-green-400/10 px-2 py-0.5 rounded-full">
+                            <CheckCircle2 className="w-3.5 h-3.5" />
+                            Healthy
+                          </span>
+                        )}
+                        {!acc.connectionState && isTokenExpired(acc.tokenExpiresAt) && (
+                          <div className="flex items-center gap-1.5">
+                            <span className="flex items-center gap-1 text-[10px] text-red-400 bg-red-400/10 px-2 py-0.5 rounded-full">
+                              <AlertCircle className="w-3.5 h-3.5" />
+                              Token expired
+                            </span>
+                            <a
+                              href={`/api/managed/tiktok/auth?groupId=${group.id}`}
+                              className="text-[10px] text-purple-400 hover:text-purple-300 bg-purple-500/10 border border-purple-500/20 px-2 py-0.5 rounded-full transition-all font-semibold"
+                            >
+                              Reconnect
+                            </a>
+                          </div>
                         )}
                       </div>
                       <p className="text-sm text-gray-500">
