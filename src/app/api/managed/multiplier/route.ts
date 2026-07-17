@@ -6,6 +6,7 @@ import { can } from "@/lib/services/permissions";
 import { createGroup } from "@/lib/services/multiplier";
 import fs from "fs";
 import path from "path";
+import { deleteFromR2 } from "@/lib/services/storage";
 
 // GET /api/managed/multiplier — List all multiplier groups (and transform/merge legacy batches)
 export async function GET() {
@@ -159,7 +160,7 @@ export async function POST(req: NextRequest) {
   }
 }
 
-// DELETE /api/managed/multiplier?groupId=... — Delete a group/batch and its files
+// DELETE /api/managed/multiplier?groupId=...&outputId=...&outputIds=... — Delete group/batch/output(s)
 export async function DELETE(req: NextRequest) {
   const session = await getSession();
   if (!session) {
@@ -171,9 +172,50 @@ export async function DELETE(req: NextRequest) {
 
   const { searchParams } = new URL(req.url);
   const groupId = searchParams.get("groupId");
+  const outputId = searchParams.get("outputId");
+  const outputIds = searchParams.get("outputIds");
 
+  // ── Individual output(s) deletion ──────────────────────────────────────
+  if (outputId || outputIds) {
+    try {
+      const ids = outputId ? [outputId] : (outputIds || "").split(",").filter(Boolean);
+      if (ids.length === 0) {
+        return NextResponse.json({ error: "No output IDs provided" }, { status: 400 });
+      }
+
+      const publicDir = path.join(process.cwd(), "public");
+      const outputs = await prisma.multiplierOutput.findMany({
+        where: { id: { in: ids } },
+      });
+
+      for (const out of outputs) {
+        // Delete local file
+        if (out.outputRef) {
+          const localPath = path.join(publicDir, out.outputRef);
+          if (fs.existsSync(localPath)) {
+            try { fs.unlinkSync(localPath); } catch {}
+          }
+          // Delete from R2
+          const r2Key = `uploads/multiplier/renders/multi_${out.id}.mp4`;
+          await deleteFromR2(r2Key).catch(() => {});
+        }
+      }
+
+      // Delete DB records
+      await prisma.multiplierOutput.deleteMany({
+        where: { id: { in: ids } },
+      });
+
+      return NextResponse.json({ success: true, deleted: ids.length });
+    } catch (err: any) {
+      console.error("[Multiplier Output DELETE] Error:", err);
+      return NextResponse.json({ error: err.message || "Failed to delete output(s)" }, { status: 500 });
+    }
+  }
+
+  // ── Group/batch deletion ───────────────────────────────────────────────
   if (!groupId) {
-    return NextResponse.json({ error: "Missing groupId" }, { status: 400 });
+    return NextResponse.json({ error: "Missing groupId or outputId" }, { status: 400 });
   }
 
   try {

@@ -796,6 +796,7 @@ model MultiplierOutput {
   driveFolderName String?
   googleEmail     String?
   errorMessage  String?
+  exportedAt    DateTime?                 // set when included in a Smart Download archive
   createdAt     DateTime                  @default(now())
   updatedAt     DateTime                  @updatedAt
 }

@@ -24,7 +24,11 @@ import {
   ChevronUp,
   FolderOpen,
   Search,
-  Download
+  Download,
+  Eye,
+  Trash2,
+  CheckSquare,
+  Square
 } from "lucide-react";
 
 interface Campaign {
@@ -58,6 +62,7 @@ interface MultiplierOutput {
   driveFolderName: string | null;
   googleEmail: string | null;
   errorMessage: string | null;
+  exportedAt: string | null;
   variation: { videoRef: string };
   hook: { text: string };
 }
@@ -158,6 +163,19 @@ export default function ClientPage({ session }: ClientPageProps = {}) {
   const [downloads, setDownloads] = useState<Record<string, { progress: number; message: string }>>({});
   const [exportingGroups, setExportingGroups] = useState<Set<string>>(new Set());
   const [previewVideoUrl, setPreviewVideoUrl] = useState<string | null>(null);
+
+  // Multi-select + Smart Download state
+  const [selectedGroupIds, setSelectedGroupIds] = useState<Set<string>>(new Set());
+  const [showSmartDownload, setShowSmartDownload] = useState(false);
+  const [smartDownloading, setSmartDownloading] = useState(false);
+  const [smartDownloadProgress, setSmartDownloadProgress] = useState("");
+  const [smartAccounts, setSmartAccounts] = useState(5);
+  const [smartVidsPerAccount, setSmartVidsPerAccount] = useState(3);
+  const [includeExported, setIncludeExported] = useState(false);
+
+  // Per-video delete state
+  const [deletingOutputs, setDeletingOutputs] = useState<Set<string>>(new Set());
+  const [previewLoading, setPreviewLoading] = useState(false);
 
   // Fetch initial data
   const fetchData = async () => {
@@ -1068,6 +1086,140 @@ export default function ClientPage({ session }: ClientPageProps = {}) {
     }
   };
 
+  // ── Multi-select toggle ─────────────────────────────────────────────────
+  const toggleGroupSelection = (groupId: string) => {
+    setSelectedGroupIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(groupId)) {
+        next.delete(groupId);
+      } else {
+        next.add(groupId);
+      }
+      return next;
+    });
+  };
+
+  const toggleSelectAll = () => {
+    const selectableGroups = groups.filter((g) => {
+      const total = g.outputs.length;
+      return total > 0 || g.status === "RENDERING" || g.transcriptStatus === "TRANSCRIBING";
+    });
+    if (selectedGroupIds.size === selectableGroups.length) {
+      setSelectedGroupIds(new Set());
+    } else {
+      setSelectedGroupIds(new Set(selectableGroups.map((g) => g.id)));
+    }
+  };
+
+  // ── Smart Download (cross-group shuffled archive) ───────────────────────
+  const handleSmartDownload = async () => {
+    if (selectedGroupIds.size === 0) return;
+
+    setSmartDownloading(true);
+    setSmartDownloadProgress("Building archive...");
+
+    try {
+      const res = await fetch("/api/managed/multiplier/smart-download", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          groupIds: Array.from(selectedGroupIds),
+          accountCount: smartAccounts,
+          videosPerAccount: smartVidsPerAccount,
+          includeExported,
+        }),
+      });
+
+      const text = await res.text();
+      let data: any;
+      try {
+        data = JSON.parse(text);
+      } catch (e) {
+        if (text.trim().startsWith("<")) {
+          const titleMatch = text.match(/<title>(.*?)<\/title>/i);
+          const title = titleMatch ? titleMatch[1] : "HTML Error Page";
+          throw new Error(`Server error (${res.status}): ${title}`);
+        }
+        throw new Error(`Server returned invalid response: ${text.substring(0, 100)}`);
+      }
+
+      if (!res.ok) {
+        throw new Error(data.error || "Failed to create archive");
+      }
+
+      if (data.status === "COMPLETED" && data.downloadUrl) {
+        setSmartDownloadProgress("Starting browser download...");
+        const fileUrl = `/api${data.downloadUrl}`;
+        const link = document.createElement("a");
+        link.href = fileUrl;
+        link.download = data.downloadUrl.split("/").pop() || "smart_multiplier_download.tar";
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+
+        toast.success(`Smart Download started! (${data.message || "Archive compiled successfully!"})`);
+        await new Promise((resolve) => setTimeout(resolve, 3000));
+      } else {
+        throw new Error("Archive creation failed — no download URL returned");
+      }
+    } catch (err: any) {
+      toast.error(err.message || "Smart download failed");
+    } finally {
+      setSmartDownloading(false);
+      setSmartDownloadProgress("");
+      setShowSmartDownload(false);
+      setIncludeExported(false);
+      await fetchData(); // Refresh to show exportedAt badges
+    }
+  };
+
+  // ── Preview Output ──────────────────────────────────────────────────────
+  const handlePreviewOutput = async (outputId: string) => {
+    setPreviewLoading(true);
+    try {
+      const res = await fetch(`/api/managed/multiplier/preview?outputId=${outputId}`);
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || "Failed to fetch preview");
+      }
+      const data = await res.json();
+      setPreviewVideoUrl(data.url);
+    } catch (err: any) {
+      toast.error(err.message || "Video unavailable");
+    } finally {
+      setPreviewLoading(false);
+    }
+  };
+
+  // ── Delete Output ───────────────────────────────────────────────────────
+  const handleDeleteOutput = async (outputId: string, status: string) => {
+    const label = status === "PENDING" || status === "RENDERING" ? "cancel" : "delete";
+    if (!confirm(`Are you sure you want to ${label} this video output?`)) return;
+
+    setDeletingOutputs((prev) => new Set([...prev, outputId]));
+    try {
+      const res = await fetch(`/api/managed/multiplier?outputId=${outputId}`, {
+        method: "DELETE",
+      });
+
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || "Failed to delete output");
+      }
+
+      toast.success("Output deleted successfully.");
+      await fetchData();
+    } catch (err: any) {
+      toast.error(err.message || "Failed to delete output");
+    } finally {
+      setDeletingOutputs((prev) => {
+        const next = new Set(prev);
+        next.delete(outputId);
+        return next;
+      });
+    }
+  };
+
   // Live output computation
   const getEstimatedOutputs = () => {
     if (!selectedGroup) return 0;
@@ -1933,6 +2085,19 @@ export default function ClientPage({ session }: ClientPageProps = {}) {
             <div className="flex items-center gap-2">
               {groups.length > 0 && (
                 <button
+                  onClick={toggleSelectAll}
+                  className={`px-3 py-2 border rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all ${
+                    selectedGroupIds.size > 0
+                      ? "bg-[#E11D48]/10 text-[#E11D48] border-[#E11D48]/20 hover:bg-[#E11D48]/20"
+                      : "bg-[#18181b] text-[#a1a1aa] border-[#27272a] hover:bg-[#27272a]"
+                  }`}
+                >
+                  {selectedGroupIds.size > 0 ? <CheckSquare className="w-4 h-4" /> : <Square className="w-4 h-4" />}
+                  {selectedGroupIds.size > 0 ? `Clear (${selectedGroupIds.size})` : "Select All"}
+                </button>
+              )}
+              {groups.length > 0 && (
+                <button
                   onClick={handleDeleteAllGroups}
                   className="px-3 py-2 bg-red-500/10 hover:bg-red-500/20 text-red-500 border border-red-500/20 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all"
                 >
@@ -1974,16 +2139,28 @@ export default function ClientPage({ session }: ClientPageProps = {}) {
                   <div key={group.id} className="bg-[#18181b] rounded-xl border border-[#27272a] p-6 space-y-4">
                     {/* Header */}
                     <div className="flex justify-between items-start gap-4">
-                      <div>
-                        <h3 className="font-extrabold text-lg flex items-center gap-2">
-                          {group.name}
-                          <span className="text-xs text-[#a1a1aa] font-medium bg-[#27272a] px-2.5 py-0.5 rounded-full border border-[#27272a]">
-                            Campaign: {group.campaign?.title || "None"}
-                          </span>
-                        </h3>
-                        <p className="text-xs text-[#71717a] mt-1">
-                          Mode: {group.mappingMode === "each" ? "Multiply" : "Distribute"} | Preset: {group.styleId}
-                        </p>
+                      <div className="flex items-start gap-3">
+                        <button
+                          onClick={() => toggleGroupSelection(group.id)}
+                          className="mt-1 text-[#71717a] hover:text-[#fafafa] transition-colors cursor-pointer"
+                        >
+                          {selectedGroupIds.has(group.id) ? (
+                            <CheckSquare className="w-5 h-5 text-[#E11D48]" />
+                          ) : (
+                            <Square className="w-5 h-5" />
+                          )}
+                        </button>
+                        <div>
+                          <h3 className="font-extrabold text-lg flex items-center gap-2">
+                            {group.name}
+                            <span className="text-xs text-[#a1a1aa] font-medium bg-[#27272a] px-2.5 py-0.5 rounded-full border border-[#27272a]">
+                              Campaign: {group.campaign?.title || "None"}
+                            </span>
+                          </h3>
+                          <p className="text-xs text-[#71717a] mt-1">
+                            Mode: {group.mappingMode === "each" ? "Multiply" : "Distribute"} | Preset: {group.styleId}
+                          </p>
+                        </div>
                       </div>
 
                       <div className="flex items-center gap-3">
@@ -2114,50 +2291,84 @@ export default function ClientPage({ session }: ClientPageProps = {}) {
                               </div>
 
                               <div className="flex justify-between items-center">
-                                <span
-                                  className={`px-2 py-0.5 rounded text-[10px] uppercase font-extrabold ${
-                                    out.status === "COMPLETED"
-                                      ? "bg-green-500/10 text-green-500"
-                                      : out.status === "FAILED"
-                                      ? "bg-red-500/10 text-red-500"
-                                      : "bg-amber-500/10 text-amber-500 animate-pulse"
-                                  }`}
-                                >
-                                  {out.status}
-                                </span>
+                                <div className="flex items-center gap-1.5">
+                                  <span
+                                    className={`px-2 py-0.5 rounded text-[10px] uppercase font-extrabold ${
+                                      out.status === "COMPLETED"
+                                        ? "bg-green-500/10 text-green-500"
+                                        : out.status === "FAILED"
+                                        ? "bg-red-500/10 text-red-500"
+                                        : "bg-amber-500/10 text-amber-500 animate-pulse"
+                                    }`}
+                                  >
+                                    {out.status}
+                                  </span>
+                                  {out.exportedAt && (
+                                    <span className="px-2 py-0.5 rounded text-[10px] bg-blue-500/10 text-blue-400 font-bold border border-blue-500/20" title={`Exported at ${new Date(out.exportedAt).toLocaleString()}`}>
+                                      Exported ✓
+                                    </span>
+                                  )}
+                                </div>
 
-                                <div className="flex gap-2">
+                                <div className="flex items-center gap-1.5">
                                   {out.status === "FAILED" && (
                                     <button
                                       onClick={() => handleRetryOutput(group, out.id)}
-                                      className="px-2.5 py-1 bg-zinc-800 hover:bg-zinc-700 text-[#fafafa] font-semibold rounded text-[10px] transition-all"
+                                      className="px-2 py-1 bg-zinc-800 hover:bg-zinc-700 text-[#fafafa] font-semibold rounded text-[10px] transition-all cursor-pointer"
                                     >
                                       Retry
+                                    </button>
+                                  )}
+                                  {out.status === "COMPLETED" && (
+                                    <button
+                                      onClick={() => handlePreviewOutput(out.id)}
+                                      disabled={previewLoading}
+                                      className="p-1 bg-zinc-800 hover:bg-zinc-700 text-white rounded transition-all flex items-center justify-center cursor-pointer disabled:opacity-50"
+                                      title="Preview Video"
+                                    >
+                                      {previewLoading ? (
+                                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                      ) : (
+                                        <Eye className="w-3.5 h-3.5" />
+                                      )}
                                     </button>
                                   )}
                                   {driveConnected && out.status === "COMPLETED" && out.outputRef && (
                                     <button
                                       onClick={() => handleSyncToDrive(group, out.id)}
                                       disabled={syncingOutputs.has(out.id)}
-                                      className="px-2.5 py-1 bg-zinc-800 hover:bg-zinc-700 text-[#fafafa] font-semibold rounded text-[10px] transition-all flex items-center gap-1 disabled:opacity-50"
+                                      className="p-1 bg-zinc-800 hover:bg-zinc-700 text-[#fafafa] rounded transition-all flex items-center justify-center cursor-pointer disabled:opacity-50"
+                                      title="Sync to Drive"
                                     >
                                       {syncingOutputs.has(out.id) ? (
-                                        <Loader2 className="w-3 h-3 animate-spin" />
+                                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
                                       ) : (
-                                        <FolderOpen className="w-3 h-3 text-rose-500" />
+                                        <FolderOpen className="w-3.5 h-3.5 text-rose-500" />
                                       )}
-                                      {syncingOutputs.has(out.id) ? "Syncing..." : "Sync Drive"}
                                     </button>
                                   )}
                                   {out.status === "COMPLETED" && out.outputRef && (
                                     <a
                                       href={out.outputRef}
                                       download
-                                      className="px-2.5 py-1 bg-[#E11D48] hover:bg-rose-700 text-white font-semibold rounded text-[10px] transition-all flex items-center gap-1"
+                                      className="p-1 bg-[#E11D48] hover:bg-rose-700 text-white rounded transition-all flex items-center justify-center cursor-pointer"
+                                      title="Download Video"
                                     >
-                                      Download <ExternalLink className="w-3 h-3" />
+                                      <Download className="w-3.5 h-3.5" />
                                     </a>
                                   )}
+                                  <button
+                                    onClick={() => handleDeleteOutput(out.id, out.status)}
+                                    disabled={deletingOutputs.has(out.id)}
+                                    className="p-1 bg-zinc-900/50 hover:bg-red-500/10 text-[#71717a] hover:text-red-500 border border-[#27272a] rounded transition-all flex items-center justify-center cursor-pointer disabled:opacity-50"
+                                    title="Delete/Cancel Video"
+                                  >
+                                    {deletingOutputs.has(out.id) ? (
+                                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                    ) : (
+                                      <Trash2 className="w-3.5 h-3.5" />
+                                    )}
+                                  </button>
                                 </div>
                               </div>
 
@@ -2461,6 +2672,153 @@ export default function ClientPage({ session }: ClientPageProps = {}) {
           </div>
         </div>
       )}
+
+      {/* Floating Smart Download Action Bar */}
+      {selectedGroupIds.size > 0 && (() => {
+        let total = 0;
+        groups.forEach((g) => {
+          if (selectedGroupIds.has(g.id)) {
+            g.outputs.forEach((out) => {
+              if (out.status === "COMPLETED") total++;
+            });
+          }
+        });
+        return (
+          <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 bg-[#18181b]/95 border border-[#E11D48]/30 rounded-full px-6 py-3 shadow-2xl backdrop-blur-md flex items-center gap-4 animate-in fade-in slide-in-from-bottom-4 duration-300">
+            <span className="text-xs text-[#e4e4e7] font-semibold">
+              {selectedGroupIds.size} group{selectedGroupIds.size > 1 ? "s" : ""} selected ({total} ready)
+            </span>
+            <div className="w-[1px] h-4 bg-[#27272a]"></div>
+            <button
+              onClick={() => {
+                if (total === 0) {
+                  toast.error("No completed videos in the selected groups!");
+                  return;
+                }
+                setShowSmartDownload(true);
+              }}
+              className="px-4 py-1.5 bg-[#E11D48] hover:bg-rose-700 text-white text-xs font-bold rounded-full flex items-center gap-1.5 transition-all shadow-md cursor-pointer"
+            >
+              <FolderOpen className="w-3.5 h-3.5" /> Smart Download
+            </button>
+            <button
+              onClick={() => setSelectedGroupIds(new Set())}
+              className="text-[10px] text-[#71717a] hover:text-[#fafafa] transition-colors font-medium underline cursor-pointer"
+            >
+              Clear Selection
+            </button>
+          </div>
+        );
+      })()}
+
+      {/* Smart Download Modal */}
+      {showSmartDownload && (() => {
+        let total = 0;
+        let unexported = 0;
+        groups.forEach((g) => {
+          if (selectedGroupIds.has(g.id)) {
+            g.outputs.forEach((out) => {
+              if (out.status === "COMPLETED") {
+                total++;
+                if (!out.exportedAt) unexported++;
+              }
+            });
+          }
+        });
+        const availableCount = includeExported ? total : unexported;
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm">
+            <div
+              className="bg-[#18181b] rounded-2xl border border-[#27272a] p-6 max-w-sm w-full mx-4 shadow-2xl space-y-4"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between">
+                <h3 className="text-[#fafafa] text-sm font-semibold flex items-center gap-2">
+                  <FolderOpen className="w-4 h-4 text-[#E11D48]" /> Smart Folderized Download
+                </h3>
+                <button
+                  onClick={() => {
+                    setShowSmartDownload(false);
+                    setIncludeExported(false);
+                  }}
+                  className="text-[#71717a] hover:text-[#fafafa] transition-all cursor-pointer"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <p className="text-[#71717a] text-xs leading-relaxed">
+                Randomly shuffles and distributes completed videos from the selected {selectedGroupIds.size} groups into account folders inside a single archive.
+              </p>
+
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs text-[#a1a1aa] font-semibold">Accounts (folders)</label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={50}
+                    value={smartAccounts}
+                    onChange={(e) => setSmartAccounts(Math.max(1, parseInt(e.target.value) || 1))}
+                    className="w-16 bg-[#09090b] border border-[#27272a] rounded-lg px-2 py-1.5 text-white text-xs text-center focus:outline-none focus:border-[#E11D48]"
+                  />
+                </div>
+                <div className="flex items-center justify-between">
+                  <label className="text-xs text-[#a1a1aa] font-semibold">Videos per account</label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={100}
+                    value={smartVidsPerAccount}
+                    onChange={(e) => setSmartVidsPerAccount(Math.max(1, parseInt(e.target.value) || 1))}
+                    className="w-16 bg-[#09090b] border border-[#27272a] rounded-lg px-2 py-1.5 text-white text-xs text-center focus:outline-none focus:border-[#E11D48]"
+                  />
+                </div>
+              </div>
+
+              {/* Exported count / check guard */}
+              {total - unexported > 0 && (
+                <div className="bg-[#27272a]/20 border border-[#27272a] rounded-xl p-3 space-y-2">
+                  <p className="text-[10px] text-[#a1a1aa] leading-normal">
+                    <span className="font-bold text-[#fafafa]">{total - unexported}</span> of the {total} completed videos have already been exported.
+                  </p>
+                  <label className="flex items-center gap-2 text-[10px] text-[#e4e4e7] font-medium cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={includeExported}
+                      onChange={(e) => setIncludeExported(e.target.checked)}
+                      className="rounded border-[#27272a] bg-[#09090b] text-[#E11D48] focus:ring-[#E11D48]/30 w-3 h-3 cursor-pointer"
+                    />
+                    <span>Include previously exported videos</span>
+                  </label>
+                </div>
+              )}
+
+              <div className="bg-[#E11D48]/5 border border-[#E11D48]/10 rounded-lg px-3 py-2 text-[10px] text-rose-300">
+                Total needed: <span className="font-bold text-white">{smartAccounts * smartVidsPerAccount}</span> • Available: <span className="font-bold text-white">{availableCount}</span> completed videos
+              </div>
+
+              <button
+                onClick={handleSmartDownload}
+                disabled={smartDownloading || (smartAccounts * smartVidsPerAccount > availableCount)}
+                className="w-full py-2.5 rounded-xl bg-[#E11D48] hover:bg-rose-700 disabled:opacity-30 disabled:cursor-not-allowed text-white text-sm font-semibold transition-all shadow-lg flex items-center justify-center gap-1.5 cursor-pointer"
+              >
+                {smartDownloading ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    {smartDownloadProgress || "Processing..."}
+                  </>
+                ) : (
+                  <>
+                    <Download className="w-4 h-4" />
+                    Generate & Download Archive
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        );
+      })()}
 
       {previewVideoUrl && (
         <div
