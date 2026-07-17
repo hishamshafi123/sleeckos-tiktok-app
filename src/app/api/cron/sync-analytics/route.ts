@@ -31,7 +31,7 @@ export async function GET(req: NextRequest) {
         select: {
           scheduledPosts: {
             where: {
-              status: "PUBLISHED",
+              status: { in: ["PUBLISHED", "PENDING_DELETION", "DELETED"] },
               publishedAt: {
                 gte: dateKey,
               },
@@ -49,7 +49,7 @@ export async function GET(req: NextRequest) {
     const todayMetrics = await prisma.scheduledPost.aggregate({
       where: {
         accountId: account.id,
-        status: "PUBLISHED",
+        status: { in: ["PUBLISHED", "PENDING_DELETION", "DELETED"] },
         publishedAt: { gte: dateKey },
       },
       _sum: { viewCount: true, likeCount: true },

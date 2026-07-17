@@ -20,7 +20,7 @@ export async function POST(req: NextRequest) {
 
   const posts = await prisma.scheduledPost.findMany({
     where: {
-      status: "PUBLISHED",
+      status: { in: ["PUBLISHED", "PENDING_DELETION", "DELETED"] },
       tiktokVideoId: { not: null },
       tiktokPostUrl: null,
     },

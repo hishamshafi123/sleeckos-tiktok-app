@@ -1,6 +1,7 @@
 export const dynamic = "force-dynamic";
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/db";
+import { pollJobStatus, reconcilePostJobs } from "@/lib/services/posting-pipeline";
 
 function verifyCronSecret(req: NextRequest) {
   const secret =
@@ -15,7 +16,7 @@ function getPostPeerKey(): string | null {
   return process.env.POSTPEER_ACCESS_KEY || null;
 }
 
-// Poll PostPeer for PUBLISHED posts missing TikTok URLs
+// Poll active posting pipeline jobs and run reconciliation/delayed deletions
 export async function GET(req: NextRequest) {
   if (!verifyCronSecret(req)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -23,9 +24,41 @@ export async function GET(req: NextRequest) {
 
   const results: Record<string, string> = {};
   const postpeerKey = getPostPeerKey();
-  let postpeerChecked = 0;
 
-  if (postpeerKey) {
+  if (!postpeerKey) {
+    return NextResponse.json({ error: "Missing PostPeer Access Key" }, { status: 400 });
+  }
+
+  // 1. Reconcile stuck/crashed worker jobs, process delayed deletions, and scan drive folders
+  try {
+    console.log("[poll-status] Running posting pipeline reconciliation...");
+    await reconcilePostJobs();
+    results["reconciliation"] = "success";
+  } catch (recErr: any) {
+    console.error("[poll-status] Reconciliation error:", recErr);
+    results["reconciliation"] = `failed: ${recErr.message}`;
+  }
+
+  // 2. Poll all active UPLOADING jobs in the state machine
+  const activeJobs = await prisma.postJob.findMany({
+    where: { state: "UPLOADING" },
+    select: { id: true, tiktokPublishId: true },
+  });
+
+  console.log(`[poll-status] Polling ${activeJobs.length} active UPLOADING post jobs...`);
+
+  for (const job of activeJobs) {
+    try {
+      await pollJobStatus(job.id);
+      results[`job_${job.id}`] = "polled";
+    } catch (pollErr: any) {
+      console.error(`[poll-status] Failed polling job ${job.id}:`, pollErr);
+      results[`job_${job.id}`] = `failed: ${pollErr.message}`;
+    }
+  }
+
+  // 3. Fallback: Legacy backfill for any ScheduledPost records that got published but lack TikTok URLs
+  try {
     const missingUrlPosts = await prisma.scheduledPost.findMany({
       where: {
         status: "PUBLISHED",
@@ -35,10 +68,8 @@ export async function GET(req: NextRequest) {
       include: {
         account: { select: { tiktokUsername: true } },
       },
-      take: 50,
+      take: 20,
     });
-
-    postpeerChecked = missingUrlPosts.length;
 
     for (const post of missingUrlPosts) {
       const postpeerId = post.tiktokPublishId!;
@@ -48,20 +79,17 @@ export async function GET(req: NextRequest) {
         });
 
         if (!res.ok) {
-          results[`pp_${postpeerId}`] = `postpeer_api_error_${res.status}`;
+          results[`legacy_${postpeerId}`] = `failed_status_${res.status}`;
           continue;
         }
 
         const data = await res.json();
-
-        // PostPeer response: { success: true, post: { platforms: [...] } }
         const postData = data.post || data;
         const platforms = postData.platforms || [];
         const tiktokPlatform = Array.isArray(platforms)
-          ? platforms.find((p: Record<string, unknown>) => p.platform === "tiktok")
+          ? platforms.find((p: any) => p.platform === "tiktok")
           : null;
 
-        // platformPostId format: "v_pub_url~v2-1.7647150213232183318"
         const rawPlatformPostId: string = tiktokPlatform?.platformPostId || "";
         let tiktokVideoId: string | null = null;
 
@@ -81,20 +109,19 @@ export async function GET(req: NextRequest) {
               tiktokVideoId,
             },
           });
-          results[`pp_${postpeerId}`] = `url_updated: ${finalUrl}`;
-        } else {
-          results[`pp_${postpeerId}`] = `no_video_id (raw: ${rawPlatformPostId})`;
+          results[`legacy_${postpeerId}`] = `backfilled: ${finalUrl}`;
         }
-      } catch (err) {
-        results[`pp_${postpeerId}`] = `error: ${err instanceof Error ? err.message : String(err)}`;
+      } catch (err: any) {
+        results[`legacy_${postpeerId}`] = `error: ${err.message}`;
       }
     }
+  } catch (err: any) {
+    console.error("[poll-status] Legacy backfill error:", err);
   }
 
   return NextResponse.json({
     ok: true,
-    postpeerChecked,
+    activeJobsPolled: activeJobs.length,
     results,
   });
 }
-

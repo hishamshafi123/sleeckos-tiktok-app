@@ -37,13 +37,13 @@ export async function GET(req: NextRequest) {
 
   // Status filter
   if (statusFilter === "PUBLISHED") {
-    where.status = "PUBLISHED";
+    where.status = { in: ["PUBLISHED", "PENDING_DELETION", "DELETED"] };
   } else if (statusFilter === "SKIPPED") {
     where.status = "SKIPPED";
   } else if (statusFilter === "FAILED") {
     where.status = "FAILED";
   } else {
-    where.status = { in: ["PUBLISHED", "SKIPPED", "FAILED"] };
+    where.status = { in: ["PUBLISHED", "PENDING_DELETION", "DELETED", "SKIPPED", "FAILED"] };
   }
 
   // Section filter
@@ -144,7 +144,7 @@ export async function POST(req: NextRequest) {
   // Clear them so Refresh Links can re-populate correctly from PostPeer's platformPostUrl.
   const cleanedUp = await prisma.scheduledPost.updateMany({
     where: {
-      status: "PUBLISHED",
+      status: { in: ["PUBLISHED", "PENDING_DELETION", "DELETED"] },
       tiktokPostUrl: { not: null },
       tiktokVideoId: { not: null },
       // These were ALL incorrectly constructed - clear them
@@ -163,7 +163,7 @@ export async function POST(req: NextRequest) {
   // These can be rebuilt instantly without calling PostPeer
   const rebuildablePosts = await prisma.scheduledPost.findMany({
     where: {
-      status: "PUBLISHED",
+      status: { in: ["PUBLISHED", "PENDING_DELETION", "DELETED"] },
       tiktokVideoId: { not: null },
       tiktokPostUrl: null,
     },
@@ -190,7 +190,7 @@ export async function POST(req: NextRequest) {
   // === Tier 2: Posts with PostPeer ID but no video ID — need to fetch from PostPeer ===
   const missingUrlPosts = await prisma.scheduledPost.findMany({
     where: {
-      status: "PUBLISHED",
+      status: { in: ["PUBLISHED", "PENDING_DELETION", "DELETED"] },
       tiktokPublishId: { not: null },
       tiktokPostUrl: null,
     },

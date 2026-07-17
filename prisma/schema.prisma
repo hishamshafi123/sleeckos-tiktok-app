@@ -249,6 +249,7 @@ model ManagedAccount {
   updatedAt             DateTime     @updatedAt
 
   scheduledPosts        ScheduledPost[]
+  postJobs              PostJob[]
   dailyAnalytics        AccountDailyAnalytics[]
   sourcingNiches        SourcingNicheAccount[]
   genreConfigs          AccountGenreConfig[]
@@ -267,6 +268,31 @@ enum PostStatus {
   PUBLISHED
   FAILED
   SKIPPED
+  CLAIMED
+  PENDING_DELETION
+  DELETED
+}
+
+model PostJob {
+  id              String         @id @default(uuid())
+  driveFileId     String
+  driveFileName   String?
+  accountId       String
+  account         ManagedAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  state           String         @default("AVAILABLE") // AVAILABLE | CLAIMED | UPLOADING | PUBLISHED | PENDING_DELETION | DELETED | FAILED
+  attempts        Int            @default(0)
+  lockedAt        DateTime?
+  lockedBy        String?
+  tiktokPublishId String?
+  tiktokPostId    String?
+  tiktokPostUrl   String?
+  failureReason   String?
+  publishedAt     DateTime?
+  deleteAfter     DateTime?
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  @@unique([driveFileId, accountId])
 }
 
 model ScheduledPost {

@@ -22,11 +22,11 @@ export async function GET(req: NextRequest) {
     // Build where clause
     const where: Record<string, unknown> = {};
     if (filter === "active") {
-      where.status = { in: ["QUEUED", "DOWNLOADING", "UPLOADING", "PROCESSING"] };
+      where.status = { in: ["QUEUED", "DOWNLOADING", "UPLOADING", "PROCESSING", "CLAIMED"] };
     } else if (filter === "failed") {
       where.status = "FAILED";
     } else if (filter === "completed") {
-      where.status = { in: ["PUBLISHED", "SKIPPED"] };
+      where.status = { in: ["PUBLISHED", "SKIPPED", "PENDING_DELETION", "DELETED"] };
     }
 
     const posts = await prisma.scheduledPost.findMany({

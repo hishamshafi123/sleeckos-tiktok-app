@@ -23,9 +23,9 @@ export default async function AccountsDashboard() {
     prisma.managedAccount.count(),
     prisma.accountSection.count(),
     prisma.accountGroup.count(),
-    prisma.scheduledPost.count({ where: { status: "PUBLISHED", publishedAt: { gte: todayStart } } }),
-    prisma.scheduledPost.count({ where: { status: "PUBLISHED", publishedAt: { gte: weekAgo } } }),
-    prisma.scheduledPost.count({ where: { status: "PUBLISHED", publishedAt: { gte: monthAgo } } }),
+    prisma.scheduledPost.count({ where: { status: { in: ["PUBLISHED", "PENDING_DELETION", "DELETED"] }, publishedAt: { gte: todayStart } } }),
+    prisma.scheduledPost.count({ where: { status: { in: ["PUBLISHED", "PENDING_DELETION", "DELETED"] }, publishedAt: { gte: weekAgo } } }),
+    prisma.scheduledPost.count({ where: { status: { in: ["PUBLISHED", "PENDING_DELETION", "DELETED"] }, publishedAt: { gte: monthAgo } } }),
     prisma.scheduledPost.count({ where: { status: "FAILED" } }),
     prisma.scheduledPost.findMany({
       orderBy: { createdAt: "desc" },
@@ -118,16 +118,16 @@ export default async function AccountsDashboard() {
                   <td className="px-4 py-3 text-gray-400 text-xs max-w-[200px] truncate">{post.caption || "—"}</td>
                   <td className="px-4 py-3">
                     <span className={`text-xs px-2 py-0.5 rounded-full ${
-                      post.status === "PUBLISHED" ? "bg-green-500/10 text-green-400" :
+                      post.status === "PUBLISHED" || post.status === "PENDING_DELETION" || post.status === "DELETED" ? "bg-green-500/10 text-green-400" :
                       post.status === "FAILED" ? "bg-red-500/10 text-red-400" :
-                      post.status === "PROCESSING" ? "bg-blue-500/10 text-blue-400" :
+                      post.status === "PROCESSING" || post.status === "UPLOADING" || post.status === "CLAIMED" ? "bg-blue-500/10 text-blue-400" :
                       "bg-gray-500/10 text-gray-400"
                     }`}>{post.status}</span>
                   </td>
                   <td className="px-4 py-3 text-xs max-w-[250px]">
                     {post.errorMessage ? (
                       <span className="text-red-400 line-clamp-2">{post.errorMessage}</span>
-                    ) : post.status === "PUBLISHED" ? (
+                    ) : post.status === "PUBLISHED" || post.status === "PENDING_DELETION" || post.status === "DELETED" ? (
                       <span className="text-gray-500">{Number(post.viewCount).toLocaleString()} views</span>
                     ) : (
                       <span className="text-gray-600">—</span>

@@ -3,8 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/db";
 import { getSession } from "@/lib/session";
 import { can } from "@/lib/services/permissions";
-import { makeFilePublic, deleteDriveFile } from "@/lib/google";
-import { postViaPostPeer, driveDirectUrl } from "@/lib/postpeer";
+import { uploadAndPublish, pollJobStatus } from "@/lib/services/posting-pipeline";
 
 // POST /api/managed/posts/[id]/retry — retry a FAILED post via PostPeer
 export async function POST(
@@ -51,60 +50,49 @@ export async function POST(
     );
   }
 
-  // Reset to uploading
-  await prisma.scheduledPost.update({
-    where: { id },
-    data: { status: "UPLOADING", errorMessage: null },
+  // 1. Get or create a PostJob for this retry
+  let job = await prisma.postJob.findUnique({
+    where: {
+      driveFileId_accountId: {
+        driveFileId: post.driveFileId,
+        accountId: post.accountId,
+      },
+    },
   });
 
-  // Retry async via PostPeer
+  if (!job) {
+    job = await prisma.postJob.create({
+      data: {
+        driveFileId: post.driveFileId,
+        driveFileName: post.driveFileName || "video.mp4",
+        accountId: post.accountId,
+        state: "CLAIMED",
+        attempts: 0,
+      },
+    });
+  } else {
+    // Reset state to CLAIMED to allow uploadAndPublish to run
+    job = await prisma.postJob.update({
+      where: { id: job.id },
+      data: {
+        state: "CLAIMED",
+        attempts: 0, // Reset attempts so it gets up to 3 retries
+        tiktokPublishId: null, // Clear old publish ID to trigger a fresh upload
+      },
+    });
+  }
+
+  // 2. Trigger retry upload asynchronously
   (async () => {
     try {
-      await makeFilePublic(post.driveFileId!, account.id);
-      const videoUrl = driveDirectUrl(post.driveFileId!);
-
-      const result = await postViaPostPeer(
-        account.postpeerAccountId!,
-        post.caption,
-        videoUrl,
-        {
-          draft: account.postMode === "DRAFT",
-          privacyLevel: "PUBLIC_TO_EVERYONE",
-          disableComment: false,
-          disableDuet: false,
-          disableStitch: false,
-          publishNow: true,
-        }
-      );
-
-      const tiktokPostUrl = result.platformPostUrl || null;
-
-      await prisma.scheduledPost.update({
-        where: { id: post.id },
-        data: {
-          tiktokPublishId: result.postId || null,
-          tiktokPostUrl,
-          status: "PUBLISHED",
-          publishedAt: new Date(),
-        },
-      });
-
-      // Cleanup Drive file
-      try {
-        await deleteDriveFile(post.driveFileId!, account.id);
-      } catch (delErr) {
-        console.error(`Drive delete failed in retry for ${post.driveFileId}:`, delErr);
-      }
+      await uploadAndPublish(job!.id, post.caption);
+      // Wait a few seconds and poll immediately
+      await new Promise((resolve) => setTimeout(resolve, 5000));
+      await pollJobStatus(job!.id);
     } catch (err) {
-      await prisma.scheduledPost.update({
-        where: { id },
-        data: {
-          status: "FAILED",
-          errorMessage: err instanceof Error ? err.message : "Retry failed",
-        },
-      });
+      console.error(`[Retry] Post retry failed for job ${job!.id}:`, err);
     }
   })();
 
-  return NextResponse.json({ ok: true });
+  return NextResponse.json({ ok: true, message: "Retry started..." });
 }

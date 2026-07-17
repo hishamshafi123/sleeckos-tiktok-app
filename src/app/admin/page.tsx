@@ -150,13 +150,13 @@ export default async function AdminDashboard() {
                   <td className="py-3">
                     <span
                       className={`px-2 py-0.5 rounded-full text-[9px] font-semibold border ${
-                        post.status === "PUBLISHED"
-                          ? "bg-emerald-950/20 text-emerald-400 border-emerald-900/50"
-                          : post.status === "FAILED"
-                          ? "bg-red-950/20 text-red-400 border-red-900/50"
-                          : post.status === "QUEUED"
-                          ? "bg-blue-950/20 text-blue-400 border-blue-900/50"
-                          : "bg-zinc-950/20 text-zinc-400 border-zinc-900/50"
+                      post.status === "PUBLISHED" || post.status === "PENDING_DELETION" || post.status === "DELETED"
+                        ? "bg-emerald-950/20 text-emerald-400 border-emerald-900/50"
+                        : post.status === "FAILED"
+                        ? "bg-red-950/20 text-red-400 border-red-900/50"
+                        : post.status === "QUEUED" || post.status === "CLAIMED"
+                        ? "bg-blue-950/20 text-blue-400 border-blue-900/50"
+                        : "bg-zinc-950/20 text-zinc-400 border-zinc-900/50"
                       }`}
                     >
                       {post.status}

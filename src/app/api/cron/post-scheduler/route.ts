@@ -2,11 +2,10 @@ export const dynamic = "force-dynamic";
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/db";
 import {
-  listVideoFilesInFolder,
-  makeFilePublic,
-  deleteDriveFile,
-} from "@/lib/google";
-import { postViaPostPeer, driveDirectUrl } from "@/lib/postpeer";
+  ingestDriveFiles,
+  claimNextVideo,
+  uploadAndPublish,
+} from "@/lib/services/posting-pipeline";
 import { toZonedTime } from "date-fns-tz";
 
 function verifyCronSecret(req: NextRequest) {
@@ -156,54 +155,16 @@ export async function GET(req: NextRequest) {
         continue;
       }
 
-      // ── Get next unposted file from Drive ────────────────────────────────
-      let files;
+      // ── Ingest Drive files & Claim next unposted file atomically ─────────
       try {
-        files = await listVideoFilesInFolder(account.driveFolderId!, account.id);
-      } catch (err) {
-        await prisma.scheduledPost.create({
-          data: {
-            accountId: account.id,
-            scheduledFor: now,
-            status: "FAILED",
-            errorMessage: `Drive folder access failed: ${err instanceof Error ? err.message : String(err)}`,
-          },
-        });
-        results[accountKey] = "failed_drive_access";
-        continue;
+        await ingestDriveFiles(account.id);
+      } catch (ingestErr) {
+        console.error(`Ingest failed for ${accountKey}:`, ingestErr);
       }
 
-      if (!files.length) {
-        await prisma.scheduledPost.create({
-          data: {
-            accountId: account.id,
-            scheduledFor: now,
-            status: "SKIPPED",
-            errorMessage: "No video files in Drive folder.",
-          },
-        });
-        results[accountKey] = "skipped_no_files";
-        continue;
-      }
-
-      const postedFileIds = await prisma.scheduledPost
-        .findMany({
-          where: { accountId: account.id, driveFileId: { not: null }, status: { not: "FAILED" } },
-          select: { driveFileId: true },
-        })
-        .then((rows) => new Set(rows.map((r) => r.driveFileId)));
-
-      const nextFile = files.find((f) => f.id && !postedFileIds.has(f.id));
-      if (!nextFile || !nextFile.id) {
-        await prisma.scheduledPost.create({
-          data: {
-            accountId: account.id,
-            scheduledFor: now,
-            status: "SKIPPED",
-            errorMessage: `All ${files.length} video(s) have been posted. Add more to Drive.`,
-          },
-        });
-        results[accountKey] = "skipped_all_posted";
+      const job = await claimNextVideo(account.id, `cron-worker-${process.pid || "default"}`);
+      if (!job) {
+        results[accountKey] = "skipped_no_available_files";
         continue;
       }
 
@@ -224,7 +185,7 @@ export async function GET(req: NextRequest) {
         }
         // No fallback to account/group — tags will be appended in step 2
       } else if (account.captionSource === "FILENAME") {
-        caption = nextFile.name!.replace(/\.[^.]+$/, "");
+        caption = job.driveFileName!.replace(/\.[^.]+$/, "");
       } else if (account.captionSource === "DEFAULT") {
         // Fallback only when section has NO config at all
         if (account.group.defaultDescription) {
@@ -250,75 +211,17 @@ export async function GET(req: NextRequest) {
 
       console.log(`[PostScheduler] Final caption for ${accountKey}: "${caption.substring(0, 200)}"`);
 
-      // ── Create post record ───────────────────────────────────────────────
-      const post = await prisma.scheduledPost.create({
-        data: {
-          accountId: account.id,
-          driveFileId: nextFile.id,
-          driveFileName: nextFile.name,
-          caption,
-          scheduledFor: now,
-          status: "UPLOADING",
-        },
-      });
-
-      // ── Make file public, post via PostPeer, cleanup ─────────────────────
+      // ── Upload via PostPeer (no immediate Drive delete) ───────────────────
       try {
-        await makeFilePublic(nextFile.id, account.id);
-        const videoUrl = driveDirectUrl(nextFile.id);
-
-        const result = await postViaPostPeer(
-          account.postpeerAccountId,
-          caption,
-          videoUrl,
-          {
-            draft: account.postMode === "DRAFT",
-            privacyLevel: "PUBLIC_TO_EVERYONE",
-            disableComment: false,
-            disableDuet: false,
-            disableStitch: false,
-            publishNow: true,
-          }
-        );
-
-        // The initial POST response does NOT contain the actual TikTok video URL.
-        // platformPostId from POST is TikTok's publish_id, NOT the video_id.
-        // platformPostUrl may be populated if PostPeer provides it directly.
-        const tiktokPostUrl = result.platformPostUrl || null;
-
-        console.log(`[PostScheduler] PostPeer result for ${accountKey}: postId=${result.postId}, platformPostUrl=${tiktokPostUrl}`);
-
-        await prisma.scheduledPost.update({
-          where: { id: post.id },
-          data: {
-            tiktokPublishId: result.postId || null,
-            tiktokPostUrl,
-            status: "PUBLISHED",
-            publishedAt: new Date(),
-          },
-        });
-
-        // Delete from Drive after successful post
-        try {
-          await deleteDriveFile(nextFile.id, account.id);
-        } catch (delErr) {
-          console.error(`Drive delete failed for ${nextFile.id}:`, delErr);
-        }
+        await uploadAndPublish(job.id, caption);
 
         const jitterSign = jitter >= 0 ? `+${jitter}` : `${jitter}`;
         const jitterHour = Math.floor(jitteredMinutes / 60);
         const jitterMin = jitteredMinutes % 60;
         const jitteredTimeStr = `${jitterHour.toString().padStart(2, "0")}:${jitterMin.toString().padStart(2, "0")}`;
-        results[accountKey] = `published via PostPeer (slot ${matchedSlot}, jittered ${jitterSign}m to ${jitteredTimeStr})`;
+        results[accountKey] = `upload_started (slot ${matchedSlot}, jittered ${jitterSign}m to ${jitteredTimeStr})`;
       } catch (err) {
-        await prisma.scheduledPost.update({
-          where: { id: post.id },
-          data: {
-            status: "FAILED",
-            errorMessage: `PostPeer post failed: ${err instanceof Error ? err.message : String(err)}`,
-          },
-        });
-        results[accountKey] = "failed_postpeer";
+        results[accountKey] = `upload_failed: ${err instanceof Error ? err.message : String(err)}`;
       }
     } catch (err) {
       results[accountKey] = `error: ${err instanceof Error ? err.message : String(err)}`;

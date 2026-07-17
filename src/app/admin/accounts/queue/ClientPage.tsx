@@ -39,6 +39,7 @@ const TABS = [
   { key: "active", label: "In Progress" },
   { key: "failed", label: "Failed" },
   { key: "completed", label: "Completed" },
+  { key: "reconciliation", label: "Reconciliation" },
 ];
 
 const statusConfig: Record<
@@ -87,6 +88,24 @@ const statusConfig: Record<
     bg: "bg-yellow-500/10",
     label: "Skipped",
   },
+  CLAIMED: {
+    icon: Clock,
+    color: "text-yellow-400",
+    bg: "bg-yellow-500/10",
+    label: "Claimed",
+  },
+  PENDING_DELETION: {
+    icon: CheckCircle2,
+    color: "text-green-400",
+    bg: "bg-green-500/10",
+    label: "Published (Pending Cleanup)",
+  },
+  DELETED: {
+    icon: CheckCircle2,
+    color: "text-green-500",
+    bg: "bg-green-500/10",
+    label: "Published & Cleaned",
+  },
 };
 
 export default function QueuePage() {
@@ -95,8 +114,25 @@ export default function QueuePage() {
   const [retrying, setRetrying] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState("all");
   const [expandedError, setExpandedError] = useState<string | null>(null);
+  const [recoReport, setRecoReport] = useState<any>(null);
+  const [loadingReport, setLoadingReport] = useState(false);
 
   const fetchPosts = useCallback(async () => {
+    if (activeTab === "reconciliation") {
+      setLoadingReport(true);
+      try {
+        const res = await fetch("/api/managed/posts/reconciliation");
+        if (!res.ok) throw new Error("Failed to fetch reconciliation report");
+        const data = await res.json();
+        setRecoReport(data);
+      } catch (err: any) {
+        toast.error(err.message || "Failed to load report");
+      } finally {
+        setLoadingReport(false);
+      }
+      return;
+    }
+
     try {
       const res = await fetch(`/api/managed/queue?filter=${activeTab}`);
       if (!res.ok) {
@@ -229,7 +265,116 @@ export default function QueuePage() {
       </div>
 
       {/* Posts list */}
-      {loading ? (
+      {activeTab === "reconciliation" ? (
+        loadingReport ? (
+          <div className="flex items-center justify-center h-32">
+            <Loader2 className="w-5 h-5 text-purple-400 animate-spin" />
+          </div>
+        ) : !recoReport ? (
+          <div className="text-gray-500 text-center py-6">Failed to load report data.</div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {/* Duplicates Section */}
+            <div className="glass border border-white/5 rounded-2xl p-5 space-y-3">
+              <h3 className="font-bold text-white text-sm flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4 text-red-400" />
+                Videos Posted Multiple Times ({recoReport.duplicates?.length || 0})
+              </h3>
+              {recoReport.duplicates?.length === 0 ? (
+                <p className="text-xs text-gray-500">No duplicate postings detected. Idempotency is working perfectly.</p>
+              ) : (
+                <div className="space-y-2 max-h-[400px] overflow-y-auto">
+                  {recoReport.duplicates.map((dup: any, idx: number) => (
+                    <div key={idx} className="bg-white/[0.02] border border-white/5 rounded-xl p-3 text-xs">
+                      <p className="text-white font-medium">Account: @{dup.tiktokUsername}</p>
+                      <p className="text-gray-400 mt-1">File ID: <code className="bg-black/30 px-1 py-0.5 rounded text-[10px]">{dup.driveFileId}</code> (Posted {dup.count} times)</p>
+                      <div className="mt-2 pl-3 border-l border-white/5 space-y-1">
+                        {dup.posts.map((p: any, pIdx: number) => (
+                          <div key={pIdx} className="flex justify-between items-center text-[10px] text-gray-500">
+                            <span>Posted {timeAgo(p.publishedAt)}</span>
+                            {p.tiktokPostUrl && (
+                              <a href={p.tiktokPostUrl} target="_blank" rel="noopener noreferrer" className="text-purple-400 hover:underline">View Post</a>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Stuck In Progress Section */}
+            <div className="glass border border-white/5 rounded-2xl p-5 space-y-3">
+              <h3 className="font-bold text-white text-sm flex items-center gap-2">
+                <Clock className="w-4 h-4 text-amber-400" />
+                Stuck In-Progress Jobs ({recoReport.stuckJobs?.length || 0})
+              </h3>
+              {recoReport.stuckJobs?.length === 0 ? (
+                <p className="text-xs text-gray-500">No stuck jobs. All postings completed cleanly or failed.</p>
+              ) : (
+                <div className="space-y-2 max-h-[400px] overflow-y-auto">
+                  {recoReport.stuckJobs.map((job: any) => (
+                    <div key={job.id} className="bg-white/[0.02] border border-white/5 rounded-xl p-3 text-xs flex justify-between items-center">
+                      <div>
+                        <p className="text-white font-medium">{job.driveFileName}</p>
+                        <p className="text-[10px] text-gray-500">State: {job.state} · Locked {timeAgo(job.lockedAt)} for @{job.tiktokUsername}</p>
+                      </div>
+                      <span className="text-[10px] text-amber-400 font-semibold bg-amber-500/10 px-2 py-0.5 rounded-full">Reconciling</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Posted but Not Deleted Section */}
+            <div className="glass border border-white/5 rounded-2xl p-5 space-y-3">
+              <h3 className="font-bold text-white text-sm flex items-center gap-2">
+                <Clock className="w-4 h-4 text-blue-400" />
+                Videos Posted but Not Deleted ({recoReport.notDeleted?.length || 0})
+              </h3>
+              {recoReport.notDeleted?.length === 0 ? (
+                <p className="text-xs text-gray-500">All published videos have been cleaned up or are in the delayed queue.</p>
+              ) : (
+                <div className="space-y-2 max-h-[400px] overflow-y-auto">
+                  {recoReport.notDeleted.map((job: any) => (
+                    <div key={job.id} className="bg-white/[0.02] border border-white/5 rounded-xl p-3 text-xs flex justify-between items-center">
+                      <div>
+                        <p className="text-white font-medium">{job.driveFileName}</p>
+                        <p className="text-[10px] text-gray-500">State: {job.state} · Published {timeAgo(job.publishedAt)} for @{job.tiktokUsername}</p>
+                      </div>
+                      <span className="text-[10px] text-blue-400 font-semibold bg-blue-500/10 px-2 py-0.5 rounded-full">Pending Delete</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Untracked Files Section */}
+            <div className="glass border border-white/5 rounded-2xl p-5 space-y-3">
+              <h3 className="font-bold text-white text-sm flex items-center gap-2">
+                <Cog className="w-4 h-4 text-purple-400" />
+                Videos in Drive Not Tracked Yet ({recoReport.untracked?.length || 0})
+              </h3>
+              {recoReport.untracked?.length === 0 ? (
+                <p className="text-xs text-gray-500">All files in Google Drive folders are currently indexed.</p>
+              ) : (
+                <div className="space-y-2 max-h-[400px] overflow-y-auto">
+                  {recoReport.untracked.map((file: any, idx: number) => (
+                    <div key={idx} className="bg-white/[0.02] border border-white/5 rounded-xl p-3 text-xs flex justify-between items-center">
+                      <div className="min-w-0 flex-1">
+                        <p className="text-white font-medium truncate">{file.filename}</p>
+                        <p className="text-[10px] text-gray-500 truncate">ID: <code className="bg-black/30 px-1 py-0.5 rounded text-[10px]">{file.fileId}</code></p>
+                      </div>
+                      <span className="text-[10px] text-purple-400 font-semibold bg-purple-500/10 px-2.5 py-0.5 rounded-full flex-shrink-0">@{file.tiktokUsername}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        )
+      ) : loading ? (
         <div className="flex items-center justify-center h-32">
           <Loader2 className="w-5 h-5 text-purple-400 animate-spin" />
         </div>

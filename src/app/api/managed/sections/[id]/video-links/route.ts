@@ -43,7 +43,7 @@ export async function GET(
 
   // Build where clause — include posts with tiktokPostUrl OR tiktokVideoId
   const where: Record<string, unknown> = {
-    status: "PUBLISHED",
+    status: { in: ["PUBLISHED", "PENDING_DELETION", "DELETED"] },
     OR: [
       { tiktokPostUrl: { not: null } },
       { tiktokVideoId: { not: null } },

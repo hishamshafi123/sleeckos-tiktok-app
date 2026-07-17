@@ -55,7 +55,7 @@ export async function GET() {
       const posts = await prisma.scheduledPost.findMany({
         where: {
           driveFileId: { in: driveFileIds },
-          status: "PUBLISHED",
+          status: { in: ["PUBLISHED", "PENDING_DELETION", "DELETED"] },
           publishedAt: {
             gte: track.campaignActiveAt
           }

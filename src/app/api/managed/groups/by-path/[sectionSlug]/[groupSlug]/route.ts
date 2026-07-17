@@ -36,7 +36,7 @@ export async function GET(
           _count: {
             select: {
               scheduledPosts: {
-                where: { status: "PUBLISHED" },
+                where: { status: { in: ["PUBLISHED", "PENDING_DELETION", "DELETED"] } },
               },
             },
           },

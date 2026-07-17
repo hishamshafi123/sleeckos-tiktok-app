@@ -4,11 +4,11 @@ import prisma from "@/lib/db";
 import { getSession } from "@/lib/session";
 import { can } from "@/lib/services/permissions";
 import {
-  listVideoFilesInFolder,
-  makeFilePublic,
-  deleteDriveFile,
-} from "@/lib/google";
-import { postViaPostPeer, driveDirectUrl } from "@/lib/postpeer";
+  ingestDriveFiles,
+  claimNextVideo,
+  uploadAndPublish,
+  pollJobStatus,
+} from "@/lib/services/posting-pipeline";
 
 // POST /api/managed/accounts/[id]/post-now — instantly post next video via PostPeer
 export async function POST(
@@ -45,57 +45,37 @@ export async function POST(
     );
   }
 
-  // ── Find next unposted file ────────────────────────────────────────────────
-  let files;
+  // 1. Ingest files from Drive to update the database state
   try {
-    files = await listVideoFilesInFolder(account.driveFolderId, account.id);
-  } catch (err) {
+    await ingestDriveFiles(account.id);
+  } catch (err: any) {
     return NextResponse.json(
-      { error: `Cannot access Drive folder: ${err instanceof Error ? err.message : String(err)}` },
+      { error: `Drive folder ingestion failed: ${err.message || String(err)}` },
       { status: 500 }
     );
   }
 
-  if (!files.length) {
+  // 2. Claim the next AVAILABLE post atomically
+  const job = await claimNextVideo(account.id, "post-now-button");
+  if (!job) {
     return NextResponse.json(
-      { error: "No video files in the linked Drive folder." },
+      { error: "No unposted video files in the linked Drive folder." },
       { status: 400 }
     );
   }
 
-  const postedFileIds = await prisma.scheduledPost
-    .findMany({
-      where: { accountId: id, driveFileId: { not: null }, status: { not: "FAILED" } },
-      select: { driveFileId: true },
-    })
-    .then((rows) => new Set(rows.map((r) => r.driveFileId)));
-
-  const nextFile = files.find((f) => f.id && !postedFileIds.has(f.id));
-  if (!nextFile || !nextFile.id) {
-    return NextResponse.json(
-      { error: `All ${files.length} video(s) have been posted. Add more to the Drive folder.` },
-      { status: 400 }
-    );
-  }
-
-  // ── Caption (section is STRONGEST, then group, then account) ──────────
-  // Section-level description overrides everything.
+  // 3. Compute caption (section overrides group/account)
   let caption = "";
   const sec = account.group.section;
-
-  // 1. Base text — section config takes full control when present
   const sectionHasConfig = (sec.descFixedTextEnabled && sec.descFixedText?.trim()) || (sec.descTags && sec.descTagCount > 0);
 
   if (sectionHasConfig) {
-    // Section owns the description — use fixed text if set, otherwise just tags (added below)
     if (sec.descFixedTextEnabled && sec.descFixedText?.trim()) {
       caption = sec.descFixedText.trim();
     }
-    // No fallback to account/group — tags will be appended in step 2
   } else if (account.captionSource === "FILENAME") {
-    caption = nextFile.name!.replace(/\.[^.]+$/, "");
+    caption = job.driveFileName!.replace(/\.[^.]+$/, "");
   } else if (account.captionSource === "DEFAULT") {
-    // Fallback only when section has NO config at all
     if (account.group.defaultDescription) {
       caption = account.group.defaultDescription;
     } else if (account.defaultCaption) {
@@ -103,7 +83,6 @@ export async function POST(
     }
   }
 
-  // 2. Always append section random tags
   if (sec.descTags && sec.descTagCount > 0) {
     const allTags = sec.descTags
       .split(",")
@@ -117,81 +96,22 @@ export async function POST(
     }
   }
 
-  // ── Create post record ─────────────────────────────────────────────────────
-  const post = await prisma.scheduledPost.create({
-    data: {
-      accountId: id,
-      driveFileId: nextFile.id,
-      driveFileName: nextFile.name,
-      caption,
-      scheduledFor: new Date(),
-      status: "UPLOADING",
-    },
-  });
-
-  // ── Post via PostPeer (fire-and-forget) ────────────────────────────────────
-  const fileId = nextFile.id;
-  const postpeerAccountId = account.postpeerAccountId;
-
+  // 4. Asynchronously start the upload & publish process (handled by pipeline)
   (async () => {
     try {
-      // Make the Drive file publicly accessible
-      await makeFilePublic(fileId, account.id);
-      const videoUrl = driveDirectUrl(fileId);
-
-      const result = await postViaPostPeer(
-        postpeerAccountId,
-        caption,
-        videoUrl,
-        {
-          draft: account.postMode === "DRAFT",
-          privacyLevel: "PUBLIC_TO_EVERYONE",
-          disableComment: false,
-          disableDuet: false,
-          disableStitch: false,
-          publishNow: true,
-        }
-      );
-
-      // The initial POST response does NOT contain the actual TikTok video URL.
-      // platformPostId from POST is TikTok's publish_id, NOT the video_id.
-      // platformPostUrl may be populated if PostPeer provides it directly.
-      const tiktokPostUrl = result.platformPostUrl || null;
-
-      console.log(`[PostNow] @${account.tiktokUsername}: postId=${result.postId}, platformPostUrl=${tiktokPostUrl}`);
-
-      await prisma.scheduledPost.update({
-        where: { id: post.id },
-        data: {
-          tiktokPublishId: result.postId || null,
-          tiktokPostUrl,
-          status: "PUBLISHED",
-          publishedAt: new Date(),
-        },
-      });
-
-      // Delete from Drive after success
-      try {
-        await deleteDriveFile(fileId, account.id);
-        console.log(`[Drive] Deleted file ${fileId} after successful post`);
-      } catch (delErr) {
-        console.error(`[Drive] Delete failed for ${fileId}:`, delErr instanceof Error ? delErr.message : delErr);
-      }
+      await uploadAndPublish(job.id, caption);
+      // Run an immediate status poll to complete it faster if upload is quick
+      await new Promise((resolve) => setTimeout(resolve, 5000));
+      await pollJobStatus(job.id);
     } catch (err) {
-      await prisma.scheduledPost.update({
-        where: { id: post.id },
-        data: {
-          status: "FAILED",
-          errorMessage: `PostPeer failed: ${err instanceof Error ? err.message : String(err)}`,
-        },
-      });
+      console.error(`[PostNow] Background publish failed for job ${job.id}:`, err);
     }
   })();
 
   return NextResponse.json({
     ok: true,
-    postId: post.id,
-    fileName: nextFile.name,
-    message: `Posting "${nextFile.name}" via PostPeer...`,
+    jobId: job.id,
+    fileName: job.driveFileName,
+    message: `Posting "${job.driveFileName}" via PostPeer...`,
   });
 }
