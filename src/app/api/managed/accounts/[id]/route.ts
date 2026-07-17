@@ -145,5 +145,11 @@ export async function GET(
     return NextResponse.json({ error: "Account not found" }, { status: 404 });
   }
 
-  return NextResponse.json(account);
+  const serialized = JSON.parse(
+    JSON.stringify(account, (key, value) =>
+      typeof value === "bigint" ? Number(value) : value
+    )
+  );
+
+  return NextResponse.json(serialized);
 }
