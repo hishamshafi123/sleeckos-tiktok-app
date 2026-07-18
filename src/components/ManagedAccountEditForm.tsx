@@ -164,12 +164,15 @@ export default function ManagedAccountEditForm({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(editForm),
       });
-      if (!res.ok) throw new Error("Save failed");
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || "Save failed");
+      }
       toast.success("Schedule updated");
       if (onSave) onSave();
       fetchAccount();
-    } catch {
-      toast.error("Failed to save");
+    } catch (err: any) {
+      toast.error(err.message || "Failed to save");
     } finally {
       setSaving(false);
     }

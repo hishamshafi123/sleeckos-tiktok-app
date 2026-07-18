@@ -22,6 +22,11 @@ export async function PATCH(
   const body = await req.json();
   const data: Record<string, unknown> = {};
 
+  const currentAccount = await prisma.managedAccount.findUnique({ where: { id } });
+  if (!currentAccount) {
+    return NextResponse.json({ error: "Account not found" }, { status: 404 });
+  }
+
   // Schedule settings
   if (body.postTimeHour !== undefined) data.postTimeHour = body.postTimeHour;
   if (body.postTimeMinute !== undefined)
@@ -31,9 +36,12 @@ export async function PATCH(
   if (body.postMode !== undefined) data.postMode = body.postMode;
   if (body.postTimeSlots !== undefined) data.postTimeSlots = body.postTimeSlots;
   
-  if (body.postpeerAccountId !== undefined) {
-    if (body.postpeerAccountId && body.postpeerAccountId.trim() !== "") {
-      const isValid = await validatePostPeerAccount(body.postpeerAccountId);
+  const newPostPeerId = body.postpeerAccountId?.trim() || null;
+  const currentPostPeerId = currentAccount.postpeerAccountId?.trim() || null;
+
+  if (body.postpeerAccountId !== undefined && newPostPeerId !== currentPostPeerId) {
+    if (newPostPeerId) {
+      const isValid = await validatePostPeerAccount(newPostPeerId);
       if (!isValid) {
         return NextResponse.json(
           { error: `PostPeer Account ID "${body.postpeerAccountId}" could not be verified against PostPeer. Please check the ID and try again.` },
@@ -41,8 +49,8 @@ export async function PATCH(
         );
       }
     }
-    data.postpeerAccountId = body.postpeerAccountId?.trim() || null;
-    data.connectionState = body.postpeerAccountId?.trim() ? "healthy" : "needs_reauth";
+    data.postpeerAccountId = newPostPeerId;
+    data.connectionState = newPostPeerId ? "healthy" : "needs_reauth";
   }
   
   if (body.isActive !== undefined) data.isActive = body.isActive;
