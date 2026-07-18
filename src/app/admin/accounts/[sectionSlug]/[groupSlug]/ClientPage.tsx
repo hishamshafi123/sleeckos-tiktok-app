@@ -134,8 +134,8 @@ export default function GroupPage({
       const valA = searchMode === "drive" ? (a.driveFolderName || "") : a.tiktokUsername;
       const valB = searchMode === "drive" ? (b.driveFolderName || "") : b.tiktokUsername;
       return sortDirection === "asc"
-        ? valA.localeCompare(valB)
-        : valB.localeCompare(valA);
+        ? valA.localeCompare(valB, undefined, { numeric: true, sensitivity: "base" })
+        : valB.localeCompare(valA, undefined, { numeric: true, sensitivity: "base" });
     });
 
     if (!searchQuery.trim()) return sorted;
