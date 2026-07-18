@@ -73,6 +73,9 @@ export async function PATCH(
   // Group reassignment
   if (body.groupId !== undefined) data.groupId = body.groupId;
 
+  // Account color tag
+  if (body.color !== undefined) data.color = body.color;
+
   const account = await prisma.managedAccount.update({
     where: { id },
     data,

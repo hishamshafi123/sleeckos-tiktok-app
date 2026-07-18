@@ -52,6 +52,7 @@ type Account = {
   connectionState?: string;
   lastCheckedAt?: string | null;
   lastError?: string | null;
+  color?: string;
 };
 
 type Group = {
@@ -72,6 +73,63 @@ const DAYS = [
   { num: "6", label: "Sat" },
   { num: "7", label: "Sun" },
 ];
+
+const CARD_COLOR_CLASSES: Record<string, { border: string; borderL: string; bg: string; shadow: string }> = {
+  red: {
+    border: "border-red-500/20 hover:border-red-500/30",
+    borderL: "border-l-4 border-l-red-500",
+    bg: "bg-red-950/5",
+    shadow: "shadow-red-950/10",
+  },
+  orange: {
+    border: "border-orange-500/20 hover:border-orange-500/30",
+    borderL: "border-l-4 border-l-orange-500",
+    bg: "bg-orange-950/5",
+    shadow: "shadow-orange-950/10",
+  },
+  yellow: {
+    border: "border-yellow-500/20 hover:border-yellow-500/30",
+    borderL: "border-l-4 border-l-yellow-500",
+    bg: "bg-yellow-950/5",
+    shadow: "shadow-yellow-950/10",
+  },
+  green: {
+    border: "border-green-500/20 hover:border-green-500/30",
+    borderL: "border-l-4 border-l-green-500",
+    bg: "bg-green-950/5",
+    shadow: "shadow-green-950/10",
+  },
+  blue: {
+    border: "border-blue-500/20 hover:border-blue-500/30",
+    borderL: "border-l-4 border-l-blue-500",
+    bg: "bg-blue-950/5",
+    shadow: "shadow-blue-950/10",
+  },
+  purple: {
+    border: "border-purple-500/20 hover:border-purple-500/30",
+    borderL: "border-l-4 border-l-purple-500",
+    bg: "bg-purple-950/5",
+    shadow: "shadow-purple-950/10",
+  },
+  pink: {
+    border: "border-pink-500/20 hover:border-pink-500/30",
+    borderL: "border-l-4 border-l-pink-500",
+    bg: "bg-pink-950/5",
+    shadow: "shadow-pink-950/10",
+  },
+  zinc: {
+    border: "border-white/5 hover:border-white/10",
+    borderL: "border-l-4 border-l-zinc-500",
+    bg: "bg-transparent",
+    shadow: "shadow-none",
+  },
+  gray: {
+    border: "border-white/5 hover:border-white/10",
+    borderL: "border-l-4 border-l-zinc-500",
+    bg: "bg-transparent",
+    shadow: "shadow-none",
+  },
+};
 
 export default function GroupPage({
   params,
@@ -95,9 +153,30 @@ export default function GroupPage({
 
   const filteredAccounts = useMemo(() => {
     if (!group) return [];
-    if (!searchQuery.trim()) return group.accounts;
+
+    const colorOrder: Record<string, number> = {
+      red: 1,
+      orange: 2,
+      yellow: 3,
+      green: 4,
+      blue: 5,
+      purple: 6,
+      pink: 7,
+      zinc: 8,
+      gray: 8,
+    };
+
+    // Sort by color priority, then username alphabetically
+    const sorted = [...group.accounts].sort((a, b) => {
+      const orderA = colorOrder[a.color || "zinc"] || 99;
+      const orderB = colorOrder[b.color || "zinc"] || 99;
+      if (orderA !== orderB) return orderA - orderB;
+      return a.tiktokUsername.localeCompare(b.tiktokUsername);
+    });
+
+    if (!searchQuery.trim()) return sorted;
     const query = searchQuery.toLowerCase().trim();
-    return group.accounts.filter((acc) => {
+    return sorted.filter((acc) => {
       if (searchMode === "drive") {
         return (
           (acc.driveFolderName || "").toLowerCase().includes(query) ||
@@ -446,12 +525,15 @@ export default function GroupPage({
               No matching accounts found for "{searchQuery}"
             </div>
           ) : (
-            filteredAccounts.map((acc) => (
-            <div
-              key={acc.id}
-              className="glass border border-white/5 rounded-2xl overflow-hidden hover:border-white/10 transition-all"
-            >
-              <div className="p-5">
+            filteredAccounts.map((acc) => {
+              const colKey = acc.color || "zinc";
+              const colConf = CARD_COLOR_CLASSES[colKey] || CARD_COLOR_CLASSES.zinc;
+              return (
+                <div
+                  key={acc.id}
+                  className={`glass border rounded-2xl overflow-hidden transition-all ${colConf.border} ${colConf.borderL} ${colConf.bg} ${colConf.shadow}`}
+                >
+                  <div className="p-5">
                 {/* Top row */}
                 <div className="flex items-center justify-between mb-4">
                   <div className="flex items-center gap-3">
@@ -676,7 +758,8 @@ export default function GroupPage({
                 )}
               </div>
             </div>
-          )))}
+          );
+        }))}
         </div>
       )}
     </div>

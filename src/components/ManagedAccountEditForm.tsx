@@ -31,6 +31,7 @@ type Account = {
   captionSource: string;
   postpeerAccountId: string | null;
   googleOAuthConnected?: boolean;
+  color?: string;
 };
 
 const DAYS = [
@@ -41,6 +42,17 @@ const DAYS = [
   { num: "5", label: "Fri" },
   { num: "6", label: "Sat" },
   { num: "7", label: "Sun" },
+];
+
+const ACCOUNT_COLORS = [
+  { id: "zinc", name: "Gray", bg: "bg-zinc-500", text: "text-zinc-300", border: "border-zinc-500/50" },
+  { id: "red", name: "Red", bg: "bg-red-500", text: "text-red-300", border: "border-red-500/50" },
+  { id: "orange", name: "Orange", bg: "bg-orange-500", text: "text-orange-300", border: "border-orange-500/50" },
+  { id: "yellow", name: "Yellow", bg: "bg-yellow-500", text: "text-yellow-300", border: "border-yellow-500/50" },
+  { id: "green", name: "Green", bg: "bg-green-500", text: "text-green-300", border: "border-green-500/50" },
+  { id: "blue", name: "Blue", bg: "bg-blue-500", text: "text-blue-300", border: "border-blue-500/50" },
+  { id: "purple", name: "Purple", bg: "bg-purple-500", text: "text-purple-300", border: "border-purple-500/50" },
+  { id: "pink", name: "Pink", bg: "bg-pink-500", text: "text-pink-300", border: "border-pink-500/50" },
 ];
 
 export default function ManagedAccountEditForm({
@@ -67,6 +79,7 @@ export default function ManagedAccountEditForm({
     defaultCaption: "",
     captionSource: "FILENAME",
     postpeerAccountId: "",
+    color: "zinc",
   });
 
   const [newSlot, setNewSlot] = useState("12:00");
@@ -94,6 +107,7 @@ export default function ManagedAccountEditForm({
         defaultCaption: data.defaultCaption || "",
         captionSource: data.captionSource,
         postpeerAccountId: data.postpeerAccountId || "",
+        color: data.color || "zinc",
       });
       fetchFolders();
     } catch (err: any) {
@@ -423,6 +437,31 @@ export default function ManagedAccountEditForm({
           />
         </div>
       )}
+
+      {/* Account Color Selection */}
+      <div className="pt-2 border-t border-white/5">
+        <label className="block text-xs text-gray-400 mb-2 font-medium">
+          Account Card Color
+        </label>
+        <div className="grid grid-cols-4 gap-2">
+          {ACCOUNT_COLORS.map((col) => (
+            <button
+              key={col.id}
+              type="button"
+              disabled={isReadOnly}
+              onClick={() => setEditForm({ ...editForm, color: col.id })}
+              className={`flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-lg border text-xs font-semibold transition-all cursor-pointer ${
+                editForm.color === col.id
+                  ? `${col.border} bg-white/5 text-white ring-1 ring-offset-0`
+                  : "border-white/5 bg-[#111] text-gray-400 hover:text-white hover:border-white/10"
+              }`}
+            >
+              <span className={`w-2 h-2 rounded-full ${col.bg}`} />
+              {col.name}
+            </button>
+          ))}
+        </div>
+      </div>
 
       {/* ── Drive Folder Linking ── */}
       <div className="pt-3 border-t border-white/5 space-y-3">

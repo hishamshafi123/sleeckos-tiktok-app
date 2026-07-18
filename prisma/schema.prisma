@@ -228,6 +228,7 @@ model ManagedAccount {
 
   // PostPeer integration
   postpeerAccountId     String?
+  color                 String       @default("zinc")
 
   // Scheduling config
   postTimeHour          Int          @default(12)
