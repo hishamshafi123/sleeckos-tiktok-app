@@ -28,7 +28,8 @@ import {
   Eye,
   Trash2,
   CheckSquare,
-  Square
+  Square,
+  Minus,
 } from "lucide-react";
 
 interface Campaign {
@@ -63,6 +64,7 @@ interface MultiplierOutput {
   googleEmail: string | null;
   errorMessage: string | null;
   exportedAt: string | null;
+  exportStatus?: "not_exported" | "exporting" | "exported";
   variation: { videoRef: string };
   hook: { text: string };
 }
@@ -173,9 +175,173 @@ export default function ClientPage({ session }: ClientPageProps = {}) {
   const [smartVidsPerAccount, setSmartVidsPerAccount] = useState(3);
   const [includeExported, setIncludeExported] = useState(false);
 
+  // Smart Export state
+  const [showSmartExport, setShowSmartExport] = useState(false);
+  const [smartExportSearch, setSmartExportSearch] = useState("");
+  const [searchingExportFolders, setSearchingExportFolders] = useState(false);
+  const [searchedExportFolders, setSearchedExportFolders] = useState<{ id: string; name: string; mappedAccount: { id: string; tiktokUsername: string } | null }[]>([]);
+  const [selectedExportFolders, setSelectedExportFolders] = useState<{ id: string; name: string; count: number; mappedAccount: { id: string; tiktokUsername: string } | null }[]>([]);
+  const [includeExportedSmartExport, setIncludeExportedSmartExport] = useState(false);
+  const [exportPreview, setExportPreview] = useState<{
+    videoBudget: { totalAvailable: number; assigned: number; videosLeft: number };
+    assignments: { driveFolderId: string; driveFolderName: string; videoIds: string[] }[];
+    unfulfillable: { driveFolderId: string; driveFolderName: string; requestedCount: number; assignedCount: number; reason: string }[];
+  } | null>(null);
+  const [loadingPreview, setLoadingPreview] = useState(false);
+  const [exportingJobId, setExportingJobId] = useState<string | null>(null);
+  const [exportJobDetails, setExportJobDetails] = useState<any | null>(null);
+  const [pollingJobDetails, setPollingJobDetails] = useState(false);
+
   // Per-video delete state
   const [deletingOutputs, setDeletingOutputs] = useState<Set<string>>(new Set());
   const [previewLoading, setPreviewLoading] = useState(false);
+
+  // Smart Export logic
+  useEffect(() => {
+    if (!showSmartExport || selectedGroupIds.size === 0 || selectedExportFolders.length === 0) {
+      setExportPreview(null);
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      const getPreview = async () => {
+        setLoadingPreview(true);
+        try {
+          const res = await fetch("/api/managed/multiplier/smart-export/preview", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              groupIds: Array.from(selectedGroupIds),
+              folderCounts: selectedExportFolders.map((f) => ({
+                id: f.id,
+                name: f.name,
+                count: f.count,
+              })),
+              includeExported: includeExportedSmartExport,
+            }),
+          });
+          if (res.ok) {
+            const data = await res.json();
+            setExportPreview(data);
+          }
+        } catch (err) {
+          console.error("Preview failed:", err);
+        } finally {
+          setLoadingPreview(false);
+        }
+      };
+      getPreview();
+    }, 300); // 300ms debounce
+
+    return () => clearTimeout(timer);
+  }, [showSmartExport, selectedGroupIds, selectedExportFolders, includeExportedSmartExport]);
+
+  const handleSearchExportFolders = async (val: string) => {
+    setSmartExportSearch(val);
+    if (!val.trim()) {
+      setSearchedExportFolders([]);
+      return;
+    }
+    setSearchingExportFolders(true);
+    try {
+      const res = await fetch(`/api/managed/multiplier/smart-export/folders?q=${encodeURIComponent(val)}`);
+      if (res.ok) {
+        const data = await res.json();
+        const selectedIds = new Set(selectedExportFolders.map((f) => f.id));
+        setSearchedExportFolders((data.folders || []).filter((f: any) => !selectedIds.has(f.id)));
+      }
+    } catch (err) {
+      console.error("Folder search failed:", err);
+    } finally {
+      setSearchingExportFolders(false);
+    }
+  };
+
+  const handleStartSmartExport = async () => {
+    if (!exportPreview || exportPreview.unfulfillable.length > 0) return;
+    if (exportPreview.videoBudget.assigned > exportPreview.videoBudget.totalAvailable) {
+      toast.error("Cannot export: Over-allocated video budget!");
+      return;
+    }
+
+    try {
+      const res = await fetch("/api/managed/multiplier/smart-export/jobs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          groupIds: Array.from(selectedGroupIds),
+          plan: exportPreview.assignments,
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to start export");
+
+      toast.success("Smart Export queued successfully!");
+      setExportingJobId(data.jobId);
+      setShowSmartExport(false);
+      fetchData();
+    } catch (err: any) {
+      toast.error(err.message || "Failed to start export");
+    }
+  };
+
+  useEffect(() => {
+    if (!exportingJobId) {
+      setExportJobDetails(null);
+      return;
+    }
+
+    let active = true;
+    const fetchProgress = async () => {
+      try {
+        const res = await fetch(`/api/managed/multiplier/smart-export/jobs/${exportingJobId}`);
+        if (res.ok) {
+          const data = await res.json();
+          if (active) {
+            setExportJobDetails(data.job);
+            if (data.job.status === "done" || data.job.status === "failed") {
+              fetchData();
+            } else {
+              setTimeout(fetchProgress, 3000);
+            }
+          }
+        }
+      } catch (err) {
+        console.error("Failed to poll export progress:", err);
+        if (active) {
+          setTimeout(fetchProgress, 5000);
+        }
+      }
+    };
+
+    fetchProgress();
+
+    return () => {
+      active = false;
+    };
+  }, [exportingJobId]);
+
+  const handleRetryAssignment = async (assignmentId: string) => {
+    try {
+      const res = await fetch(`/api/managed/multiplier/smart-export/assignments/${assignmentId}/retry`, {
+        method: "POST",
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Retry failed");
+      toast.success("Upload retry queued");
+      
+      if (exportingJobId) {
+        const detailRes = await fetch(`/api/managed/multiplier/smart-export/jobs/${exportingJobId}`);
+        if (detailRes.ok) {
+          const detailData = await detailRes.json();
+          setExportJobDetails(detailData.job);
+        }
+      }
+    } catch (err: any) {
+      toast.error(err.message || "Failed to retry upload");
+    }
+  };
 
   // Fetch initial data
   const fetchData = async () => {
@@ -2702,6 +2868,23 @@ export default function ClientPage({ session }: ClientPageProps = {}) {
               <FolderOpen className="w-3.5 h-3.5" /> Smart Download
             </button>
             <button
+              onClick={() => {
+                if (total === 0) {
+                  toast.error("No completed videos in the selected groups!");
+                  return;
+                }
+                setSmartExportSearch("");
+                setSearchedExportFolders([]);
+                setSelectedExportFolders([]);
+                setIncludeExportedSmartExport(false);
+                setExportPreview(null);
+                setShowSmartExport(true);
+              }}
+              className="px-4 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-full flex items-center gap-1.5 transition-all shadow-md cursor-pointer"
+            >
+              <Upload className="w-3.5 h-3.5" /> Smart Export
+            </button>
+            <button
               onClick={() => setSelectedGroupIds(new Set())}
               className="text-[10px] text-[#71717a] hover:text-[#fafafa] transition-colors font-medium underline cursor-pointer"
             >
@@ -2815,6 +2998,379 @@ export default function ClientPage({ session }: ClientPageProps = {}) {
                   </>
                 )}
               </button>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* Smart Export Modal */}
+      {showSmartExport && (() => {
+        let total = 0;
+        let unexported = 0;
+        groups.forEach((g) => {
+          if (selectedGroupIds.has(g.id)) {
+            g.outputs.forEach((out) => {
+              if (out.status === "COMPLETED") {
+                total++;
+                if (out.exportStatus !== "exported" && !out.exportedAt) unexported++;
+              }
+            });
+          }
+        });
+        const totalCompleted = includeExportedSmartExport ? total : unexported;
+
+        const assignedCount = selectedExportFolders.reduce((sum, f) => sum + f.count, 0);
+        const overAllocated = assignedCount > totalCompleted;
+        const cannotExport = overAllocated || (exportPreview && exportPreview.unfulfillable.length > 0) || selectedExportFolders.length === 0;
+
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-sm">
+            <div
+              className="bg-[#18181b] rounded-2xl border border-[#27272a] p-6 max-w-xl w-full mx-4 shadow-2xl space-y-6 flex flex-col max-h-[85vh] overflow-hidden"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between border-b border-[#27272a] pb-4 flex-shrink-0">
+                <h3 className="text-[#fafafa] text-base font-bold flex items-center gap-2">
+                  <Upload className="w-5 h-5 text-blue-500" /> Smart Google Drive Export
+                </h3>
+                <button
+                  onClick={() => {
+                    setShowSmartExport(false);
+                    setSelectedExportFolders([]);
+                  }}
+                  className="text-[#71717a] hover:text-[#fafafa] transition-all cursor-pointer"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <div className="flex-1 overflow-y-auto space-y-5 pr-1 custom-scrollbar text-xs">
+                <p className="text-[#71717a] leading-relaxed">
+                  Distribute and mix completed videos from the selected <span className="text-[#fafafa] font-bold">{selectedGroupIds.size} groups</span> directly into Google Drive folders. No two videos in the same folder will come from the same group to prevent duplication issues.
+                </p>
+
+                {total - unexported > 0 && (
+                  <div className="bg-[#27272a]/20 border border-[#27272a] rounded-xl p-3.5 flex items-center justify-between">
+                    <span className="text-[#a1a1aa] leading-normal">
+                      <span className="font-bold text-[#fafafa]">{total - unexported}</span> of the {total} completed videos are already exported.
+                    </span>
+                    <label className="flex items-center gap-2 text-[#e4e4e7] font-medium cursor-pointer flex-shrink-0">
+                      <input
+                        type="checkbox"
+                        checked={includeExportedSmartExport}
+                        onChange={(e) => {
+                          setIncludeExportedSmartExport(e.target.checked);
+                          setExportPreview(null);
+                        }}
+                        className="rounded border-[#27272a] bg-[#09090b] text-blue-600 focus:ring-blue-600/30 w-3.5 h-3.5 cursor-pointer"
+                      />
+                      <span>Include previously exported</span>
+                    </label>
+                  </div>
+                )}
+
+                <div>
+                  <h4 className="font-bold text-[#fafafa] uppercase tracking-wider text-[10px] text-[#71717a] mb-2">Selected Folders Tray</h4>
+                  {selectedExportFolders.length === 0 ? (
+                    <div className="bg-[#09090b] border border-[#27272a] border-dashed rounded-xl p-6 text-center text-[#71717a]">
+                      No folders selected yet. Search and select folders below.
+                    </div>
+                  ) : (
+                    <div className="space-y-2 max-h-[180px] overflow-y-auto pr-1 custom-scrollbar">
+                      {selectedExportFolders.map((folder, index) => (
+                        <div key={folder.id} className="flex items-center justify-between p-3 bg-blue-500/5 hover:bg-blue-500/10 border border-blue-500/20 rounded-xl transition-all">
+                          <div className="truncate flex-1 mr-3">
+                            <p className="font-semibold text-white truncate">{folder.name}</p>
+                            {folder.mappedAccount && (
+                              <p className="text-[10px] text-blue-400 mt-0.5 font-medium">
+                                Maps to Account: @{folder.mappedAccount.tiktokUsername}
+                              </p>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-3">
+                            <div className="flex items-center bg-[#09090b] border border-[#27272a] rounded-lg overflow-hidden">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setSelectedExportFolders((prev) => {
+                                    const next = [...prev];
+                                    next[index] = { ...next[index], count: Math.max(1, next[index].count - 1) };
+                                    return next;
+                                  });
+                                }}
+                                className="p-1.5 hover:bg-[#27272a] text-[#a1a1aa] hover:text-white transition-colors"
+                              >
+                                <Minus className="w-3.5 h-3.5" />
+                              </button>
+                              <span className="w-8 text-center text-xs font-bold text-white font-mono">
+                                {folder.count}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  if (folder.count >= selectedGroupIds.size) {
+                                    toast.error(`Per-folder count cannot exceed selected groups (${selectedGroupIds.size})!`);
+                                    return;
+                                  }
+                                  setSelectedExportFolders((prev) => {
+                                    const next = [...prev];
+                                    next[index] = { ...next[index], count: next[index].count + 1 };
+                                    return next;
+                                  });
+                                }}
+                                className="p-1.5 hover:bg-[#27272a] text-[#a1a1aa] hover:text-white transition-colors"
+                              >
+                                <Plus className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                            <button
+                              onClick={() => {
+                                setSelectedExportFolders((prev) => prev.filter((_, idx) => idx !== index));
+                                setSearchedExportFolders([]);
+                              }}
+                              className="p-1.5 bg-red-500/10 hover:bg-red-500/20 text-red-500 rounded-lg transition-colors cursor-pointer"
+                              title="Remove folder"
+                            >
+                              <X className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                <div className="space-y-2">
+                  <h4 className="font-bold text-[#fafafa] uppercase tracking-wider text-[10px] text-[#71717a]">Search Drive Folders</h4>
+                  <div className="relative">
+                    <Search className="absolute left-3 top-2.5 w-4 h-4 text-[#71717a]" />
+                    <input
+                      type="text"
+                      placeholder="Type folder name to search..."
+                      value={smartExportSearch}
+                      onChange={(e) => handleSearchExportFolders(e.target.value)}
+                      className="w-full bg-[#09090b] border border-[#27272a] rounded-xl pl-9 pr-4 py-2 text-white placeholder-[#71717a] text-xs focus:outline-none focus:border-blue-500"
+                    />
+                    {searchingExportFolders && (
+                      <Loader2 className="absolute right-3 top-2.5 w-4 h-4 animate-spin text-blue-500" />
+                    )}
+                  </div>
+
+                  {searchedExportFolders.length > 0 && (
+                    <div className="bg-[#09090b] border border-[#27272a] rounded-xl max-h-[160px] overflow-y-auto divide-y divide-[#27272a] pr-1 custom-scrollbar">
+                      {searchedExportFolders.map((folder) => (
+                        <div
+                          key={folder.id}
+                          onClick={() => {
+                            setSelectedExportFolders((prev) => [
+                              ...prev,
+                              { ...folder, count: 1 },
+                            ]);
+                            setSearchedExportFolders([]);
+                            setSmartExportSearch("");
+                          }}
+                          className="p-2.5 hover:bg-[#18181b] cursor-pointer flex justify-between items-center transition-colors"
+                        >
+                          <div className="truncate mr-3">
+                            <p className="font-medium text-gray-200 truncate">{folder.name}</p>
+                            {folder.mappedAccount && (
+                              <p className="text-[10px] text-blue-400 font-medium">
+                                linked to @{folder.mappedAccount.tiktokUsername}
+                              </p>
+                            )}
+                          </div>
+                          <Plus className="w-4 h-4 text-[#71717a] hover:text-white flex-shrink-0" />
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {smartExportSearch && !searchingExportFolders && searchedExportFolders.length === 0 && (
+                    <p className="text-[10px] text-[#71717a] italic">No folders found matching search query.</p>
+                  )}
+                </div>
+
+                {exportPreview && exportPreview.unfulfillable.length > 0 && (
+                  <div className="bg-red-500/10 border border-red-500/20 rounded-xl p-3.5 space-y-2 text-red-400">
+                    <p className="font-bold text-[10px] uppercase tracking-wider flex items-center gap-1.5">
+                      <AlertCircle className="w-4 h-4" /> Feasibility Warning: Unfulfillable Folders
+                    </p>
+                    <ul className="list-disc pl-4 space-y-1 text-[10px] leading-normal">
+                      {exportPreview.unfulfillable.map((unf, idx) => (
+                        <li key={idx}>
+                          <span className="font-bold text-white">{unf.driveFolderName}</span>: {unf.reason}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
+
+              <div className="flex-shrink-0 border-t border-[#27272a] pt-4 space-y-4">
+                <div className="flex justify-between items-center bg-[#09090b] border border-[#27272a] rounded-xl px-4 py-3 text-xs">
+                  <div className="text-center flex-1">
+                    <p className="text-[#71717a] text-[10px] uppercase font-bold">Total Available</p>
+                    <p className="font-bold text-[#fafafa] text-sm mt-0.5">{totalCompleted}</p>
+                  </div>
+                  <div className="w-[1px] h-6 bg-[#27272a]"></div>
+                  <div className="text-center flex-1">
+                    <p className="text-[#71717a] text-[10px] uppercase font-bold">Assigned</p>
+                    <p className="font-bold text-blue-400 text-sm mt-0.5">{assignedCount}</p>
+                  </div>
+                  <div className="w-[1px] h-6 bg-[#27272a]"></div>
+                  <div className="text-center flex-1">
+                    <p className="text-[#71717a] text-[10px] uppercase font-bold">Left to Assign</p>
+                    <p className={`font-extrabold text-sm mt-0.5 ${overAllocated ? "text-red-500" : "text-green-400"}`}>
+                      {overAllocated ? 0 : totalCompleted - assignedCount}
+                    </p>
+                  </div>
+                </div>
+
+                {overAllocated && (
+                  <div className="text-center text-[10px] text-red-500 font-bold bg-red-500/10 py-1.5 rounded-lg border border-red-500/20">
+                    ⚠️ Over-allocation warning: You have assigned more videos than available. Please reduce folder counts.
+                  </div>
+                )}
+
+                <div className="flex justify-end gap-3">
+                  <button
+                    onClick={() => {
+                      setShowSmartExport(false);
+                      setSelectedExportFolders([]);
+                    }}
+                    className="px-4 py-2 bg-[#27272a] hover:bg-[#3f3f46] text-white text-xs font-semibold rounded-lg transition-colors cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handleStartSmartExport}
+                    disabled={cannotExport || loadingPreview}
+                    className="px-5 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-30 disabled:cursor-not-allowed text-white text-xs font-bold rounded-lg transition-all shadow-md flex items-center gap-1.5 cursor-pointer"
+                  >
+                    {loadingPreview ? (
+                      <>
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        Validating...
+                      </>
+                    ) : (
+                      <>
+                        <Upload className="w-3.5 h-3.5" />
+                        Queue Smart Export
+                      </>
+                    )}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* Smart Export Progress & Retry Modal */}
+      {exportingJobId && exportJobDetails && (() => {
+        const job = exportJobDetails;
+        const totalAssigned = job.assignments?.length || 0;
+        const done = job.assignments?.filter((a: any) => a.status === "done").length || 0;
+        const failed = job.assignments?.filter((a: any) => a.status === "failed").length || 0;
+        const pending = job.assignments?.filter((a: any) => a.status === "pending" || a.status === "uploading").length || 0;
+        const percent = totalAssigned > 0 ? Math.round(((done + failed) / totalAssigned) * 100) : 0;
+
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-sm">
+            <div
+              className="bg-[#18181b] rounded-2xl border border-[#27272a] p-6 max-w-xl w-full mx-4 shadow-2xl space-y-5 flex flex-col max-h-[85vh] overflow-hidden"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between border-b border-[#27272a] pb-4 flex-shrink-0">
+                <div>
+                  <h3 className="text-[#fafafa] text-base font-bold flex items-center gap-2">
+                    <Loader2 className={`w-5 h-5 text-blue-500 ${job.status === "uploading" ? "animate-spin" : ""}`} /> 
+                    Smart Export Job Progress
+                  </h3>
+                  <p className="text-[10px] text-[#71717a] mt-0.5 font-mono">Job ID: {job.id}</p>
+                </div>
+                {(job.status === "done" || job.status === "failed") && (
+                  <button
+                    onClick={() => setExportingJobId(null)}
+                    className="text-[#71717a] hover:text-[#fafafa] transition-all cursor-pointer"
+                  >
+                    <X className="w-5 h-5" />
+                  </button>
+                )}
+              </div>
+
+              <div className="space-y-2 flex-shrink-0">
+                <div className="flex justify-between text-xs text-[#a1a1aa] font-semibold">
+                  <span className="capitalize">Status: <span className={job.status === "done" ? "text-green-400 font-bold" : job.status === "failed" ? "text-red-400 font-bold" : "text-blue-400 font-bold"}>{job.status}</span></span>
+                  <span>{percent}% ({done + failed}/{totalAssigned})</span>
+                </div>
+                <div className="w-full h-2 bg-[#09090b] rounded-full overflow-hidden border border-[#27272a]">
+                  <div
+                    className={`h-full transition-all duration-500 ${job.status === "failed" ? "bg-red-500" : "bg-blue-600"}`}
+                    style={{ width: `${percent}%` }}
+                  />
+                </div>
+                <div className="flex justify-between text-[10px] text-[#71717a] font-medium pt-1">
+                  <span>Queued/Uploading: <span className="text-blue-400 font-bold">{pending}</span></span>
+                  <span>Uploaded: <span className="text-green-400 font-bold">{done}</span></span>
+                  <span>Failed: <span className="text-red-400 font-bold">{failed}</span></span>
+                </div>
+              </div>
+
+              <div className="flex-1 overflow-y-auto space-y-2.5 pr-1 custom-scrollbar">
+                <h4 className="font-bold text-[#fafafa] uppercase tracking-wider text-[10px] text-[#71717a] sticky top-0 bg-[#18181b] py-1">Assignments List</h4>
+                {job.assignments?.map((ass: any) => {
+                  const hookText = ass.video?.hook?.text || "Unknown video";
+                  const grpName = ass.video?.group?.name || "Unknown group";
+                  return (
+                    <div key={ass.id} className="p-3 bg-[#09090b] border border-[#27272a] rounded-xl flex items-center justify-between text-xs">
+                      <div className="truncate flex-1 mr-3 space-y-1">
+                        <p className="font-bold text-gray-200 truncate" title={hookText}>“{hookText}”</p>
+                        <p className="text-[10px] text-[#71717a] truncate font-medium">
+                          From: <span className="text-[#fafafa]">{grpName}</span> • Dest Folder: <span className="font-mono text-gray-300">{ass.driveFolderId.substring(0, 12)}...</span>
+                        </p>
+                        {ass.error && (
+                          <p className="text-[10px] text-red-400 font-medium leading-normal bg-red-500/5 p-2 rounded-lg border border-red-500/10">
+                            Error: {ass.error}
+                          </p>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-3 flex-shrink-0">
+                        <span className={`px-2.5 py-1 rounded-full text-[10px] font-bold ${
+                          ass.status === "done"
+                            ? "bg-green-500/10 text-green-400"
+                            : ass.status === "failed"
+                            ? "bg-red-500/10 text-red-500"
+                            : ass.status === "uploading"
+                            ? "bg-blue-500/10 text-blue-400 animate-pulse"
+                            : "bg-gray-500/10 text-gray-400"
+                        }`}>
+                          {ass.status}
+                        </span>
+
+                        {ass.status === "failed" && (
+                          <button
+                            onClick={() => handleRetryAssignment(ass.id)}
+                            className="px-2.5 py-1 bg-red-500/20 hover:bg-red-500/30 text-red-400 text-[10px] font-bold rounded-lg border border-red-500/20 transition-all cursor-pointer"
+                          >
+                            Retry
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {(job.status === "done" || job.status === "failed") && (
+                <div className="flex justify-end border-t border-[#27272a] pt-4 flex-shrink-0">
+                  <button
+                    onClick={() => setExportingJobId(null)}
+                    className="px-5 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-lg transition-colors cursor-pointer"
+                  >
+                    Close & Finish
+                  </button>
+                </div>
+              )}
             </div>
           </div>
         );
