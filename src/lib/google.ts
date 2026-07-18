@@ -67,10 +67,7 @@ export async function getOAuth2ClientForAccount(account: any) {
 
 // ── Build authenticated Drive client (OAuth or fallback to Service Account) ───
 async function getDriveClient(accountId?: string, useServiceAccount = false) {
-  if (useServiceAccount) {
-    return getServiceAccountDriveClient();
-  }
-
+  // If accountId has its own OAuth, we should ALWAYS prefer it!
   if (accountId) {
     const account = await prisma.managedAccount.findUnique({
       where: { id: accountId },
@@ -79,6 +76,10 @@ async function getDriveClient(accountId?: string, useServiceAccount = false) {
       const auth = await getOAuth2ClientForAccount(account);
       return google.drive({ version: "v3", auth });
     }
+  }
+
+  if (useServiceAccount) {
+    return getServiceAccountDriveClient();
   }
 
   // Master/Global OAuth Fallback: Look for ANY account that has connected via OAuth
