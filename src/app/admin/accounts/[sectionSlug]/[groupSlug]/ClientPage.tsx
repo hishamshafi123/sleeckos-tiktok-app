@@ -91,17 +91,26 @@ export default function GroupPage({
 
   // Search accounts state
   const [searchQuery, setSearchQuery] = useState("");
+  const [searchMode, setSearchMode] = useState<"account" | "drive">("account");
 
   const filteredAccounts = useMemo(() => {
     if (!group) return [];
     if (!searchQuery.trim()) return group.accounts;
     const query = searchQuery.toLowerCase().trim();
-    return group.accounts.filter(
-      (acc) =>
-        acc.tiktokUsername.toLowerCase().includes(query) ||
-        acc.tiktokDisplayName.toLowerCase().includes(query)
-    );
-  }, [group, searchQuery]);
+    return group.accounts.filter((acc) => {
+      if (searchMode === "drive") {
+        return (
+          (acc.driveFolderName || "").toLowerCase().includes(query) ||
+          (acc.driveFolderId || "").toLowerCase().includes(query)
+        );
+      } else {
+        return (
+          acc.tiktokUsername.toLowerCase().includes(query) ||
+          acc.tiktokDisplayName.toLowerCase().includes(query)
+        );
+      }
+    });
+  }, [group, searchQuery, searchMode]);
   const clockRef = useRef<ReturnType<typeof setInterval>>(undefined);
 
   // Tick the clock every second for live timezone display
@@ -362,23 +371,54 @@ export default function GroupPage({
 
       {/* Search and Accounts List */}
       {group.accounts.length > 0 && (
-        <div className="relative max-w-md">
-          <input
-            type="text"
-            placeholder="Search accounts in this group..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full bg-white/5 border border-white/10 rounded-xl pl-10 pr-4 py-2.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-purple-500 transition-colors"
-          />
-          <Search className="w-4 h-4 text-gray-500 absolute left-3.5 top-1/2 -translate-y-1/2" />
-          {searchQuery && (
+        <div className="flex flex-col sm:flex-row gap-3 items-stretch sm:items-center max-w-xl">
+          <div className="relative flex-1">
+            <input
+              type="text"
+              placeholder={searchMode === "account" ? "Search accounts in this group..." : "Search Google Drive folders/emails..."}
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="w-full bg-white/5 border border-white/10 rounded-xl pl-10 pr-8 py-2.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-purple-500 transition-colors"
+            />
+            <Search className="w-4 h-4 text-gray-500 absolute left-3.5 top-1/2 -translate-y-1/2" />
+            {searchQuery && (
+              <button
+                onClick={() => setSearchQuery("")}
+                className="text-gray-500 hover:text-white absolute right-3 top-1/2 -translate-y-1/2 text-xs font-bold font-mono p-1"
+              >
+                ×
+              </button>
+            )}
+          </div>
+
+          <div className="flex bg-white/5 border border-white/10 rounded-xl p-1 gap-1 flex-shrink-0">
             <button
-              onClick={() => setSearchQuery("")}
-              className="text-gray-500 hover:text-white absolute right-3.5 top-1/2 -translate-y-1/2 text-xs font-bold font-mono"
+              onClick={() => {
+                setSearchMode("account");
+                setSearchQuery("");
+              }}
+              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
+                searchMode === "account"
+                  ? "bg-purple-600 text-white shadow"
+                  : "text-gray-400 hover:text-white"
+              }`}
             >
-              ×
+              Account Name
             </button>
-          )}
+            <button
+              onClick={() => {
+                setSearchMode("drive");
+                setSearchQuery("");
+              }}
+              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
+                searchMode === "drive"
+                  ? "bg-purple-600 text-white shadow"
+                  : "text-gray-400 hover:text-white"
+              }`}
+            >
+              Google Drive
+            </button>
+          </div>
         </div>
       )}
 
