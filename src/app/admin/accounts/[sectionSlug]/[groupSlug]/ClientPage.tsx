@@ -20,6 +20,7 @@ import {
   Zap,
   Pencil,
   Search,
+  ArrowUpDown,
 } from "lucide-react";
 
 type Account = {
@@ -105,6 +106,7 @@ export default function GroupPage({
   // Search accounts state
   const [searchQuery, setSearchQuery] = useState("");
   const [searchMode, setSearchMode] = useState<"account" | "drive">("account");
+  const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
 
   const filteredAccounts = useMemo(() => {
     if (!group) return [];
@@ -121,12 +123,19 @@ export default function GroupPage({
       gray: 8,
     };
 
-    // Sort by color priority, then username alphabetically
+    // Sort by color priority, then username / folder name alphabetically based on searchMode
     const sorted = [...group.accounts].sort((a, b) => {
       const orderA = colorOrder[a.color || "zinc"] || 99;
       const orderB = colorOrder[b.color || "zinc"] || 99;
-      if (orderA !== orderB) return orderA - orderB;
-      return a.tiktokUsername.localeCompare(b.tiktokUsername);
+      if (orderA !== orderB) {
+        return sortDirection === "asc" ? orderA - orderB : orderB - orderA;
+      }
+
+      const valA = searchMode === "drive" ? (a.driveFolderName || "") : a.tiktokUsername;
+      const valB = searchMode === "drive" ? (b.driveFolderName || "") : b.tiktokUsername;
+      return sortDirection === "asc"
+        ? valA.localeCompare(valB)
+        : valB.localeCompare(valA);
     });
 
     if (!searchQuery.trim()) return sorted;
@@ -144,7 +153,7 @@ export default function GroupPage({
         );
       }
     });
-  }, [group, searchQuery, searchMode]);
+  }, [group, searchQuery, searchMode, sortDirection]);
   const clockRef = useRef<ReturnType<typeof setInterval>>(undefined);
 
   // Tick the clock every second for live timezone display
@@ -425,32 +434,43 @@ export default function GroupPage({
             )}
           </div>
 
-          <div className="flex bg-white/5 border border-white/10 rounded-xl p-1 gap-1 flex-shrink-0">
+          <div className="flex items-center gap-2 flex-shrink-0">
+            <div className="flex bg-white/5 border border-white/10 rounded-xl p-1 gap-1">
+              <button
+                onClick={() => {
+                  setSearchMode("account");
+                  setSearchQuery("");
+                }}
+                className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
+                  searchMode === "account"
+                    ? "bg-purple-600 text-white shadow"
+                    : "text-gray-400 hover:text-white"
+                }`}
+              >
+                Account Name
+              </button>
+              <button
+                onClick={() => {
+                  setSearchMode("drive");
+                  setSearchQuery("");
+                }}
+                className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
+                  searchMode === "drive"
+                    ? "bg-purple-600 text-white shadow"
+                    : "text-gray-400 hover:text-white"
+                }`}
+              >
+                Google Drive
+              </button>
+            </div>
+
             <button
-              onClick={() => {
-                setSearchMode("account");
-                setSearchQuery("");
-              }}
-              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
-                searchMode === "account"
-                  ? "bg-purple-600 text-white shadow"
-                  : "text-gray-400 hover:text-white"
-              }`}
+              onClick={() => setSortDirection(sortDirection === "asc" ? "desc" : "asc")}
+              className="flex items-center gap-1 bg-white/5 border border-white/10 rounded-xl px-3 py-2 hover:bg-white/10 text-xs font-medium text-gray-300 hover:text-white transition-all"
+              title={sortDirection === "asc" ? "Ascending Sort" : "Descending Sort"}
             >
-              Account Name
-            </button>
-            <button
-              onClick={() => {
-                setSearchMode("drive");
-                setSearchQuery("");
-              }}
-              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
-                searchMode === "drive"
-                  ? "bg-purple-600 text-white shadow"
-                  : "text-gray-400 hover:text-white"
-              }`}
-            >
-              Google Drive
+              <ArrowUpDown className="w-3.5 h-3.5" />
+              <span className="uppercase tracking-wider font-mono font-bold">{sortDirection}</span>
             </button>
           </div>
         </div>
