@@ -827,9 +827,34 @@ model MultiplierOutput {
   driveFolderName String?
   googleEmail     String?
   errorMessage  String?
-  exportedAt    DateTime?                 // set when included in a Smart Download archive
-  createdAt     DateTime                  @default(now())
-  updatedAt     DateTime                  @updatedAt
+  exportedAt                 DateTime?                 // set when included in a Smart Download archive
+  exportStatus               String                    @default("not_exported") // not_exported | exporting | exported
+  exportDestinationFolderId  String?
+  exportAssignments          SmartExportAssignment[]
+  createdAt                  DateTime                  @default(now())
+  updatedAt                  DateTime                  @updatedAt
+}
+
+model SmartExportJob {
+  id          String                  @id @default(uuid())
+  groupIds    String[]
+  status      String                  @default("pending") // pending | uploading | done | failed
+  createdBy   String?
+  createdAt   DateTime                @default(now())
+  summary     Json                    @default("{}")
+  assignments SmartExportAssignment[]
+}
+
+model SmartExportAssignment {
+  id            String           @id @default(uuid())
+  jobId         String
+  job           SmartExportJob   @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  videoId       String
+  video         MultiplierOutput @relation(fields: [videoId], references: [id], onDelete: Cascade)
+  sourceGroupId String
+  driveFolderId String
+  status        String           @default("pending") // pending | uploading | done | failed
+  error         String?          @db.Text
 }
 
 // ─── Global Google Drive Connection ──────────────────────────────────────────

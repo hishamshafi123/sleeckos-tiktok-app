@@ -61,7 +61,9 @@ export async function getPostPeerIntegrations(): Promise<any[]> {
       throw new Error(`PostPeer integrations query failed (${res.status}): ${JSON.stringify(data)}`);
     }
     const data = await res.json();
-    return Array.isArray(data) ? data : [];
+    if (Array.isArray(data)) return data;
+    if (data && Array.isArray(data.integrations)) return data.integrations;
+    return [];
   } catch (err: any) {
     console.error("[Accounts Service] Failed to fetch PostPeer integrations:", err.message);
     throw err;
