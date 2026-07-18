@@ -219,6 +219,18 @@ const COLOR_PRESETS = [
   "#f97316",
 ];
 
+const COLOR_MAP: Record<string, string> = {
+  red: "#ef4444",
+  orange: "#f97316",
+  yellow: "#f59e0b",
+  green: "#10b981",
+  blue: "#3b82f6",
+  purple: "#8b5cf6",
+  pink: "#ec4899",
+  zinc: "#71717a",
+  gray: "#71717a",
+};
+
 export default function AccountsPage() {
   const [sections, setSections] = useState<Section[]>([]);
   const [loading, setLoading] = useState(true);
@@ -229,6 +241,7 @@ export default function AccountsPage() {
 
   // Search accounts states
   const [searchQuery, setSearchQuery] = useState("");
+  const [searchMode, setSearchMode] = useState<"account" | "drive">("account");
   const [allAccounts, setAllAccounts] = useState<any[]>([]);
   const [loadingAccounts, setLoadingAccounts] = useState(false);
 
@@ -263,12 +276,41 @@ export default function AccountsPage() {
   const filteredAccounts = useMemo(() => {
     if (!searchQuery.trim()) return [];
     const query = searchQuery.toLowerCase().trim();
-    return allAccounts.filter(
-      (acc) =>
-        acc.tiktokUsername.toLowerCase().includes(query) ||
-        acc.tiktokDisplayName.toLowerCase().includes(query)
-    );
-  }, [allAccounts, searchQuery]);
+
+    const colorOrder: Record<string, number> = {
+      red: 1,
+      orange: 2,
+      yellow: 3,
+      green: 4,
+      blue: 5,
+      purple: 6,
+      pink: 7,
+      zinc: 8,
+      gray: 8,
+    };
+
+    const matched = allAccounts.filter((acc) => {
+      if (searchMode === "drive") {
+        return (
+          (acc.driveFolderName || "").toLowerCase().includes(query) ||
+          (acc.driveFolderId || "").toLowerCase().includes(query)
+        );
+      } else {
+        return (
+          acc.tiktokUsername.toLowerCase().includes(query) ||
+          acc.tiktokDisplayName.toLowerCase().includes(query)
+        );
+      }
+    });
+
+    // Sort by color priority then username alphabetically
+    return matched.sort((a, b) => {
+      const orderA = colorOrder[a.color || "zinc"] || 99;
+      const orderB = colorOrder[b.color || "zinc"] || 99;
+      if (orderA !== orderB) return orderA - orderB;
+      return a.tiktokUsername.localeCompare(b.tiktokUsername);
+    });
+  }, [allAccounts, searchQuery, searchMode]);
 
   const handleCreate = async () => {
     if (!createName.trim()) return;
@@ -335,24 +377,55 @@ export default function AccountsPage() {
         </button>
       </div>
 
-      {/* Search accounts */}
-      <div className="relative max-w-md">
-        <input
-          type="text"
-          placeholder="Search accounts by username or display name..."
-          value={searchQuery}
-          onChange={(e) => setSearchQuery(e.target.value)}
-          className="w-full bg-white/5 border border-white/10 rounded-xl pl-10 pr-4 py-2.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-purple-500 transition-colors"
-        />
-        <Search className="w-4 h-4 text-gray-500 absolute left-3.5 top-1/2 -translate-y-1/2" />
-        {searchQuery && (
+      {/* Search and Accounts List */}
+      <div className="flex flex-col sm:flex-row gap-3 items-stretch sm:items-center max-w-xl">
+        <div className="relative flex-1">
+          <input
+            type="text"
+            placeholder={searchMode === "account" ? "Search accounts by username or display name..." : "Search Google Drive folders/emails..."}
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="w-full bg-white/5 border border-white/10 rounded-xl pl-10 pr-8 py-2.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-purple-500 transition-colors"
+          />
+          <Search className="w-4 h-4 text-gray-500 absolute left-3.5 top-1/2 -translate-y-1/2" />
+          {searchQuery && (
+            <button
+              onClick={() => setSearchQuery("")}
+              className="text-gray-500 hover:text-white absolute right-3 top-1/2 -translate-y-1/2 text-xs font-bold font-mono p-1"
+            >
+              ×
+            </button>
+          )}
+        </div>
+
+        <div className="flex bg-white/5 border border-white/10 rounded-xl p-1 gap-1 flex-shrink-0">
           <button
-            onClick={() => setSearchQuery("")}
-            className="text-gray-500 hover:text-white absolute right-3.5 top-1/2 -translate-y-1/2 text-xs font-bold font-mono"
+            onClick={() => {
+              setSearchMode("account");
+              setSearchQuery("");
+            }}
+            className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
+              searchMode === "account"
+                ? "bg-purple-600 text-white shadow"
+                : "text-gray-400 hover:text-white"
+            }`}
           >
-            ×
+            Account Name
           </button>
-        )}
+          <button
+            onClick={() => {
+              setSearchMode("drive");
+              setSearchQuery("");
+            }}
+            className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
+              searchMode === "drive"
+                ? "bg-purple-600 text-white shadow"
+                : "text-gray-400 hover:text-white"
+            }`}
+          >
+            Google Drive
+          </button>
+        </div>
       </div>
 
       {/* Search Results */}
@@ -365,34 +438,48 @@ export default function AccountsPage() {
             <p className="text-sm text-gray-400 italic">No matching TikTok accounts found</p>
           ) : (
             <div className="grid gap-3 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4">
-              {filteredAccounts.map((acc) => (
-                <Link
-                  key={acc.id}
-                  href={`/admin/accounts/${acc.group.section.slug}/${acc.group.slug}`}
-                  className="flex items-center gap-3 p-3 rounded-xl bg-white/3 hover:bg-white/5 border border-white/5 hover:border-white/10 transition-all group"
-                >
-                  <img
-                    src={acc.tiktokAvatarUrl || "https://www.tiktok.com/favicon.ico"}
-                    alt={acc.tiktokDisplayName}
-                    className="w-10 h-10 rounded-full object-cover border border-white/10"
-                    onError={(e) => {
-                      (e.target as HTMLImageElement).src = "https://www.tiktok.com/favicon.ico";
+              {filteredAccounts.map((acc) => {
+                const colKey = acc.color || "zinc";
+                const baseColor = COLOR_MAP[colKey] || COLOR_MAP.zinc;
+                const isSpecialColor = colKey !== "zinc" && colKey !== "gray";
+                return (
+                  <Link
+                    key={acc.id}
+                    href={`/admin/accounts/${acc.group.section.slug}/${acc.group.slug}`}
+                    className="flex items-center gap-3 p-3 rounded-xl transition-all group border"
+                    style={{
+                      borderLeft: `4px solid ${baseColor}`,
+                      borderColor: isSpecialColor ? `${baseColor}25` : "rgba(255,255,255,0.05)",
+                      backgroundColor: isSpecialColor ? `${baseColor}0b` : "rgba(255,255,255,0.02)",
                     }}
-                  />
-                  <div className="min-w-0 flex-1">
-                    <h3 className="text-sm font-bold text-white truncate group-hover:text-purple-400 transition-colors">
-                      @{acc.tiktokUsername}
-                    </h3>
-                    <p className="text-xs text-gray-400 truncate">{acc.tiktokDisplayName}</p>
-                    <div className="flex items-center gap-1.5 mt-1">
-                      <span className="text-[9px] font-semibold text-gray-500 truncate">
-                        {acc.group.section.name} / {acc.group.name}
-                      </span>
+                  >
+                    <img
+                      src={acc.tiktokAvatarUrl || "https://www.tiktok.com/favicon.ico"}
+                      alt={acc.tiktokDisplayName}
+                      className="w-10 h-10 rounded-full object-cover border border-white/10"
+                      onError={(e) => {
+                        (e.target as HTMLImageElement).src = "https://www.tiktok.com/favicon.ico";
+                      }}
+                    />
+                    <div className="min-w-0 flex-1">
+                      <h3 className="text-sm font-bold text-white truncate group-hover:text-purple-400 transition-colors">
+                        @{acc.tiktokUsername}
+                      </h3>
+                      <p className="text-xs text-gray-400 truncate">
+                        {searchMode === "drive" && acc.driveFolderName
+                          ? `📁 ${acc.driveFolderName}`
+                          : acc.tiktokDisplayName}
+                      </p>
+                      <div className="flex items-center gap-1.5 mt-1">
+                        <span className="text-[9px] font-semibold text-gray-500 truncate">
+                          {acc.group.section.name} / {acc.group.name}
+                        </span>
+                      </div>
                     </div>
-                  </div>
-                  <ChevronRight className="w-4 h-4 text-gray-600 group-hover:text-purple-400 group-hover:translate-x-0.5 transition-all flex-shrink-0" />
-                </Link>
-              ))}
+                    <ChevronRight className="w-4 h-4 text-gray-600 group-hover:text-purple-400 group-hover:translate-x-0.5 transition-all flex-shrink-0" />
+                  </Link>
+                );
+              })}
             </div>
           )}
         </div>

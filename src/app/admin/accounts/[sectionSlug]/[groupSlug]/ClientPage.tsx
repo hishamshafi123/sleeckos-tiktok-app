@@ -74,61 +74,16 @@ const DAYS = [
   { num: "7", label: "Sun" },
 ];
 
-const CARD_COLOR_CLASSES: Record<string, { border: string; borderL: string; bg: string; shadow: string }> = {
-  red: {
-    border: "border-red-500/20 hover:border-red-500/30",
-    borderL: "border-l-4 border-l-red-500",
-    bg: "bg-red-950/5",
-    shadow: "shadow-red-950/10",
-  },
-  orange: {
-    border: "border-orange-500/20 hover:border-orange-500/30",
-    borderL: "border-l-4 border-l-orange-500",
-    bg: "bg-orange-950/5",
-    shadow: "shadow-orange-950/10",
-  },
-  yellow: {
-    border: "border-yellow-500/20 hover:border-yellow-500/30",
-    borderL: "border-l-4 border-l-yellow-500",
-    bg: "bg-yellow-950/5",
-    shadow: "shadow-yellow-950/10",
-  },
-  green: {
-    border: "border-green-500/20 hover:border-green-500/30",
-    borderL: "border-l-4 border-l-green-500",
-    bg: "bg-green-950/5",
-    shadow: "shadow-green-950/10",
-  },
-  blue: {
-    border: "border-blue-500/20 hover:border-blue-500/30",
-    borderL: "border-l-4 border-l-blue-500",
-    bg: "bg-blue-950/5",
-    shadow: "shadow-blue-950/10",
-  },
-  purple: {
-    border: "border-purple-500/20 hover:border-purple-500/30",
-    borderL: "border-l-4 border-l-purple-500",
-    bg: "bg-purple-950/5",
-    shadow: "shadow-purple-950/10",
-  },
-  pink: {
-    border: "border-pink-500/20 hover:border-pink-500/30",
-    borderL: "border-l-4 border-l-pink-500",
-    bg: "bg-pink-950/5",
-    shadow: "shadow-pink-950/10",
-  },
-  zinc: {
-    border: "border-white/5 hover:border-white/10",
-    borderL: "border-l-4 border-l-zinc-500",
-    bg: "bg-transparent",
-    shadow: "shadow-none",
-  },
-  gray: {
-    border: "border-white/5 hover:border-white/10",
-    borderL: "border-l-4 border-l-zinc-500",
-    bg: "bg-transparent",
-    shadow: "shadow-none",
-  },
+const COLOR_MAP: Record<string, string> = {
+  red: "#ef4444",
+  orange: "#f97316",
+  yellow: "#f59e0b",
+  green: "#10b981",
+  blue: "#3b82f6",
+  purple: "#8b5cf6",
+  pink: "#ec4899",
+  zinc: "#71717a",
+  gray: "#71717a",
 };
 
 export default function GroupPage({
@@ -527,11 +482,18 @@ export default function GroupPage({
           ) : (
             filteredAccounts.map((acc) => {
               const colKey = acc.color || "zinc";
-              const colConf = CARD_COLOR_CLASSES[colKey] || CARD_COLOR_CLASSES.zinc;
+              const baseColor = COLOR_MAP[colKey] || COLOR_MAP.zinc;
+              const isSpecialColor = colKey !== "zinc" && colKey !== "gray";
               return (
                 <div
                   key={acc.id}
-                  className={`glass border rounded-2xl overflow-hidden transition-all ${colConf.border} ${colConf.borderL} ${colConf.bg} ${colConf.shadow}`}
+                  className="glass border rounded-2xl overflow-hidden transition-all"
+                  style={{
+                    borderLeft: `4px solid ${baseColor}`,
+                    borderColor: isSpecialColor ? `${baseColor}25` : undefined,
+                    backgroundColor: isSpecialColor ? `${baseColor}0b` : undefined,
+                    boxShadow: isSpecialColor ? `0 4px 20px ${baseColor}05` : undefined,
+                  }}
                 >
                   <div className="p-5">
                 {/* Top row */}

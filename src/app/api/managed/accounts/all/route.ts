@@ -22,6 +22,9 @@ export async function GET() {
       tiktokDisplayName: true,
       tiktokAvatarUrl: true,
       isActive: true,
+      driveFolderId: true,
+      driveFolderName: true,
+      color: true,
       group: {
         select: {
           name: true,
