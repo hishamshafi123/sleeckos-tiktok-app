@@ -45,14 +45,14 @@ const DAYS = [
 ];
 
 const ACCOUNT_COLORS = [
-  { id: "zinc", name: "Gray", bg: "bg-zinc-500", text: "text-zinc-300", border: "border-zinc-500/50" },
-  { id: "red", name: "Red", bg: "bg-red-500", text: "text-red-300", border: "border-red-500/50" },
-  { id: "orange", name: "Orange", bg: "bg-orange-500", text: "text-orange-300", border: "border-orange-500/50" },
-  { id: "yellow", name: "Yellow", bg: "bg-yellow-500", text: "text-yellow-300", border: "border-yellow-500/50" },
-  { id: "green", name: "Green", bg: "bg-green-500", text: "text-green-300", border: "border-green-500/50" },
-  { id: "blue", name: "Blue", bg: "bg-blue-500", text: "text-blue-300", border: "border-blue-500/50" },
-  { id: "purple", name: "Purple", bg: "bg-purple-500", text: "text-purple-300", border: "border-purple-500/50" },
-  { id: "pink", name: "Pink", bg: "bg-pink-500", text: "text-pink-300", border: "border-pink-500/50" },
+  { id: "zinc", name: "Gray (Default)", bg: "bg-zinc-500", text: "text-zinc-300", border: "border-zinc-500/50" },
+  { id: "red", name: "Red (Banned)", bg: "bg-red-500", text: "text-red-300", border: "border-red-500/50" },
+  { id: "orange", name: "Orange (Shadowbanned)", bg: "bg-orange-500", text: "text-orange-300", border: "border-orange-500/50" },
+  { id: "yellow", name: "Yellow (Warm-up / New)", bg: "bg-yellow-500", text: "text-yellow-300", border: "border-yellow-500/50" },
+  { id: "green", name: "Green (Good)", bg: "bg-green-500", text: "text-green-300", border: "border-green-500/50" },
+  { id: "blue", name: "Blue (Best Performer)", bg: "bg-blue-500", text: "text-blue-300", border: "border-blue-500/50" },
+  { id: "purple", name: "Purple (Best Performer)", bg: "bg-purple-500", text: "text-purple-300", border: "border-purple-500/50" },
+  { id: "pink", name: "Pink (Custom)", bg: "bg-pink-500", text: "text-pink-300", border: "border-pink-500/50" },
 ];
 
 export default function ManagedAccountEditForm({
@@ -443,7 +443,7 @@ export default function ManagedAccountEditForm({
         <label className="block text-xs text-gray-400 mb-2 font-medium">
           Account Card Color
         </label>
-        <div className="grid grid-cols-4 gap-2">
+        <div className="grid grid-cols-2 gap-2">
           {ACCOUNT_COLORS.map((col) => (
             <button
               key={col.id}

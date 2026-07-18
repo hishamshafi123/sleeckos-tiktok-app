@@ -472,8 +472,8 @@ export default function AccountsPage() {
                     className="flex items-center text-left w-full gap-3 p-3 rounded-xl transition-all group border"
                     style={{
                       borderLeft: `4px solid ${baseColor}`,
-                      borderColor: isSpecialColor ? `${baseColor}25` : "rgba(255,255,255,0.05)",
-                      backgroundColor: isSpecialColor ? `${baseColor}0b` : "rgba(255,255,255,0.02)",
+                      borderColor: isSpecialColor ? `${baseColor}60` : "rgba(255,255,255,0.05)",
+                      backgroundColor: isSpecialColor ? `${baseColor}1f` : "rgba(255,255,255,0.02)",
                     }}
                   >
                     <img

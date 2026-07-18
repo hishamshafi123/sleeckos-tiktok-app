@@ -510,9 +510,9 @@ export default function GroupPage({
                   className="glass border rounded-2xl overflow-hidden transition-all"
                   style={{
                     borderLeft: `4px solid ${baseColor}`,
-                    borderColor: isSpecialColor ? `${baseColor}25` : undefined,
-                    backgroundColor: isSpecialColor ? `${baseColor}0b` : undefined,
-                    boxShadow: isSpecialColor ? `0 4px 20px ${baseColor}05` : undefined,
+                    borderColor: isSpecialColor ? `${baseColor}60` : undefined,
+                    backgroundColor: isSpecialColor ? `${baseColor}1f` : undefined,
+                    boxShadow: isSpecialColor ? `0 4px 20px ${baseColor}08` : undefined,
                   }}
                 >
                   <div className="p-5">
