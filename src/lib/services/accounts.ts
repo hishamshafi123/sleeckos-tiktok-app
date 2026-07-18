@@ -48,22 +48,42 @@ export function safeDecrypt(val: string | null | undefined): string {
  */
 export async function getPostPeerIntegrations(): Promise<any[]> {
   const apiKey = getPostPeerKey();
-  const url = `${POSTPEER_API}/connect/integrations`;
+  const allIntegrations: any[] = [];
+  const limit = 100;
+  let offset = 0;
+  let hasMore = true;
+
   try {
-    const res = await fetch(url, {
-      method: "GET",
-      headers: {
-        "x-access-key": apiKey,
-      },
-    });
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
-      throw new Error(`PostPeer integrations query failed (${res.status}): ${JSON.stringify(data)}`);
+    while (hasMore) {
+      const url = `${POSTPEER_API}/connect/integrations?limit=${limit}&offset=${offset}`;
+      const res = await fetch(url, {
+        method: "GET",
+        headers: {
+          "x-access-key": apiKey,
+        },
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(`PostPeer integrations query failed (${res.status}): ${JSON.stringify(data)}`);
+      }
+      const data = await res.json();
+      
+      let list: any[] = [];
+      if (Array.isArray(data)) {
+        list = data;
+      } else if (data && Array.isArray(data.integrations)) {
+        list = data.integrations;
+      }
+
+      allIntegrations.push(...list);
+
+      if (list.length < limit) {
+        hasMore = false;
+      } else {
+        offset += limit;
+      }
     }
-    const data = await res.json();
-    if (Array.isArray(data)) return data;
-    if (data && Array.isArray(data.integrations)) return data.integrations;
-    return [];
+    return allIntegrations;
   } catch (err: any) {
     console.error("[Accounts Service] Failed to fetch PostPeer integrations:", err.message);
     throw err;
