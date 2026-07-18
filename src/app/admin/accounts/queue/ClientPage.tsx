@@ -30,6 +30,8 @@ type QueuePost = {
   account: {
     tiktokUsername: string;
     tiktokAvatarUrl: string;
+    driveFolderId: string | null;
+    driveFolderName: string | null;
     group: { name: string; section: { name: string } };
   };
 };
@@ -417,9 +419,19 @@ export default function QueuePage() {
                         <span className="text-white text-sm font-medium">
                           @{post.account.tiktokUsername}
                         </span>
-                        <span className="text-gray-600 text-xs">
+                        <span className="text-gray-600 text-xs flex items-center gap-1.5 flex-wrap">
                           {post.account.group.section.name} /{" "}
                           {post.account.group.name}
+                          {post.account.driveFolderId && (
+                            <a
+                              href={`https://drive.google.com/drive/folders/${post.account.driveFolderId}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center gap-0.5 text-[10px] text-blue-400 hover:text-blue-300 hover:underline font-semibold"
+                            >
+                              📂 {post.account.driveFolderName || "Drive Link"}
+                            </a>
+                          )}
                         </span>
                       </div>
                       <p className="text-gray-400 text-xs mt-0.5 truncate">
@@ -431,10 +443,14 @@ export default function QueuePage() {
                         </p>
                       )}
                       <div className="flex items-center gap-2 mt-1">
-                        <span className="text-gray-600 text-[10px]">
-                          {timeAgo(post.createdAt)}
-                          {post.publishedAt &&
-                            ` · Published ${timeAgo(post.publishedAt)}`}
+                        <span className="text-gray-500 text-[10px]">
+                          {post.publishedAt ? (
+                            <span className="text-green-400 font-medium">Posted {timeAgo(post.publishedAt)}</span>
+                          ) : (
+                            <span>Scheduled {timeAgo(post.scheduledFor)}</span>
+                          )}
+                          {" · "}
+                          <span>Indexed {timeAgo(post.createdAt)}</span>
                         </span>
                         {(post.tiktokPostUrl || post.tiktokVideoId) && (
                           <a

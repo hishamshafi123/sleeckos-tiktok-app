@@ -74,6 +74,8 @@ export async function GET(req: NextRequest) {
         select: {
           tiktokUsername: true,
           tiktokAvatarUrl: true,
+          driveFolderId: true,
+          driveFolderName: true,
           group: { select: { name: true, section: { select: { id: true, name: true } } } },
         },
       },

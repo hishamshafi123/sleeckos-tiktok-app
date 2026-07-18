@@ -32,6 +32,8 @@ type HistoryPost = {
   account: {
     tiktokUsername: string;
     tiktokAvatarUrl: string;
+    driveFolderId: string | null;
+    driveFolderName: string | null;
     group: { name: string; section: { id: string; name: string } };
   };
 };
@@ -53,6 +55,17 @@ export default function HistoryPage() {
   const [hashtagFilter, setHashtagFilter] = useState("");
   const [fromDate, setFromDate] = useState("");
   const [toDate, setToDate] = useState("");
+
+  const timeAgo = (dateStr: string) => {
+    const diff = Date.now() - new Date(dateStr).getTime();
+    const mins = Math.floor(diff / 60000);
+    if (mins < 1) return "just now";
+    if (mins < 60) return `${mins}m ago`;
+    const hours = Math.floor(mins / 60);
+    if (hours < 24) return `${hours}h ago`;
+    const days = Math.floor(hours / 24);
+    return `${days}d ago`;
+  };
 
   // Fetch sections for dropdown
   useEffect(() => {
@@ -327,9 +340,21 @@ export default function HistoryPage() {
                           className="w-6 h-6 rounded-full"
                           alt=""
                         />
-                        <span className="text-white text-xs font-medium">
-                          @{post.account.tiktokUsername}
-                        </span>
+                        <div className="flex flex-col">
+                          <span className="text-white text-xs font-medium">
+                            @{post.account.tiktokUsername}
+                          </span>
+                          {post.account.driveFolderId && (
+                            <a
+                              href={`https://drive.google.com/drive/folders/${post.account.driveFolderId}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center gap-0.5 text-[9px] text-blue-400 hover:text-blue-300 hover:underline font-semibold"
+                            >
+                              📂 {post.account.driveFolderName || "Drive Link"}
+                            </a>
+                          )}
+                        </div>
                       </div>
                     </td>
                     <td className="px-4 py-3">
@@ -362,10 +387,18 @@ export default function HistoryPage() {
                     <td className="px-4 py-3 text-right text-gray-300 text-xs font-mono">
                       {Number(post.likeCount).toLocaleString()}
                     </td>
-                    <td className="px-4 py-3 text-gray-500 text-xs whitespace-nowrap">
-                      {post.publishedAt
-                        ? new Date(post.publishedAt).toLocaleDateString()
-                        : new Date(post.createdAt).toLocaleDateString()}
+                    <td className="px-4 py-3 text-xs whitespace-nowrap">
+                      {post.publishedAt ? (
+                        <div className="flex flex-col">
+                          <span className="text-green-400 font-medium">Posted {timeAgo(post.publishedAt)}</span>
+                          <span className="text-[10px] text-gray-500">{new Date(post.publishedAt).toLocaleDateString()}</span>
+                        </div>
+                      ) : (
+                        <div className="flex flex-col">
+                          <span className="text-gray-400 font-medium">Created {timeAgo(post.createdAt)}</span>
+                          <span className="text-[10px] text-gray-600">{new Date(post.createdAt).toLocaleDateString()}</span>
+                        </div>
+                      )}
                     </td>
                     <td className="px-4 py-3">
                       {post.tiktokPostUrl ? (
