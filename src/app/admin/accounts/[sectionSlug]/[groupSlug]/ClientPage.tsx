@@ -604,13 +604,20 @@ export default function GroupPage({
                   >
                     {acc.postMode === "DIRECT" ? "Direct Post" : "Draft"}
                   </span>
-                  {acc.driveConnected ? (
-                    <span className="flex items-center gap-1 bg-blue-500/10 text-blue-400 px-2.5 py-1 rounded-full">
+                  {acc.driveConnected && acc.driveFolderId ? (
+                    <a
+                      href={`https://drive.google.com/drive/folders/${acc.driveFolderId}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex items-center gap-1 bg-blue-500/10 hover:bg-blue-500/20 text-blue-400 border border-blue-500/20 hover:border-blue-500/30 px-2.5 py-1 rounded-full transition-all text-xs font-medium"
+                      title="Open Google Drive folder"
+                    >
                       <FolderOpen className="w-3 h-3" />
                       {acc.driveFolderName || "Drive linked"}
-                    </span>
+                      <ExternalLink className="w-2.5 h-2.5 ml-0.5 opacity-60" />
+                    </a>
                   ) : (
-                    <span className="flex items-center gap-1 bg-yellow-500/10 text-yellow-500 px-2.5 py-1 rounded-full">
+                    <span className="flex items-center gap-1 bg-yellow-500/10 text-yellow-500 px-2.5 py-1 rounded-full text-xs font-medium">
                       <FolderOpen className="w-3 h-3" />
                       No folder linked
                     </span>
