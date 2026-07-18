@@ -331,7 +331,16 @@ async function processExportQueue() {
       where: { status: "pending" },
       include: {
         video: {
-          include: { hook: { select: { text: true } } },
+          include: {
+            hook: { select: { text: true } },
+            group: {
+              include: {
+                campaign: {
+                  select: { title: true, name: true }
+                }
+              }
+            }
+          },
         },
         job: true,
       },
@@ -384,12 +393,19 @@ async function processExportQueue() {
       }
 
       // 3. Upload to Google Drive
+      const campaignTitle = (video as any).group?.campaign?.title || (video as any).group?.campaign?.name || "campaign";
+      const cleanCampaignSlug = campaignTitle
+        .replace(/[^a-zA-Z0-9 ]/g, "")
+        .trim()
+        .replace(/\s+/g, "_")
+        .substring(0, 30);
+
       const cleanHookSlug = video.hook.text
         .replace(/[^a-zA-Z0-9 ]/g, "")
         .trim()
         .replace(/\s+/g, "_")
         .substring(0, 40);
-      const fileName = `multi_${video.id}_${cleanHookSlug || "video"}.mp4`;
+      const fileName = `${cleanCampaignSlug}_${cleanHookSlug || "video"}_${video.id}.mp4`;
 
       console.log(`[Smart Export Worker] Uploading ${fileName} to folder ${assignment.driveFolderId}`);
       
