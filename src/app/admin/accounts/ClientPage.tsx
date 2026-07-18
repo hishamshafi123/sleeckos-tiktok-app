@@ -2,6 +2,7 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import Link from "next/link";
 import { toast } from "sonner";
+import ManagedAccountEditForm from "@/components/ManagedAccountEditForm";
 import {
   Plus,
   FolderOpen,
@@ -246,6 +247,7 @@ export default function AccountsPage() {
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
   const [allAccounts, setAllAccounts] = useState<any[]>([]);
   const [loadingAccounts, setLoadingAccounts] = useState(false);
+  const [editingAccountId, setEditingAccountId] = useState<string | null>(null);
 
   const fetchSections = useCallback(async () => {
     try {
@@ -260,20 +262,21 @@ export default function AccountsPage() {
     fetchSections();
   }, [fetchSections]);
 
-  useEffect(() => {
-    const fetchAllAccounts = async () => {
-      setLoadingAccounts(true);
-      try {
-        const res = await fetch("/api/managed/accounts/all");
-        if (res.ok) setAllAccounts(await res.json());
-      } catch (err) {
-        console.error("Failed to load accounts list for search", err);
-      } finally {
-        setLoadingAccounts(false);
-      }
-    };
-    fetchAllAccounts();
+  const fetchAllAccounts = useCallback(async () => {
+    setLoadingAccounts(true);
+    try {
+      const res = await fetch("/api/managed/accounts/all");
+      if (res.ok) setAllAccounts(await res.json());
+    } catch (err) {
+      console.error("Failed to load accounts list for search", err);
+    } finally {
+      setLoadingAccounts(false);
+    }
   }, []);
+
+  useEffect(() => {
+    fetchAllAccounts();
+  }, [fetchAllAccounts]);
 
   const filteredAccounts = useMemo(() => {
     if (!searchQuery.trim()) return [];
@@ -463,10 +466,10 @@ export default function AccountsPage() {
                 const baseColor = COLOR_MAP[colKey] || COLOR_MAP.zinc;
                 const isSpecialColor = colKey !== "zinc" && colKey !== "gray";
                 return (
-                  <Link
+                  <button
                     key={acc.id}
-                    href={`/admin/accounts/${acc.group.section.slug}/${acc.group.slug}`}
-                    className="flex items-center gap-3 p-3 rounded-xl transition-all group border"
+                    onClick={() => setEditingAccountId(acc.id)}
+                    className="flex items-center text-left w-full gap-3 p-3 rounded-xl transition-all group border"
                     style={{
                       borderLeft: `4px solid ${baseColor}`,
                       borderColor: isSpecialColor ? `${baseColor}25` : "rgba(255,255,255,0.05)",
@@ -497,7 +500,7 @@ export default function AccountsPage() {
                       </div>
                     </div>
                     <ChevronRight className="w-4 h-4 text-gray-600 group-hover:text-purple-400 group-hover:translate-x-0.5 transition-all flex-shrink-0" />
-                  </Link>
+                  </button>
                 );
               })}
             </div>
@@ -667,6 +670,30 @@ export default function AccountsPage() {
               </div>
             </div>
           ))}
+        </div>
+      )}
+      {/* Account Settings Popup Modal */}
+      {editingAccountId && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm">
+          <div className="relative w-full max-w-2xl bg-[#09090b] border border-white/10 rounded-2xl p-6 shadow-2xl max-h-[90vh] overflow-y-auto custom-scrollbar">
+            <button
+              onClick={() => setEditingAccountId(null)}
+              className="absolute top-4 right-4 text-gray-500 hover:text-white transition-colors"
+              aria-label="Close settings"
+            >
+              <X className="w-5 h-5" />
+            </button>
+            <h2 className="text-lg font-bold text-white mb-4">Account Settings</h2>
+            <ManagedAccountEditForm
+              accountId={editingAccountId}
+              onClose={() => setEditingAccountId(null)}
+              onSave={() => {
+                setEditingAccountId(null);
+                fetchAllAccounts();
+                fetchSections();
+              }}
+            />
+          </div>
         </div>
       )}
     </div>
