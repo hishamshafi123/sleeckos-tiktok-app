@@ -160,13 +160,19 @@ export async function transcribeGroup(groupId: string): Promise<string> {
   });
 }
 
-export async function generateHooks(groupId: string, count: number, useCampaignContext: boolean, customPrompt?: string): Promise<string[]> {
-  const group = await prisma.multiplierGroup.findUnique({
-    where: { id: groupId },
-    include: { campaign: true },
-  });
+type GroupWithCampaign = {
+  transcript: string | null;
+  campaign: {
+    title: string;
+    type: string;
+    description: string;
+    brief: string;
+    infoContent: string | null;
+  } | null;
+};
 
-  if (!group) throw new Error("Group not found");
+// Shared Gemini pipeline: builds the prompt, calls the model, parses hook texts.
+async function generateHookTexts(group: GroupWithCampaign, count: number, useCampaignContext: boolean, customPrompt?: string): Promise<string[]> {
   if (!group.transcript) throw new Error("Group has not been transcribed yet. Run transcription first.");
 
   const apiKey = process.env.GEMINI_API_KEY;
@@ -242,19 +248,7 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
     }
     const hooks = JSON.parse(cleaned);
     if (Array.isArray(hooks)) {
-      // Save hooks to DB
-      await prisma.multiplierHook.deleteMany({ where: { groupId } });
-      for (let i = 0; i < hooks.length; i++) {
-        await prisma.multiplierHook.create({
-          data: {
-            groupId,
-            text: hooks[i].trim(),
-            source: "ai",
-            order: i,
-          },
-        });
-      }
-      return hooks;
+      return hooks.map((h: any) => String(h).trim()).filter((h: string) => h.length > 0);
     }
   } catch (parseErr) {
     console.error("[Multiplier Gemini Parse Error]:", parseErr, responseText);
@@ -267,22 +261,61 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
     .filter((l) => l.length > 3 && !l.startsWith("[") && !l.startsWith("]"));
 
   if (lines.length > 0) {
-    await prisma.multiplierHook.deleteMany({ where: { groupId } });
-    const saved = lines.slice(0, count);
-    for (let i = 0; i < saved.length; i++) {
-      await prisma.multiplierHook.create({
-        data: {
-          groupId,
-          text: saved[i],
-          source: "ai",
-          order: i,
-        },
-      });
-    }
-    return saved;
+    return lines.slice(0, count);
   }
 
   throw new Error("Failed to parse Gemini generated hooks. Please check format or retry.");
+}
+
+export async function generateHooks(groupId: string, count: number, useCampaignContext: boolean, customPrompt?: string): Promise<string[]> {
+  const group = await prisma.multiplierGroup.findUnique({
+    where: { id: groupId },
+    include: { campaign: true },
+  });
+
+  if (!group) throw new Error("Group not found");
+  if (!group.transcript) throw new Error("Group has not been transcribed yet. Run transcription first.");
+
+  const hooks = await generateHookTexts(group, count, useCampaignContext, customPrompt);
+
+  // Replace the group's hook list with the generated set
+  await prisma.multiplierHook.deleteMany({ where: { groupId } });
+  for (let i = 0; i < hooks.length; i++) {
+    await prisma.multiplierHook.create({
+      data: {
+        groupId,
+        text: hooks[i].trim(),
+        source: "ai",
+        order: i,
+      },
+    });
+  }
+
+  return hooks;
+}
+
+// Regenerates the text of a single existing hook using the same Gemini pipeline.
+export async function regenerateHook(hookId: string) {
+  const hook = await prisma.multiplierHook.findUnique({
+    where: { id: hookId },
+  });
+  if (!hook) throw new Error("Hook not found");
+
+  const group = await prisma.multiplierGroup.findUnique({
+    where: { id: hook.groupId },
+    include: { campaign: true },
+  });
+  if (!group) throw new Error("Group not found");
+  if (!group.transcript) throw new Error("Group has not been transcribed yet. Run transcription first.");
+
+  const texts = await generateHookTexts(group, 1, !!group.campaignId);
+  const newText = (texts[0] || "").trim();
+  if (!newText) throw new Error("Gemini returned an empty hook. Please retry.");
+
+  return prisma.multiplierHook.update({
+    where: { id: hookId },
+    data: { text: newText, source: "ai" },
+  });
 }
 
 export async function addManualHook(groupId: string, text: string) {
@@ -703,4 +736,202 @@ export async function retryOutput(outputId: string) {
   triggerQueueWorker();
 
   return output;
+}
+
+// ─── Bulk Intake (multi-video batch upload) ─────────────────────────────────
+
+const DEFAULT_BULK_STYLE_ID = "news-lower-third";
+
+export async function createBulkBatch(input: {
+  files: { tempPath: string; fileName: string }[];
+  campaignId?: string | null;
+  styleId?: string | null;
+  createdBy?: string | null;
+}): Promise<{ jobId: string; groupIds: string[] }> {
+  ensureDirsExist();
+
+  const job = await prisma.multiplierBatchJob.create({
+    data: {
+      status: "PROCESSING",
+      campaignId: input.campaignId || null,
+      styleId: input.styleId || null,
+      createdBy: input.createdBy || null,
+    },
+  });
+
+  const groupIds: string[] = [];
+
+  for (const file of input.files) {
+    try {
+      const name = file.fileName.replace(/\.[^.]+$/, "") || file.fileName;
+      const group = await prisma.multiplierGroup.create({
+        data: {
+          name,
+          campaignId: input.campaignId || null,
+          styleId: input.styleId || DEFAULT_BULK_STYLE_ID,
+          mappingMode: "distribute",
+          settings: {},
+          createdBy: input.createdBy || null,
+        },
+      });
+
+      // Moves the uploaded temp file into the variations directory
+      await addVariation(group.id, file.tempPath, file.fileName);
+
+      // The route has already received the upload, so the item starts at TRANSCRIBING
+      await prisma.multiplierBatchJobItem.create({
+        data: {
+          jobId: job.id,
+          fileName: file.fileName,
+          status: "TRANSCRIBING",
+          groupId: group.id,
+        },
+      });
+
+      groupIds.push(group.id);
+    } catch (err: any) {
+      try { fs.unlinkSync(file.tempPath); } catch {}
+      await prisma.multiplierBatchJobItem.create({
+        data: {
+          jobId: job.id,
+          fileName: file.fileName,
+          status: "FAILED",
+          error: err?.message || String(err),
+        },
+      });
+    }
+  }
+
+  // Kick off background processing (fire-and-forget, same pattern as triggerQueueWorker)
+  processBulkBatch(job.id).catch((err) => {
+    console.error(`[Multiplier Bulk Batch] Failed to trigger processing for job ${job.id}:`, err);
+  });
+
+  return { jobId: job.id, groupIds };
+}
+
+let isBulkProcessing = false;
+
+export async function processBulkBatch(jobId: string) {
+  if (isBulkProcessing) {
+    // CPU is scarce — process batches strictly one at a time. Retry shortly.
+    setTimeout(() => {
+      processBulkBatch(jobId).catch((err) => {
+        console.error(`[Multiplier Bulk Batch] Error processing job ${jobId}:`, err);
+      });
+    }, 5000);
+    return;
+  }
+  isBulkProcessing = true;
+
+  try {
+    const job = await prisma.multiplierBatchJob.findUnique({
+      where: { id: jobId },
+      include: { items: { orderBy: { createdAt: "asc" } } },
+    });
+    if (!job) return;
+
+    for (const item of job.items) {
+      if (item.status === "READY" || item.status === "FAILED") continue; // resume-safe
+
+      try {
+        if (!item.groupId) throw new Error("Batch item has no associated group");
+
+        await prisma.multiplierBatchJobItem.update({
+          where: { id: item.id },
+          data: { status: "TRANSCRIBING", error: null },
+        });
+        await transcribeGroup(item.groupId);
+
+        await prisma.multiplierBatchJobItem.update({
+          where: { id: item.id },
+          data: { status: "GENERATING_HOOKS" },
+        });
+        await generateHooks(item.groupId, 15, !!job.campaignId);
+
+        await prisma.multiplierBatchJobItem.update({
+          where: { id: item.id },
+          data: { status: "READY" },
+        });
+      } catch (err: any) {
+        console.error(`[Multiplier Bulk Batch] Item ${item.id} (${item.fileName}) failed:`, err);
+        // One bad video must not kill the batch — mark it and continue
+        await prisma.multiplierBatchJobItem.update({
+          where: { id: item.id },
+          data: { status: "FAILED", error: err?.message || String(err) },
+        });
+      }
+    }
+
+    const items = await prisma.multiplierBatchJobItem.findMany({ where: { jobId } });
+    const anyReady = items.some((i) => i.status === "READY");
+    await prisma.multiplierBatchJob.update({
+      where: { id: jobId },
+      data: { status: anyReady ? "COMPLETED" : "FAILED" },
+    });
+  } finally {
+    isBulkProcessing = false;
+  }
+}
+
+export async function getBulkBatch(jobId: string) {
+  return prisma.multiplierBatchJob.findUnique({
+    where: { id: jobId },
+    include: {
+      items: {
+        orderBy: { createdAt: "asc" },
+        select: {
+          id: true,
+          fileName: true,
+          status: true,
+          groupId: true,
+          error: true,
+        },
+      },
+    },
+  });
+}
+
+// ─── Bulk Render ─────────────────────────────────────────────────────────────
+
+export async function bulkRenderGroups(groupIds: string[]): Promise<{
+  queued: string[];
+  skipped: { groupId: string; reason: string }[];
+}> {
+  const queued: string[] = [];
+  const skipped: { groupId: string; reason: string }[] = [];
+
+  for (const groupId of groupIds) {
+    const group = await prisma.multiplierGroup.findUnique({
+      where: { id: groupId },
+      include: { _count: { select: { variations: true, hooks: true } } },
+    });
+
+    if (!group) {
+      skipped.push({ groupId, reason: "Group not found" });
+      continue;
+    }
+    if (group.status === "QUEUED" || group.status === "RENDERING") {
+      skipped.push({ groupId, reason: `Group is already ${group.status.toLowerCase()}` });
+      continue;
+    }
+    if (group._count.variations === 0) {
+      skipped.push({ groupId, reason: "Add at least one video variation to render" });
+      continue;
+    }
+    if (group._count.hooks === 0) {
+      skipped.push({ groupId, reason: "Add at least one hook to render" });
+      continue;
+    }
+
+    try {
+      // startGroupRender triggers the queue worker internally
+      await startGroupRender(groupId);
+      queued.push(groupId);
+    } catch (err: any) {
+      skipped.push({ groupId, reason: err?.message || String(err) });
+    }
+  }
+
+  return { queued, skipped };
 }

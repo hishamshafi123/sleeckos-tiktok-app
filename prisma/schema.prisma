@@ -789,8 +789,8 @@ model MultiplierTemplate {
 model MultiplierGroup {
   id              String                    @id @default(uuid())
   name            String
-  campaignId      String
-  campaign        Campaign                  @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  campaignId      String?
+  campaign        Campaign?                 @relation(fields: [campaignId], references: [id], onDelete: Cascade)
   transcript      String?                   @db.Text
   transcriptStatus String                    @default("PENDING") // PENDING | TRANSCRIBING | TRANSCRIBED | FAILED
   styleId         String                    // template preset key or ID
@@ -853,6 +853,7 @@ model SmartExportJob {
   id          String                  @id @default(uuid())
   groupIds    String[]
   status      String                  @default("pending") // pending | uploading | done | failed
+  days        Int                     @default(1)
   createdBy   String?
   createdAt   DateTime                @default(now())
   summary     Json                    @default("{}")
@@ -869,6 +870,31 @@ model SmartExportAssignment {
   driveFolderId String
   status        String           @default("pending") // pending | uploading | done | failed
   error         String?          @db.Text
+}
+
+// ─── Multiplier Bulk Intake (batch upload of many videos) ────────────────────
+
+model MultiplierBatchJob {
+  id         String                   @id @default(uuid())
+  status     String                   @default("PROCESSING") // PROCESSING | COMPLETED | FAILED
+  campaignId String?
+  styleId    String?
+  createdBy  String?
+  items      MultiplierBatchJobItem[]
+  createdAt  DateTime                 @default(now())
+  updatedAt  DateTime                 @updatedAt
+}
+
+model MultiplierBatchJobItem {
+  id        String             @id @default(uuid())
+  jobId     String
+  job       MultiplierBatchJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  fileName  String
+  status    String             @default("UPLOADING") // UPLOADING | TRANSCRIBING | GENERATING_HOOKS | READY | FAILED
+  groupId   String?            // the auto-created MultiplierGroup
+  error     String?            @db.Text
+  createdAt DateTime           @default(now())
+  updatedAt DateTime           @updatedAt
 }
 
 // ─── Global Google Drive Connection ──────────────────────────────────────────

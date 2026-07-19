@@ -5,6 +5,65 @@ import { downloadFromR2 } from "@/lib/services/storage";
 import fs from "fs";
 import path from "path";
 
+// Shared context for color → defaultPostCount resolution
+async function getColorResolutionContext() {
+  const fallbackSetting = await prisma.appSetting.findUnique({
+    where: { key: "defaultPostCountFallback" },
+  });
+  const defaultFallback = fallbackSetting ? parseInt(fallbackSetting.value, 10) : 1;
+  const defaultFallbackCount = isNaN(defaultFallback) ? 1 : defaultFallback;
+
+  const allColors = await prisma.accountColor.findMany({
+    select: { color: true, defaultPostCount: true },
+  });
+
+  return { defaultFallbackCount, allColors };
+}
+
+type ColorResolvableAccount = {
+  color: string;
+  colorRef?: { color: string; defaultPostCount: number } | null;
+};
+
+// Resolves an account's effective color and default post count:
+// colorRef relation → legacy color name match → static fallback → AppSetting fallback.
+function resolveAccountColorInfo(
+  acc: ColorResolvableAccount | null | undefined,
+  allColors: { color: string; defaultPostCount: number }[],
+  defaultFallbackCount: number
+) {
+  let defaultCount = defaultFallbackCount;
+  let resolvedColor = "zinc";
+
+  if (acc) {
+    if (acc.colorRef) {
+      // Use the linked AccountColor relation (preferred)
+      defaultCount = acc.colorRef.defaultPostCount;
+      resolvedColor = acc.colorRef.color;
+    } else if (acc.color && acc.color !== "zinc") {
+      // Fallback: match legacy color field against AccountColor table
+      resolvedColor = acc.color;
+      const matchingColor = allColors.find(
+        (c) => c.color.toLowerCase() === acc.color.toLowerCase()
+      );
+      if (matchingColor) {
+        defaultCount = matchingColor.defaultPostCount;
+      } else {
+        // Hardcoded fallback if DB is missing the color
+        const staticFallbackCounts: Record<string, number> = {
+          green: 3, red: 0, orange: 1, yellow: 1, blue: 1, purple: 1, pink: 1
+        };
+        const fallback = staticFallbackCounts[acc.color.toLowerCase()];
+        if (fallback !== undefined) {
+          defaultCount = fallback;
+        }
+      }
+    }
+  }
+
+  return { resolvedColor, defaultCount };
+}
+
 /**
  * Searches Google Drive folders and maps them to ManagedAccount records.
  */
@@ -42,68 +101,31 @@ export async function searchDriveFolders(query: string) {
   // Natural sort the aggregated set
   folders.sort((a, b) => naturalCompare(a.name || "", b.name || ""));
 
-  // Retrieve global fallback default count setting
-  const fallbackSetting = await prisma.appSetting.findUnique({
-    where: { key: "defaultPostCountFallback" },
-  });
-  const defaultFallback = fallbackSetting ? parseInt(fallbackSetting.value, 10) : 1;
-  const defaultFallbackCount = isNaN(defaultFallback) ? 1 : defaultFallback;
+  const { defaultFallbackCount, allColors } = await getColorResolutionContext();
 
   // Find all accounts linked to these folder IDs
   const folderIds = folders.map((f) => f.id).filter(Boolean) as string[];
-  const [mappedAccounts, allColors] = await Promise.all([
-    prisma.managedAccount.findMany({
-      where: { driveFolderId: { in: folderIds } },
-      select: {
-        id: true,
-        driveFolderId: true,
-        tiktokUsername: true,
-        color: true,
-        colorId: true,
-        colorRef: {
-          select: {
-            color: true,
-            meaning: true,
-            defaultPostCount: true,
-          },
+  const mappedAccounts = await prisma.managedAccount.findMany({
+    where: { driveFolderId: { in: folderIds } },
+    select: {
+      id: true,
+      driveFolderId: true,
+      tiktokUsername: true,
+      color: true,
+      colorId: true,
+      colorRef: {
+        select: {
+          color: true,
+          meaning: true,
+          defaultPostCount: true,
         },
       },
-    }),
-    prisma.accountColor.findMany({
-      select: { color: true, defaultPostCount: true },
-    }),
-  ]);
+    },
+  });
 
   return folders.map((f) => {
     const acc = mappedAccounts.find((a) => a.driveFolderId === f.id);
-    let defaultCount = defaultFallbackCount;
-    let resolvedColor = "zinc";
-
-    if (acc) {
-      if (acc.colorRef) {
-        // Use the linked AccountColor relation (preferred)
-        defaultCount = acc.colorRef.defaultPostCount;
-        resolvedColor = acc.colorRef.color;
-      } else if (acc.color && acc.color !== "zinc") {
-        // Fallback: match legacy color field against AccountColor table
-        resolvedColor = acc.color;
-        const matchingColor = allColors.find(
-          (c) => c.color.toLowerCase() === acc.color.toLowerCase()
-        );
-        if (matchingColor) {
-          defaultCount = matchingColor.defaultPostCount;
-        } else {
-          // Hardcoded fallback if DB is missing the color
-          const staticFallbackCounts: Record<string, number> = {
-            green: 3, red: 0, orange: 1, yellow: 1, blue: 1, purple: 1, pink: 1
-          };
-          const fallback = staticFallbackCounts[acc.color.toLowerCase()];
-          if (fallback !== undefined) {
-            defaultCount = fallback;
-          }
-        }
-      }
-    }
+    const { resolvedColor, defaultCount } = resolveAccountColorInfo(acc, allColors, defaultFallbackCount);
 
     return {
       id: f.id,
@@ -133,14 +155,22 @@ interface FolderCount {
 export async function previewSmartExport(
   groupIds: string[],
   folderCounts: FolderCount[],
-  includeExported = false
+  includeExported = false,
+  days: number = 1
 ) {
   if (!groupIds || groupIds.length === 0) {
     throw new Error("No groups selected");
   }
 
+  // Scale each folder's per-day count by the number of export days
+  const safeDays = Math.max(1, Math.floor(days) || 1);
+  const scaledFolderCounts = folderCounts.map((f) => ({
+    ...f,
+    count: Math.max(0, Math.floor(f.count * safeDays)),
+  }));
+
   // Filter out folders with 0 count (excluded accounts/folders)
-  const activeFolderCounts = folderCounts.filter((f) => f.count > 0);
+  const activeFolderCounts = scaledFolderCounts.filter((f) => f.count > 0);
 
   // 1. Fetch completed outputs for selected groups
   const completedOutputs = await prisma.multiplierOutput.findMany({
@@ -277,7 +307,8 @@ interface SmartExportPlanAssignment {
 export async function runSmartExport(
   userId: string | null,
   groupIds: string[],
-  plan: SmartExportPlanAssignment[]
+  plan: SmartExportPlanAssignment[],
+  days: number = 1
 ) {
   // Compute flat list of assignments to create
   const flatAssignments: { videoId: string; sourceGroupId: string; driveFolderId: string }[] = [];
@@ -314,6 +345,7 @@ export async function runSmartExport(
     data: {
       groupIds,
       status: "pending",
+      days: Math.max(1, Math.floor(days) || 1),
       createdBy: userId,
       summary: {},
     },
@@ -601,4 +633,100 @@ async function uploadWithRetry(
     }
   }
   return { success: false, error: "Failed after 3 retries" };
+}
+
+// ─── Account-based adapters (new /api/multiplier namespace) ─────────────────
+
+interface AccountAllocation {
+  driveFolderId: string;
+  name?: string;
+  count: number;
+}
+
+/**
+ * Adapter over previewSmartExport that takes account-shaped allocations
+ * instead of raw folder counts.
+ */
+export async function previewSmartExportAccounts(input: {
+  groupIds: string[];
+  accounts: AccountAllocation[];
+  days?: number;
+  includeExported?: boolean;
+}) {
+  const days = Math.max(1, Math.floor(input.days ?? 1) || 1);
+  const folderCounts: FolderCount[] = (input.accounts || []).map((a) => ({
+    id: a.driveFolderId,
+    name: a.name || "",
+    count: a.count,
+  }));
+
+  const result = await previewSmartExport(input.groupIds, folderCounts, !!input.includeExported, days);
+  return { ...result, days };
+}
+
+/**
+ * Unified search over export destinations.
+ * mode "drive"   → Google Drive folders (delegates to searchDriveFolders)
+ * mode "account" → ManagedAccounts with a linked Drive folder
+ */
+export async function searchAccounts(input: { q: string; mode?: "drive" | "account" }) {
+  const q = input.q || "";
+  const mode = input.mode || "drive";
+
+  if (mode === "account") {
+    const accounts = await prisma.managedAccount.findMany({
+      where: {
+        driveFolderId: { not: null },
+        OR: [
+          { tiktokUsername: { contains: q, mode: "insensitive" } },
+          { tiktokDisplayName: { contains: q, mode: "insensitive" } },
+        ],
+      },
+      select: {
+        id: true,
+        tiktokUsername: true,
+        driveFolderId: true,
+        driveFolderName: true,
+        color: true,
+        colorId: true,
+        colorRef: {
+          select: {
+            color: true,
+            meaning: true,
+            defaultPostCount: true,
+          },
+        },
+      },
+    });
+
+    accounts.sort((a, b) => naturalCompare(a.tiktokUsername, b.tiktokUsername));
+
+    const { defaultFallbackCount, allColors } = await getColorResolutionContext();
+
+    return accounts.map((acc) => {
+      const { resolvedColor, defaultCount } = resolveAccountColorInfo(acc, allColors, defaultFallbackCount);
+      return {
+        driveFolderId: acc.driveFolderId as string,
+        driveFolderName: acc.driveFolderName || acc.tiktokUsername,
+        color: resolvedColor,
+        defaultPostCount: defaultCount,
+        account: {
+          id: acc.id,
+          tiktokUsername: acc.tiktokUsername,
+        },
+      };
+    });
+  }
+
+  // mode "drive"
+  const folders = await searchDriveFolders(q);
+  return folders.map((f) => ({
+    driveFolderId: f.id,
+    driveFolderName: f.name,
+    color: f.mappedAccount?.color ?? null,
+    defaultPostCount: f.defaultPostCount,
+    account: f.mappedAccount
+      ? { id: f.mappedAccount.id, tiktokUsername: f.mappedAccount.tiktokUsername }
+      : null,
+  }));
 }

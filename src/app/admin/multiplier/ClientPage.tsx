@@ -101,6 +101,20 @@ interface MultiplierGroup {
   createdAt: string;
 }
 
+interface BulkBatchItem {
+  id: string;
+  fileName: string;
+  status: "TRANSCRIBING" | "GENERATING_HOOKS" | "READY" | "FAILED";
+  groupId: string | null;
+  error: string | null;
+}
+
+interface BulkBatchJob {
+  id: string;
+  status: "PROCESSING" | "COMPLETED" | "FAILED";
+  items: BulkBatchItem[];
+}
+
 interface ClientPageProps {
   session?: {
     userId: string;
@@ -117,7 +131,7 @@ export default function ClientPage({ session }: ClientPageProps = {}) {
     return path;
   };
 
-  const [activeTab, setActiveTab] = useState<"builder" | "queue">("builder");
+  const [activeTab, setActiveTab] = useState<"builder" | "queue" | "bulk">("builder");
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [groups, setGroups] = useState<MultiplierGroup[]>([]);
   const [loadingCampaigns, setLoadingCampaigns] = useState(true);
@@ -158,7 +172,7 @@ export default function ClientPage({ session }: ClientPageProps = {}) {
   const [filesToUpload, setFilesToUpload] = useState<File[]>([]);
   const [uploadingFiles, setUploadingFiles] = useState(false);
   const [newHookText, setNewHookText] = useState("");
-  const [aiHookCount, setAiHookCount] = useState<number>(5);
+  const [aiHookCount, setAiHookCount] = useState<number>(15);
   const [generatingAiHooks, setGeneratingAiHooks] = useState(false);
   const [aiHooks, setAiHooks] = useState<string[]>([]);
   const [customPrompt, setCustomPrompt] = useState<string>("");
@@ -252,7 +266,7 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
   const [smartExportSearch, setSmartExportSearch] = useState("");
   const [searchingExportFolders, setSearchingExportFolders] = useState(false);
   const [searchedExportFolders, setSearchedExportFolders] = useState<{ id: string; name: string; defaultPostCount: number; mappedAccount: { id: string; tiktokUsername: string; color?: string } | null }[]>([]);
-  const [selectedExportFolders, setSelectedExportFolders] = useState<{ id: string; name: string; count: number; mappedAccount: { id: string; tiktokUsername: string; color?: string } | null }[]>([]);
+  const [selectedExportFolders, setSelectedExportFolders] = useState<{ id: string; name: string; count: number; defaultPostCount?: number; mappedAccount: { id: string; tiktokUsername: string; color?: string } | null }[]>([]);
   const [includeExportedSmartExport, setIncludeExportedSmartExport] = useState(false);
   const [exportPreview, setExportPreview] = useState<{
     videoBudget: { totalAvailable: number; assigned: number; videosLeft: number };
@@ -263,6 +277,20 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
   const [exportingJobId, setExportingJobId] = useState<string | null>(null);
   const [exportJobDetails, setExportJobDetails] = useState<any | null>(null);
   const [pollingJobDetails, setPollingJobDetails] = useState(false);
+  const [exportDays, setExportDays] = useState(1);
+  const [exportRunError, setExportRunError] = useState<string | null>(null);
+
+  // Bulk intake state
+  const [bulkCampaignId, setBulkCampaignId] = useState("");
+  const [bulkStyleId, setBulkStyleId] = useState("");
+  const [bulkFiles, setBulkFiles] = useState<File[]>([]);
+  const [bulkUploading, setBulkUploading] = useState(false);
+  const [bulkError, setBulkError] = useState<string | null>(null);
+  const [batchJobs, setBatchJobs] = useState<BulkBatchJob[]>([]);
+  const bulkFileInputRef = useRef<HTMLInputElement>(null);
+
+  // Bulk render state
+  const [bulkRendering, setBulkRendering] = useState(false);
 
   // Per-video delete state
   const [deletingOutputs, setDeletingOutputs] = useState<Set<string>>(new Set());
@@ -289,6 +317,7 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
                 name: f.name,
                 count: f.count,
               })),
+              days: exportDays,
               includeExported: includeExportedSmartExport,
             }),
           });
@@ -335,26 +364,51 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
       return;
     }
 
+    setExportRunError(null);
     try {
-      const res = await fetch("/api/managed/multiplier/smart-export/jobs", {
+      const res = await fetch("/api/multiplier/smart-export/run", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           groupIds: Array.from(selectedGroupIds),
-          plan: exportPreview.assignments,
+          accounts: selectedExportFolders.map((f) => ({
+            driveFolderId: f.id,
+            name: f.name,
+            count: f.count,
+          })),
+          days: exportDays,
+          includeExported: includeExportedSmartExport,
         }),
       });
 
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Failed to start export");
+      if (!res.ok) {
+        // 400 = nothing fulfillable — surface inline so the user can adjust counts
+        setExportRunError(data.error || "Nothing in the current selection can be fulfilled.");
+        return;
+      }
 
       toast.success("Smart Export queued successfully!");
       setExportingJobId(data.jobId);
       setShowSmartExport(false);
       fetchData();
     } catch (err: any) {
-      toast.error(err.message || "Failed to start export");
+      setExportRunError(err.message || "Failed to start export");
     }
+  };
+
+  // Days change resets every folder count to its defaultPostCount × days, clamped to
+  // the selected group count — manual stepper overrides are intentionally not preserved
+  // (predictable: days is the single source of truth until the user edits a stepper again).
+  const handleExportDaysChange = (days: number) => {
+    const d = Math.max(1, days || 1);
+    setExportDays(d);
+    setSelectedExportFolders((prev) =>
+      prev.map((f) => ({
+        ...f,
+        count: Math.max(1, Math.min((f.defaultPostCount ?? 1) * d, selectedGroupIds.size)),
+      }))
+    );
   };
 
   useEffect(() => {
@@ -467,6 +521,135 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
       setLoadingGroups(false);
     }
     return null;
+  };
+
+  // ── Bulk intake ───────────────────────────────────────────────────────────
+  const handleBulkFilesPicked = (files: File[]) => {
+    const videos = files.filter((f) => f.type.startsWith("video/") || /\.(mp4|mov|webm|mkv)$/i.test(f.name));
+    if (videos.length === 0) {
+      toast.error("Please select video files only.");
+      return;
+    }
+    setBulkError(null);
+    setBulkFiles((prev) => [...prev, ...videos]);
+  };
+
+  const handleBulkUpload = async () => {
+    if (bulkFiles.length === 0) {
+      toast.error("Please select at least one video file.");
+      return;
+    }
+    setBulkUploading(true);
+    setBulkError(null);
+    try {
+      const formData = new FormData();
+      bulkFiles.forEach((f) => formData.append("files", f));
+      if (bulkCampaignId) formData.append("campaignId", bulkCampaignId);
+      if (bulkStyleId) formData.append("styleId", bulkStyleId);
+
+      const res = await fetch("/api/multiplier/bulk-upload", { method: "POST", body: formData });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Bulk upload failed");
+
+      // Seed batch history with the fresh job state so polling picks it up
+      const jobRes = await fetch(`/api/multiplier/batch-jobs/${data.jobId}`);
+      if (jobRes.ok) {
+        const job = await jobRes.json();
+        setBatchJobs((prev) => [{ id: job.id, status: job.status, items: job.items || [] }, ...prev]);
+      } else {
+        setBatchJobs((prev) => [{ id: data.jobId, status: "PROCESSING", items: [] }, ...prev]);
+      }
+      setBulkFiles([]);
+      toast.success(`Uploaded ${bulkFiles.length} video${bulkFiles.length > 1 ? "s" : ""} — processing started.`);
+    } catch (err: any) {
+      setBulkError(err.message || "Bulk upload failed");
+    } finally {
+      setBulkUploading(false);
+    }
+  };
+
+  // Poll active batch jobs every 3s while PROCESSING
+  useEffect(() => {
+    const processing = batchJobs.filter((j) => j.status === "PROCESSING");
+    if (processing.length === 0) return;
+
+    const intervalId = setInterval(async () => {
+      let anyFinished = false;
+      for (const job of processing) {
+        try {
+          const res = await fetch(`/api/multiplier/batch-jobs/${job.id}`);
+          if (!res.ok) continue;
+          const data = await res.json();
+          setBatchJobs((prev) =>
+            prev.map((j) => (j.id === job.id ? { id: data.id, status: data.status, items: data.items || [] } : j))
+          );
+          if (data.status !== "PROCESSING") anyFinished = true;
+        } catch (err) {
+          console.error("Batch job polling failed:", err);
+        }
+      }
+      // Refresh the group list once a job finishes so READY groups appear in the builder
+      if (anyFinished) fetchData();
+    }, 3000);
+
+    return () => clearInterval(intervalId);
+  }, [batchJobs]);
+
+  const handleViewGroupInBuilder = async (groupId: string) => {
+    let target = groups.find((g) => g.id === groupId);
+    if (!target) {
+      const fresh = await fetchData();
+      target = fresh?.find((g: MultiplierGroup) => g.id === groupId);
+    }
+    if (target) {
+      handleSelectGroup(target);
+      setActiveTab("builder");
+    } else {
+      toast.error("Group not found yet — it may still be processing.");
+    }
+  };
+
+  // ── Bulk render ───────────────────────────────────────────────────────────
+  // Render-ready = at least one variation and one hook, not already queued/rendering
+  const isGroupRenderReady = (g: MultiplierGroup) =>
+    g.variations.length > 0 && g.hooks.length > 0 && g.status !== "QUEUED" && g.status !== "RENDERING";
+
+  const toggleSelectRenderReady = () => {
+    const ready = groups.filter(isGroupRenderReady);
+    const allSelected = ready.length > 0 && ready.every((g) => selectedGroupIds.has(g.id));
+    setSelectedGroupIds(allSelected ? new Set() : new Set(ready.map((g) => g.id)));
+  };
+
+  const handleBulkRenderSelected = async () => {
+    const ids = groups.filter((g) => selectedGroupIds.has(g.id) && isGroupRenderReady(g)).map((g) => g.id);
+    if (ids.length === 0) {
+      toast.error("No render-ready groups selected (need at least 1 variation and 1 hook).");
+      return;
+    }
+    setBulkRendering(true);
+    try {
+      const res = await fetch("/api/multiplier/render", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ groupIds: ids }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to queue renders");
+
+      toast.success(`Queued ${data.queued?.length ?? 0} group${(data.queued?.length ?? 0) !== 1 ? "s" : ""} for rendering.`);
+      if (data.skipped?.length > 0) {
+        toast.warning(
+          `Skipped ${data.skipped.length}: ${data.skipped.map((s: any) => s.reason).join("; ")}`
+        );
+      }
+      setSelectedGroupIds(new Set());
+      await fetchData();
+      setActiveTab("queue");
+    } catch (err: any) {
+      toast.error(err.message || "Failed to queue renders");
+    } finally {
+      setBulkRendering(false);
+    }
   };
 
   const searchDriveFolders = async (query: string) => {
@@ -1572,6 +1755,16 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
             Group Builder
           </button>
           <button
+            onClick={() => setActiveTab("bulk")}
+            className={`px-4 py-2 text-sm font-semibold rounded-md transition-all ${
+              activeTab === "bulk"
+                ? "bg-[#E11D48] text-white shadow-lg"
+                : "text-[#a1a1aa] hover:text-white"
+            }`}
+          >
+            Bulk Intake
+          </button>
+          <button
             onClick={() => setActiveTab("queue")}
             className={`px-4 py-2 text-sm font-semibold rounded-md transition-all ${
               activeTab === "queue"
@@ -1939,7 +2132,7 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
                              min={1}
                              max={20}
                              value={aiHookCount}
-                             onChange={(e) => setAiHookCount(parseInt(e.target.value) || 5)}
+                             onChange={(e) => setAiHookCount(parseInt(e.target.value) || 15)}
                              className="w-full bg-[#18181b] border border-[#27272a] rounded px-3 py-1.5 text-xs text-center focus:outline-none"
                              disabled={generatingAiHooks}
                            />
@@ -2459,6 +2652,242 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
             )}
           </div>
         </div>
+      ) : activeTab === "bulk" ? (
+        /* Bulk Intake Tab */
+        <div className="max-w-4xl mx-auto w-full space-y-6">
+          {/* Upload card */}
+          <div className="bg-[#18181b] rounded-xl border border-[#27272a] p-6 space-y-5">
+            <div>
+              <h2 className="text-xl font-bold flex items-center gap-2">
+                <Video className="text-[#E11D48] w-5 h-5" /> Bulk Intake
+              </h2>
+              <p className="text-xs text-[#71717a] mt-1">
+                Upload videos to auto-create groups — each file is transcribed and gets AI hooks generated automatically.
+              </p>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-xs font-semibold uppercase tracking-wider text-[#a1a1aa] mb-2">Campaign</label>
+                <select
+                  value={bulkCampaignId}
+                  onChange={(e) => setBulkCampaignId(e.target.value)}
+                  className="w-full bg-[#09090b] border border-[#27272a] rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:border-[#E11D48] text-[#fafafa]"
+                >
+                  <option value="">Select campaign context...</option>
+                  {campaigns.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.title} ({c.type})
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-semibold uppercase tracking-wider text-[#a1a1aa] mb-2">Style Preset (optional)</label>
+                <select
+                  value={bulkStyleId}
+                  onChange={(e) => setBulkStyleId(e.target.value)}
+                  className="w-full bg-[#09090b] border border-[#27272a] rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:border-[#E11D48] text-[#fafafa]"
+                >
+                  <option value="">Default style</option>
+                  {savedStyles.map((s: any) => (
+                    <option key={s.id} value={s.id}>
+                      {s.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            {/* Dropzone */}
+            <div
+              onClick={() => !bulkUploading && bulkFileInputRef.current?.click()}
+              onDragOver={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+              }}
+              onDrop={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                if (bulkUploading) return;
+                if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+                  handleBulkFilesPicked(Array.from(e.dataTransfer.files));
+                }
+              }}
+              className={`border-2 border-dashed rounded-xl p-8 text-center transition-all bg-[#09090b] flex flex-col items-center justify-center ${
+                bulkUploading
+                  ? "border-[#E11D48]/30 cursor-not-allowed opacity-60"
+                  : "border-[#27272a] hover:border-[#E11D48] cursor-pointer"
+              }`}
+            >
+              {bulkUploading ? (
+                <>
+                  <Loader2 className="w-8 h-8 text-[#E11D48] mb-2 animate-spin" />
+                  <p className="text-sm font-semibold">Uploading {bulkFiles.length} video{bulkFiles.length !== 1 ? "s" : ""}…</p>
+                  <p className="text-xs text-[#71717a] mt-1">Keep this tab open while the files upload</p>
+                </>
+              ) : (
+                <>
+                  <Upload className="w-8 h-8 text-[#71717a] mb-2" />
+                  <p className="text-sm font-semibold">Click to browse or drop video files</p>
+                  <p className="text-xs text-[#71717a] mt-1">Accepts multiple videos — one group per file</p>
+                </>
+              )}
+              <input
+                ref={bulkFileInputRef}
+                type="file"
+                multiple
+                accept="video/*"
+                disabled={bulkUploading}
+                onChange={(e) => {
+                  if (e.target.files && e.target.files.length > 0) {
+                    handleBulkFilesPicked(Array.from(e.target.files));
+                  }
+                  e.target.value = "";
+                }}
+                className="hidden"
+              />
+            </div>
+
+            {/* Selected files list */}
+            {bulkFiles.length > 0 && !bulkUploading && (
+              <div className="bg-[#09090b] border border-[#27272a] rounded-xl divide-y divide-[#27272a] max-h-48 overflow-y-auto custom-scrollbar">
+                {bulkFiles.map((f, idx) => (
+                  <div key={`${f.name}-${idx}`} className="flex items-center justify-between px-3 py-2">
+                    <p className="text-xs text-[#e4e4e7] truncate" title={f.name}>{f.name}</p>
+                    <button
+                      onClick={() => setBulkFiles((prev) => prev.filter((_, i) => i !== idx))}
+                      className="text-[#71717a] hover:text-red-500 transition-colors p-1 cursor-pointer"
+                      title="Remove file"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {bulkError && (
+              <div className="text-xs text-red-500 font-semibold bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2 flex items-center gap-1.5">
+                <AlertCircle className="w-4 h-4 flex-shrink-0" /> {bulkError}
+              </div>
+            )}
+
+            <button
+              onClick={handleBulkUpload}
+              disabled={bulkUploading || bulkFiles.length === 0}
+              className="px-5 py-2.5 bg-[#E11D48] hover:bg-rose-700 disabled:opacity-40 disabled:cursor-not-allowed text-white font-semibold rounded-lg text-sm transition-all flex items-center gap-2"
+            >
+              {bulkUploading ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" /> Uploading…
+                </>
+              ) : (
+                <>
+                  <Upload className="w-4 h-4" /> Upload &amp; Create Groups{bulkFiles.length > 0 ? ` (${bulkFiles.length})` : ""}
+                </>
+              )}
+            </button>
+          </div>
+
+          {/* Batch history */}
+          <div className="bg-[#18181b] rounded-xl border border-[#27272a] p-6 space-y-4">
+            <h3 className="font-bold text-sm text-[#a1a1aa] uppercase tracking-wider">Recent Batches</h3>
+            {batchJobs.length === 0 ? (
+              <div className="text-center p-10 text-[#71717a]">
+                <Video className="w-10 h-10 mx-auto mb-2 opacity-30" />
+                <p className="text-xs">No batches yet. Upload videos above to auto-create groups.</p>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {batchJobs.map((job) => {
+                  const readyCount = job.items.filter((i) => i.status === "READY").length;
+                  const failedCount = job.items.filter((i) => i.status === "FAILED").length;
+                  return (
+                    <div key={job.id} className="bg-[#09090b] border border-[#27272a] rounded-xl p-4 space-y-3">
+                      <div className="flex items-center justify-between gap-3">
+                        <p className="text-xs font-semibold text-[#71717a] font-mono truncate">Batch {job.id.slice(0, 8)}</p>
+                        <span
+                          className={`text-xs font-semibold px-2.5 py-0.5 rounded-full flex-shrink-0 ${
+                            job.status === "COMPLETED"
+                              ? "bg-green-500/10 text-green-500"
+                              : job.status === "FAILED"
+                              ? "bg-red-500/10 text-red-500"
+                              : "bg-amber-500/10 text-amber-500 animate-pulse"
+                          }`}
+                        >
+                          {job.status}
+                          {job.status !== "PROCESSING" && ` · ${readyCount}/${job.items.length} ready`}
+                          {failedCount > 0 && ` · ${failedCount} failed`}
+                        </span>
+                      </div>
+                      <div className="divide-y divide-[#27272a]">
+                        {job.items.map((item) => {
+                          const steps = [
+                            { key: "TRANSCRIBING", label: "Transcribing" },
+                            { key: "GENERATING_HOOKS", label: "Generating hooks" },
+                            { key: "READY", label: "Ready" },
+                          ];
+                          const failed = item.status === "FAILED";
+                          const activeIdx = steps.findIndex((s) => s.key === item.status);
+                          return (
+                            <div key={item.id} className="flex items-center justify-between gap-4 py-2.5">
+                              <p className="text-xs text-[#e4e4e7] truncate flex-1 min-w-0" title={item.fileName}>
+                                {item.fileName}
+                              </p>
+                              {failed ? (
+                                <span
+                                  className="flex items-center gap-1.5 text-[10px] text-red-500 font-semibold flex-shrink-0 max-w-[50%] truncate"
+                                  title={item.error || "Processing failed"}
+                                >
+                                  <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
+                                  Failed{item.error ? ` — ${item.error}` : ""}
+                                </span>
+                              ) : (
+                                <div className="flex items-center gap-3 flex-shrink-0">
+                                  {steps.map((s, i) => {
+                                    const done = item.status === "READY" || i < activeIdx;
+                                    const active = !done && i === activeIdx;
+                                    return (
+                                      <div key={s.key} className="flex items-center gap-1.5">
+                                        {done ? (
+                                          <Check className="w-3 h-3 text-green-500" />
+                                        ) : active ? (
+                                          <Loader2 className="w-3 h-3 animate-spin text-amber-500" />
+                                        ) : (
+                                          <span className="w-1.5 h-1.5 rounded-full bg-[#3f3f46]" />
+                                        )}
+                                        <span
+                                          className={`text-[10px] font-medium ${
+                                            done ? "text-green-500" : active ? "text-amber-500" : "text-[#52525b]"
+                                          }`}
+                                        >
+                                          {s.label}
+                                        </span>
+                                      </div>
+                                    );
+                                  })}
+                                  {item.status === "READY" && item.groupId && (
+                                    <button
+                                      onClick={() => handleViewGroupInBuilder(item.groupId!)}
+                                      className="text-[10px] font-semibold text-[#E11D48] hover:underline flex-shrink-0 cursor-pointer"
+                                    >
+                                      View in builder
+                                    </button>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
       ) : (
         /* Queue Dashboard Tab */
         <div className="space-y-6">
@@ -2478,6 +2907,15 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
                 >
                   {selectedGroupIds.size > 0 ? <CheckSquare className="w-4 h-4" /> : <Square className="w-4 h-4" />}
                   {selectedGroupIds.size > 0 ? `Clear (${selectedGroupIds.size})` : "Select All"}
+                </button>
+              )}
+              {groups.some(isGroupRenderReady) && (
+                <button
+                  onClick={toggleSelectRenderReady}
+                  className="px-3 py-2 bg-[#18181b] text-[#a1a1aa] border border-[#27272a] hover:bg-[#27272a] rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all"
+                  title="Select all groups with at least 1 variation and 1 hook that are not yet queued"
+                >
+                  <Play className="w-4 h-4" /> Select Render-Ready
                 </button>
               )}
               {groups.length > 0 && (
@@ -3060,8 +3498,10 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
       {/* Floating Smart Download Action Bar */}
       {selectedGroupIds.size > 0 && (() => {
         let total = 0;
+        let renderReadyCount = 0;
         groups.forEach((g) => {
           if (selectedGroupIds.has(g.id)) {
+            if (isGroupRenderReady(g)) renderReadyCount++;
             g.outputs.forEach((out) => {
               if (out.status === "COMPLETED") total++;
             });
@@ -3073,6 +3513,19 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
               {selectedGroupIds.size} group{selectedGroupIds.size > 1 ? "s" : ""} selected ({total} ready)
             </span>
             <div className="w-[1px] h-4 bg-[#27272a]"></div>
+            <button
+              onClick={handleBulkRenderSelected}
+              disabled={bulkRendering || renderReadyCount === 0}
+              title={renderReadyCount === 0 ? "Selected groups need at least 1 variation and 1 hook, and must not be queued already" : "Queue all selected render-ready groups for rendering"}
+              className="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-40 disabled:cursor-not-allowed text-white text-xs font-bold rounded-full flex items-center gap-1.5 transition-all shadow-md cursor-pointer"
+            >
+              {bulkRendering ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <Play className="w-3.5 h-3.5" />
+              )}
+              Render selected ({renderReadyCount})
+            </button>
             <button
               onClick={() => {
                 if (total === 0) {
@@ -3096,6 +3549,8 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
                 setSelectedExportFolders([]);
                 setIncludeExportedSmartExport(false);
                 setExportPreview(null);
+                setExportDays(1);
+                setExportRunError(null);
                 setShowSmartExport(true);
               }}
               className="px-4 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-full flex items-center gap-1.5 transition-all shadow-md cursor-pointer"
@@ -3272,6 +3727,41 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
                   Distribute and mix completed videos from the selected <span className="text-[#fafafa] font-bold">{selectedGroupIds.size} groups</span> directly into Google Drive folders. No two videos in the same folder will come from the same group to prevent duplication issues.
                 </p>
 
+                {/* Posting schedule: days multiplier */}
+                <div className="bg-[#27272a]/20 border border-[#27272a] rounded-xl p-3.5 flex items-center justify-between">
+                  <span className="text-[#a1a1aa] leading-normal">
+                    Folder counts are set to <span className="font-bold text-[#fafafa]">default posts/day × days</span>.
+                  </span>
+                  <div className="flex items-center gap-2 flex-shrink-0">
+                    <span className="text-[#e4e4e7] font-medium">Days</span>
+                    <div className="flex items-center bg-[#09090b] border border-[#27272a] rounded-lg overflow-hidden">
+                      <button
+                        type="button"
+                        onClick={() => handleExportDaysChange(exportDays - 1)}
+                        disabled={exportDays <= 1}
+                        className="p-1.5 hover:bg-[#27272a] text-[#a1a1aa] hover:text-white transition-colors cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
+                      >
+                        <Minus className="w-3.5 h-3.5" />
+                      </button>
+                      <input
+                        type="number"
+                        min={1}
+                        max={90}
+                        value={exportDays}
+                        onChange={(e) => handleExportDaysChange(parseInt(e.target.value) || 1)}
+                        className="w-12 bg-transparent text-center text-xs font-bold text-white font-mono focus:outline-none"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => handleExportDaysChange(exportDays + 1)}
+                        className="p-1.5 hover:bg-[#27272a] text-[#a1a1aa] hover:text-white transition-colors cursor-pointer"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
                 {total - unexported > 0 && (
                   <div className="bg-[#27272a]/20 border border-[#27272a] rounded-xl p-3.5 flex items-center justify-between">
                     <span className="text-[#a1a1aa] leading-normal">
@@ -3360,7 +3850,10 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
                                 } else {
                                   setSelectedExportFolders((prev) => [
                                     ...prev,
-                                    { ...folder, count: folder.defaultPostCount ?? 1 },
+                                    {
+                                      ...folder,
+                                      count: Math.max(1, Math.min((folder.defaultPostCount ?? 1) * exportDays, selectedGroupIds.size)),
+                                    },
                                   ]);
                                 }
                               }}
@@ -3378,11 +3871,20 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
                                 />
                                 <div className="truncate">
                                   <p className="font-medium text-gray-200 truncate">{folder.name}</p>
-                                  {folder.mappedAccount && (
-                                    <p className="text-[10px] text-blue-400 font-medium mt-0.5">
-                                      linked to @{folder.mappedAccount.tiktokUsername}
-                                    </p>
-                                  )}
+                                  <div className="flex items-center gap-1.5 mt-0.5 truncate">
+                                    <span
+                                      className="w-2 h-2 rounded-full flex-shrink-0"
+                                      style={{ backgroundColor: baseColor }}
+                                    />
+                                    <span className="text-[10px] text-[#71717a] font-medium flex-shrink-0">
+                                      {colKey} · {folder.defaultPostCount ?? 1}/day
+                                    </span>
+                                    {folder.mappedAccount && (
+                                      <span className="text-[10px] text-blue-400 font-medium truncate">
+                                        · linked to @{folder.mappedAccount.tiktokUsername}
+                                      </span>
+                                    )}
+                                  </div>
                                 </div>
                               </div>
                               <Plus className={`w-4 h-4 text-[#71717a] hover:text-white flex-shrink-0 transition-transform ${isSelected ? "rotate-45 text-red-400 hover:text-red-300" : ""}`} />
@@ -3526,6 +4028,12 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
                 {overAllocated && (
                   <div className="text-center text-[10px] text-red-500 font-bold bg-red-500/10 py-1.5 rounded-lg border border-red-500/20">
                     ⚠️ Over-allocation warning: You have assigned more videos than available. Please reduce folder counts.
+                  </div>
+                )}
+
+                {exportRunError && (
+                  <div className="text-center text-[10px] text-red-500 font-bold bg-red-500/10 py-1.5 rounded-lg border border-red-500/20 flex items-center justify-center gap-1.5">
+                    <AlertCircle className="w-3.5 h-3.5" /> {exportRunError}
                   </div>
                 )}
 
