@@ -51,37 +51,7 @@ export async function addVariation(groupId: string, tempFilePath: string, origin
   const targetFileName = `var_${id}${ext}`;
   const targetPath = path.join(VARIATIONS_DIR, targetFileName);
 
-  const stats = fs.statSync(tempFilePath);
-  const sizeInMB = stats.size / (1024 * 1024);
-
-  if (sizeInMB > 20) {
-    console.log(`[Multiplier Service] Video is large (${sizeInMB.toFixed(2)} MB). Compressing before saving...`);
-    const compressedTempPath = tempFilePath + ".compressed.mp4";
-
-    try {
-      await new Promise<void>((resolve, reject) => {
-        // Compress using ffmpeg: CRF 28 provides highly efficient compression while keeping good quality
-        const command = `ffmpeg -y -i "${tempFilePath}" -vcodec libx264 -crf 28 -preset fast -acodec aac -b:a 128k "${compressedTempPath}"`;
-        exec(command, (error, stdout, stderr) => {
-          if (error) {
-            console.error("[Multiplier Service] ffmpeg compression failed:", stderr);
-            reject(error);
-          } else {
-            resolve();
-          }
-        });
-      });
-
-      fs.copyFileSync(compressedTempPath, targetPath);
-      try { fs.unlinkSync(compressedTempPath); } catch {}
-    } catch (err) {
-      console.warn("[Multiplier Service] Compression failed, falling back to original upload:", err);
-      fs.copyFileSync(tempFilePath, targetPath);
-    }
-  } else {
-    fs.copyFileSync(tempFilePath, targetPath);
-  }
-
+  fs.copyFileSync(tempFilePath, targetPath);
   fs.unlinkSync(tempFilePath);
 
   const relativeRef = `/uploads/multiplier/variations/${targetFileName}`;
