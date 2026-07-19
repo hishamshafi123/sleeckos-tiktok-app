@@ -48,6 +48,8 @@ export async function searchDriveFolders(query: string) {
       colorId: true,
       colorRef: {
         select: {
+          color: true,
+          meaning: true,
           defaultPostCount: true,
         },
       },
@@ -64,7 +66,13 @@ export async function searchDriveFolders(query: string) {
       id: f.id,
       name: f.name,
       defaultPostCount: defaultCount,
-      mappedAccount: acc ? { id: acc.id, tiktokUsername: acc.tiktokUsername } : null,
+      mappedAccount: acc
+        ? {
+            id: acc.id,
+            tiktokUsername: acc.tiktokUsername,
+            color: acc.colorRef?.color || "zinc",
+          }
+        : null,
     };
   });
 }

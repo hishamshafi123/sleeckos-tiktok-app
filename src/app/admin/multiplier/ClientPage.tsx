@@ -32,6 +32,18 @@ import {
   Minus,
 } from "lucide-react";
 
+const COLOR_MAP: Record<string, string> = {
+  red: "#ef4444",
+  orange: "#f97316",
+  yellow: "#f59e0b",
+  green: "#10b981",
+  blue: "#3b82f6",
+  purple: "#8b5cf6",
+  pink: "#ec4899",
+  zinc: "#71717a",
+  gray: "#71717a",
+};
+
 interface Campaign {
   id: string;
   title: string;
@@ -238,8 +250,8 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
   const [showSmartExport, setShowSmartExport] = useState(false);
   const [smartExportSearch, setSmartExportSearch] = useState("");
   const [searchingExportFolders, setSearchingExportFolders] = useState(false);
-  const [searchedExportFolders, setSearchedExportFolders] = useState<{ id: string; name: string; defaultPostCount: number; mappedAccount: { id: string; tiktokUsername: string } | null }[]>([]);
-  const [selectedExportFolders, setSelectedExportFolders] = useState<{ id: string; name: string; count: number; mappedAccount: { id: string; tiktokUsername: string } | null }[]>([]);
+  const [searchedExportFolders, setSearchedExportFolders] = useState<{ id: string; name: string; defaultPostCount: number; mappedAccount: { id: string; tiktokUsername: string; color?: string } | null }[]>([]);
+  const [selectedExportFolders, setSelectedExportFolders] = useState<{ id: string; name: string; count: number; mappedAccount: { id: string; tiktokUsername: string; color?: string } | null }[]>([]);
   const [includeExportedSmartExport, setIncludeExportedSmartExport] = useState(false);
   const [exportPreview, setExportPreview] = useState<{
     videoBudget: { totalAvailable: number; assigned: number; videosLeft: number };
@@ -306,8 +318,7 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
       const res = await fetch(`/api/managed/multiplier/smart-export/folders?q=${encodeURIComponent(val)}`);
       if (res.ok) {
         const data = await res.json();
-        const selectedIds = new Set(selectedExportFolders.map((f) => f.id));
-        setSearchedExportFolders((data.folders || []).filter((f: any) => !selectedIds.has(f.id)));
+        setSearchedExportFolders(data.folders || []);
       }
     } catch (err) {
       console.error("Folder search failed:", err);
@@ -960,6 +971,43 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
       }
     } catch (err: any) {
       toast.error(err.message);
+    }
+  };
+
+  const handleDeleteVariation = async (v: any) => {
+    if (!selectedGroup) return;
+
+    const hasRendered = (selectedGroup as any).outputs?.some(
+      (out: any) => out.variationId === v.id && (out.status === "COMPLETED" || out.outputRef)
+    );
+
+    const message = hasRendered
+      ? "This variation already has completed outputs. Deleting it will clean up those outputs and remove their local/Drive files. Are you sure you want to proceed?"
+      : "Are you sure you want to delete this variation video? Any pending outputs for this variation will be removed.";
+
+    if (!confirm(message)) return;
+
+    try {
+      const res = await fetch(`/api/managed/multiplier/groups/${selectedGroup.id}/variations?variationId=${v.id}`, {
+        method: "DELETE",
+      });
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || "Failed to delete variation");
+      }
+
+      toast.success("Variation deleted successfully");
+      
+      const freshGroups = await fetchData();
+      if (freshGroups) {
+        const updated = freshGroups.find((g: any) => g.id === selectedGroup.id);
+        if (updated) {
+          setSelectedGroup(updated);
+        }
+      }
+    } catch (err: any) {
+      toast.error(err.message || "Failed to delete variation");
     }
   };
 
@@ -1733,15 +1781,28 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
                       <p className="text-xs font-semibold text-[#a1a1aa] mb-2">Uploaded Variations ({selectedGroup.variations.length}):</p>
                       <div className="flex flex-wrap gap-3">
                         {selectedGroup.variations.map((v, i) => (
-                          <button
+                          <div
                             key={v.id}
-                            onClick={() => setPreviewVideoUrl(getServeUrl(v.videoRef))}
-                            className="group relative bg-[#09090b] hover:bg-[#18181b] px-3 py-2 rounded-lg border border-[#27272a] hover:border-[#E11D48] flex items-center gap-2 transition-all text-left"
-                            title="Click to play preview"
+                            className="flex items-center gap-1 bg-[#09090b] hover:bg-[#18181b] px-3 py-2 rounded-lg border border-[#27272a] transition-all"
                           >
-                            <Play className="w-3.5 h-3.5 text-[#71717a] group-hover:text-[#E11D48] transition-colors" />
-                            <span className="text-xs font-semibold text-[#fafafa] group-hover:text-white">Variation #{i + 1}</span>
-                          </button>
+                            <button
+                              type="button"
+                              onClick={() => setPreviewVideoUrl(getServeUrl(v.videoRef))}
+                              className="group flex items-center gap-2 text-left"
+                              title="Click to play preview"
+                            >
+                              <Play className="w-3.5 h-3.5 text-[#71717a] group-hover:text-[#E11D48] transition-colors" />
+                              <span className="text-xs font-semibold text-[#fafafa] group-hover:text-white">Variation #{i + 1}</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteVariation(v)}
+                              className="p-1 text-[#71717a] hover:text-[#E11D48] hover:bg-red-500/5 rounded transition-all cursor-pointer"
+                              title="Delete variation"
+                            >
+                              <X className="w-3 h-3" />
+                            </button>
+                          </div>
                         ))}
                       </div>
                     </div>
@@ -3179,12 +3240,21 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
         const overAllocated = assignedCount > totalCompleted;
         const cannotExport = overAllocated || (exportPreview && exportPreview.unfulfillable.length > 0) || selectedExportFolders.length === 0;
 
+        const sortedSelected = [...selectedExportFolders].sort((a, b) => {
+          return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
+        });
+
+        const sortedResults = [...searchedExportFolders].sort((a, b) => {
+          return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
+        });
+
         return (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-sm">
             <div
-              className="bg-[#18181b] rounded-2xl border border-[#27272a] p-6 max-w-xl w-full mx-4 shadow-2xl space-y-6 flex flex-col max-h-[85vh] overflow-hidden"
+              className="bg-[#18181b] rounded-2xl border border-[#27272a] p-6 max-w-4xl w-full mx-4 shadow-2xl space-y-6 flex flex-col max-h-[90vh] overflow-hidden text-white"
               onClick={(e) => e.stopPropagation()}
             >
+              {/* Header */}
               <div className="flex items-center justify-between border-b border-[#27272a] pb-4 flex-shrink-0">
                 <h3 className="text-[#fafafa] text-base font-bold flex items-center gap-2">
                   <Upload className="w-5 h-5 text-blue-500" /> Smart Google Drive Export
@@ -3200,6 +3270,7 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
                 </button>
               </div>
 
+              {/* Scrollable Content Area */}
               <div className="flex-1 overflow-y-auto space-y-5 pr-1 custom-scrollbar text-xs">
                 <p className="text-[#71717a] leading-relaxed">
                   Distribute and mix completed videos from the selected <span className="text-[#fafafa] font-bold">{selectedGroupIds.size} groups</span> directly into Google Drive folders. No two videos in the same folder will come from the same group to prevent duplication issues.
@@ -3225,142 +3296,217 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
                   </div>
                 )}
 
-                <div>
-                  <h4 className="font-bold text-[#fafafa] uppercase tracking-wider text-[10px] text-[#71717a] mb-2">Selected Folders Tray</h4>
-                  {selectedExportFolders.length === 0 ? (
-                    <div className="bg-[#09090b] border border-[#27272a] border-dashed rounded-xl p-6 text-center text-[#71717a]">
-                      No folders selected yet. Search and select folders below.
-                    </div>
-                  ) : (
-                    <div className="space-y-2 max-h-[180px] overflow-y-auto pr-1 custom-scrollbar">
-                      {selectedExportFolders.map((folder, index) => (
-                        <div key={folder.id} className="flex items-center justify-between p-3 bg-blue-500/5 hover:bg-blue-500/10 border border-blue-500/20 rounded-xl transition-all">
-                          <div className="truncate flex-1 mr-3">
-                            <p className="font-semibold text-white truncate">{folder.name}</p>
-                            {folder.mappedAccount && (
-                              <p className="text-[10px] text-blue-400 mt-0.5 font-medium">
-                                Maps to Account: @{folder.mappedAccount.tiktokUsername}
-                              </p>
-                            )}
-                          </div>
-                          <div className="flex items-center gap-3">
-                            <div className="flex items-center bg-[#09090b] border border-[#27272a] rounded-lg overflow-hidden">
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setSelectedExportFolders((prev) => {
-                                    const next = [...prev];
-                                    next[index] = { ...next[index], count: Math.max(0, next[index].count - 1) };
-                                    return next;
-                                  });
-                                }}
-                                className="p-1.5 hover:bg-[#27272a] text-[#a1a1aa] hover:text-white transition-colors"
-                              >
-                                <Minus className="w-3.5 h-3.5" />
-                              </button>
-                              <span className="w-8 text-center text-xs font-bold text-white font-mono">
-                                {folder.count}
-                              </span>
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  if (folder.count >= selectedGroupIds.size) {
-                                    toast.error(`Per-folder count cannot exceed selected groups (${selectedGroupIds.size})!`);
-                                    return;
-                                  }
-                                  setSelectedExportFolders((prev) => {
-                                    const next = [...prev];
-                                    next[index] = { ...next[index], count: next[index].count + 1 };
-                                    return next;
-                                  });
-                                }}
-                                className="p-1.5 hover:bg-[#27272a] text-[#a1a1aa] hover:text-white transition-colors"
-                              >
-                                <Plus className="w-3.5 h-3.5" />
-                              </button>
-                            </div>
+                {/* Selected accounts chips tray */}
+                {sortedSelected.length > 0 && (
+                  <div className="space-y-2">
+                    <h4 className="font-bold text-[#fafafa] uppercase tracking-wider text-[10px] text-[#71717a]">Selected Accounts Tray</h4>
+                    <div className="flex flex-wrap gap-2 p-3 bg-[#09090b] border border-[#27272a] rounded-xl">
+                      {sortedSelected.map((folder) => {
+                        const colKey = folder.mappedAccount?.color || "zinc";
+                        const baseColor = COLOR_MAP[colKey] || (colKey.startsWith("#") ? colKey : null) || COLOR_MAP.zinc;
+                        return (
+                          <div
+                            key={folder.id}
+                            className="flex items-center gap-1.5 px-2.5 py-1 bg-white/5 rounded-lg border border-white/10 text-white text-[11px] font-medium transition-all"
+                            style={{ borderLeft: `3px solid ${baseColor}` }}
+                          >
+                            <span className="truncate max-w-[150px]">{folder.name}</span>
                             <button
+                              type="button"
                               onClick={() => {
-                                setSelectedExportFolders((prev) => prev.filter((_, idx) => idx !== index));
-                                setSearchedExportFolders([]);
+                                setSelectedExportFolders((prev) => prev.filter((f) => f.id !== folder.id));
                               }}
-                              className="p-1.5 bg-red-500/10 hover:bg-red-500/20 text-red-500 rounded-lg transition-colors cursor-pointer"
-                              title="Remove folder"
+                              className="text-[#71717a] hover:text-white transition-colors cursor-pointer"
                             >
-                              <X className="w-3.5 h-3.5" />
+                              <X className="w-3 h-3" />
                             </button>
                           </div>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
-                  )}
-                </div>
+                  </div>
+                )}
 
-                <div className="space-y-2">
-                  <h4 className="font-bold text-[#fafafa] uppercase tracking-wider text-[10px] text-[#71717a]">Search Drive Folders</h4>
-                  <div className="relative">
-                    <Search className="absolute left-3 top-2.5 w-4 h-4 text-[#71717a]" />
-                    <input
-                      type="text"
-                      placeholder="Type folder name to search..."
-                      value={smartExportSearch}
-                      onChange={(e) => handleSearchExportFolders(e.target.value)}
-                      className="w-full bg-[#09090b] border border-[#27272a] rounded-xl pl-9 pr-4 py-2 text-white placeholder-[#71717a] text-xs focus:outline-none focus:border-blue-500"
-                    />
-                    {searchingExportFolders && (
-                      <Loader2 className="absolute right-3 top-2.5 w-4 h-4 animate-spin text-blue-500" />
+                {/* Two Column Grid */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-start">
+                  
+                  {/* Left Column: Search & Results */}
+                  <div className="space-y-3">
+                    <h4 className="font-bold text-[#fafafa] uppercase tracking-wider text-[10px] text-[#71717a]">Search Drive Folders</h4>
+                    
+                    <div className="relative">
+                      <Search className="absolute left-3 top-2.5 w-4 h-4 text-[#71717a]" />
+                      <input
+                        type="text"
+                        placeholder="Type folder name to search..."
+                        value={smartExportSearch}
+                        onChange={(e) => handleSearchExportFolders(e.target.value)}
+                        className="w-full bg-[#09090b] border border-[#27272a] rounded-xl pl-9 pr-4 py-2 text-white placeholder-[#71717a] text-xs focus:outline-none focus:border-blue-500"
+                      />
+                      {searchingExportFolders && (
+                        <Loader2 className="absolute right-3 top-2.5 w-4 h-4 animate-spin text-blue-500" />
+                      )}
+                    </div>
+
+                    {sortedResults.length > 0 && (
+                      <div className="bg-[#09090b] border border-[#27272a] rounded-xl max-h-[300px] overflow-y-auto divide-y divide-[#27272a] pr-1 custom-scrollbar">
+                        {sortedResults.map((folder) => {
+                          const colKey = folder.mappedAccount?.color || "zinc";
+                          const baseColor = COLOR_MAP[colKey] || (colKey.startsWith("#") ? colKey : null) || COLOR_MAP.zinc;
+                          const isSelected = selectedExportFolders.some((f) => f.id === folder.id);
+
+                          return (
+                            <div
+                              key={folder.id}
+                              onClick={() => {
+                                if (isSelected) {
+                                  setSelectedExportFolders((prev) => prev.filter((f) => f.id !== folder.id));
+                                } else {
+                                  setSelectedExportFolders((prev) => [
+                                    ...prev,
+                                    { ...folder, count: folder.defaultPostCount ?? 1 },
+                                  ]);
+                                }
+                              }}
+                              className={`p-2.5 hover:bg-[#18181b] cursor-pointer flex justify-between items-center transition-colors ${
+                                isSelected ? "bg-blue-500/5" : ""
+                              }`}
+                              style={{ borderLeft: `3px solid ${baseColor}` }}
+                            >
+                              <div className="flex items-center gap-2.5 truncate mr-3">
+                                <input
+                                  type="checkbox"
+                                  checked={isSelected}
+                                  readOnly
+                                  className="rounded border-[#27272a] bg-[#09090b] text-blue-600 focus:ring-blue-600/30 w-3.5 h-3.5 cursor-pointer"
+                                />
+                                <div className="truncate">
+                                  <p className="font-medium text-gray-200 truncate">{folder.name}</p>
+                                  {folder.mappedAccount && (
+                                    <p className="text-[10px] text-blue-400 font-medium mt-0.5">
+                                      linked to @{folder.mappedAccount.tiktokUsername}
+                                    </p>
+                                  )}
+                                </div>
+                              </div>
+                              <Plus className={`w-4 h-4 text-[#71717a] hover:text-white flex-shrink-0 transition-transform ${isSelected ? "rotate-45 text-red-400 hover:text-red-300" : ""}`} />
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                    {smartExportSearch && !searchingExportFolders && sortedResults.length === 0 && (
+                      <p className="text-[10px] text-[#71717a] italic">No folders found matching search query.</p>
                     )}
                   </div>
 
-                  {searchedExportFolders.length > 0 && (
-                    <div className="bg-[#09090b] border border-[#27272a] rounded-xl max-h-[160px] overflow-y-auto divide-y divide-[#27272a] pr-1 custom-scrollbar">
-                      {searchedExportFolders.map((folder) => (
-                        <div
-                          key={folder.id}
-                          onClick={() => {
-                            setSelectedExportFolders((prev) => [
-                              ...prev,
-                              { ...folder, count: folder.defaultPostCount ?? 1 },
-                            ]);
-                            setSearchedExportFolders([]);
-                            setSmartExportSearch("");
-                          }}
-                          className="p-2.5 hover:bg-[#18181b] cursor-pointer flex justify-between items-center transition-colors"
-                        >
-                          <div className="truncate mr-3">
-                            <p className="font-medium text-gray-200 truncate">{folder.name}</p>
-                            {folder.mappedAccount && (
-                              <p className="text-[10px] text-blue-400 font-medium">
-                                linked to @{folder.mappedAccount.tiktokUsername}
-                              </p>
-                            )}
-                          </div>
-                          <Plus className="w-4 h-4 text-[#71717a] hover:text-white flex-shrink-0" />
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                  {smartExportSearch && !searchingExportFolders && searchedExportFolders.length === 0 && (
-                    <p className="text-[10px] text-[#71717a] italic">No folders found matching search query.</p>
-                  )}
-                </div>
+                  {/* Right Column: Counts, Mix Rules & Warnings */}
+                  <div className="space-y-4">
+                    <h4 className="font-bold text-[#fafafa] uppercase tracking-wider text-[10px] text-[#71717a]">Export Volumes Configuration</h4>
+                    
+                    {sortedSelected.length === 0 ? (
+                      <div className="bg-[#09090b] border border-[#27272a] border-dashed rounded-xl p-8 text-center text-[#71717a]">
+                        No folders selected yet. Search and select folders on the left.
+                      </div>
+                    ) : (
+                      <div className="space-y-2 max-h-[300px] overflow-y-auto pr-1 custom-scrollbar">
+                        {sortedSelected.map((folder) => {
+                          const colKey = folder.mappedAccount?.color || "zinc";
+                          const baseColor = COLOR_MAP[colKey] || (colKey.startsWith("#") ? colKey : null) || COLOR_MAP.zinc;
+                          
+                          const origIndex = selectedExportFolders.findIndex((f) => f.id === folder.id);
 
-                {exportPreview && exportPreview.unfulfillable.length > 0 && (
-                  <div className="bg-red-500/10 border border-red-500/20 rounded-xl p-3.5 space-y-2 text-red-400">
-                    <p className="font-bold text-[10px] uppercase tracking-wider flex items-center gap-1.5">
-                      <AlertCircle className="w-4 h-4" /> Feasibility Warning: Unfulfillable Folders
-                    </p>
-                    <ul className="list-disc pl-4 space-y-1 text-[10px] leading-normal">
-                      {exportPreview.unfulfillable.map((unf, idx) => (
-                        <li key={idx}>
-                          <span className="font-bold text-white">{unf.driveFolderName}</span>: {unf.reason}
-                        </li>
-                      ))}
-                    </ul>
+                          return (
+                            <div
+                              key={folder.id}
+                              className="flex items-center justify-between p-3 bg-blue-500/5 hover:bg-blue-500/10 border border-blue-500/20 rounded-xl transition-all"
+                              style={{ borderLeft: `3px solid ${baseColor}` }}
+                            >
+                              <div className="truncate flex-1 mr-3">
+                                <p className="font-semibold text-white truncate">{folder.name}</p>
+                                {folder.mappedAccount && (
+                                  <p className="text-[10px] text-blue-400 mt-0.5 font-medium">
+                                    Maps to Account: @{folder.mappedAccount.tiktokUsername}
+                                  </p>
+                                )}
+                              </div>
+                              <div className="flex items-center gap-3 flex-shrink-0">
+                                <div className="flex items-center bg-[#09090b] border border-[#27272a] rounded-lg overflow-hidden">
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      if (origIndex !== -1) {
+                                        setSelectedExportFolders((prev) => {
+                                          const next = [...prev];
+                                          next[origIndex] = { ...next[origIndex], count: Math.max(0, next[origIndex].count - 1) };
+                                          return next;
+                                        });
+                                      }
+                                    }}
+                                    className="p-1.5 hover:bg-[#27272a] text-[#a1a1aa] hover:text-white transition-colors cursor-pointer"
+                                  >
+                                    <Minus className="w-3.5 h-3.5" />
+                                  </button>
+                                  <span className="w-8 text-center text-xs font-bold text-white font-mono">
+                                    {folder.count}
+                                  </span>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      if (folder.count >= selectedGroupIds.size) {
+                                        toast.error(`Per-folder count cannot exceed selected groups (${selectedGroupIds.size})!`);
+                                        return;
+                                      }
+                                      if (origIndex !== -1) {
+                                        setSelectedExportFolders((prev) => {
+                                          const next = [...prev];
+                                          next[origIndex] = { ...next[origIndex], count: next[origIndex].count + 1 };
+                                          return next;
+                                        });
+                                      }
+                                    }}
+                                    className="p-1.5 hover:bg-[#27272a] text-[#a1a1aa] hover:text-white transition-colors cursor-pointer"
+                                  >
+                                    <Plus className="w-3.5 h-3.5" />
+                                  </button>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setSelectedExportFolders((prev) => prev.filter((f) => f.id !== folder.id));
+                                  }}
+                                  className="p-1.5 bg-red-500/10 hover:bg-red-500/20 text-red-500 rounded-lg transition-colors cursor-pointer"
+                                  title="Remove folder"
+                                >
+                                  <X className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+
+                    {exportPreview && exportPreview.unfulfillable.length > 0 && (
+                      <div className="bg-red-500/10 border border-red-500/20 rounded-xl p-3.5 space-y-2 text-red-400">
+                        <p className="font-bold text-[10px] uppercase tracking-wider flex items-center gap-1.5">
+                          <AlertCircle className="w-4 h-4" /> Feasibility Warning: Unfulfillable Folders
+                        </p>
+                        <ul className="list-disc pl-4 space-y-1 text-[10px] leading-normal">
+                          {exportPreview.unfulfillable.map((unf, idx) => (
+                            <li key={idx}>
+                              <span className="font-bold text-white">{unf.driveFolderName}</span>: {unf.reason}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
                   </div>
-                )}
+
+                </div>
               </div>
 
+              {/* Footer Summary & Action Buttons */}
               <div className="flex-shrink-0 border-t border-[#27272a] pt-4 space-y-4">
                 <div className="flex justify-between items-center bg-[#09090b] border border-[#27272a] rounded-xl px-4 py-3 text-xs">
                   <div className="text-center flex-1">
