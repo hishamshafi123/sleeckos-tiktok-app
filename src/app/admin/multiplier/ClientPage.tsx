@@ -128,6 +128,32 @@ export default function ClientPage({ session }: ClientPageProps = {}) {
   const [fontFamily, setFontFamily] = useState("Inter");
   const [previewVariationIndex, setPreviewVariationIndex] = useState<number>(0);
 
+  // Template/Style Preset CRUD state
+  const [savedStyles, setSavedStyles] = useState<any[]>([]);
+  const [selectedSavedStyleId, setSelectedSavedStyleId] = useState<string>("");
+  const [newTemplateName, setNewTemplateName] = useState<string>("");
+  const [showTemplateSaveModal, setShowTemplateSaveModal] = useState<boolean>(false);
+  const [isSavingTemplate, setIsSavingTemplate] = useState<boolean>(false);
+  const [showWarnInUseDialog, setShowWarnInUseDialog] = useState<boolean>(false);
+
+  // Rendering Settings
+  const [hookDuration, setHookDuration] = useState(5);
+  const [animationType, setAnimationType] = useState<"NONE" | "FADE_IN" | "SLIDE_UP">("NONE");
+  const [animationDuration, setAnimationDuration] = useState(0.5);
+
+  // Variations & manual hooks inputs
+  const [filesToUpload, setFilesToUpload] = useState<File[]>([]);
+  const [uploadingFiles, setUploadingFiles] = useState(false);
+  const [newHookText, setNewHookText] = useState("");
+  const [aiHookCount, setAiHookCount] = useState<number>(5);
+  const [generatingAiHooks, setGeneratingAiHooks] = useState(false);
+  const [aiHooks, setAiHooks] = useState<string[]>([]);
+  const [customPrompt, setCustomPrompt] = useState<string>("");
+  const [isEditingPrompt, setIsEditingPrompt] = useState(false);
+  const [hasManuallyEditedPrompt, setHasManuallyEditedPrompt] = useState(false);
+  const [transcribing, setTranscribing] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+
   // Reset selected variation preview on group switch
   useEffect(() => {
     setPreviewVariationIndex(0);
@@ -137,6 +163,7 @@ export default function ClientPage({ session }: ClientPageProps = {}) {
   useEffect(() => {
     if (!selectedGroup) {
       setCustomPrompt("");
+      setHasManuallyEditedPrompt(false);
       return;
     }
     const campaign = campaigns.find((c) => c.id === selectedGroup.campaignId);
@@ -158,7 +185,7 @@ export default function ClientPage({ session }: ClientPageProps = {}) {
       }
     }
 
-    const defaultPrompt = `Generate exactly 5 unique video captions or hook headlines summarizing this video transcript.
+    const defaultPrompt = `Generate exactly ${aiHookCount} unique video captions or hook headlines summarizing this video transcript.
 
 CAMPAIGN CONTEXT:
 ${campaignMarkdown}
@@ -170,32 +197,13 @@ Format your response strictly as a JSON array of strings, like this:
 ["First hook headline", "Second hook headline", "Third hook headline"]
 Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate only the raw JSON array.`;
 
-    setCustomPrompt(defaultPrompt);
-  }, [selectedGroup?.id, selectedGroup?.transcript, campaigns]);
-
-  // Template/Style Preset CRUD state
-  const [savedStyles, setSavedStyles] = useState<any[]>([]);
-  const [selectedSavedStyleId, setSelectedSavedStyleId] = useState<string>("");
-  const [newTemplateName, setNewTemplateName] = useState<string>("");
-  const [showTemplateSaveModal, setShowTemplateSaveModal] = useState<boolean>(false);
-  const [isSavingTemplate, setIsSavingTemplate] = useState<boolean>(false);
-  const [showWarnInUseDialog, setShowWarnInUseDialog] = useState<boolean>(false);
-
-  // Rendering Settings
-  const [hookDuration, setHookDuration] = useState(5);
-  const [animationType, setAnimationType] = useState<"NONE" | "FADE_IN" | "SLIDE_UP">("NONE");
-  const [animationDuration, setAnimationDuration] = useState(0.5);
-
-  // Variations & manual hooks inputs
-  const [filesToUpload, setFilesToUpload] = useState<File[]>([]);
-  const [uploadingFiles, setUploadingFiles] = useState(false);
-  const [newHookText, setNewHookText] = useState("");
-  const [aiHookCount, setAiHookCount] = useState(5);
-  const [generatingAiHooks, setGeneratingAiHooks] = useState(false);
-  const [customPrompt, setCustomPrompt] = useState("");
-  const [isEditingPrompt, setIsEditingPrompt] = useState(false);
-  const [transcribing, setTranscribing] = useState(false);
-  const [showAdvanced, setShowAdvanced] = useState(false);
+    if (!hasManuallyEditedPrompt) {
+      setCustomPrompt(defaultPrompt);
+    } else {
+      // If manually edited, just update the count in-place without wiping out their changes
+      setCustomPrompt((prev) => prev.replace(/Generate exactly \d+/i, `Generate exactly ${aiHookCount}`));
+    }
+  }, [selectedGroup?.id, selectedGroup?.transcript, campaigns, aiHookCount, hasManuallyEditedPrompt]);
 
   // File Drag-Drop Ref
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -690,6 +698,7 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
     setGroupName(group.name);
     setSelectedCampaignId(group.campaignId);
     setStyleId(group.styleId as any);
+    setHasManuallyEditedPrompt(false);
     setMappingMode(group.mappingMode as any);
 
     let parsedSettings = {};
@@ -3572,7 +3581,10 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
 
               <textarea
                 value={customPrompt}
-                onChange={(e) => setCustomPrompt(e.target.value)}
+                onChange={(e) => {
+                  setCustomPrompt(e.target.value);
+                  setHasManuallyEditedPrompt(true);
+                }}
                 className="w-full min-h-[300px] text-xs bg-[#09090b] border border-[#27272a] focus:border-[#E11D48] rounded-xl p-4 text-zinc-200 font-mono focus:outline-none custom-scrollbar leading-relaxed"
                 placeholder="Prompt template details..."
               />
@@ -3613,6 +3625,7 @@ Format your response strictly as a JSON array of strings, like this:
 Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate only the raw JSON array.`;
 
                   setCustomPrompt(defaultPrompt);
+                  setHasManuallyEditedPrompt(false);
                   toast.success("Reset prompt to default");
                 }}
                 className="text-xs text-[#71717a] hover:text-[#fafafa] font-bold transition-colors cursor-pointer"

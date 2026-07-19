@@ -21,6 +21,7 @@ export async function GET() {
         type: true,
         description: true,
         brief: true,
+        infoContent: true,
       },
     });
 
