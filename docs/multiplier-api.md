@@ -185,8 +185,27 @@ in the last 24 h.
     updatedAt: string;
     outputCounts: { pending: number; rendering: number; completed: number; failed: number };
   }[];
+  state: {
+    paused: boolean;        // render worker paused by operator
+    processing: boolean;    // worker loop currently running
+    staleRendering: number; // outputs stuck in RENDERING >2 min (e.g. after a restart)
+  };
 }
 ```
+
+### `POST /api/multiplier/queue/control`
+
+Operator control over the render queue.
+
+**Request:** `{ action: "pause" | "resume" | "recover" }`
+
+- `pause` — the worker finishes the current video, then stops picking up new ones (queued outputs stay `PENDING`).
+- `resume` — clears the pause, resets outputs stuck in `RENDERING` to `PENDING`, restarts the worker.
+- `recover` — resets stale `RENDERING` outputs and kicks the worker without changing the pause flag.
+
+**Response `200`:** `{ success: true, state: { paused, processing }, recovered?: number }`
+
+Errors: `400` unknown action.
 
 ---
 

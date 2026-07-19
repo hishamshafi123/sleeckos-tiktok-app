@@ -2,6 +2,7 @@ export const dynamic = "force-dynamic";
 import { NextRequest, NextResponse } from "next/server";
 import { getSession } from "@/lib/session";
 import { can } from "@/lib/services/permissions";
+import { getRenderQueueState } from "@/lib/services/multiplier";
 import prisma from "@/lib/db";
 
 // GET /api/multiplier/queue — active renders plus groups finished in the last 24h
@@ -44,7 +45,14 @@ export async function GET(req: NextRequest) {
       },
     }));
 
-    return NextResponse.json({ groups: queue });
+    const staleRendering = await prisma.multiplierOutput.count({
+      where: { status: "RENDERING", updatedAt: { lt: new Date(Date.now() - 2 * 60 * 1000) } },
+    });
+
+    return NextResponse.json({
+      groups: queue,
+      state: { ...getRenderQueueState(), staleRendering },
+    });
   } catch (err: any) {
     console.error("[Multiplier Queue GET API] Error:", err);
     return NextResponse.json({ error: err.message || "Failed to fetch render queue" }, { status: 500 });

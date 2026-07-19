@@ -522,9 +522,40 @@ export async function composeOutput(
 // ─── Background Queue Rendering orchestrator ───────────────────────────────
 
 let isQueueProcessing = false;
+let isRenderPaused = false;
+
+export function getRenderQueueState() {
+  return { paused: isRenderPaused, processing: isQueueProcessing };
+}
+
+// Outputs left in RENDERING by a crash/restart are never picked up again
+// (the loop only fetches PENDING) — reset them so the queue can move.
+export async function recoverStaleRenderingOutputs(staleMinutes = 2): Promise<number> {
+  const staleBefore = new Date(Date.now() - staleMinutes * 60 * 1000);
+  const reset = await prisma.multiplierOutput.updateMany({
+    where: { status: "RENDERING", updatedAt: { lt: staleBefore } },
+    data: { status: "PENDING" },
+  });
+  if (reset.count > 0) {
+    console.log(`[Multiplier Worker] Recovered ${reset.count} output(s) stuck in RENDERING`);
+  }
+  return reset.count;
+}
+
+export async function pauseRenderQueue() {
+  isRenderPaused = true;
+  return getRenderQueueState();
+}
+
+export async function resumeRenderQueue() {
+  isRenderPaused = false;
+  await recoverStaleRenderingOutputs();
+  triggerQueueWorker();
+  return getRenderQueueState();
+}
 
 export async function triggerQueueWorker() {
-  if (isQueueProcessing) return;
+  if (isQueueProcessing || isRenderPaused) return;
   isQueueProcessing = true;
   processRenderQueue().finally(() => {
     isQueueProcessing = false;
@@ -534,7 +565,17 @@ export async function triggerQueueWorker() {
 async function processRenderQueue() {
   console.log("[Multiplier Worker] Starting processing render queue...");
 
+  // A previous process may have died mid-render — recover before starting.
+  await recoverStaleRenderingOutputs().catch((err) => {
+    console.error("[Multiplier Worker] Stale-output recovery failed:", err);
+  });
+
   while (true) {
+    if (isRenderPaused) {
+      console.log("[Multiplier Worker] Paused by operator. Stopping loop.");
+      break;
+    }
+
     const output = await prisma.multiplierOutput.findFirst({
       where: { status: "PENDING" },
       include: {
@@ -648,6 +689,26 @@ async function processRenderQueue() {
 
       await updateParentGroupStatus(output.groupId);
     }
+  }
+
+  // Sweep: groups stuck in QUEUED/RENDERING whose outputs are all terminal
+  // (e.g. after a restart or a pause) get their correct final status.
+  try {
+    const stuckGroups = await prisma.multiplierGroup.findMany({
+      where: { status: { in: ["QUEUED", "RENDERING"] } },
+      include: { outputs: { select: { status: true } } },
+    });
+    for (const g of stuckGroups) {
+      const anyActive = g.outputs.some((o) => o.status === "PENDING" || o.status === "RENDERING");
+      if (anyActive) continue;
+      const hasFailed = g.outputs.some((o) => o.status === "FAILED");
+      await prisma.multiplierGroup.update({
+        where: { id: g.id },
+        data: { status: hasFailed ? "FAILED" : "COMPLETED" },
+      });
+    }
+  } catch (err) {
+    console.error("[Multiplier Worker] Group status sweep failed:", err);
   }
 }
 

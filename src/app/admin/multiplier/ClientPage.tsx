@@ -31,6 +31,8 @@ import {
   CheckSquare,
   Square,
   Minus,
+  Pause,
+  ChevronRight,
 } from "lucide-react";
 
 const COLOR_MAP: Record<string, string> = {
@@ -296,6 +298,66 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
 
   // Bulk render state
   const [bulkRendering, setBulkRendering] = useState(false);
+
+  // Render queue control (pause/resume) + collapsed queue rows
+  const [queueControl, setQueueControl] = useState<{ paused: boolean; processing: boolean; staleRendering: number } | null>(null);
+  const [queueControlLoading, setQueueControlLoading] = useState(false);
+  const [expandedQueueGroups, setExpandedQueueGroups] = useState<Set<string>>(new Set());
+
+  const toggleQueueGroupExpanded = (groupId: string) => {
+    setExpandedQueueGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(groupId)) next.delete(groupId);
+      else next.add(groupId);
+      return next;
+    });
+  };
+
+  const handleQueueControl = async (action: "pause" | "resume" | "recover") => {
+    setQueueControlLoading(true);
+    try {
+      const res = await fetch("/api/multiplier/queue/control", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `Failed to ${action} queue`);
+      if (data.state) setQueueControl((prev) => ({ staleRendering: 0, ...prev, ...data.state }));
+      toast.success(
+        action === "pause"
+          ? "Render queue paused — current video will finish, then rendering stops."
+          : action === "resume"
+          ? "Render queue resumed."
+          : `Recovered ${data.recovered ?? 0} stuck video(s).`
+      );
+      fetchData();
+    } catch (err: any) {
+      toast.error(err.message || `Failed to ${action} queue`);
+    } finally {
+      setQueueControlLoading(false);
+    }
+  };
+
+  // Poll queue worker state while the queue tab is open
+  useEffect(() => {
+    if (activeTab !== "queue") return;
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const res = await fetch("/api/multiplier/queue");
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!cancelled && data.state) setQueueControl(data.state);
+      } catch {}
+    };
+    poll();
+    const intervalId = setInterval(poll, 5000);
+    return () => {
+      cancelled = true;
+      clearInterval(intervalId);
+    };
+  }, [activeTab]);
 
   // Per-video delete state
   const [deletingOutputs, setDeletingOutputs] = useState<Set<string>>(new Set());
@@ -3025,6 +3087,36 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
               <Layers className="text-[#E11D48] w-5 h-5" /> Rendering Batches Progress Board
             </h2>
             <div className="flex items-center gap-2">
+              {queueControl && (
+                <>
+                  {queueControl.staleRendering > 0 && (
+                    <button
+                      onClick={() => handleQueueControl("recover")}
+                      disabled={queueControlLoading}
+                      className="px-3 py-2 bg-amber-500/10 text-amber-500 border border-amber-500/20 hover:bg-amber-500/20 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all disabled:opacity-50"
+                      title={`${queueControl.staleRendering} video(s) stuck in RENDERING (e.g. after a restart) — reset them to pending`}
+                    >
+                      <AlertCircle className="w-4 h-4" /> Recover {queueControl.staleRendering} Stuck
+                    </button>
+                  )}
+                  <button
+                    onClick={() => handleQueueControl(queueControl.paused ? "resume" : "pause")}
+                    disabled={queueControlLoading}
+                    className={`px-3 py-2 border rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all disabled:opacity-50 ${
+                      queueControl.paused
+                        ? "bg-emerald-500/10 text-emerald-500 border-emerald-500/20 hover:bg-emerald-500/20"
+                        : "bg-amber-500/10 text-amber-500 border-amber-500/20 hover:bg-amber-500/20"
+                    }`}
+                    title={queueControl.paused ? "Resume rendering (also recovers stuck videos)" : "Pause rendering after the current video finishes"}
+                  >
+                    {queueControl.paused ? <Play className="w-4 h-4" /> : <Pause className="w-4 h-4" />}
+                    {queueControl.paused ? "Resume Rendering" : "Pause Rendering"}
+                  </button>
+                  {queueControl.paused && (
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-amber-500">Paused</span>
+                  )}
+                </>
+              )}
               {groups.length > 0 && (
                 <button
                   onClick={toggleSelectAll}
@@ -3074,7 +3166,7 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
               No rendering queue batches running.
             </div>
           ) : (
-            <div className="space-y-6">
+            <div className="space-y-2">
               {groups.map((group) => {
                 const pendingOutputs = group.outputs.filter((o) => o.status === "PENDING" || o.status === "RENDERING");
                 const completedOutputs = group.outputs.filter((o) => o.status === "COMPLETED");
@@ -3086,11 +3178,69 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
                 // Hide completely raw draft groups without outputs from queue dashboard unless they are transcribing
                 if (totalOutputs === 0 && group.status !== "RENDERING" && group.transcriptStatus !== "TRANSCRIBING") return null;
 
+                const isExpanded = expandedQueueGroups.has(group.id);
+
+                // Collapsed: one-line summary row — expand via the chevron to see videos
+                if (!isExpanded) {
+                  return (
+                    <div key={group.id} className="bg-[#18181b] rounded-lg border border-[#27272a] px-3 py-2 flex items-center gap-3">
+                      <button
+                        onClick={() => toggleQueueGroupExpanded(group.id)}
+                        className="text-[#71717a] hover:text-[#fafafa] transition-colors cursor-pointer flex-shrink-0"
+                        title="Show videos"
+                      >
+                        <ChevronRight className="w-4 h-4" />
+                      </button>
+                      <button
+                        onClick={() => toggleGroupSelection(group.id)}
+                        className="text-[#71717a] hover:text-[#fafafa] transition-colors cursor-pointer flex-shrink-0"
+                      >
+                        {selectedGroupIds.has(group.id) ? (
+                          <CheckSquare className="w-4 h-4 text-[#E11D48]" />
+                        ) : (
+                          <Square className="w-4 h-4" />
+                        )}
+                      </button>
+                      <span className="font-semibold text-sm text-[#fafafa] truncate min-w-0">{group.name}</span>
+                      <span className="text-[10px] text-[#71717a] truncate hidden md:inline flex-shrink-0 max-w-[140px]">
+                        {group.campaign?.title || "No Campaign"}
+                      </span>
+                      <div className="flex-1 h-1.5 bg-zinc-800 rounded-full overflow-hidden min-w-[50px]">
+                        <div
+                          className={`h-full rounded-full transition-all ${failedOutputs.length > 0 && pendingOutputs.length === 0 ? "bg-red-500" : "bg-emerald-500"}`}
+                          style={{ width: `${percent}%` }}
+                        />
+                      </div>
+                      <span className="text-[10px] font-mono text-[#a1a1aa] whitespace-nowrap flex-shrink-0">
+                        {completedOutputs.length}/{totalOutputs} done{failedOutputs.length > 0 ? ` · ${failedOutputs.length} failed` : ""}
+                      </span>
+                      <span
+                        className={`px-2 py-0.5 rounded text-[10px] uppercase font-extrabold flex-shrink-0 ${
+                          group.status === "COMPLETED"
+                            ? "bg-green-500/10 text-green-500"
+                            : group.status === "FAILED"
+                            ? "bg-red-500/10 text-red-500"
+                            : "bg-amber-500/10 text-amber-500"
+                        }`}
+                      >
+                        {group.status}
+                      </span>
+                    </div>
+                  );
+                }
+
                 return (
                   <div key={group.id} className="bg-[#18181b] rounded-xl border border-[#27272a] p-6 space-y-4">
                     {/* Header */}
                     <div className="flex justify-between items-start gap-4">
                       <div className="flex items-start gap-3">
+                        <button
+                          onClick={() => toggleQueueGroupExpanded(group.id)}
+                          className="mt-1 text-[#71717a] hover:text-[#fafafa] transition-colors cursor-pointer"
+                          title="Collapse"
+                        >
+                          <ChevronDown className="w-5 h-5" />
+                        </button>
                         <button
                           onClick={() => toggleGroupSelection(group.id)}
                           className="mt-1 text-[#71717a] hover:text-[#fafafa] transition-colors cursor-pointer"
