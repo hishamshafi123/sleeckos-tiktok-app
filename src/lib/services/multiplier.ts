@@ -347,18 +347,18 @@ export async function renderCaptionStill(
         ? JSON.parse(savedStyle.params) 
         : (savedStyle.params || {});
       customProps = {
-        ...savedParams,
-        ...customProps
+        ...customProps,
+        ...savedParams
       };
     }
   }
 
   // Merge presets default settings based on finalStyleId
   const fontSize = customProps.fontSize ?? 32;
-  const fontColor = customProps.fontColor ?? "#FFFFFF";
-  const bgStripColor = customProps.bgStripColor ?? "#000000";
-  const bgStripOpacity = customProps.bgStripOpacity ?? 0.85;
-  const positionYPercent = customProps.positionYPercent ?? 75;
+  const fontColor = customProps.fontColor ?? customProps.textColor ?? "#FFFFFF";
+  const bgStripColor = customProps.bgStripColor ?? customProps.bgColor ?? "#000000";
+  const bgStripOpacity = customProps.bgStripOpacity ?? customProps.bgOpacity ?? 0.85;
+  const positionYPercent = customProps.positionYPercent ?? customProps.positionY ?? 75;
   const accentColor = customProps.accentColor ?? "#E11D48";
   const author = customProps.author || "";
 

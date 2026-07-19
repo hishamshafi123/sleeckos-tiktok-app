@@ -1993,10 +1993,10 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
                             setStyleId(found.templateKey as any);
                             const p = typeof found.params === "string" ? JSON.parse(found.params) : (found.params || {});
                             setFontSize(p.fontSize ?? 32);
-                            setFontColor(p.fontColor ?? "#FFFFFF");
-                            setBgStripColor(p.bgStripColor ?? "#000000");
-                            setBgStripOpacity(p.bgStripOpacity ?? 0.85);
-                            setPositionYPercent(p.positionYPercent ?? 75);
+                            setFontColor(p.fontColor ?? p.textColor ?? "#FFFFFF");
+                            setBgStripColor(p.bgStripColor ?? p.bgColor ?? "#000000");
+                            setBgStripOpacity(p.bgStripOpacity ?? p.bgOpacity ?? 0.85);
+                            setPositionYPercent(p.positionYPercent ?? p.positionY ?? 75);
                             setAccentColor(p.accentColor ?? "#E11D48");
                             setAuthor(p.author ?? "");
                             setFontFamily(p.fontFamily ?? "Inter");
@@ -2242,21 +2242,21 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
                           style={{
                             position: "absolute",
                             top: `${positionYPercent}%`,
-                            left: "10px",
-                            right: "10px",
+                            left: "11px",
+                            right: "11px",
                             transform: "translateY(-50%)",
                             backgroundColor: bgStripColor,
                             opacity: bgStripOpacity,
-                            borderLeft: styleId === "news-lower-third" || styleId === "breaking-headline" ? `3px solid ${accentColor}` : "none",
-                            borderRadius: styleId === "subtitle-box" ? "4px" : styleId === "quote-card" ? "6px" : "0",
-                            padding: "6px",
+                            borderLeft: styleId === "news-lower-third" || styleId === "breaking-headline" ? `2px solid ${accentColor}` : "none",
+                            borderRadius: styleId === "subtitle-box" ? "2px" : styleId === "quote-card" ? "3px" : "0",
+                            padding: "5.5px 6.6px",
                             boxShadow: "0 4px 10px rgba(0,0,0,0.3)",
                           }}
                         >
                           <p
                             style={{
                               color: fontColor,
-                              fontSize: "8px",
+                              fontSize: `${fontSize / 3.6}px`,
                               lineHeight: "1.2",
                               fontWeight: "bold",
                               textAlign: styleId === "subtitle-box" ? "center" : "left",
