@@ -932,7 +932,18 @@ async function processBatchRendering(batchId: string) {
           }
 
           // Merge parameters (SavedStyle.params + item.parameterTweaks)
-          const baseParams = JSON.parse(savedStyle.params || "{}");
+          let baseParams: any = savedStyle.params;
+          if (typeof baseParams === "string") {
+            try {
+              baseParams = JSON.parse(baseParams);
+              if (typeof baseParams === "string") {
+                baseParams = JSON.parse(baseParams);
+              }
+            } catch {
+              baseParams = {};
+            }
+          }
+          if (!baseParams) baseParams = {};
           let tweaks = {};
           if (item.parameterTweaks) {
             try {

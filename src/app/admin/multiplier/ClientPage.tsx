@@ -665,31 +665,30 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
       (g) => g.status === "QUEUED" || g.status === "RENDERING" || g.transcriptStatus === "TRANSCRIBING"
     );
 
+    let intervalId: NodeJS.Timeout | null = null;
+
     if (activeGroups.length > 0) {
-      if (!pollTimerRef.current) {
-        pollTimerRef.current = setInterval(async () => {
-          try {
-            const res = await fetch("/api/managed/multiplier");
-            if (res.ok) {
-              const data = await res.json();
-              setGroups(data);
-              // Update selected group in real-time
-              if (selectedGroup) {
-                const updated = data.find((g: MultiplierGroup) => g.id === selectedGroup.id);
-                if (updated) setSelectedGroup(updated);
-              }
+      intervalId = setInterval(async () => {
+        try {
+          const res = await fetch("/api/managed/multiplier");
+          if (res.ok) {
+            const data = await res.json();
+            setGroups(data);
+            // Update selected group in real-time
+            if (selectedGroup) {
+              const updated = data.find((g: MultiplierGroup) => g.id === selectedGroup.id);
+              if (updated) setSelectedGroup(updated);
             }
-          } catch (err) {
-            console.error("Polling failed:", err);
           }
-        }, 3000);
-      }
-    } else {
-      if (pollTimerRef.current) {
-        clearInterval(pollTimerRef.current);
-        pollTimerRef.current = null;
-      }
+        } catch (err) {
+          console.error("Polling failed:", err);
+        }
+      }, 3000);
     }
+
+    return () => {
+      if (intervalId) clearInterval(intervalId);
+    };
   }, [groups, selectedGroup]);
 
   // Load selected group details into form
@@ -851,7 +850,7 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
         body: JSON.stringify({
           templateKey: styleId,
           name: newTemplateName,
-          params: JSON.stringify(paramsObj),
+          params: paramsObj,
           tags: ["multiplier"],
         }),
       });
@@ -912,7 +911,7 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
         body: JSON.stringify({
           id: selectedSavedStyleId,
           name: savedStyles.find(s => s.id === selectedSavedStyleId)?.name,
-          params: JSON.stringify(paramsObj),
+          params: paramsObj,
           tags: ["multiplier"],
         }),
       });
@@ -2000,7 +1999,18 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
                           const found = savedStyles.find(s => s.id === val);
                           if (found) {
                             setStyleId(found.templateKey as any);
-                            const p = typeof found.params === "string" ? JSON.parse(found.params) : (found.params || {});
+                            let p = found.params;
+                            if (typeof p === "string") {
+                              try {
+                                p = JSON.parse(p);
+                                if (typeof p === "string") {
+                                  p = JSON.parse(p);
+                                }
+                              } catch {
+                                p = {};
+                              }
+                            }
+                            if (!p) p = {};
                             setFontSize(p.fontSize ?? 32);
                             setFontColor(p.fontColor ?? p.textColor ?? "#FFFFFF");
                             setBgStripColor(p.bgStripColor ?? p.bgColor ?? "#000000");

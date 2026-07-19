@@ -310,7 +310,18 @@ async function processQueue() {
       }
 
       // Merge saved parameters with custom input props (like text overrides)
-      const savedParams = JSON.parse(savedStyle.params || "{}");
+      let savedParams: any = savedStyle.params;
+      if (typeof savedParams === "string") {
+        try {
+          savedParams = JSON.parse(savedParams);
+          if (typeof savedParams === "string") {
+            savedParams = JSON.parse(savedParams);
+          }
+        } catch {
+          savedParams = {};
+        }
+      }
+      if (!savedParams) savedParams = {};
       const customProps = JSON.parse(job.inputProps || "{}");
       const inputProps = { ...savedParams, ...customProps };
 

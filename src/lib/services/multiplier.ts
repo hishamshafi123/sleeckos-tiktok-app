@@ -343,9 +343,18 @@ export async function renderCaptionStill(
     });
     if (savedStyle) {
       finalStyleId = savedStyle.templateKey;
-      const savedParams = typeof savedStyle.params === "string" 
-        ? JSON.parse(savedStyle.params) 
-        : (savedStyle.params || {});
+      let savedParams: any = savedStyle.params;
+      if (typeof savedParams === "string") {
+        try {
+          savedParams = JSON.parse(savedParams);
+          if (typeof savedParams === "string") {
+            savedParams = JSON.parse(savedParams);
+          }
+        } catch {
+          savedParams = {};
+        }
+      }
+      if (!savedParams) savedParams = {};
       customProps = {
         ...customProps,
         ...savedParams
