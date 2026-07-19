@@ -28,6 +28,7 @@ export async function POST(req: NextRequest) {
     // Clients upload one file per request to stay under proxy body-size limits.
     const existingJobId = (formData.get("jobId") as string) || null;
     const finalize = formData.get("finalize") === "true";
+    const namePrefix = (formData.get("namePrefix") as string) || null;
 
     if ((!files || files.length === 0) && !finalize) {
       return NextResponse.json({ error: "No files uploaded" }, { status: 400 });
@@ -64,6 +65,7 @@ export async function POST(req: NextRequest) {
         files: staged,
         campaignId,
         styleId,
+        namePrefix,
         createdBy: session.userId,
       });
       jobId = created.jobId;

@@ -36,6 +36,7 @@ later requests append to it via `jobId`; the last request sets `finalize`.
 | `campaignId` | `string?` | applied to every created group + hook context (first request only) |
 | `styleId` | `string?` | caption style; defaults to `news-lower-third` (first request only) |
 | `jobId` | `string?` | append to an existing batch instead of creating one |
+| `namePrefix` | `string?` | group naming sequence — groups become `"PREFIX 01", "PREFIX 02", …` in arrival order (first request only; omit to name groups after their files) |
 | `finalize` | `"true"?` | start background processing; send on the last request (or alone with just `jobId`) |
 
 **Response `200`:**
@@ -149,9 +150,12 @@ Errors: `400` missing/invalid fields or (regenerate) no transcript; `404` group 
 ### `POST /api/multiplier/render`
 
 Queue renders for multiple groups. Groups that fail validation are skipped with a
-reason instead of failing the whole request.
+reason instead of failing the whole request. Rendering is **resume-safe** by default:
+completed outputs (and their export records) are kept and only missing/failed
+compositions are re-created. Pass `fresh: true` to wipe a group's outputs and
+re-render everything.
 
-**Request:** `{ groupIds: string[] }`
+**Request:** `{ groupIds: string[]; fresh?: boolean }`
 
 **Response `200`:**
 
@@ -241,6 +245,10 @@ accounts, and starts a background `SmartExportJob` (with `days` recorded on the 
 ```
 
 Errors: `400` missing fields, or nothing fulfillable (`{ error, budget, unfulfillable }`).
+
+Note: when a job is created, each included `MultiplierOutput` records its destination
+on `exportDestinationFolderId` / `exportDestinationFolderName` (visible in the queue
+dashboard and in the legacy `GET /api/managed/multiplier` group payloads).
 
 ---
 

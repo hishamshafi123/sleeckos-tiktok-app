@@ -461,14 +461,19 @@ export async function composeOutput(
   const animType = settings?.animationType ?? "NONE";
   const animDuration = settings?.animationDuration ?? 0.5;
 
+  // Normalize the canvas to 720x1280 BEFORE overlay: the still is rendered at
+  // 720x1280, and encoding a 1080p source is ~2.25x the pixels for no benefit
+  // (TikTok re-compresses above ~5-10 Mbps anyway).
+  const canvasFilter = `scale='if(gte(iw/ih,720/1280),-1,720)':'if(gte(iw/ih,720/1280),1280,-1)',crop=720:1280`;
+
   let filterComplex = "";
   if (animType === "FADE_IN" && animDuration > 0) {
-    filterComplex = `[1:v]fade=in:st=0:d=${animDuration}:alpha=1[overlay_fade];[0:v][overlay_fade]overlay=x=0:y=0:enable='lt(t,${hookDuration})'[v]`;
+    filterComplex = `[0:v]${canvasFilter}[bg];[1:v]fade=in:st=0:d=${animDuration}:alpha=1[overlay_fade];[bg][overlay_fade]overlay=x=0:y=0:enable='lt(t,${hookDuration})'[v]`;
   } else if (animType === "SLIDE_UP" && animDuration > 0) {
     // slides Y up from +60px to 0px
-    filterComplex = `[0:v][1:v]overlay=x=0:y='if(lt(t,${animDuration}), 60*(1-t/${animDuration}), 0)':enable='lt(t,${hookDuration})'[v]`;
+    filterComplex = `[0:v]${canvasFilter}[bg];[bg][1:v]overlay=x=0:y='if(lt(t,${animDuration}), 60*(1-t/${animDuration}), 0)':enable='lt(t,${hookDuration})'[v]`;
   } else {
-    filterComplex = `[0:v][1:v]overlay=x=0:y=0:enable='lt(t,${hookDuration})'[v]`;
+    filterComplex = `[0:v]${canvasFilter}[bg];[bg][1:v]overlay=x=0:y=0:enable='lt(t,${hookDuration})'[v]`;
   }
 
   const ffmpegArgs = [
@@ -479,7 +484,9 @@ export async function composeOutput(
     "-map", "[v]",
     "-map", "0:a?",
     "-c:v", "libx264",
-    "-preset", "medium",
+    // veryfast ~3-5x faster than medium on the shared CPU; the 8M maxrate cap
+    // keeps file sizes bounded, so the tradeoff is only a slight efficiency loss.
+    "-preset", "veryfast",
     "-crf", "26",
     "-maxrate", "8M",
     "-bufsize", "16M",
@@ -662,7 +669,7 @@ async function updateParentGroupStatus(groupId: string) {
   }
 }
 
-export async function startGroupRender(groupId: string) {
+export async function startGroupRender(groupId: string, opts?: { fresh?: boolean }) {
   const group = await prisma.multiplierGroup.findUnique({
     where: { id: groupId },
     include: {
@@ -675,8 +682,21 @@ export async function startGroupRender(groupId: string) {
   if (group.variations.length === 0) throw new Error("Add at least one video variation to render");
   if (group.hooks.length === 0) throw new Error("Add at least one hook to render");
 
-  // Delete previous outputs
-  await prisma.multiplierOutput.deleteMany({ where: { groupId } });
+  // Resume-safe: completed outputs (and their export records) are kept — only
+  // incomplete ones are replaced. Pass { fresh: true } to force a full re-render.
+  let completedCombos = new Set<string>();
+  if (opts?.fresh) {
+    await prisma.multiplierOutput.deleteMany({ where: { groupId } });
+  } else {
+    await prisma.multiplierOutput.deleteMany({
+      where: { groupId, status: { not: "COMPLETED" } },
+    });
+    const completed = await prisma.multiplierOutput.findMany({
+      where: { groupId, status: "COMPLETED" },
+      select: { hookId: true, variationId: true },
+    });
+    completedCombos = new Set(completed.map((o) => `${o.hookId}:${o.variationId}`));
+  }
 
   // Map outputs
   if (group.mappingMode === "distribute") {
@@ -685,6 +705,7 @@ export async function startGroupRender(groupId: string) {
       const hook = group.hooks[i];
       const variation = group.variations[i % group.variations.length];
 
+      if (completedCombos.has(`${hook.id}:${variation.id}`)) continue;
       await prisma.multiplierOutput.create({
         data: {
           groupId,
@@ -698,6 +719,7 @@ export async function startGroupRender(groupId: string) {
     // each hook on each variation
     for (const hook of group.hooks) {
       for (const variation of group.variations) {
+        if (completedCombos.has(`${hook.id}:${variation.id}`)) continue;
         await prisma.multiplierOutput.create({
           data: {
             groupId,
@@ -748,9 +770,13 @@ async function addFileToBulkBatch(input: {
   campaignId?: string | null;
   styleId?: string | null;
   createdBy?: string | null;
+  namePrefix?: string | null;
+  seq?: number; // 1-based position in the naming sequence
 }): Promise<string | null> {
   try {
-    const name = input.file.fileName.replace(/\.[^.]+$/, "") || input.file.fileName;
+    const name = input.namePrefix && input.seq != null
+      ? `${input.namePrefix} ${String(input.seq).padStart(2, "0")}`
+      : input.file.fileName.replace(/\.[^.]+$/, "") || input.file.fileName;
     const group = await prisma.multiplierGroup.create({
       data: {
         name,
@@ -792,31 +818,39 @@ async function addFileToBulkBatch(input: {
 
 // Creates the batch shell in RECEIVING state. Files may arrive across several
 // requests (see appendToBulkBatch) — processing starts only on finalizeBulkBatch.
+// namePrefix enables a "PREFIX 01, 02, …" group naming sequence; the sequence
+// follows arrival order (files normally arrive one request at a time, in the
+// order the operator picked them).
 export async function createBulkBatch(input: {
   files: { tempPath: string; fileName: string }[];
   campaignId?: string | null;
   styleId?: string | null;
+  namePrefix?: string | null;
   createdBy?: string | null;
 }): Promise<{ jobId: string; groupIds: string[] }> {
   ensureDirsExist();
 
+  const namePrefix = input.namePrefix?.trim() || null;
   const job = await prisma.multiplierBatchJob.create({
     data: {
       status: "RECEIVING",
       campaignId: input.campaignId || null,
       styleId: input.styleId || null,
+      namePrefix,
       createdBy: input.createdBy || null,
     },
   });
 
   const groupIds: string[] = [];
-  for (const file of input.files) {
+  for (let i = 0; i < input.files.length; i++) {
     const groupId = await addFileToBulkBatch({
       jobId: job.id,
-      file,
+      file: input.files[i],
       campaignId: input.campaignId,
       styleId: input.styleId,
       createdBy: input.createdBy,
+      namePrefix,
+      seq: i + 1,
     });
     if (groupId) groupIds.push(groupId);
   }
@@ -832,18 +866,23 @@ export async function appendToBulkBatch(
 ): Promise<string[]> {
   ensureDirsExist();
 
-  const job = await prisma.multiplierBatchJob.findUnique({ where: { id: jobId } });
+  const job = await prisma.multiplierBatchJob.findUnique({
+    where: { id: jobId },
+    include: { _count: { select: { items: true } } },
+  });
   if (!job) throw new Error("Batch job not found");
   if (job.status !== "RECEIVING") throw new Error("Batch job is already being processed");
 
   const groupIds: string[] = [];
-  for (const file of files) {
+  for (let i = 0; i < files.length; i++) {
     const groupId = await addFileToBulkBatch({
       jobId,
-      file,
+      file: files[i],
       campaignId: job.campaignId,
       styleId: job.styleId,
       createdBy: job.createdBy,
+      namePrefix: job.namePrefix,
+      seq: job._count.items + i + 1,
     });
     if (groupId) groupIds.push(groupId);
   }
@@ -888,9 +927,46 @@ export async function processBulkBatch(jobId: string) {
     });
     if (!job) return;
 
-    for (const item of job.items) {
-      if (item.status === "READY" || item.status === "FAILED") continue; // resume-safe
+    const pendingItems = job.items.filter((i) => i.status !== "READY" && i.status !== "FAILED");
 
+    // Pipeline: Whisper transcription is CPU-bound → strictly sequential.
+    // Gemini hook generation is network-bound → small concurrent pool that
+    // picks up each video as soon as its transcript lands.
+    const HOOK_CONCURRENCY = 3;
+    type HookTask = { itemId: string; groupId: string; fileName: string };
+    const hookQueue: HookTask[] = [];
+    let transcriptionDone = false;
+
+    const hookWorker = async () => {
+      while (true) {
+        const task = hookQueue.shift();
+        if (!task) {
+          if (transcriptionDone) return;
+          await new Promise((r) => setTimeout(r, 500));
+          continue;
+        }
+        try {
+          await prisma.multiplierBatchJobItem.update({
+            where: { id: task.itemId },
+            data: { status: "GENERATING_HOOKS" },
+          });
+          await generateHooks(task.groupId, 15, !!job.campaignId);
+          await prisma.multiplierBatchJobItem.update({
+            where: { id: task.itemId },
+            data: { status: "READY" },
+          });
+        } catch (err: any) {
+          console.error(`[Multiplier Bulk Batch] Hook generation failed for ${task.fileName}:`, err);
+          await prisma.multiplierBatchJobItem.update({
+            where: { id: task.itemId },
+            data: { status: "FAILED", error: err?.message || String(err) },
+          });
+        }
+      }
+    };
+    const hookWorkers = Array.from({ length: HOOK_CONCURRENCY }, () => hookWorker());
+
+    for (const item of pendingItems) {
       try {
         if (!item.groupId) throw new Error("Batch item has no associated group");
 
@@ -900,16 +976,7 @@ export async function processBulkBatch(jobId: string) {
         });
         await transcribeGroup(item.groupId);
 
-        await prisma.multiplierBatchJobItem.update({
-          where: { id: item.id },
-          data: { status: "GENERATING_HOOKS" },
-        });
-        await generateHooks(item.groupId, 15, !!job.campaignId);
-
-        await prisma.multiplierBatchJobItem.update({
-          where: { id: item.id },
-          data: { status: "READY" },
-        });
+        hookQueue.push({ itemId: item.id, groupId: item.groupId, fileName: item.fileName });
       } catch (err: any) {
         console.error(`[Multiplier Bulk Batch] Item ${item.id} (${item.fileName}) failed:`, err);
         // One bad video must not kill the batch — mark it and continue
@@ -919,6 +986,8 @@ export async function processBulkBatch(jobId: string) {
         });
       }
     }
+    transcriptionDone = true;
+    await Promise.all(hookWorkers);
 
     const items = await prisma.multiplierBatchJobItem.findMany({ where: { jobId } });
     const anyReady = items.some((i) => i.status === "READY");
@@ -951,7 +1020,7 @@ export async function getBulkBatch(jobId: string) {
 
 // ─── Bulk Render ─────────────────────────────────────────────────────────────
 
-export async function bulkRenderGroups(groupIds: string[]): Promise<{
+export async function bulkRenderGroups(groupIds: string[], opts?: { fresh?: boolean }): Promise<{
   queued: string[];
   skipped: { groupId: string; reason: string }[];
 }> {
@@ -983,7 +1052,7 @@ export async function bulkRenderGroups(groupIds: string[]): Promise<{
 
     try {
       // startGroupRender triggers the queue worker internally
-      await startGroupRender(groupId);
+      await startGroupRender(groupId, opts);
       queued.push(groupId);
     } catch (err: any) {
       skipped.push({ groupId, reason: err?.message || String(err) });

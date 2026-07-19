@@ -79,6 +79,8 @@ interface MultiplierOutput {
   errorMessage: string | null;
   exportedAt: string | null;
   exportStatus?: "not_exported" | "exporting" | "exported";
+  exportDestinationFolderId?: string | null;
+  exportDestinationFolderName?: string | null;
   variation: { videoRef: string };
   hook: { text: string };
 }
@@ -283,6 +285,7 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
   // Bulk intake state
   const [bulkCampaignId, setBulkCampaignId] = useState("");
   const [bulkStyleId, setBulkStyleId] = useState("");
+  const [bulkNamePrefix, setBulkNamePrefix] = useState("");
   const [bulkFiles, setBulkFiles] = useState<File[]>([]);
   const [bulkUploading, setBulkUploading] = useState(false);
   const [bulkUploadProgress, setBulkUploadProgress] = useState<{ current: number; total: number; fileName: string } | null>(null);
@@ -561,6 +564,7 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
         } else {
           if (bulkCampaignId) formData.append("campaignId", bulkCampaignId);
           if (bulkStyleId) formData.append("styleId", bulkStyleId);
+          if (bulkNamePrefix.trim()) formData.append("namePrefix", bulkNamePrefix.trim());
         }
         if (isLast) formData.append("finalize", "true");
 
@@ -621,11 +625,15 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
 
     const intervalId = setInterval(async () => {
       let anyFinished = false;
+      let anyNewlyReady = false;
       for (const job of processing) {
         try {
           const res = await fetch(`/api/multiplier/batch-jobs/${job.id}`);
           if (!res.ok) continue;
           const data = await res.json();
+          const prevReady = job.items.filter((i) => i.status === "READY").length;
+          const nextReady = (data.items || []).filter((i: BulkBatchItem) => i.status === "READY").length;
+          if (nextReady > prevReady) anyNewlyReady = true;
           setBatchJobs((prev) =>
             prev.map((j) => (j.id === job.id ? { id: data.id, status: data.status, items: data.items || [] } : j))
           );
@@ -634,8 +642,9 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
           console.error("Batch job polling failed:", err);
         }
       }
-      // Refresh the group list once a job finishes so READY groups appear in the builder
-      if (anyFinished) fetchData();
+      // Refresh the group list as items become READY (and when a job finishes)
+      // so processed groups show up in the builder right away
+      if (anyFinished || anyNewlyReady) fetchData();
     }, 3000);
 
     return () => clearInterval(intervalId);
@@ -2745,6 +2754,18 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
               </div>
             </div>
 
+            <div>
+              <label className="block text-xs font-semibold uppercase tracking-wider text-[#a1a1aa] mb-2">Group Name Prefix (optional)</label>
+              <input
+                type="text"
+                value={bulkNamePrefix}
+                onChange={(e) => setBulkNamePrefix(e.target.value)}
+                placeholder="e.g. Campaign Alpha — groups become “Campaign Alpha 01, 02, 03…”"
+                className="w-full bg-[#09090b] border border-[#27272a] rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:border-[#E11D48] text-[#fafafa] placeholder:text-[#52525b]"
+              />
+              <p className="text-[10px] text-[#71717a] mt-1.5">Leave empty to name groups after their file names.</p>
+            </div>
+
             {/* Dropzone */}
             <div
               onClick={() => !bulkUploading && bulkFileInputRef.current?.click()}
@@ -3187,6 +3208,14 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
                                   {out.exportedAt && (
                                     <span className="px-2 py-0.5 rounded text-[10px] bg-blue-500/10 text-blue-400 font-bold border border-blue-500/20" title={`Exported at ${new Date(out.exportedAt).toLocaleString()}`}>
                                       Exported ✓
+                                    </span>
+                                  )}
+                                  {(out.exportDestinationFolderName || out.driveFolderName) && (
+                                    <span
+                                      className="px-2 py-0.5 rounded text-[10px] bg-zinc-500/10 text-zinc-300 font-semibold border border-zinc-500/20 truncate max-w-[140px]"
+                                      title={`Google Drive folder: ${out.exportDestinationFolderName || out.driveFolderName}`}
+                                    >
+                                      {out.exportDestinationFolderName || out.driveFolderName}
                                     </span>
                                   )}
                                 </div>

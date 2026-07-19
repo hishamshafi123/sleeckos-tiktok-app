@@ -844,6 +844,7 @@ model MultiplierOutput {
   exportedAt                 DateTime?                 // set when included in a Smart Download archive
   exportStatus               String                    @default("not_exported") // not_exported | exporting | exported
   exportDestinationFolderId  String?
+  exportDestinationFolderName String?
   exportAssignments          SmartExportAssignment[]
   createdAt                  DateTime                  @default(now())
   updatedAt                  DateTime                  @updatedAt
@@ -877,6 +878,7 @@ model SmartExportAssignment {
 model MultiplierBatchJob {
   id         String                   @id @default(uuid())
   status     String                   @default("RECEIVING") // RECEIVING | PROCESSING | COMPLETED | FAILED
+  namePrefix String?                  // optional "PREFIX 01, 02, …" group naming sequence
   campaignId String?
   styleId    String?
   createdBy  String?

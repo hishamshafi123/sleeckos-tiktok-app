@@ -352,6 +352,7 @@ export async function runSmartExport(
   });
 
   // Create the SmartExportAssignments and set video statuses to exporting
+  // (per-folder updates so each video also records its destination folder name)
   await prisma.$transaction([
     prisma.smartExportAssignment.createMany({
       data: flatAssignments.map((a) => ({
@@ -362,10 +363,16 @@ export async function runSmartExport(
         status: "pending",
       })),
     }),
-    prisma.multiplierOutput.updateMany({
-      where: { id: { in: allVideoIds } },
-      data: { exportStatus: "exporting" },
-    }),
+    ...plan.map((p) =>
+      prisma.multiplierOutput.updateMany({
+        where: { id: { in: p.videoIds } },
+        data: {
+          exportStatus: "exporting",
+          exportDestinationFolderId: p.driveFolderId,
+          exportDestinationFolderName: p.driveFolderName,
+        },
+      })
+    ),
   ]);
 
   // Trigger worker asynchronously
