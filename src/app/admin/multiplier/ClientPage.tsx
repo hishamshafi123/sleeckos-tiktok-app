@@ -149,7 +149,7 @@ export default function ClientPage({ session }: ClientPageProps = {}) {
       try {
         const wordList = JSON.parse(selectedGroup.transcript);
         if (Array.isArray(wordList)) {
-          transcriptionText = wordList.map((w: any) => w.text || "").join(" ");
+          transcriptionText = wordList.map((w: any) => w.word || w.text || "").join(" ");
         } else {
           transcriptionText = String(selectedGroup.transcript);
         }
@@ -193,6 +193,7 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
   const [aiHookCount, setAiHookCount] = useState(5);
   const [generatingAiHooks, setGeneratingAiHooks] = useState(false);
   const [customPrompt, setCustomPrompt] = useState("");
+  const [isEditingPrompt, setIsEditingPrompt] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
 
@@ -1803,73 +1804,24 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
                      {/* AI Generator Box */}
                      <div className="md:col-span-2 bg-[#09090b] border border-[#27272a] rounded-xl p-6 flex flex-col justify-between">
                        <div>
-                         <p className="text-sm font-semibold flex items-center gap-1.5">
-                           <Sparkles className="w-4.5 h-4.5 text-[#E11D48]" /> Gemini AI Hook Generator
-                         </p>
-                         <p className="text-xs text-[#71717a] mt-1 mb-4">
-                           Synthesizes the transcript text with the campaign brief messaging context to draft premium news-style hooks.
-                         </p>
-
-                         {/* Editable Prompt Area */}
-                         <div className="space-y-2 mb-4">
-                           <div className="flex justify-between items-center">
-                             <label className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">
-                               Prompt Template (Editable)
-                             </label>
-                             <button
-                               onClick={() => {
-                                 const campaign = campaigns.find((c) => c.id === selectedGroup.campaignId);
-                                 const campaignMarkdown = campaign
-                                   ? `# ${campaign.title}\n\n**Type:** ${campaign.type}\n**Description:** ${campaign.description}\n**Brief:** ${campaign.brief}\n**Info Context:**\n${campaign.infoContent || "None"}`
-                                   : "No campaign linked.";
-
-                                 let transcriptionText = "";
-                                 if (selectedGroup.transcript) {
-                                   try {
-                                     const wordList = JSON.parse(selectedGroup.transcript);
-                                     if (Array.isArray(wordList)) {
-                                       transcriptionText = wordList.map((w: any) => w.text || "").join(" ");
-                                     } else {
-                                       transcriptionText = String(selectedGroup.transcript);
-                                     }
-                                   } catch {
-                                     transcriptionText = selectedGroup.transcript;
-                                   }
-                                 }
-
-                                 const defaultPrompt = `Generate exactly ${aiHookCount} unique video captions or hook headlines summarizing this video transcript.
-
-CAMPAIGN CONTEXT:
-${campaignMarkdown}
-
-VIDEO TRANSCRIPT:
-"${transcriptionText}"
-
-Format your response strictly as a JSON array of strings, like this:
-["First hook headline", "Second hook headline", "Third hook headline"]
-Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate only the raw JSON array.`;
-
-                                 setCustomPrompt(defaultPrompt);
-                                 toast.success("Reset prompt to default");
-                               }}
-                               className="text-[10px] text-zinc-500 hover:text-zinc-300 font-bold transition-all"
-                               type="button"
-                               disabled={selectedGroup.transcriptStatus !== "TRANSCRIBED"}
-                             >
-                               [Reset Prompt]
-                             </button>
+                         <div className="flex justify-between items-start mb-4 gap-4">
+                           <div>
+                             <p className="text-sm font-semibold flex items-center gap-1.5">
+                               <Sparkles className="w-4.5 h-4.5 text-[#E11D48]" /> Gemini AI Hook Generator
+                             </p>
+                             <p className="text-xs text-[#71717a] mt-1">
+                               Synthesizes the transcript text with the campaign brief messaging context to draft premium news-style hooks.
+                             </p>
                            </div>
-                           <textarea
-                             value={customPrompt}
-                             onChange={(e) => setCustomPrompt(e.target.value)}
-                             className="w-full min-h-[150px] text-[11px] bg-[#18181b] border border-[#27272a] focus:border-[#E11D48] rounded-lg p-3 text-zinc-200 font-mono focus:outline-none custom-scrollbar"
-                             placeholder={
-                               selectedGroup.transcriptStatus === "TRANSCRIBED"
-                                 ? "AI Prompt template..."
-                                 : "Please run audio transcription alignment first to load prompt template"
-                             }
+                           <button
+                             onClick={() => setIsEditingPrompt(true)}
                              disabled={selectedGroup.transcriptStatus !== "TRANSCRIBED" || generatingAiHooks}
-                           />
+                             className="px-3.5 py-1.5 bg-[#18181b] hover:bg-zinc-800 text-[#fafafa] font-bold rounded-lg text-xs transition-all disabled:opacity-50 flex items-center gap-1.5 whitespace-nowrap cursor-pointer shadow-sm border border-[#27272a]"
+                             type="button"
+                             title="Edit prompt instructions and template variables sent to Gemini"
+                           >
+                             <Sparkles className="w-3.5 h-3.5 text-[#E11D48]" /> Edit Prompt
+                           </button>
                          </div>
 
                          {/* Side-by-Side Context Previews */}
@@ -1893,7 +1845,7 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
                                  try {
                                    const wordList = JSON.parse(selectedGroup.transcript);
                                    if (Array.isArray(wordList)) {
-                                     return wordList.map((w: any) => w.text || "").join(" ");
+                                     return wordList.map((w: any) => w.word || w.text || "").join(" ");
                                    }
                                    return String(selectedGroup.transcript);
                                  } catch {
@@ -3585,6 +3537,96 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
                 autoPlay
                 className="w-full h-full object-contain"
               />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {isEditingPrompt && selectedGroup && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-sm p-4">
+          <div
+            className="bg-[#18181b] border border-[#27272a] rounded-2xl p-6 max-w-2xl w-full max-h-[90vh] flex flex-col justify-between shadow-2xl animate-in fade-in zoom-in duration-200"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div>
+              <div className="flex justify-between items-center border-b border-[#27272a] pb-3 mb-4">
+                <h3 className="text-base font-extrabold text-white flex items-center gap-2">
+                  <Sparkles className="w-5 h-5 text-[#E11D48]" /> Edit AI Prompt Template
+                </h3>
+                <button
+                  onClick={() => setIsEditingPrompt(false)}
+                  className="text-[#71717a] hover:text-[#fafafa] transition-colors cursor-pointer"
+                  type="button"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <p className="text-xs text-[#71717a] mb-4 leading-relaxed">
+                Customize the instruction context sent to Gemini to generate your video caption hooks. Keep the strict JSON format instruction at the end to ensure hooks parse correctly.
+              </p>
+
+              <textarea
+                value={customPrompt}
+                onChange={(e) => setCustomPrompt(e.target.value)}
+                className="w-full min-h-[300px] text-xs bg-[#09090b] border border-[#27272a] focus:border-[#E11D48] rounded-xl p-4 text-zinc-200 font-mono focus:outline-none custom-scrollbar leading-relaxed"
+                placeholder="Prompt template details..."
+              />
+            </div>
+
+            <div className="flex justify-between items-center border-t border-[#27272a] pt-4 mt-6">
+              <button
+                onClick={() => {
+                  const campaign = campaigns.find((c) => c.id === selectedGroup.campaignId);
+                  const campaignMarkdown = campaign
+                    ? `# ${campaign.title}\n\n**Type:** ${campaign.type}\n**Description:** ${campaign.description}\n**Brief:** ${campaign.brief}\n**Info Context:**\n${campaign.infoContent || "None"}`
+                    : "No campaign linked.";
+
+                  let transcriptionText = "";
+                  if (selectedGroup.transcript) {
+                    try {
+                      const wordList = JSON.parse(selectedGroup.transcript);
+                      if (Array.isArray(wordList)) {
+                        transcriptionText = wordList.map((w: any) => w.word || w.text || "").join(" ");
+                      } else {
+                        transcriptionText = String(selectedGroup.transcript);
+                      }
+                    } catch {
+                      transcriptionText = selectedGroup.transcript;
+                    }
+                  }
+
+                  const defaultPrompt = `Generate exactly ${aiHookCount} unique video captions or hook headlines summarizing this video transcript.
+
+CAMPAIGN CONTEXT:
+${campaignMarkdown}
+
+VIDEO TRANSCRIPT:
+"${transcriptionText}"
+
+Format your response strictly as a JSON array of strings, like this:
+["First hook headline", "Second hook headline", "Third hook headline"]
+Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate only the raw JSON array.`;
+
+                  setCustomPrompt(defaultPrompt);
+                  toast.success("Reset prompt to default");
+                }}
+                className="text-xs text-[#71717a] hover:text-[#fafafa] font-bold transition-colors cursor-pointer"
+                type="button"
+              >
+                [Reset to Default]
+              </button>
+
+              <button
+                onClick={() => {
+                  setIsEditingPrompt(false);
+                  toast.success("Prompt template saved");
+                }}
+                className="px-5 py-2 bg-[#E11D48] hover:bg-rose-700 text-white font-bold rounded-lg text-xs transition-colors shadow cursor-pointer font-semibold"
+                type="button"
+              >
+                Save & Close
+              </button>
             </div>
           </div>
         </div>
