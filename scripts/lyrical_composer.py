@@ -955,6 +955,11 @@ def create_lyrical_video(input_path, background_path, output_path, **kwargs):
             with open(save_json_path, "w", encoding="utf-8") as f:
                 json.dump(words, f, indent=4, ensure_ascii=False)
             print(f"[+] Transcription JSON metadata saved successfully!")
+            
+            # Skip video rendering if we only wanted transcription JSON output
+            if output_path == "/dev/null":
+                print("[*] Output path is /dev/null. Bypassing heavy video/audio rendering steps since alignment JSON is successfully generated.")
+                return
         except Exception as e:
             print(f"[-] Warning: Failed to save aligned JSON metadata: {e}", file=sys.stderr)
 
