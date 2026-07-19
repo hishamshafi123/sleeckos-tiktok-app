@@ -75,7 +75,9 @@ export async function PATCH(
 
   // Account color tag
   if (body.color !== undefined) data.color = body.color;
-  if (body.colorId !== undefined) data.colorId = body.colorId;
+  if (body.colorId !== undefined) {
+    data.colorId = body.colorId ? body.colorId : null;
+  }
 
   const account = await prisma.managedAccount.update({
     where: { id },

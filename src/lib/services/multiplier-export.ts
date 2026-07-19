@@ -39,29 +39,51 @@ export async function searchDriveFolders(query: string) {
 
   // Find all accounts linked to these folder IDs
   const folderIds = folders.map((f) => f.id).filter(Boolean) as string[];
-  const mappedAccounts = await prisma.managedAccount.findMany({
-    where: { driveFolderId: { in: folderIds } },
-    select: {
-      id: true,
-      driveFolderId: true,
-      tiktokUsername: true,
-      colorId: true,
-      colorRef: {
-        select: {
-          color: true,
-          meaning: true,
-          defaultPostCount: true,
+  const [mappedAccounts, allColors] = await Promise.all([
+    prisma.managedAccount.findMany({
+      where: { driveFolderId: { in: folderIds } },
+      select: {
+        id: true,
+        driveFolderId: true,
+        tiktokUsername: true,
+        color: true,
+        colorId: true,
+        colorRef: {
+          select: {
+            color: true,
+            meaning: true,
+            defaultPostCount: true,
+          },
         },
       },
-    },
-  });
+    }),
+    prisma.accountColor.findMany({
+      select: { color: true, defaultPostCount: true },
+    }),
+  ]);
 
   return folders.map((f) => {
     const acc = mappedAccounts.find((a) => a.driveFolderId === f.id);
     let defaultCount = defaultFallbackCount;
-    if (acc && acc.colorRef) {
-      defaultCount = acc.colorRef.defaultPostCount;
+    let resolvedColor = "zinc";
+
+    if (acc) {
+      if (acc.colorRef) {
+        // Use the linked AccountColor relation (preferred)
+        defaultCount = acc.colorRef.defaultPostCount;
+        resolvedColor = acc.colorRef.color;
+      } else if (acc.color && acc.color !== "zinc") {
+        // Fallback: match legacy color field against AccountColor table
+        resolvedColor = acc.color;
+        const matchingColor = allColors.find(
+          (c) => c.color.toLowerCase() === acc.color.toLowerCase()
+        );
+        if (matchingColor) {
+          defaultCount = matchingColor.defaultPostCount;
+        }
+      }
     }
+
     return {
       id: f.id,
       name: f.name,
@@ -70,7 +92,7 @@ export async function searchDriveFolders(query: string) {
         ? {
             id: acc.id,
             tiktokUsername: acc.tiktokUsername,
-            color: acc.colorRef?.color || "zinc",
+            color: resolvedColor,
           }
         : null,
     };
