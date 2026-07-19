@@ -876,7 +876,7 @@ model SmartExportAssignment {
 
 model MultiplierBatchJob {
   id         String                   @id @default(uuid())
-  status     String                   @default("PROCESSING") // PROCESSING | COMPLETED | FAILED
+  status     String                   @default("RECEIVING") // RECEIVING | PROCESSING | COMPLETED | FAILED
   campaignId String?
   styleId    String?
   createdBy  String?

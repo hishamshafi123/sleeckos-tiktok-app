@@ -285,6 +285,7 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
   const [bulkStyleId, setBulkStyleId] = useState("");
   const [bulkFiles, setBulkFiles] = useState<File[]>([]);
   const [bulkUploading, setBulkUploading] = useState(false);
+  const [bulkUploadProgress, setBulkUploadProgress] = useState<{ current: number; total: number; fileName: string } | null>(null);
   const [bulkError, setBulkError] = useState<string | null>(null);
   const [batchJobs, setBatchJobs] = useState<BulkBatchJob[]>([]);
   const bulkFileInputRef = useRef<HTMLInputElement>(null);
@@ -534,6 +535,8 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
     setBulkFiles((prev) => [...prev, ...videos]);
   };
 
+  // Uploads one file per request — a single multi-file multipart body can
+  // exceed proxy body-size limits (nginx client_max_body_size → 413).
   const handleBulkUpload = async () => {
     if (bulkFiles.length === 0) {
       toast.error("Please select at least one video file.");
@@ -541,30 +544,73 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
     }
     setBulkUploading(true);
     setBulkError(null);
+    const total = bulkFiles.length;
+    const failedUploads: string[] = [];
+    let jobId: string | null = null;
+    let finalized = false;
     try {
-      const formData = new FormData();
-      bulkFiles.forEach((f) => formData.append("files", f));
-      if (bulkCampaignId) formData.append("campaignId", bulkCampaignId);
-      if (bulkStyleId) formData.append("styleId", bulkStyleId);
+      for (let i = 0; i < bulkFiles.length; i++) {
+        const file = bulkFiles[i];
+        const isLast = i === bulkFiles.length - 1;
+        setBulkUploadProgress({ current: i + 1, total, fileName: file.name });
 
-      const res = await fetch("/api/multiplier/bulk-upload", { method: "POST", body: formData });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Bulk upload failed");
+        const formData = new FormData();
+        formData.append("files", file);
+        if (jobId) {
+          formData.append("jobId", jobId);
+        } else {
+          if (bulkCampaignId) formData.append("campaignId", bulkCampaignId);
+          if (bulkStyleId) formData.append("styleId", bulkStyleId);
+        }
+        if (isLast) formData.append("finalize", "true");
+
+        try {
+          const res = await fetch("/api/multiplier/bulk-upload", { method: "POST", body: formData });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || "Upload failed");
+          jobId = data.jobId;
+          if (isLast) finalized = true;
+        } catch (err: any) {
+          failedUploads.push(`${file.name}: ${err.message || "upload failed"}`);
+          // If the very first file failed there is no batch to append to — stop.
+          if (!jobId) throw new Error(failedUploads[0]);
+        }
+      }
+
+      if (!jobId) throw new Error("No files could be uploaded.");
+
+      // The last file's request carries finalize — if it failed, finalize separately
+      // so the batch doesn't sit unprocessed.
+      if (!finalized) {
+        const formData = new FormData();
+        formData.append("jobId", jobId);
+        formData.append("finalize", "true");
+        const res = await fetch("/api/multiplier/bulk-upload", { method: "POST", body: formData });
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          throw new Error(data.error || "Failed to start batch processing");
+        }
+      }
 
       // Seed batch history with the fresh job state so polling picks it up
-      const jobRes = await fetch(`/api/multiplier/batch-jobs/${data.jobId}`);
+      const jobRes = await fetch(`/api/multiplier/batch-jobs/${jobId}`);
       if (jobRes.ok) {
         const job = await jobRes.json();
         setBatchJobs((prev) => [{ id: job.id, status: job.status, items: job.items || [] }, ...prev]);
       } else {
-        setBatchJobs((prev) => [{ id: data.jobId, status: "PROCESSING", items: [] }, ...prev]);
+        setBatchJobs((prev) => [{ id: jobId!, status: "PROCESSING", items: [] }, ...prev]);
       }
       setBulkFiles([]);
-      toast.success(`Uploaded ${bulkFiles.length} video${bulkFiles.length > 1 ? "s" : ""} — processing started.`);
+      if (failedUploads.length > 0) {
+        toast.warning(`Uploaded ${total - failedUploads.length}/${total} videos. Failed: ${failedUploads.join("; ")}`);
+      } else {
+        toast.success(`Uploaded ${total} video${total > 1 ? "s" : ""} — processing started.`);
+      }
     } catch (err: any) {
       setBulkError(err.message || "Bulk upload failed");
     } finally {
       setBulkUploading(false);
+      setBulkUploadProgress(null);
     }
   };
 
@@ -2723,8 +2769,20 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
               {bulkUploading ? (
                 <>
                   <Loader2 className="w-8 h-8 text-[#E11D48] mb-2 animate-spin" />
-                  <p className="text-sm font-semibold">Uploading {bulkFiles.length} video{bulkFiles.length !== 1 ? "s" : ""}…</p>
+                  <p className="text-sm font-semibold">
+                    {bulkUploadProgress
+                      ? `Uploading ${bulkUploadProgress.current}/${bulkUploadProgress.total} — ${bulkUploadProgress.fileName}`
+                      : `Uploading ${bulkFiles.length} video${bulkFiles.length !== 1 ? "s" : ""}…`}
+                  </p>
                   <p className="text-xs text-[#71717a] mt-1">Keep this tab open while the files upload</p>
+                  {bulkUploadProgress && (
+                    <div className="w-full max-w-xs mt-3 h-1.5 bg-zinc-800 rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-[#E11D48] rounded-full transition-all"
+                        style={{ width: `${Math.round((bulkUploadProgress.current / bulkUploadProgress.total) * 100)}%` }}
+                      />
+                    </div>
+                  )}
                 </>
               ) : (
                 <>
@@ -2780,7 +2838,8 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
             >
               {bulkUploading ? (
                 <>
-                  <Loader2 className="w-4 h-4 animate-spin" /> Uploading…
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  {bulkUploadProgress ? `Uploading ${bulkUploadProgress.current}/${bulkUploadProgress.total}…` : "Uploading…"}
                 </>
               ) : (
                 <>

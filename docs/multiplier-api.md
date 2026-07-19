@@ -19,17 +19,24 @@ All error responses follow the shape `{ "error": string }`.
 
 ### `POST /api/multiplier/bulk-upload`
 
-Upload many videos at once. Creates one `MultiplierGroup` per file (named after the
-file, `mappingMode: "distribute"`), then transcribes and generates 15 hooks per group
-in the background (sequential — one video at a time).
+Upload videos for bulk intake. Creates one `MultiplierGroup` per file (named after the
+file, `mappingMode: "distribute"`). Processing (transcribe → 15 hooks per group,
+sequential — one video at a time) starts when the batch is **finalized**.
+
+Files may be sent across multiple requests (recommended: one file per request —
+a single multi-file body can exceed proxy body-size limits such as nginx
+`client_max_body_size`, producing a `413`). First request creates the batch;
+later requests append to it via `jobId`; the last request sets `finalize`.
 
 **Request:** `multipart/form-data`
 
 | Field | Type | Notes |
 |---|---|---|
-| `files` | `File[]` | one or more video files (repeat the field) |
-| `campaignId` | `string?` | applied to every created group + hook context |
-| `styleId` | `string?` | caption style; defaults to `news-lower-third` |
+| `files` | `File[]` | video file(s) (repeat the field); may be omitted on a finalize-only request |
+| `campaignId` | `string?` | applied to every created group + hook context (first request only) |
+| `styleId` | `string?` | caption style; defaults to `news-lower-third` (first request only) |
+| `jobId` | `string?` | append to an existing batch instead of creating one |
+| `finalize` | `"true"?` | start background processing; send on the last request (or alone with just `jobId`) |
 
 **Response `200`:**
 
@@ -37,7 +44,7 @@ in the background (sequential — one video at a time).
 { jobId: string; groupIds: string[] }
 ```
 
-Errors: `400` no files uploaded.
+Errors: `400` no files uploaded (and not a finalize-only request); `400` finalize without `jobId`; `500` batch not found / already processing.
 
 ### `GET /api/multiplier/batch-jobs/[id]`
 
@@ -48,7 +55,7 @@ Poll bulk-intake progress.
 ```ts
 {
   id: string;
-  status: "PROCESSING" | "COMPLETED" | "FAILED"; // FAILED only if every item failed
+  status: "RECEIVING" | "PROCESSING" | "COMPLETED" | "FAILED"; // RECEIVING until finalized; FAILED only if every item failed
   campaignId: string | null;
   styleId: string | null;
   createdBy: string | null;

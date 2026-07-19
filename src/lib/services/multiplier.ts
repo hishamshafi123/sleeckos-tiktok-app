@@ -742,6 +742,56 @@ export async function retryOutput(outputId: string) {
 
 const DEFAULT_BULK_STYLE_ID = "news-lower-third";
 
+async function addFileToBulkBatch(input: {
+  jobId: string;
+  file: { tempPath: string; fileName: string };
+  campaignId?: string | null;
+  styleId?: string | null;
+  createdBy?: string | null;
+}): Promise<string | null> {
+  try {
+    const name = input.file.fileName.replace(/\.[^.]+$/, "") || input.file.fileName;
+    const group = await prisma.multiplierGroup.create({
+      data: {
+        name,
+        campaignId: input.campaignId || null,
+        styleId: input.styleId || DEFAULT_BULK_STYLE_ID,
+        mappingMode: "distribute",
+        settings: {},
+        createdBy: input.createdBy || null,
+      },
+    });
+
+    // Moves the uploaded temp file into the variations directory
+    await addVariation(group.id, input.file.tempPath, input.file.fileName);
+
+    // The route has already received the upload, so the item starts at TRANSCRIBING
+    await prisma.multiplierBatchJobItem.create({
+      data: {
+        jobId: input.jobId,
+        fileName: input.file.fileName,
+        status: "TRANSCRIBING",
+        groupId: group.id,
+      },
+    });
+
+    return group.id;
+  } catch (err: any) {
+    try { fs.unlinkSync(input.file.tempPath); } catch {}
+    await prisma.multiplierBatchJobItem.create({
+      data: {
+        jobId: input.jobId,
+        fileName: input.file.fileName,
+        status: "FAILED",
+        error: err?.message || String(err),
+      },
+    });
+    return null;
+  }
+}
+
+// Creates the batch shell in RECEIVING state. Files may arrive across several
+// requests (see appendToBulkBatch) — processing starts only on finalizeBulkBatch.
 export async function createBulkBatch(input: {
   files: { tempPath: string; fileName: string }[];
   campaignId?: string | null;
@@ -752,7 +802,7 @@ export async function createBulkBatch(input: {
 
   const job = await prisma.multiplierBatchJob.create({
     data: {
-      status: "PROCESSING",
+      status: "RECEIVING",
       campaignId: input.campaignId || null,
       styleId: input.styleId || null,
       createdBy: input.createdBy || null,
@@ -760,54 +810,61 @@ export async function createBulkBatch(input: {
   });
 
   const groupIds: string[] = [];
-
   for (const file of input.files) {
-    try {
-      const name = file.fileName.replace(/\.[^.]+$/, "") || file.fileName;
-      const group = await prisma.multiplierGroup.create({
-        data: {
-          name,
-          campaignId: input.campaignId || null,
-          styleId: input.styleId || DEFAULT_BULK_STYLE_ID,
-          mappingMode: "distribute",
-          settings: {},
-          createdBy: input.createdBy || null,
-        },
-      });
-
-      // Moves the uploaded temp file into the variations directory
-      await addVariation(group.id, file.tempPath, file.fileName);
-
-      // The route has already received the upload, so the item starts at TRANSCRIBING
-      await prisma.multiplierBatchJobItem.create({
-        data: {
-          jobId: job.id,
-          fileName: file.fileName,
-          status: "TRANSCRIBING",
-          groupId: group.id,
-        },
-      });
-
-      groupIds.push(group.id);
-    } catch (err: any) {
-      try { fs.unlinkSync(file.tempPath); } catch {}
-      await prisma.multiplierBatchJobItem.create({
-        data: {
-          jobId: job.id,
-          fileName: file.fileName,
-          status: "FAILED",
-          error: err?.message || String(err),
-        },
-      });
-    }
+    const groupId = await addFileToBulkBatch({
+      jobId: job.id,
+      file,
+      campaignId: input.campaignId,
+      styleId: input.styleId,
+      createdBy: input.createdBy,
+    });
+    if (groupId) groupIds.push(groupId);
   }
 
-  // Kick off background processing (fire-and-forget, same pattern as triggerQueueWorker)
-  processBulkBatch(job.id).catch((err) => {
-    console.error(`[Multiplier Bulk Batch] Failed to trigger processing for job ${job.id}:`, err);
+  return { jobId: job.id, groupIds };
+}
+
+// Appends files to an existing RECEIVING batch (one request per file keeps
+// each request under proxy body-size limits, e.g. nginx client_max_body_size).
+export async function appendToBulkBatch(
+  jobId: string,
+  files: { tempPath: string; fileName: string }[]
+): Promise<string[]> {
+  ensureDirsExist();
+
+  const job = await prisma.multiplierBatchJob.findUnique({ where: { id: jobId } });
+  if (!job) throw new Error("Batch job not found");
+  if (job.status !== "RECEIVING") throw new Error("Batch job is already being processed");
+
+  const groupIds: string[] = [];
+  for (const file of files) {
+    const groupId = await addFileToBulkBatch({
+      jobId,
+      file,
+      campaignId: job.campaignId,
+      styleId: job.styleId,
+      createdBy: job.createdBy,
+    });
+    if (groupId) groupIds.push(groupId);
+  }
+  return groupIds;
+}
+
+// Marks the batch ready and kicks off background processing
+// (fire-and-forget, same pattern as triggerQueueWorker).
+export async function finalizeBulkBatch(jobId: string): Promise<void> {
+  const job = await prisma.multiplierBatchJob.findUnique({ where: { id: jobId } });
+  if (!job) throw new Error("Batch job not found");
+  if (job.status !== "RECEIVING") return; // already finalized — idempotent
+
+  await prisma.multiplierBatchJob.update({
+    where: { id: jobId },
+    data: { status: "PROCESSING" },
   });
 
-  return { jobId: job.id, groupIds };
+  processBulkBatch(jobId).catch((err) => {
+    console.error(`[Multiplier Bulk Batch] Failed to trigger processing for job ${jobId}:`, err);
+  });
 }
 
 let isBulkProcessing = false;

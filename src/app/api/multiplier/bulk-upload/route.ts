@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSession } from "@/lib/session";
 import { can } from "@/lib/services/permissions";
-import { createBulkBatch } from "@/lib/services/multiplier";
+import { createBulkBatch, appendToBulkBatch, finalizeBulkBatch } from "@/lib/services/multiplier";
 import fs from "fs";
 import path from "path";
 import os from "os";
@@ -24,9 +24,22 @@ export async function POST(req: NextRequest) {
     const files = formData.getAll("files") as File[];
     const campaignId = (formData.get("campaignId") as string) || null;
     const styleId = (formData.get("styleId") as string) || null;
+    // Append mode: add files to an existing batch; finalize starts processing.
+    // Clients upload one file per request to stay under proxy body-size limits.
+    const existingJobId = (formData.get("jobId") as string) || null;
+    const finalize = formData.get("finalize") === "true";
 
-    if (!files || files.length === 0) {
+    if ((!files || files.length === 0) && !finalize) {
       return NextResponse.json({ error: "No files uploaded" }, { status: 400 });
+    }
+
+    if (finalize && files.length === 0) {
+      // Finalize-only request (e.g. the last file's upload failed client-side)
+      if (!existingJobId) {
+        return NextResponse.json({ error: "jobId is required to finalize" }, { status: 400 });
+      }
+      await finalizeBulkBatch(existingJobId);
+      return NextResponse.json({ jobId: existingJobId, groupIds: [] });
     }
 
     const tempDir = os.tmpdir();
@@ -41,12 +54,25 @@ export async function POST(req: NextRequest) {
       staged.push({ tempPath, fileName: file.name });
     }
 
-    const { jobId, groupIds } = await createBulkBatch({
-      files: staged,
-      campaignId,
-      styleId,
-      createdBy: session.userId,
-    });
+    let jobId: string;
+    let groupIds: string[];
+    if (existingJobId) {
+      groupIds = await appendToBulkBatch(existingJobId, staged);
+      jobId = existingJobId;
+    } else {
+      const created = await createBulkBatch({
+        files: staged,
+        campaignId,
+        styleId,
+        createdBy: session.userId,
+      });
+      jobId = created.jobId;
+      groupIds = created.groupIds;
+    }
+
+    if (finalize) {
+      await finalizeBulkBatch(jobId);
+    }
 
     return NextResponse.json({ jobId, groupIds });
   } catch (err: any) {
