@@ -190,7 +190,7 @@ export async function transcribeGroup(groupId: string): Promise<string> {
   });
 }
 
-export async function generateHooks(groupId: string, count: number, useCampaignContext: boolean): Promise<string[]> {
+export async function generateHooks(groupId: string, count: number, useCampaignContext: boolean, customPrompt?: string): Promise<string[]> {
   const group = await prisma.multiplierGroup.findUnique({
     where: { id: groupId },
     include: { campaign: true },
@@ -232,7 +232,9 @@ Your goal is to generate short, factual, and high-impact headlines or summaries 
 The output MUST look like standard breaking-news bars or credible journalistic cards, NOT casual entertainment.
 Do NOT use emojis, clickbait questions, or hashtags. Keep the phrasing brief, serious, and informative.`;
 
-  const prompt = `
+  let prompt = customPrompt;
+  if (!prompt) {
+    prompt = `
 Generate exactly ${count} unique video captions or hook headlines summarizing this video transcript.
 ${campaignContextPrompt}
 VIDEO TRANSCRIPT:
@@ -241,6 +243,12 @@ VIDEO TRANSCRIPT:
 Format your response strictly as a JSON array of strings, like this:
 ["First hook headline", "Second hook headline", "Third hook headline"]
 Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate only the raw JSON array.`;
+  } else {
+    // Always append strict JSON format instructions if not present to ensure parseability
+    if (!prompt.includes("Format your response strictly as a JSON array of strings")) {
+      prompt += `\n\nFormat your response strictly as a JSON array of strings, like this:\n["First hook headline", "Second hook headline", "Third hook headline"]\nDo not add any other markdown wrapper like \`\`\`json or text blocks. Generate only the raw JSON array.`;
+    }
+  }
 
   const ai = new GoogleGenAI({ apiKey });
   const response = await ai.models.generateContent({

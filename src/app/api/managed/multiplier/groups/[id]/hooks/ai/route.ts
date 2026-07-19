@@ -19,7 +19,7 @@ export async function POST(
   const { id: groupId } = await params;
 
   try {
-    const { count = 5, useCampaignContext = true } = await req.json();
+    const { count = 5, useCampaignContext = true, customPrompt } = await req.json();
 
     const group = await prisma.multiplierGroup.findUnique({
       where: { id: groupId },
@@ -33,7 +33,7 @@ export async function POST(
       return NextResponse.json({ error: "No transcript found. Please transcribe the video first." }, { status: 400 });
     }
 
-    const hooks = await generateHooks(groupId, count, useCampaignContext);
+    const hooks = await generateHooks(groupId, count, useCampaignContext, customPrompt);
     return NextResponse.json({ success: true, hooks });
   } catch (err: any) {
     console.error("[Multiplier AI Hooks POST API] Error:", err);

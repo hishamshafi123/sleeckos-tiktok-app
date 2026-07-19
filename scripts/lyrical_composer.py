@@ -294,7 +294,7 @@ def transcribe_audio(media_path, model_size="base", device="cpu"):
     print(f"[*] Initializing stable-ts with faster-whisper backend (Model: '{model_size}', Device: '{device}')...")
     
     # Select appropriate compute type
-    compute_type = "float16" if device == "cuda" else "int8"
+    compute_type = "float16" if device == "cuda" else "float32"
     
     # Load model
     model = stable_whisper.load_faster_whisper(model_size, device=device, compute_type=compute_type)

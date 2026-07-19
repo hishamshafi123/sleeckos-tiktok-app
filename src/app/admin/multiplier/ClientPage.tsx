@@ -38,6 +38,7 @@ interface Campaign {
   type: string;
   description: string;
   brief: string;
+  infoContent?: string | null;
 }
 
 interface MultiplierHook {
@@ -95,6 +96,14 @@ interface ClientPageProps {
 }
 
 export default function ClientPage({ session }: ClientPageProps = {}) {
+  const getServeUrl = (path: string | null | undefined) => {
+    if (!path) return "";
+    if (path.startsWith("/uploads/")) {
+      return path.replace("/uploads/", "/api/uploads/");
+    }
+    return path;
+  };
+
   const [activeTab, setActiveTab] = useState<"builder" | "queue">("builder");
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [groups, setGroups] = useState<MultiplierGroup[]>([]);
@@ -124,6 +133,46 @@ export default function ClientPage({ session }: ClientPageProps = {}) {
     setPreviewVariationIndex(0);
   }, [selectedGroup?.id]);
 
+  // Dynamically initialize customPrompt with campaign markdown and transcription
+  useEffect(() => {
+    if (!selectedGroup) {
+      setCustomPrompt("");
+      return;
+    }
+    const campaign = campaigns.find((c) => c.id === selectedGroup.campaignId);
+    const campaignMarkdown = campaign
+      ? `# ${campaign.title}\n\n**Type:** ${campaign.type}\n**Description:** ${campaign.description}\n**Brief:** ${campaign.brief}\n**Info Context:**\n${campaign.infoContent || "None"}`
+      : "No campaign linked.";
+
+    let transcriptionText = "";
+    if (selectedGroup.transcript) {
+      try {
+        const wordList = JSON.parse(selectedGroup.transcript);
+        if (Array.isArray(wordList)) {
+          transcriptionText = wordList.map((w: any) => w.text || "").join(" ");
+        } else {
+          transcriptionText = String(selectedGroup.transcript);
+        }
+      } catch {
+        transcriptionText = selectedGroup.transcript;
+      }
+    }
+
+    const defaultPrompt = `Generate exactly 5 unique video captions or hook headlines summarizing this video transcript.
+
+CAMPAIGN CONTEXT:
+${campaignMarkdown}
+
+VIDEO TRANSCRIPT:
+"${transcriptionText}"
+
+Format your response strictly as a JSON array of strings, like this:
+["First hook headline", "Second hook headline", "Third hook headline"]
+Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate only the raw JSON array.`;
+
+    setCustomPrompt(defaultPrompt);
+  }, [selectedGroup?.id, selectedGroup?.transcript, campaigns]);
+
   // Template/Style Preset CRUD state
   const [savedStyles, setSavedStyles] = useState<any[]>([]);
   const [selectedSavedStyleId, setSelectedSavedStyleId] = useState<string>("");
@@ -143,6 +192,7 @@ export default function ClientPage({ session }: ClientPageProps = {}) {
   const [newHookText, setNewHookText] = useState("");
   const [aiHookCount, setAiHookCount] = useState(5);
   const [generatingAiHooks, setGeneratingAiHooks] = useState(false);
+  const [customPrompt, setCustomPrompt] = useState("");
   const [transcribing, setTranscribing] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
 
@@ -343,7 +393,6 @@ export default function ClientPage({ session }: ClientPageProps = {}) {
     }
   };
 
-  // Fetch initial data
   const fetchData = async () => {
     try {
       const campRes = await fetch("/api/managed/campaigns");
@@ -355,24 +404,6 @@ export default function ClientPage({ session }: ClientPageProps = {}) {
       console.error("Error loading campaigns:", err);
     } finally {
       setLoadingCampaigns(false);
-    }
-
-    try {
-      const groupRes = await fetch("/api/managed/multiplier");
-      if (groupRes.ok) {
-        const data = await groupRes.json();
-        setGroups(data);
-        // Sync selectedGroup with the new data
-        setSelectedGroup((prev) => {
-          if (!prev) return null;
-          const updated = data.find((g: any) => g.id === prev.id);
-          return updated || prev;
-        });
-      }
-    } catch (err) {
-      console.error("Error loading groups:", err);
-    } finally {
-      setLoadingGroups(false);
     }
 
     try {
@@ -395,6 +426,26 @@ export default function ClientPage({ session }: ClientPageProps = {}) {
     } catch (err) {
       console.error("Error loading saved styles:", err);
     }
+
+    try {
+      const groupRes = await fetch("/api/managed/multiplier");
+      if (groupRes.ok) {
+        const data = await groupRes.json();
+        setGroups(data);
+        // Sync selectedGroup with the new data
+        setSelectedGroup((prev) => {
+          if (!prev) return null;
+          const updated = data.find((g: any) => g.id === prev.id);
+          return updated || prev;
+        });
+        return data; // Return the fresh data array!
+      }
+    } catch (err) {
+      console.error("Error loading groups:", err);
+    } finally {
+      setLoadingGroups(false);
+    }
+    return null;
   };
 
   const searchDriveFolders = async (query: string) => {
@@ -754,10 +805,11 @@ export default function ClientPage({ session }: ClientPageProps = {}) {
       }
 
       toast.success("Group configuration updated.");
-      await fetchData();
-      // Reload updated info
-      const updated = groups.find((g) => g.id === selectedGroup.id);
-      if (updated) setSelectedGroup(updated);
+      const freshGroups = await fetchData();
+      if (freshGroups) {
+        const updated = freshGroups.find((g: any) => g.id === selectedGroup.id);
+        if (updated) setSelectedGroup(updated);
+      }
     } catch (err: any) {
       toast.error(err.message);
     }
@@ -938,9 +990,19 @@ export default function ClientPage({ session }: ClientPageProps = {}) {
       }
 
       toast.success("Video variations uploaded and processed successfully.");
-      await fetchData();
-      const updated = groups.find((g) => g.id === selectedGroup.id);
-      if (updated) setSelectedGroup(updated);
+      const freshGroups = await fetchData();
+      if (freshGroups && selectedGroup) {
+        const updated = freshGroups.find((g: any) => g.id === selectedGroup.id);
+        if (updated) {
+          setSelectedGroup(updated);
+          // Auto Whisper Transcription trigger
+          if (!updated.transcriptStatus || updated.transcriptStatus === "PENDING" || updated.transcriptStatus === "FAILED") {
+            fetch(`/api/managed/multiplier/groups/${updated.id}/transcribe`, { method: "POST" })
+              .then(() => fetchData())
+              .catch(console.error);
+          }
+        }
+      }
     } catch (err: any) {
       toast.error(err.message);
     } finally {
@@ -985,6 +1047,7 @@ export default function ClientPage({ session }: ClientPageProps = {}) {
         body: JSON.stringify({
           count: aiHookCount,
           useCampaignContext: true,
+          customPrompt: customPrompt || undefined,
         }),
       });
 
@@ -994,9 +1057,11 @@ export default function ClientPage({ session }: ClientPageProps = {}) {
       }
 
       toast.success(`Successfully generated ${aiHookCount} AI captions.`);
-      await fetchData();
-      const updated = groups.find((g) => g.id === selectedGroup.id);
-      if (updated) setSelectedGroup(updated);
+      const freshGroups = await fetchData();
+      if (freshGroups && selectedGroup) {
+        const updated = freshGroups.find((g: any) => g.id === selectedGroup.id);
+        if (updated) setSelectedGroup(updated);
+      }
     } catch (err: any) {
       toast.error(err.message);
     } finally {
@@ -1022,9 +1087,11 @@ export default function ClientPage({ session }: ClientPageProps = {}) {
 
       setNewHookText("");
       toast.success("Manual hook added.");
-      await fetchData();
-      const updated = groups.find((g) => g.id === selectedGroup.id);
-      if (updated) setSelectedGroup(updated);
+      const freshGroups = await fetchData();
+      if (freshGroups && selectedGroup) {
+        const updated = freshGroups.find((g: any) => g.id === selectedGroup.id);
+        if (updated) setSelectedGroup(updated);
+      }
     } catch (err: any) {
       toast.error(err.message);
     }
@@ -1058,9 +1125,11 @@ export default function ClientPage({ session }: ClientPageProps = {}) {
         count++;
       }
       toast.success(`Imported ${count} hooks from CSV successfully.`);
-      await fetchData();
-      const updated = groups.find((g) => g.id === selectedGroup.id);
-      if (updated) setSelectedGroup(updated);
+      const freshGroups = await fetchData();
+      if (freshGroups && selectedGroup) {
+        const updated = freshGroups.find((g: any) => g.id === selectedGroup.id);
+        if (updated) setSelectedGroup(updated);
+      }
     } catch (err) {
       toast.error("Error importing CSV hooks");
     }
@@ -1078,9 +1147,11 @@ export default function ClientPage({ session }: ClientPageProps = {}) {
       if (!res.ok) throw new Error("Failed to delete hook");
 
       toast.success("Hook removed.");
-      await fetchData();
-      const updated = groups.find((g) => g.id === selectedGroup.id);
-      if (updated) setSelectedGroup(updated);
+      const freshGroups = await fetchData();
+      if (freshGroups && selectedGroup) {
+        const updated = freshGroups.find((g: any) => g.id === selectedGroup.id);
+        if (updated) setSelectedGroup(updated);
+      }
     } catch (err: any) {
       toast.error(err.message);
     }
@@ -1349,7 +1420,7 @@ export default function ClientPage({ session }: ClientPageProps = {}) {
         throw new Error(err.error || "Failed to fetch preview");
       }
       const data = await res.json();
-      setPreviewVideoUrl(data.url);
+      setPreviewVideoUrl(getServeUrl(data.url));
     } catch (err: any) {
       toast.error(err.message || "Video unavailable");
     } finally {
@@ -1616,6 +1687,11 @@ export default function ClientPage({ session }: ClientPageProps = {}) {
                         <Loader2 className="w-8 h-8 text-[#E11D48] mb-2 animate-spin" />
                         <p className="text-sm font-semibold">Uploading and processing video variations...</p>
                         <p className="text-xs text-[#71717a] mt-1">Videos over 20MB will be automatically compressed for optimal rendering speed</p>
+                        <div className="w-full max-w-xs mt-4 relative">
+                          <div className="h-1.5 w-full bg-zinc-800 rounded-full overflow-hidden">
+                            <div className="h-full bg-[#E11D48] rounded-full animate-pulse w-2/3" />
+                          </div>
+                        </div>
                       </>
                     ) : (
                       <>
@@ -1646,7 +1722,7 @@ export default function ClientPage({ session }: ClientPageProps = {}) {
                         {selectedGroup.variations.map((v, i) => (
                           <button
                             key={v.id}
-                            onClick={() => setPreviewVideoUrl(v.videoRef)}
+                            onClick={() => setPreviewVideoUrl(getServeUrl(v.videoRef))}
                             className="group relative bg-[#09090b] hover:bg-[#18181b] px-3 py-2 rounded-lg border border-[#27272a] hover:border-[#E11D48] flex items-center gap-2 transition-all text-left"
                             title="Click to play preview"
                           >
@@ -1659,47 +1735,57 @@ export default function ClientPage({ session }: ClientPageProps = {}) {
                   )}
                 </div>
 
-                {/* Step 3: Transcription */}
+                {/* Step 3: Speech Transcription */}
                 <div className="border-t border-[#27272a] pt-6">
-                  <h2 className="text-xl font-bold mb-4 flex items-center gap-2">
-                    <span className="bg-[#E11D48] text-white text-xs w-5 h-5 flex items-center justify-center rounded-full font-bold">3</span>
-                    Speech Transcription (Stable-ts / Whisper)
-                  </h2>
-                  <div className="bg-[#09090b] border border-[#27272a] rounded-xl p-6 flex items-start gap-4 justify-between">
-                    <div className="space-y-1">
-                      <p className="text-sm font-semibold">Runs transcription alignment once for the entire Group</p>
-                      <p className="text-xs text-[#71717a]">
-                        We transcribe only the first variation, saving execution costs. All hooks use this exact transcript alignment.
-                      </p>
+                  <div className="bg-[#09090b] border border-[#27272a] rounded-xl p-4 flex items-center justify-between gap-4">
+                    <div className="flex-1 flex items-center gap-3">
+                      <span className="bg-[#E11D48] text-white text-[10px] w-4.5 h-4.5 flex items-center justify-center rounded-full font-bold">3</span>
+                      <span className="text-xs font-bold text-gray-300 uppercase tracking-wider">Whisper Alignment:</span>
+                      
                       {selectedGroup.transcriptStatus === "TRANSCRIBED" && (
-                        <div className="mt-2 inline-flex items-center gap-1 text-xs text-green-500 bg-green-500/10 px-2.5 py-1 rounded-full font-semibold">
-                          <CheckCircle2 className="w-3.5 h-3.5" /> Alignment completed successfully
-                        </div>
+                        <span className="inline-flex items-center gap-1.5 text-xs text-green-500 font-semibold bg-green-500/10 px-2.5 py-1 rounded-full">
+                          <CheckCircle2 className="w-3.5 h-3.5" /> Completed
+                        </span>
                       )}
+                      
                       {selectedGroup.transcriptStatus === "TRANSCRIBING" && (
-                        <div className="mt-2 inline-flex items-center gap-1 text-xs text-amber-500 bg-amber-500/10 px-2.5 py-1 rounded-full font-semibold animate-pulse">
-                          <Loader2 className="w-3.5 h-3.5 animate-spin" /> Transcribing source...
+                        <div className="flex-1 flex items-center gap-3">
+                          <span className="inline-flex items-center gap-1 text-xs text-amber-500 font-semibold animate-pulse">
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" /> Processing...
+                          </span>
+                          <div className="flex-1 max-w-xs h-1.5 bg-zinc-800 rounded-full overflow-hidden">
+                            <div className="h-full bg-amber-500 rounded-full animate-pulse w-3/4" />
+                          </div>
                         </div>
                       )}
+                      
                       {selectedGroup.transcriptStatus === "FAILED" && (
-                        <div className="mt-2 inline-flex items-center gap-1 text-xs text-red-500 bg-red-500/10 px-2.5 py-1 rounded-full font-semibold">
-                          <AlertCircle className="w-3.5 h-3.5" /> Transcription failed
-                        </div>
+                        <span className="inline-flex items-center gap-1.5 text-xs text-red-500 font-semibold bg-red-500/10 px-2.5 py-1 rounded-full">
+                          <AlertCircle className="w-3.5 h-3.5" /> Failed: {selectedGroup.errorMessage || "System error"}
+                        </span>
+                      )}
+                      
+                      {(!selectedGroup.transcriptStatus || selectedGroup.transcriptStatus === "PENDING") && (
+                        <span className="inline-flex items-center gap-1 text-xs text-gray-500 font-semibold">
+                          <AlertCircle className="w-3.5 h-3.5" /> Idle (No transcription yet)
+                        </span>
                       )}
                     </div>
 
                     <button
                       onClick={handleTranscribeGroup}
                       disabled={transcribing || selectedGroup.variations.length === 0 || selectedGroup.transcriptStatus === "TRANSCRIBING"}
-                      className="px-5 py-2.5 bg-zinc-800 hover:bg-zinc-700 text-white font-semibold rounded-lg text-sm transition-all disabled:opacity-50 flex items-center gap-2"
+                      className="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-white font-bold rounded-lg text-xs transition-all disabled:opacity-50 flex items-center gap-1.5"
+                      title="Trigger or reload transcription alignment"
                     >
                       {transcribing ? (
                         <>
-                          <Loader2 className="w-4 h-4 animate-spin text-[#E11D48]" /> Processing...
+                          <Loader2 className="w-3 h-3 animate-spin text-[#E11D48]" /> Transcribing...
                         </>
                       ) : (
                         <>
-                          <RefreshCw className="w-4 h-4" /> Run Alignment
+                          <RefreshCw className="w-3 h-3" />
+                          {selectedGroup.transcriptStatus === "FAILED" ? "Retry Transcription" : "Reload / Realign"}
                         </>
                       )}
                     </button>
@@ -1714,46 +1800,141 @@ export default function ClientPage({ session }: ClientPageProps = {}) {
                   </h2>
 
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
-                    {/* AI Generator Box */}
-                    <div className="md:col-span-2 bg-[#09090b] border border-[#27272a] rounded-xl p-6 flex flex-col justify-between">
-                      <div>
-                        <p className="text-sm font-semibold flex items-center gap-1.5">
-                          <Sparkles className="w-4.5 h-4.5 text-[#E11D48]" /> Gemini AI Hook Generator
-                        </p>
-                        <p className="text-xs text-[#71717a] mt-1 mb-4">
-                          Synthesizes the transcript text with the campaign brief messaging context to draft premium news-style hooks.
-                        </p>
-                      </div>
+                     {/* AI Generator Box */}
+                     <div className="md:col-span-2 bg-[#09090b] border border-[#27272a] rounded-xl p-6 flex flex-col justify-between">
+                       <div>
+                         <p className="text-sm font-semibold flex items-center gap-1.5">
+                           <Sparkles className="w-4.5 h-4.5 text-[#E11D48]" /> Gemini AI Hook Generator
+                         </p>
+                         <p className="text-xs text-[#71717a] mt-1 mb-4">
+                           Synthesizes the transcript text with the campaign brief messaging context to draft premium news-style hooks.
+                         </p>
 
-                      <div className="flex items-center gap-4">
-                        <div className="w-24">
-                          <label className="block text-[10px] text-[#71717a] uppercase font-bold mb-1">Hooks Count</label>
-                          <input
-                            type="number"
-                            min={1}
-                            max={20}
-                            value={aiHookCount}
-                            onChange={(e) => setAiHookCount(parseInt(e.target.value) || 5)}
-                            className="w-full bg-[#18181b] border border-[#27272a] rounded px-3 py-1.5 text-xs text-center focus:outline-none"
-                          />
-                        </div>
-                        <button
-                          onClick={handleGenerateAiHooks}
-                          disabled={generatingAiHooks || selectedGroup.transcriptStatus !== "TRANSCRIBED"}
-                          className="flex-1 py-2 bg-[#E11D48] hover:bg-rose-700 text-white font-semibold rounded-lg text-xs transition-all disabled:opacity-50 flex items-center justify-center gap-1.5"
-                        >
-                          {generatingAiHooks ? (
-                            <>
-                              <Loader2 className="w-4 h-4 animate-spin" /> Generating AI Hooks...
-                            </>
-                          ) : (
-                            <>
-                              <Sparkles className="w-3.5 h-3.5" /> Generate AI hooks with Campaign context
-                            </>
-                          )}
-                        </button>
-                      </div>
-                    </div>
+                         {/* Editable Prompt Area */}
+                         <div className="space-y-2 mb-4">
+                           <div className="flex justify-between items-center">
+                             <label className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">
+                               Prompt Template (Editable)
+                             </label>
+                             <button
+                               onClick={() => {
+                                 const campaign = campaigns.find((c) => c.id === selectedGroup.campaignId);
+                                 const campaignMarkdown = campaign
+                                   ? `# ${campaign.title}\n\n**Type:** ${campaign.type}\n**Description:** ${campaign.description}\n**Brief:** ${campaign.brief}\n**Info Context:**\n${campaign.infoContent || "None"}`
+                                   : "No campaign linked.";
+
+                                 let transcriptionText = "";
+                                 if (selectedGroup.transcript) {
+                                   try {
+                                     const wordList = JSON.parse(selectedGroup.transcript);
+                                     if (Array.isArray(wordList)) {
+                                       transcriptionText = wordList.map((w: any) => w.text || "").join(" ");
+                                     } else {
+                                       transcriptionText = String(selectedGroup.transcript);
+                                     }
+                                   } catch {
+                                     transcriptionText = selectedGroup.transcript;
+                                   }
+                                 }
+
+                                 const defaultPrompt = `Generate exactly ${aiHookCount} unique video captions or hook headlines summarizing this video transcript.
+
+CAMPAIGN CONTEXT:
+${campaignMarkdown}
+
+VIDEO TRANSCRIPT:
+"${transcriptionText}"
+
+Format your response strictly as a JSON array of strings, like this:
+["First hook headline", "Second hook headline", "Third hook headline"]
+Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate only the raw JSON array.`;
+
+                                 setCustomPrompt(defaultPrompt);
+                                 toast.success("Reset prompt to default");
+                               }}
+                               className="text-[10px] text-zinc-500 hover:text-zinc-300 font-bold transition-all"
+                               type="button"
+                               disabled={selectedGroup.transcriptStatus !== "TRANSCRIBED"}
+                             >
+                               [Reset Prompt]
+                             </button>
+                           </div>
+                           <textarea
+                             value={customPrompt}
+                             onChange={(e) => setCustomPrompt(e.target.value)}
+                             className="w-full min-h-[150px] text-[11px] bg-[#18181b] border border-[#27272a] focus:border-[#E11D48] rounded-lg p-3 text-zinc-200 font-mono focus:outline-none custom-scrollbar"
+                             placeholder={
+                               selectedGroup.transcriptStatus === "TRANSCRIBED"
+                                 ? "AI Prompt template..."
+                                 : "Please run audio transcription alignment first to load prompt template"
+                             }
+                             disabled={selectedGroup.transcriptStatus !== "TRANSCRIBED" || generatingAiHooks}
+                           />
+                         </div>
+
+                         {/* Side-by-Side Context Previews */}
+                         <div className="grid grid-cols-2 gap-4 mb-4">
+                           <div className="bg-[#18181b]/50 border border-[#27272a]/50 rounded-lg p-3">
+                             <p className="text-[9px] uppercase font-bold text-zinc-500 mb-1">Campaign Markdown</p>
+                             <div className="max-h-[85px] overflow-y-auto text-[10px] text-zinc-400 font-mono custom-scrollbar whitespace-pre-line leading-relaxed">
+                               {(() => {
+                                 const campaign = campaigns.find((c) => c.id === selectedGroup.campaignId);
+                                 return campaign
+                                   ? `# ${campaign.title}\nDescription: ${campaign.description}\nBrief: ${campaign.brief}`
+                                   : "No linked campaign details.";
+                               })()}
+                             </div>
+                           </div>
+                           <div className="bg-[#18181b]/50 border border-[#27272a]/50 rounded-lg p-3">
+                             <p className="text-[9px] uppercase font-bold text-zinc-500 mb-1">Raw Audio Transcription</p>
+                             <div className="max-h-[85px] overflow-y-auto text-[10px] text-zinc-400 font-mono custom-scrollbar leading-relaxed">
+                               {(() => {
+                                 if (!selectedGroup.transcript) return "Pending transcription alignment.";
+                                 try {
+                                   const wordList = JSON.parse(selectedGroup.transcript);
+                                   if (Array.isArray(wordList)) {
+                                     return wordList.map((w: any) => w.text || "").join(" ");
+                                   }
+                                   return String(selectedGroup.transcript);
+                                 } catch {
+                                   return selectedGroup.transcript;
+                                 }
+                               })()}
+                             </div>
+                           </div>
+                         </div>
+                       </div>
+
+                       <div className="flex items-center gap-4 border-t border-[#27272a] pt-4 mt-2">
+                         <div className="w-24">
+                           <label className="block text-[10px] text-[#71717a] uppercase font-bold mb-1">Hooks Count</label>
+                           <input
+                             type="number"
+                             min={1}
+                             max={20}
+                             value={aiHookCount}
+                             onChange={(e) => setAiHookCount(parseInt(e.target.value) || 5)}
+                             className="w-full bg-[#18181b] border border-[#27272a] rounded px-3 py-1.5 text-xs text-center focus:outline-none"
+                             disabled={generatingAiHooks}
+                           />
+                         </div>
+                         <button
+                           onClick={handleGenerateAiHooks}
+                           disabled={generatingAiHooks || selectedGroup.transcriptStatus !== "TRANSCRIBED"}
+                           className="flex-1 py-2 bg-[#E11D48] hover:bg-rose-700 text-white font-semibold rounded-lg text-xs transition-all disabled:opacity-50 flex items-center justify-center gap-1.5"
+                         >
+                           {generatingAiHooks ? (
+                             <>
+                               <Loader2 className="w-4 h-4 animate-spin" /> Generating AI Hooks...
+                             </>
+                           ) : (
+                             <>
+                               <Sparkles className="w-3.5 h-3.5" /> Generate AI hooks with Campaign context
+                             </>
+                           )}
+                         </button>
+                       </div>
+                     </div>
 
                     {/* CSV / Manual Box */}
                     <div className="bg-[#09090b] border border-[#27272a] rounded-xl p-6 flex flex-col justify-between">
@@ -2088,7 +2269,7 @@ export default function ClientPage({ session }: ClientPageProps = {}) {
                         {selectedGroup?.variations && selectedGroup.variations.length > 0 ? (
                           <video
                             key={selectedGroup.variations[previewVariationIndex]?.videoRef}
-                            src={selectedGroup.variations[previewVariationIndex]?.videoRef}
+                            src={getServeUrl(selectedGroup.variations[previewVariationIndex]?.videoRef)}
                             className="absolute inset-0 w-full h-full object-cover"
                             autoPlay
                             muted
