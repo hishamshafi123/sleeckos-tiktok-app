@@ -76,7 +76,12 @@ export async function PATCH(
   // Account color tag
   if (body.color !== undefined) data.color = body.color;
   if (body.colorId !== undefined) {
-    data.colorId = body.colorId ? body.colorId : null;
+    const uuidRegex = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/i;
+    if (body.colorId && uuidRegex.test(body.colorId)) {
+      data.colorId = body.colorId;
+    } else {
+      data.colorId = null;
+    }
   }
 
   const account = await prisma.managedAccount.update({

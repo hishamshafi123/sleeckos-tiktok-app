@@ -3241,11 +3241,47 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
         const cannotExport = overAllocated || (exportPreview && exportPreview.unfulfillable.length > 0) || selectedExportFolders.length === 0;
 
         const sortedSelected = [...selectedExportFolders].sort((a, b) => {
-          return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
+          const regex = /(\d+)|(\D+)/g;
+          const aParts = String(a.name).match(regex) || [];
+          const bParts = String(b.name).match(regex) || [];
+          for (let i = 0; i < Math.max(aParts.length, bParts.length); i++) {
+            if (aParts[i] === undefined) return -1;
+            if (bParts[i] === undefined) return 1;
+            
+            const aIsNum = !isNaN(Number(aParts[i]));
+            const bIsNum = !isNaN(Number(bParts[i]));
+            
+            if (aIsNum && bIsNum) {
+              const diff = Number(aParts[i]) - Number(bParts[i]);
+              if (diff !== 0) return diff;
+            } else {
+              const diff = aParts[i].localeCompare(bParts[i], undefined, { sensitivity: 'base' });
+              if (diff !== 0) return diff;
+            }
+          }
+          return 0;
         });
 
         const sortedResults = [...searchedExportFolders].sort((a, b) => {
-          return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
+          const regex = /(\d+)|(\D+)/g;
+          const aParts = String(a.name).match(regex) || [];
+          const bParts = String(b.name).match(regex) || [];
+          for (let i = 0; i < Math.max(aParts.length, bParts.length); i++) {
+            if (aParts[i] === undefined) return -1;
+            if (bParts[i] === undefined) return 1;
+            
+            const aIsNum = !isNaN(Number(aParts[i]));
+            const bIsNum = !isNaN(Number(bParts[i]));
+            
+            if (aIsNum && bIsNum) {
+              const diff = Number(aParts[i]) - Number(bParts[i]);
+              if (diff !== 0) return diff;
+            } else {
+              const diff = aParts[i].localeCompare(bParts[i], undefined, { sensitivity: 'base' });
+              if (diff !== 0) return diff;
+            }
+          }
+          return 0;
         });
 
         return (

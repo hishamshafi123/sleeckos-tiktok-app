@@ -80,6 +80,15 @@ export async function searchDriveFolders(query: string) {
         );
         if (matchingColor) {
           defaultCount = matchingColor.defaultPostCount;
+        } else {
+          // Hardcoded fallback if DB is missing the color
+          const staticFallbackCounts: Record<string, number> = {
+            green: 3, red: 0, orange: 1, yellow: 1, blue: 1, purple: 1, pink: 1
+          };
+          const fallback = staticFallbackCounts[acc.color.toLowerCase()];
+          if (fallback !== undefined) {
+            defaultCount = fallback;
+          }
         }
       }
     }
