@@ -508,19 +508,24 @@ async function processExportQueue() {
       }
 
       // 3. Upload to Google Drive
-      const campaignTitle = (video as any).group?.campaign?.title || (video as any).group?.campaign?.name || "campaign";
-      const cleanCampaignSlug = campaignTitle
+      const campaignTitle: string | null =
+        (video as any).group?.campaign?.title || (video as any).group?.campaign?.name || null;
+      const cleanCampaignSlug = (campaignTitle || "campaign")
         .replace(/[^a-zA-Z0-9 ]/g, "")
         .trim()
         .replace(/\s+/g, "_")
         .substring(0, 30);
+
+      // Full campaign title in literal parentheses at position 0 — the posting
+      // pipeline parses /^\(([^)]+)\)/ to attribute posts to campaigns.
+      const campaignPrefix = campaignTitle ? formatCampaignBracketPrefix(campaignTitle) : "";
 
       const cleanHookSlug = video.hook.text
         .replace(/[^a-zA-Z0-9 ]/g, "")
         .trim()
         .replace(/\s+/g, "_")
         .substring(0, 40);
-      const fileName = `${cleanCampaignSlug}_${cleanHookSlug || "video"}_${video.id}.mp4`;
+      const fileName = `${campaignPrefix}${cleanCampaignSlug}_${cleanHookSlug || "video"}_${video.id}.mp4`;
 
       console.log(`[Smart Export Worker] Uploading ${fileName} to folder ${assignment.driveFolderId}`);
       
@@ -600,17 +605,49 @@ async function updateParentJobStatus(jobId: string) {
   }
 }
 
+// Builds the "(Campaign Title) " filename prefix. Keeps the full human-readable
+// title (spaces intact) and only strips characters illegal in Drive file names.
+export function formatCampaignBracketPrefix(campaignTitle: string): string {
+  const safeTitle = campaignTitle.replace(/[/\\]/g, " ").replace(/\s+/g, " ").trim();
+  return safeTitle ? `(${safeTitle}) ` : "";
+}
+
+// Finds a file with the exact same name already sitting in the target folder.
+async function findExistingDriveFile(
+  drive: any,
+  fileName: string,
+  folderId: string
+): Promise<string | null> {
+  const escapedName = fileName.replace(/'/g, "\\'");
+  const res = await drive.files.list({
+    q: `name = '${escapedName}' and '${folderId}' in parents and trashed = false`,
+    fields: "files(id,name)",
+    pageSize: 1,
+    supportsAllDrives: true,
+    includeItemsFromAllDrives: true,
+  });
+  return res.data.files?.[0]?.id || null;
+}
+
 async function uploadWithRetry(
   drive: any,
   filePath: string,
   fileName: string,
   folderId: string,
   maxRetries = 3
-): Promise<{ success: boolean; error?: string }> {
+): Promise<{ success: boolean; fileId?: string; error?: string }> {
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
+      // Dedup guard: a previous attempt may have created the file server-side but
+      // timed out before we saw the response — reuse it instead of duplicating.
+      const existingId = await findExistingDriveFile(drive, fileName, folderId);
+      if (existingId) {
+        console.log(`[Smart Export Drive] Dedup hit: "${fileName}" already exists in folder ${folderId} (file id: ${existingId}) — skipping re-upload`);
+        return { success: true, fileId: existingId };
+      }
+
       const fileStream = fs.createReadStream(filePath);
-      await drive.files.create({
+      const res = await drive.files.create({
         requestBody: {
           name: fileName,
           parents: [folderId],
@@ -622,7 +659,7 @@ async function uploadWithRetry(
         fields: "id",
         supportsAllDrives: true,
       });
-      return { success: true };
+      return { success: true, fileId: res.data.id };
     } catch (err: any) {
       const status = err?.response?.status || err?.code;
       const message = err?.response?.data?.error?.message || err?.message || String(err);

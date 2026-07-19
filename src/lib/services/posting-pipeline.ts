@@ -3,7 +3,9 @@ import {
   listVideoFilesInFolder,
   makeFilePublic,
   deleteDriveFile,
+  revokeFilePublic,
 } from "@/lib/google";
+import { getMultiplierDriveClient } from "@/app/api/managed/multiplier/google/drive-helper";
 import { postViaPostPeer, driveDirectUrl } from "@/lib/postpeer";
 import fs from "fs";
 import path from "path";
@@ -47,6 +49,17 @@ export async function ingestDriveFiles(accountId: string) {
       });
 
       if (!existingJob) {
+        // Match a leading "(Campaign Title)" bracket in the file name to a Campaign
+        let campaignId: string | null = null;
+        const bracketMatch = file.name?.match(/^\(([^)]+)\)/);
+        if (bracketMatch) {
+          const campaign = await prisma.campaign.findFirst({
+            where: { title: { equals: bracketMatch[1].trim(), mode: "insensitive" } },
+            select: { id: true },
+          });
+          campaignId = campaign?.id ?? null;
+        }
+
         // Atomic transaction to create both PostJob and ScheduledPost
         try {
           await prisma.$transaction(async (tx) => {
@@ -56,6 +69,7 @@ export async function ingestDriveFiles(accountId: string) {
                 driveFileName: file.name || "video.mp4",
                 accountId: account.id,
                 state: "AVAILABLE",
+                campaignId,
               },
             });
 
@@ -242,7 +256,8 @@ export async function pollJobStatus(jobId: string) {
   });
 
   if (!job || !job.tiktokPublishId) return null;
-  if (job.state !== "UPLOADING") return job;
+  // Allow CLAIMED too: reconcile-adopted jobs with a publish ID must be able to advance
+  if (job.state !== "UPLOADING" && job.state !== "CLAIMED") return job;
 
   console.log(`[Posting Pipeline] Polling status for job ${jobId} (publishId: ${job.tiktokPublishId})`);
 
@@ -333,6 +348,13 @@ export async function confirmPublished(jobId: string, tiktokVideoId?: string, pl
       publishedAt: now,
     },
   });
+
+  if (job.campaignId) {
+    await prisma.campaign.update({
+      where: { id: job.campaignId },
+      data: { postedCount: { increment: 1 } },
+    });
+  }
 }
 
 /**
@@ -349,8 +371,17 @@ export async function runDeletion(jobId: string) {
   console.log(`[Posting Pipeline] Running Drive deletion for job ${jobId} (file: ${job.driveFileId})`);
 
   try {
-    await deleteDriveFile(job.driveFileId, job.accountId);
-    
+    // Best-effort: revoke public access granted for the upload — non-fatal
+    await revokeFilePublic(job.driveFileId, job.accountId).catch(() => {});
+
+    try {
+      await deleteDriveFile(job.driveFileId, job.accountId);
+    } catch (primaryErr) {
+      // Files were uploaded via the multiplier Drive identity — retry with that client
+      console.warn(`[Posting Pipeline] Primary delete failed for job ${jobId}, trying multiplier Drive client:`, primaryErr);
+      await deleteWithMultiplierClient(job.driveFileId);
+    }
+
     await prisma.postJob.update({
       where: { id: jobId },
       data: { state: "DELETED" },
@@ -366,6 +397,49 @@ export async function runDeletion(jobId: string) {
     console.error(`[Posting Pipeline] Drive deletion failed for job ${jobId}:`, err);
     // Keep in pending_deletion so it will retry during next reconciliation
   }
+}
+
+/**
+ * Delete a Drive file using the multiplier Drive identity (the account that
+ * uploaded the files). Tries permanent delete, then trash, then unparent.
+ */
+async function deleteWithMultiplierClient(fileId: string): Promise<void> {
+  const drive = await getMultiplierDriveClient();
+  if (!drive) throw new Error("Multiplier Drive client unavailable");
+
+  try {
+    await drive.files.delete({ fileId, supportsAllDrives: true });
+    console.log(`[Drive] Permanently deleted file ${fileId} via multiplier client`);
+    return;
+  } catch (delErr: any) {
+    console.warn(`[Drive] multiplier delete() failed for ${fileId}: ${delErr?.message || delErr}`);
+  }
+
+  try {
+    await drive.files.update({
+      fileId,
+      requestBody: { trashed: true },
+      supportsAllDrives: true,
+    });
+    console.log(`[Drive] Trashed file ${fileId} via multiplier client`);
+    return;
+  } catch (trashErr: any) {
+    console.warn(`[Drive] multiplier trash() failed for ${fileId}: ${trashErr?.message || trashErr}`);
+  }
+
+  const file = await drive.files.get({ fileId, fields: "parents", supportsAllDrives: true });
+  const parents = file.data.parents;
+  if (parents && parents.length > 0) {
+    await drive.files.update({
+      fileId,
+      removeParents: parents.join(","),
+      supportsAllDrives: true,
+    });
+    console.log(`[Drive] Removed file ${fileId} from parent folder(s) via multiplier client`);
+    return;
+  }
+
+  throw new Error(`All multiplier-client delete methods failed for ${fileId}`);
 }
 
 /**
@@ -396,9 +470,16 @@ export async function handleFailure(jobId: string, errorMsg: string) {
         errorMessage: errorMsg,
       },
     });
+
+    if (job.campaignId) {
+      await prisma.campaign.update({
+        where: { id: job.campaignId },
+        data: { failedCount: { increment: 1 } },
+      });
+    }
   } else {
-    // Safe backoff: Unlock it and let it retry in 10 minutes
-    const retryTime = new Date(Date.now() + 10 * 60 * 1000);
+    // Safe backoff: Unlock it and let it retry in 30 minutes
+    const retryTime = new Date(Date.now() + 30 * 60 * 1000);
     console.warn(`[Posting Pipeline] Job ${jobId} failed (attempt ${nextAttempts}/${maxAttempts}). Backing off until ${retryTime.toISOString()}.`);
     
     await prisma.postJob.update({
@@ -428,12 +509,18 @@ export async function handleFailure(jobId: string, errorMsg: string) {
 export async function reconcilePostJobs() {
   console.log("[Posting Pipeline Reconciliation] Starting periodic check...");
 
-  // 8a. Reset stuck CLAIMED/UPLOADING jobs beyond 30 min timeout
-  const timeoutLimit = new Date(Date.now() - 30 * 60 * 1000);
+  // 8a. Reset stuck CLAIMED/UPLOADING jobs. UPLOADING jobs WITHOUT a publish ID
+  // get a 6h window — a slow PostPeer publish must never be re-posted. Jobs that
+  // DO have a publish ID are polled after 30 min so they can advance to deletion.
+  const shortTimeout = new Date(Date.now() - 30 * 60 * 1000);
+  const uploadTimeout = new Date(Date.now() - 6 * 60 * 60 * 1000);
   const stuckJobs = await prisma.postJob.findMany({
     where: {
-      state: { in: ["CLAIMED", "UPLOADING"] },
-      lockedAt: { lt: timeoutLimit },
+      OR: [
+        { state: "CLAIMED", lockedAt: { lt: shortTimeout } },
+        { state: "UPLOADING", tiktokPublishId: { not: null }, lockedAt: { lt: shortTimeout } },
+        { state: "UPLOADING", tiktokPublishId: null, lockedAt: { lt: uploadTimeout } },
+      ],
     },
   });
 

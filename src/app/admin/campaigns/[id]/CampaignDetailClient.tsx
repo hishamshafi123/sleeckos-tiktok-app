@@ -791,6 +791,18 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
                   <span className="text-[9px] text-zinc-500 lowercase font-normal">/day</span>
                 </span>
               </div>
+              <div className="bg-[#18181b]/10 border border-[#27272a] rounded p-3 space-y-1">
+                <span className="text-[10px] text-zinc-500 font-medium uppercase tracking-wider block">Posted</span>
+                <span className="text-base font-bold text-emerald-400 font-mono">
+                  {(campaign.postedCount ?? 0).toLocaleString()}
+                </span>
+              </div>
+              <div className="bg-[#18181b]/10 border border-[#27272a] rounded p-3 space-y-1">
+                <span className="text-[10px] text-zinc-500 font-medium uppercase tracking-wider block">Failed</span>
+                <span className={`text-base font-bold font-mono ${(campaign.failedCount ?? 0) > 0 ? "text-red-400" : "text-zinc-500"}`}>
+                  {(campaign.failedCount ?? 0).toLocaleString()}
+                </span>
+              </div>
             </div>
 
             {/* Velocity Chart */}

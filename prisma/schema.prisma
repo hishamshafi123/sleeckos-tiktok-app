@@ -118,7 +118,11 @@ model Campaign {
   approvedByAdminAt   DateTime?
   coverImageUrl       String?
   exampleVideos       String[]
-  
+
+  // Auto-posting stats (Drive pipeline, matched via leading "(title)" in file name)
+  postedCount           Int            @default(0)
+  failedCount           Int            @default(0)
+
   // Goal / calculator parameters
   targetViews            Int         @default(0)
   accountsCount          Int         @default(0)
@@ -308,6 +312,7 @@ model PostJob {
   failureReason   String?
   publishedAt     DateTime?
   deleteAfter     DateTime?
+  campaignId      String? // plain column (no relation) — matched from leading "(Campaign Title)" in Drive file name
   createdAt       DateTime       @default(now())
   updatedAt       DateTime       @updatedAt
 

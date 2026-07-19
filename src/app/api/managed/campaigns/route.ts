@@ -22,6 +22,8 @@ export async function GET() {
         description: true,
         brief: true,
         infoContent: true,
+        postedCount: true,
+        failedCount: true,
       },
     });
 

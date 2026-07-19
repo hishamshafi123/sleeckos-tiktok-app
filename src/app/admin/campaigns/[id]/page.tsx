@@ -6,6 +6,7 @@ import { can } from "@/lib/services/permissions";
 import { redirect, notFound } from "next/navigation";
 import AccessDenied from "@/components/AccessDenied";
 import CampaignDetailClient from "./CampaignDetailClient";
+import { formatCampaignBracketPrefix } from "@/lib/services/multiplier-export";
 
 interface PageProps {
   params: Promise<{ id: string }>;
@@ -139,11 +140,14 @@ export default async function AdminCampaignDetailPage({ params }: PageProps) {
     }
   });
 
-  const cleanCampaignSlug = (campaign.title || campaign.name || "campaign")
+  const campaignTitle = campaign.title || campaign.name || "campaign";
+  const cleanCampaignSlug = campaignTitle
     .replace(/[^a-zA-Z0-9 ]/g, "")
     .trim()
     .replace(/\s+/g, "_")
     .substring(0, 30);
+  // Matches the Smart Export naming: full title in parentheses at position 0
+  const campaignPrefix = formatCampaignBracketPrefix(campaignTitle);
 
   const recentExports = recentAssignments.map((a) => {
     const meta = folderMap.get(a.driveFolderId);
@@ -155,7 +159,7 @@ export default async function AdminCampaignDetailPage({ params }: PageProps) {
       .trim()
       .replace(/\s+/g, "_")
       .substring(0, 40);
-    const driveFileName = `${cleanCampaignSlug}_${cleanHookSlug}_${a.video.id}.mp4`;
+    const driveFileName = `${campaignPrefix}${cleanCampaignSlug}_${cleanHookSlug}_${a.video.id}.mp4`;
 
     return {
       id: a.id,

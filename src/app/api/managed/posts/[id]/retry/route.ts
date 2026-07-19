@@ -70,25 +70,39 @@ export async function POST(
         attempts: 0,
       },
     });
+  } else if (job.tiktokPublishId) {
+    // Already has a publish ID — the original upload may actually have succeeded.
+    // NEVER clear it or re-upload: resume polling and let poll-status reconcile.
+    job = await prisma.postJob.update({
+      where: { id: job.id },
+      data: {
+        state: "UPLOADING",
+        failureReason: null,
+      },
+    });
   } else {
-    // Reset state to CLAIMED to allow uploadAndPublish to run
+    // No publish ID — safe to reset state to CLAIMED for a fresh upload attempt
     job = await prisma.postJob.update({
       where: { id: job.id },
       data: {
         state: "CLAIMED",
         attempts: 0, // Reset attempts so it gets up to 3 retries
-        tiktokPublishId: null, // Clear old publish ID to trigger a fresh upload
       },
     });
   }
 
-  // 2. Trigger retry upload asynchronously
+  // 2. Trigger retry asynchronously
   (async () => {
     try {
-      await uploadAndPublish(job!.id, post.caption);
-      // Wait a few seconds and poll immediately
-      await new Promise((resolve) => setTimeout(resolve, 5000));
-      await pollJobStatus(job!.id);
+      if (job!.tiktokPublishId) {
+        // Resume polling only — re-uploading would duplicate the post
+        await pollJobStatus(job!.id);
+      } else {
+        await uploadAndPublish(job!.id, post.caption);
+        // Wait a few seconds and poll immediately
+        await new Promise((resolve) => setTimeout(resolve, 5000));
+        await pollJobStatus(job!.id);
+      }
     } catch (err) {
       console.error(`[Retry] Post retry failed for job ${job!.id}:`, err);
     }

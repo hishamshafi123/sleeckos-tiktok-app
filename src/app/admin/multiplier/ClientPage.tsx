@@ -89,7 +89,7 @@ interface MultiplierGroup {
   id: string;
   name: string;
   campaignId: string;
-  campaign: { id: string; title: string };
+  campaign: { id: string; title: string } | null;
   transcript: string | null;
   transcriptStatus: "PENDING" | "TRANSCRIBING" | "TRANSCRIBED" | "FAILED";
   styleId: string;
@@ -252,6 +252,7 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
   const [selectedPickerFolders, setSelectedPickerFolders] = useState<{ id: string; name: string }[]>([]);
   const [downloads, setDownloads] = useState<Record<string, { progress: number; message: string }>>({});
   const [exportingGroups, setExportingGroups] = useState<Set<string>>(new Set());
+  const [campaignUpdating, setCampaignUpdating] = useState<Set<string>>(new Set());
   const [previewVideoUrl, setPreviewVideoUrl] = useState<string | null>(null);
 
   // Multi-select + Smart Download state
@@ -1550,6 +1551,54 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
       await fetchData();
     } catch (err: any) {
       toast.error(err.message || "Failed to delete batches");
+    }
+  };
+
+  // Reassign a group's campaign from the Queue dashboard.
+  // Smart Export reads the campaign at export time, so future exports
+  // automatically use the new campaign name in file names.
+  const handleChangeGroupCampaign = async (group: MultiplierGroup, newCampaignId: string) => {
+    const prevCampaignId = group.campaignId || "";
+    if (prevCampaignId === newCampaignId) return;
+
+    const nextCampaign = campaigns.find((c) => c.id === newCampaignId) || null;
+
+    // Optimistic update
+    setGroups((prev) =>
+      prev.map((g) =>
+        g.id === group.id ? { ...g, campaignId: newCampaignId, campaign: nextCampaign } : g
+      )
+    );
+    setCampaignUpdating((prev) => new Set(prev).add(group.id));
+
+    try {
+      const res = await fetch(`/api/multiplier/groups/${group.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ campaignId: newCampaignId || null }),
+      });
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || "Failed to update campaign");
+      }
+
+      toast.success(nextCampaign ? `Campaign set to "${nextCampaign.title}".` : "Campaign removed.");
+      await fetchData(); // Authoritative refresh (also syncs selectedGroup)
+    } catch (err: any) {
+      // Revert optimistic update
+      setGroups((prev) =>
+        prev.map((g) =>
+          g.id === group.id ? { ...g, campaignId: prevCampaignId, campaign: group.campaign } : g
+        )
+      );
+      toast.error(err.message || "Failed to update campaign");
+    } finally {
+      setCampaignUpdating((prev) => {
+        const next = new Set(prev);
+        next.delete(group.id);
+        return next;
+      });
     }
   };
 
@@ -3055,8 +3104,23 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
                         <div>
                           <h3 className="font-extrabold text-lg flex items-center gap-2">
                             {group.name}
-                            <span className="text-xs text-[#a1a1aa] font-medium bg-[#27272a] px-2.5 py-0.5 rounded-full border border-[#27272a]">
-                              Campaign: {group.campaign?.title || "None"}
+                            <span className="flex items-center gap-1.5 text-xs text-[#a1a1aa] font-medium">
+                              Campaign:
+                              <select
+                                value={group.campaignId || ""}
+                                disabled={campaignUpdating.has(group.id)}
+                                onClick={(e) => e.stopPropagation()}
+                                onChange={(e) => handleChangeGroupCampaign(group, e.target.value)}
+                                title="Reassign this group's campaign"
+                                className="bg-[#09090b] border border-[#27272a] rounded-lg px-2 py-0.5 text-xs font-medium text-[#fafafa] focus:outline-none focus:border-[#E11D48] disabled:opacity-50 cursor-pointer max-w-[180px] truncate"
+                              >
+                                <option value="">No Campaign</option>
+                                {campaigns.map((c) => (
+                                  <option key={c.id} value={c.id}>
+                                    {c.title}
+                                  </option>
+                                ))}
+                              </select>
                             </span>
                           </h3>
                           <p className="text-xs text-[#71717a] mt-1">

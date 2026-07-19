@@ -6,6 +6,7 @@ import { can } from "@/lib/services/permissions";
 import fs from "fs";
 import path from "path";
 import { getMultiplierDriveClient } from "../google/drive-helper";
+import { formatCampaignBracketPrefix } from "@/lib/services/multiplier-export";
 
 // Global export queue — serialize exports to prevent rate limiting
 let exportQueue: string[] = [];
@@ -45,6 +46,7 @@ export async function POST(req: Request) {
       const group = await prisma.multiplierGroup.findUnique({
         where: { id: groupId },
         include: {
+          campaign: { select: { title: true, name: true } },
           outputs: {
             where: { status: "COMPLETED" },
             include: {
@@ -71,7 +73,7 @@ export async function POST(req: Request) {
         return NextResponse.json({ error: "No completed videos in this group have a Drive folder assigned. Set a folder first." }, { status: 400 });
       }
 
-      exportGroupOutputsToDriveInBackground(groupId, exportableOutputs, settings.driveFolderId).catch((err) => {
+      exportGroupOutputsToDriveInBackground(groupId, exportableOutputs, settings.driveFolderId, group.campaign?.title || group.campaign?.name || null).catch((err) => {
         console.error(`[Export Worker] Group background export failed:`, err);
       });
 
@@ -88,7 +90,7 @@ export async function POST(req: Request) {
         include: {
           variation: { select: { videoRef: true } },
           hook: { select: { text: true } },
-          group: { select: { campaignId: true, settings: true } },
+          group: { select: { campaignId: true, settings: true, campaign: { select: { title: true, name: true } } } },
         },
       });
 
@@ -119,8 +121,10 @@ export async function POST(req: Request) {
         return NextResponse.json({ error: "Rendered video file not found on disk" }, { status: 400 });
       }
 
+      const outputCampaignTitle = output.group.campaign?.title || output.group.campaign?.name || null;
+      const campaignPrefix = outputCampaignTitle ? formatCampaignBracketPrefix(outputCampaignTitle) : "";
       const cleanHookSlug = output.hook.text.replace(/[^a-zA-Z0-9 ]/g, "").trim().replace(/\s+/g, "_").substring(0, 40);
-      const fileName = `multi_${output.id}_${cleanHookSlug}.mp4`;
+      const fileName = `${campaignPrefix}multi_${output.id}_${cleanHookSlug}.mp4`;
 
       const result = await uploadWithRetry(drive, localFilePath, fileName, finalFolderId);
       if (!result.success) {
@@ -302,17 +306,42 @@ function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// Finds a file with the exact same name already sitting in the target folder.
+async function findExistingDriveFile(
+  drive: any,
+  fileName: string,
+  folderId: string
+): Promise<string | null> {
+  const escapedName = fileName.replace(/'/g, "\\'");
+  const res = await drive.files.list({
+    q: `name = '${escapedName}' and '${folderId}' in parents and trashed = false`,
+    fields: "files(id,name)",
+    pageSize: 1,
+    supportsAllDrives: true,
+    includeItemsFromAllDrives: true,
+  });
+  return res.data.files?.[0]?.id || null;
+}
+
 async function uploadWithRetry(
   drive: any,
   filePath: string,
   fileName: string,
   folderId: string,
   maxRetries = 3
-): Promise<{ success: boolean; error?: string }> {
+): Promise<{ success: boolean; fileId?: string; error?: string }> {
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
+      // Dedup guard: a previous attempt may have created the file server-side but
+      // timed out before we saw the response — reuse it instead of duplicating.
+      const existingId = await findExistingDriveFile(drive, fileName, folderId);
+      if (existingId) {
+        console.log(`[Export] Dedup hit: "${fileName}" already exists in folder ${folderId} (file id: ${existingId}) — skipping re-upload`);
+        return { success: true, fileId: existingId };
+      }
+
       const fileStream = fs.createReadStream(filePath);
-      await drive.files.create({
+      const res = await drive.files.create({
         requestBody: {
           name: fileName,
           parents: [folderId],
@@ -324,7 +353,7 @@ async function uploadWithRetry(
         fields: "id",
         supportsAllDrives: true,
       });
-      return { success: true };
+      return { success: true, fileId: res.data.id };
     } catch (err: any) {
       const status = err?.response?.status || err?.code;
       const message = err?.response?.data?.error?.message || err?.message || String(err);
@@ -462,7 +491,7 @@ async function exportToDriveInBackground(batchId: string) {
   }
 }
 
-async function exportGroupOutputsToDriveInBackground(groupId: string, outputs: any[], defaultFolderId: string | null) {
+async function exportGroupOutputsToDriveInBackground(groupId: string, outputs: any[], defaultFolderId: string | null, campaignTitle: string | null = null) {
   console.log(`[Export Worker] Starting group bulk export for group: ${groupId} (${outputs.length} outputs)`);
   
   const drive = await getMultiplierDriveClient();
@@ -472,6 +501,7 @@ async function exportGroupOutputsToDriveInBackground(groupId: string, outputs: a
   }
 
   const publicDir = path.join(process.cwd(), "public");
+  const campaignPrefix = campaignTitle ? formatCampaignBracketPrefix(campaignTitle) : "";
 
   for (let i = 0; i < outputs.length; i++) {
     const out = outputs[i];
@@ -485,7 +515,7 @@ async function exportGroupOutputsToDriveInBackground(groupId: string, outputs: a
     }
 
     const cleanHookSlug = out.hook.text.replace(/[^a-zA-Z0-9 ]/g, "").trim().replace(/\s+/g, "_").substring(0, 40);
-    const fileName = `multi_${out.id}_${cleanHookSlug}.mp4`;
+    const fileName = `${campaignPrefix}multi_${out.id}_${cleanHookSlug}.mp4`;
 
     console.log(`[Export Worker] Uploading ${i + 1}/${outputs.length}: ${fileName} to folder ${finalFolderId}`);
     const result = await uploadWithRetry(drive, localFilePath, fileName, finalFolderId);

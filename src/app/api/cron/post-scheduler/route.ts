@@ -54,11 +54,28 @@ function matchesAnySlotWithJitter(
   return null;
 }
 
+// Single app container — a module-level lock is sufficient to prevent
+// overlapping cron runs (a full run can exceed the 5-min cron interval).
+let isRunning = false;
+
 export async function GET(req: NextRequest) {
   if (!verifyCronSecret(req)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
+  if (isRunning) {
+    return NextResponse.json({ skipped: "already running" });
+  }
+
+  isRunning = true;
+  try {
+    return await runScheduler();
+  } finally {
+    isRunning = false;
+  }
+}
+
+async function runScheduler() {
   const now = new Date();
   const results: Record<string, string> = {};
 
@@ -152,12 +169,26 @@ export async function GET(req: NextRequest) {
         where: {
           accountId: account.id,
           scheduledFor: { gte: slotWindowStart, lte: slotWindowEnd },
-          status: { in: ["PUBLISHED", "UPLOADING", "PROCESSING", "QUEUED", "DOWNLOADING"] },
+          status: { in: ["PUBLISHED", "UPLOADING", "PROCESSING", "QUEUED", "DOWNLOADING", "CLAIMED"] },
         },
       });
 
       if (postedForSlot > 0) {
         results[accountKey] = `slot_${matchedSlot}_already_posted`;
+        continue;
+      }
+
+      // Hard guard: never post twice within 15 min for the same account.
+      // Multiple cron ticks can match one slot (±5 min window at 5-min cadence).
+      const recentPost = await prisma.scheduledPost.count({
+        where: {
+          accountId: account.id,
+          createdAt: { gte: new Date(now.getTime() - 15 * 60 * 1000) },
+        },
+      });
+
+      if (recentPost > 0) {
+        results[accountKey] = "skipped_recent_post_within_15m";
         continue;
       }
 

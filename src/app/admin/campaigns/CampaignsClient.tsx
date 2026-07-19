@@ -186,6 +186,8 @@ export default function CampaignsClient({ initialCampaigns }: CampaignsClientPro
                 <th className="py-3 px-4 text-right">Accounts</th>
                 <th className="py-3 px-4 text-right">Videos/Day</th>
                 <th className="py-3 px-4 text-right">Days to Goal</th>
+                <th className="py-3 px-4 text-right">Posted</th>
+                <th className="py-3 px-4 text-right">Failed</th>
                 <th className="py-3 px-4 text-right">Actions</th>
               </tr>
             </thead>
@@ -223,6 +225,12 @@ export default function CampaignsClient({ initialCampaigns }: CampaignsClientPro
                     <td className="py-3.5 px-4 text-right text-emerald-400 font-semibold font-mono">
                       {daysToGoal ? `${daysToGoal} days` : "—"}
                     </td>
+                    <td className="py-3.5 px-4 text-right text-emerald-400 font-mono">
+                      {(c.postedCount ?? 0).toLocaleString()}
+                    </td>
+                    <td className={`py-3.5 px-4 text-right font-mono ${(c.failedCount ?? 0) > 0 ? "text-red-400" : "text-zinc-500"}`}>
+                      {(c.failedCount ?? 0).toLocaleString()}
+                    </td>
                     <td className="py-3.5 px-4 text-right">
                       <Link
                         href={`/admin/campaigns/${c.id}`}
@@ -237,7 +245,7 @@ export default function CampaignsClient({ initialCampaigns }: CampaignsClientPro
               })}
               {filtered.length === 0 && (
                 <tr>
-                  <td colSpan={8} className="py-12 text-center text-zinc-500">
+                  <td colSpan={10} className="py-12 text-center text-zinc-500">
                     No campaigns found matching the search and filters.
                   </td>
                 </tr>
