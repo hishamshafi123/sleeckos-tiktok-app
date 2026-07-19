@@ -2696,7 +2696,7 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
                                   )}
                                   {out.status === "COMPLETED" && out.outputRef && (
                                     <a
-                                      href={out.outputRef}
+                                      href={getServeUrl(out.outputRef)}
                                       download
                                       className="p-1 bg-[#E11D48] hover:bg-rose-700 text-white rounded transition-all flex items-center justify-center cursor-pointer"
                                       title="Download Video"

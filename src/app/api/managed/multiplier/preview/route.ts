@@ -56,9 +56,12 @@ export async function GET(req: Request) {
     const localPath = path.join(publicDir, output.outputRef);
 
     if (fs.existsSync(localPath)) {
-      // File exists locally — serve via public path
+      // File exists locally — serve via range serve route
+      const serveUrl = output.outputRef.startsWith("/uploads/")
+        ? output.outputRef.replace("/uploads/", "/api/uploads/")
+        : output.outputRef;
       return NextResponse.json({
-        url: output.outputRef,
+        url: serveUrl,
         status: "local",
       });
     }
@@ -77,8 +80,11 @@ export async function GET(req: Request) {
     // Try downloading from R2 to local
     const downloaded = await downloadFromR2(r2Key, localPath);
     if (downloaded && fs.existsSync(localPath)) {
+      const serveUrl = output.outputRef.startsWith("/uploads/")
+        ? output.outputRef.replace("/uploads/", "/api/uploads/")
+        : output.outputRef;
       return NextResponse.json({
-        url: output.outputRef,
+        url: serveUrl,
         status: "downloaded",
       });
     }
