@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import ManagedAccountEditForm from "@/components/ManagedAccountEditForm";
 import { toast } from "sonner";
+import { naturalCompare } from "@/lib/utils/sorting";
 import {
   Plus,
   Loader2,
@@ -125,19 +126,13 @@ export default function GroupPage({
       gray: 8,
     };
 
-    // Sort by color priority, then username / folder name alphabetically based on searchMode
+    // Sort by username / folder name alphabetically based on searchMode and sortDirection using naturalCompare
     const sorted = [...group.accounts].sort((a, b) => {
-      const orderA = colorOrder[a.color || "zinc"] || 99;
-      const orderB = colorOrder[b.color || "zinc"] || 99;
-      if (orderA !== orderB) {
-        return sortDirection === "asc" ? orderA - orderB : orderB - orderA;
-      }
-
       const valA = searchMode === "drive" ? (a.driveFolderName || "") : a.tiktokUsername;
       const valB = searchMode === "drive" ? (b.driveFolderName || "") : b.tiktokUsername;
-      return sortDirection === "asc"
-        ? valA.localeCompare(valB, undefined, { numeric: true, sensitivity: "base" })
-        : valB.localeCompare(valA, undefined, { numeric: true, sensitivity: "base" });
+      
+      const comp = naturalCompare(valA, valB);
+      return sortDirection === "asc" ? comp : -comp;
     });
 
     if (!searchQuery.trim()) return sorted;

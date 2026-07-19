@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/db";
 import { getSession } from "@/lib/session";
 import { can } from "@/lib/services/permissions";
+import { naturalCompare } from "@/lib/utils/sorting";
 
 // GET /api/managed/groups/by-path/[sectionSlug]/[groupSlug]
 export async function GET(
@@ -59,11 +60,11 @@ export async function GET(
     };
   });
 
-  // Sort naturally by driveFolderName
+  // Sort naturally by driveFolderName using naturalCompare
   sanitizedAccounts.sort((a: any, b: any) => {
     const nameA = a.driveFolderName || "";
     const nameB = b.driveFolderName || "";
-    return nameA.localeCompare(nameB, undefined, { numeric: true, sensitivity: 'base' });
+    return naturalCompare(nameA, nameB);
   });
 
   return NextResponse.json({

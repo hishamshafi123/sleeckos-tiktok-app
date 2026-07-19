@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/db";
 import { getSession } from "@/lib/session";
 import { can } from "@/lib/services/permissions";
+import { naturalCompare } from "@/lib/utils/sorting";
 
 // GET /api/managed/sections/by-slug/[slug] — find section by slug with groups
 export async function GET(
@@ -59,7 +60,7 @@ export async function GET(
       group.accounts.sort((a: any, b: any) => {
         const nameA = a.driveFolderName || "";
         const nameB = b.driveFolderName || "";
-        return nameA.localeCompare(nameB, undefined, { numeric: true, sensitivity: 'base' });
+        return naturalCompare(nameA, nameB);
       });
     }
   }

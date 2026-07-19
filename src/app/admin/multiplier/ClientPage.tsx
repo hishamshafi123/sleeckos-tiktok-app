@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect, useRef } from "react";
 import { toast } from "sonner";
+import { naturalCompare } from "@/lib/utils/sorting";
 import {
   Layers,
   Video,
@@ -3240,49 +3241,8 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
         const overAllocated = assignedCount > totalCompleted;
         const cannotExport = overAllocated || (exportPreview && exportPreview.unfulfillable.length > 0) || selectedExportFolders.length === 0;
 
-        const sortedSelected = [...selectedExportFolders].sort((a, b) => {
-          const regex = /(\d+)|(\D+)/g;
-          const aParts = String(a.name).match(regex) || [];
-          const bParts = String(b.name).match(regex) || [];
-          for (let i = 0; i < Math.max(aParts.length, bParts.length); i++) {
-            if (aParts[i] === undefined) return -1;
-            if (bParts[i] === undefined) return 1;
-            
-            const aIsNum = !isNaN(Number(aParts[i]));
-            const bIsNum = !isNaN(Number(bParts[i]));
-            
-            if (aIsNum && bIsNum) {
-              const diff = Number(aParts[i]) - Number(bParts[i]);
-              if (diff !== 0) return diff;
-            } else {
-              const diff = aParts[i].localeCompare(bParts[i], undefined, { sensitivity: 'base' });
-              if (diff !== 0) return diff;
-            }
-          }
-          return 0;
-        });
-
-        const sortedResults = [...searchedExportFolders].sort((a, b) => {
-          const regex = /(\d+)|(\D+)/g;
-          const aParts = String(a.name).match(regex) || [];
-          const bParts = String(b.name).match(regex) || [];
-          for (let i = 0; i < Math.max(aParts.length, bParts.length); i++) {
-            if (aParts[i] === undefined) return -1;
-            if (bParts[i] === undefined) return 1;
-            
-            const aIsNum = !isNaN(Number(aParts[i]));
-            const bIsNum = !isNaN(Number(bParts[i]));
-            
-            if (aIsNum && bIsNum) {
-              const diff = Number(aParts[i]) - Number(bParts[i]);
-              if (diff !== 0) return diff;
-            } else {
-              const diff = aParts[i].localeCompare(bParts[i], undefined, { sensitivity: 'base' });
-              if (diff !== 0) return diff;
-            }
-          }
-          return 0;
-        });
+        const sortedSelected = [...selectedExportFolders].sort((a, b) => naturalCompare(a.name || "", b.name || ""));
+        const sortedResults = [...searchedExportFolders].sort((a, b) => naturalCompare(a.name || "", b.name || ""));
 
         return (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-sm">

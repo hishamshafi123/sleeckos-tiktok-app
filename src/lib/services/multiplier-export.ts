@@ -1,5 +1,6 @@
 import prisma from "@/lib/db";
 import { getMultiplierDriveClient } from "@/app/api/managed/multiplier/google/drive-helper";
+import { naturalCompare } from "@/lib/utils/sorting";
 import { downloadFromR2 } from "@/lib/services/storage";
 import fs from "fs";
 import path from "path";
@@ -19,16 +20,27 @@ export async function searchDriveFolders(query: string) {
     queryStr += ` and name contains '${query.replace(/'/g, "\\'")}'`;
   }
 
-  const res = await drive.files.list({
-    q: queryStr,
-    fields: "files(id,name,parents)",
-    orderBy: "name",
-    pageSize: 100,
-    supportsAllDrives: true,
-    includeItemsFromAllDrives: true,
-  });
+  const folders: any[] = [];
+  let pageToken: string | undefined = undefined;
+  const maxFolders = 500;
 
-  const folders = res.data.files || [];
+  do {
+    const res: any = await drive.files.list({
+      q: queryStr,
+      fields: "nextPageToken, files(id,name,parents)",
+      pageSize: 100,
+      pageToken,
+      supportsAllDrives: true,
+      includeItemsFromAllDrives: true,
+    });
+    if (res.data.files) {
+      folders.push(...res.data.files);
+    }
+    pageToken = res.data.nextPageToken || undefined;
+  } while (pageToken && folders.length < maxFolders);
+
+  // Natural sort the aggregated set
+  folders.sort((a, b) => naturalCompare(a.name || "", b.name || ""));
 
   // Retrieve global fallback default count setting
   const fallbackSetting = await prisma.appSetting.findUnique({

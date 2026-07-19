@@ -4,6 +4,7 @@ import Link from "next/link";
 import { toast } from "sonner";
 import ManagedAccountEditForm from "@/components/ManagedAccountEditForm";
 import ColorSettingsModal from "@/components/ColorSettingsModal";
+import { naturalCompare } from "@/lib/utils/sorting";
 import {
   Plus,
   FolderOpen,
@@ -311,19 +312,13 @@ export default function AccountsPage() {
       }
     });
 
-    // Sort by color priority then username / folder name alphabetically based on searchMode and sortDirection
+    // Sort by username / folder name alphabetically based on searchMode and sortDirection using naturalCompare
     return matched.sort((a, b) => {
-      const orderA = a.colorRef?.order ?? colorOrder[a.color || "zinc"] ?? 99;
-      const orderB = b.colorRef?.order ?? colorOrder[b.color || "zinc"] ?? 99;
-      if (orderA !== orderB) {
-        return sortDirection === "asc" ? orderA - orderB : orderB - orderA;
-      }
-
       const valA = searchMode === "drive" ? (a.driveFolderName || "") : a.tiktokUsername;
       const valB = searchMode === "drive" ? (b.driveFolderName || "") : b.tiktokUsername;
-      return sortDirection === "asc"
-        ? valA.localeCompare(valB, undefined, { numeric: true, sensitivity: "base" })
-        : valB.localeCompare(valA, undefined, { numeric: true, sensitivity: "base" });
+      
+      const comp = naturalCompare(valA, valB);
+      return sortDirection === "asc" ? comp : -comp;
     });
   }, [allAccounts, searchQuery, searchMode, sortDirection]);
 
