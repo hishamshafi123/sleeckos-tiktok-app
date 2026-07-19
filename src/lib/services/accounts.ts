@@ -348,3 +348,109 @@ export async function checkAllAccountsHealth(): Promise<Record<string, string>> 
 
   return results;
 }
+
+/**
+ * Dynamic Configurable Account Colors Services
+ */
+
+export async function listAccountColors() {
+  let count = await prisma.accountColor.count();
+  if (count === 0) {
+    // Seed default colors
+    const seeds = [
+      { color: "green", meaning: "Healthy / Good", defaultPostCount: 3, order: 0 },
+      { color: "red", meaning: "Banned", defaultPostCount: 0, order: 1 },
+      { color: "orange", meaning: "Shadowbanned", defaultPostCount: 1, order: 2 },
+      { color: "yellow", meaning: "Warm-up / New", defaultPostCount: 1, order: 3 },
+    ];
+    await prisma.accountColor.createMany({
+      data: seeds,
+    });
+  }
+
+  return prisma.accountColor.findMany({
+    orderBy: { order: "asc" },
+  });
+}
+
+export async function createAccountColor(data: {
+  color: string;
+  meaning: string;
+  defaultPostCount: number;
+  order?: number;
+}) {
+  return prisma.accountColor.create({
+    data: {
+      color: data.color,
+      meaning: data.meaning,
+      defaultPostCount: data.defaultPostCount,
+      order: data.order ?? 0,
+    },
+  });
+}
+
+export async function updateAccountColor(
+  id: string,
+  data: {
+    color?: string;
+    meaning?: string;
+    defaultPostCount?: number;
+    order?: number;
+  }
+) {
+  return prisma.accountColor.update({
+    where: { id },
+    data: {
+      color: data.color,
+      meaning: data.meaning,
+      defaultPostCount: data.defaultPostCount,
+      order: data.order,
+    },
+  });
+}
+
+export async function deleteAccountColor(id: string, reassignToId?: string | null) {
+  // Check if color is in use
+  const affectedCount = await prisma.managedAccount.count({
+    where: { colorId: id },
+  });
+
+  if (affectedCount > 0) {
+    if (!reassignToId) {
+      throw new Error(`Color is in use by ${affectedCount} accounts. Please specify a reassignment color.`);
+    }
+    // Reassign accounts
+    await prisma.managedAccount.updateMany({
+      where: { colorId: id },
+      data: { colorId: reassignToId },
+    });
+  }
+
+  return prisma.accountColor.delete({
+    where: { id },
+  });
+}
+
+/**
+ * Gets the global fallback post count.
+ */
+export async function getGlobalFallbackPostCount(): Promise<number> {
+  const setting = await prisma.appSetting.findUnique({
+    where: { key: "defaultPostCountFallback" },
+  });
+  if (!setting) return 1;
+  const val = parseInt(setting.value, 10);
+  return isNaN(val) ? 1 : val;
+}
+
+/**
+ * Sets the global fallback post count.
+ */
+export async function setGlobalFallbackPostCount(value: number): Promise<number> {
+  await prisma.appSetting.upsert({
+    where: { key: "defaultPostCountFallback" },
+    update: { value: value.toString() },
+    create: { key: "defaultPostCountFallback", value: value.toString() },
+  });
+  return value;
+}

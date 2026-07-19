@@ -44,6 +44,18 @@ const DAYS = [
   { num: "7", label: "Sun" },
 ];
 
+const COLOR_MAP: Record<string, string> = {
+  red: "#ef4444",
+  orange: "#f97316",
+  yellow: "#f59e0b",
+  green: "#10b981",
+  blue: "#3b82f6",
+  purple: "#8b5cf6",
+  pink: "#ec4899",
+  zinc: "#71717a",
+  gray: "#71717a",
+};
+
 const ACCOUNT_COLORS = [
   { id: "zinc", name: "Gray (Default)", bg: "bg-zinc-500", text: "text-zinc-300", border: "border-zinc-500/50" },
   { id: "red", name: "Red (Banned)", bg: "bg-red-500", text: "text-red-300", border: "border-red-500/50" },
@@ -70,6 +82,7 @@ export default function ManagedAccountEditForm({
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
+  const [colors, setColors] = useState<any[]>([]);
   const [editForm, setEditForm] = useState({
     tiktokUsername: "",
     postTimeSlots: "12:00",
@@ -80,6 +93,7 @@ export default function ManagedAccountEditForm({
     captionSource: "FILENAME",
     postpeerAccountId: "",
     color: "zinc",
+    colorId: "",
   });
 
   const [newSlot, setNewSlot] = useState("12:00");
@@ -93,6 +107,13 @@ export default function ManagedAccountEditForm({
   const fetchAccount = useCallback(async () => {
     setLoading(true);
     try {
+      // Load account colors
+      const colorsRes = await fetch("/api/managed/accounts/colors");
+      if (colorsRes.ok) {
+        const colorsData = await colorsRes.json();
+        setColors(colorsData.colors || []);
+      }
+
       const res = await fetch(`/api/managed/accounts/${accountId}`);
       if (!res.ok) throw new Error("Failed to fetch account settings");
       const data = await res.json();
@@ -108,6 +129,7 @@ export default function ManagedAccountEditForm({
         captionSource: data.captionSource,
         postpeerAccountId: data.postpeerAccountId || "",
         color: data.color || "zinc",
+        colorId: data.colorId || "",
       });
       fetchFolders();
     } catch (err: any) {
@@ -444,22 +466,36 @@ export default function ManagedAccountEditForm({
           Account Card Color
         </label>
         <div className="grid grid-cols-2 gap-2">
-          {ACCOUNT_COLORS.map((col) => (
-            <button
-              key={col.id}
-              type="button"
-              disabled={isReadOnly}
-              onClick={() => setEditForm({ ...editForm, color: col.id })}
-              className={`flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-lg border text-xs font-semibold transition-all cursor-pointer ${
-                editForm.color === col.id
-                  ? `${col.border} bg-white/5 text-white ring-1 ring-offset-0`
-                  : "border-white/5 bg-[#111] text-gray-400 hover:text-white hover:border-white/10"
-              }`}
-            >
-              <span className={`w-2 h-2 rounded-full ${col.bg}`} />
-              {col.name}
-            </button>
-          ))}
+          {(colors.length > 0 ? colors : ACCOUNT_COLORS).map((col: any) => {
+            // Determine if selecting from dynamic DB colors or legacy hardcoded ones
+            const colId = col.id;
+            const colKey = col.color || col.id;
+            const meaning = col.meaning || col.name;
+            const baseColor = COLOR_MAP[colKey] || (colKey.startsWith("#") ? colKey : null) || COLOR_MAP.zinc;
+            
+            // Check if selected
+            const isSelected = editForm.colorId === colId || (!editForm.colorId && editForm.color === colKey);
+
+            return (
+              <button
+                key={colId}
+                type="button"
+                disabled={isReadOnly}
+                onClick={() => setEditForm({ ...editForm, colorId: colId, color: colKey })}
+                className={`flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-lg border text-xs font-semibold transition-all cursor-pointer ${
+                  isSelected
+                    ? "border-purple-500/50 bg-white/5 text-white ring-1 ring-offset-0"
+                    : "border-white/5 bg-[#111] text-gray-400 hover:text-white hover:border-white/10"
+                }`}
+              >
+                <span
+                  className="w-2 h-2 rounded-full"
+                  style={{ backgroundColor: baseColor }}
+                />
+                <span className="truncate">{meaning}</span>
+              </button>
+            );
+          })}
         </div>
       </div>
 

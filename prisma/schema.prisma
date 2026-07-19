@@ -229,6 +229,8 @@ model ManagedAccount {
   // PostPeer integration
   postpeerAccountId     String?
   color                 String       @default("zinc")
+  colorId               String?
+  colorRef              AccountColor?  @relation(fields: [colorId], references: [id], onDelete: SetNull)
 
   // Scheduling config
   postTimeHour          Int          @default(12)
@@ -264,6 +266,17 @@ model ManagedAccount {
   clipMixerItems        ClipMixerItem[]
   sheetCells            SheetCell[]
   warmupEnrollment      WarmupEnrollment?
+}
+
+model AccountColor {
+  id               String           @id @default(uuid())
+  color            String           // swatch hex code or key (e.g. "green", "#10b981")
+  meaning          String           // a text label, e.g. "Healthy", "Banned", "Warming"
+  defaultPostCount Int              @default(1)
+  order            Int              @default(0)
+  accounts         ManagedAccount[]
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
 }
 
 enum PostStatus {

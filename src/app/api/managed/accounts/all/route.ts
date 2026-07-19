@@ -25,6 +25,8 @@ export async function GET() {
       driveFolderId: true,
       driveFolderName: true,
       color: true,
+      colorId: true,
+      colorRef: true,
       group: {
         select: {
           name: true,

@@ -54,6 +54,8 @@ type Account = {
   lastCheckedAt?: string | null;
   lastError?: string | null;
   color?: string;
+  colorId?: string;
+  colorRef?: { id: string; color: string; meaning: string; defaultPostCount: number } | null;
 };
 
 type Group = {
@@ -501,8 +503,8 @@ export default function GroupPage({
             </div>
           ) : (
             filteredAccounts.map((acc) => {
-              const colKey = acc.color || "zinc";
-              const baseColor = COLOR_MAP[colKey] || COLOR_MAP.zinc;
+              const colKey = acc.colorRef?.color || acc.color || "zinc";
+              const baseColor = COLOR_MAP[colKey] || (colKey.startsWith("#") ? colKey : null) || COLOR_MAP.zinc;
               const isSpecialColor = colKey !== "zinc" && colKey !== "gray";
               return (
                 <div

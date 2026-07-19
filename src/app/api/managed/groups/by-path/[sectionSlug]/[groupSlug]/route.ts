@@ -33,6 +33,7 @@ export async function GET(
       accounts: {
         orderBy: { createdAt: "desc" },
         include: {
+          colorRef: true,
           _count: {
             select: {
               scheduledPosts: {
@@ -50,7 +51,7 @@ export async function GET(
   }
 
   // Sanitizing sensitive tokens from the API payload
-  const sanitizedAccounts = group.accounts.map((acc) => {
+  const sanitizedAccounts = (group as any).accounts.map((acc: any) => {
     const { googleAccessToken, googleRefreshToken, ...rest } = acc as any;
     return {
       ...rest,

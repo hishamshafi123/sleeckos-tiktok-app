@@ -75,6 +75,7 @@ export async function PATCH(
 
   // Account color tag
   if (body.color !== undefined) data.color = body.color;
+  if (body.colorId !== undefined) data.colorId = body.colorId;
 
   const account = await prisma.managedAccount.update({
     where: { id },
@@ -140,6 +141,7 @@ export async function GET(
   const account = await prisma.managedAccount.findUnique({
     where: { id },
     include: {
+      colorRef: true,
       group: { include: { section: true } },
       scheduledPosts: {
         orderBy: { scheduledFor: "desc" },

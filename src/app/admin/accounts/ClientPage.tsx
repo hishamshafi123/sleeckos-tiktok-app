@@ -3,6 +3,7 @@ import { useState, useEffect, useCallback, useMemo } from "react";
 import Link from "next/link";
 import { toast } from "sonner";
 import ManagedAccountEditForm from "@/components/ManagedAccountEditForm";
+import ColorSettingsModal from "@/components/ColorSettingsModal";
 import {
   Plus,
   FolderOpen,
@@ -23,6 +24,7 @@ import {
   Calendar,
   Hash,
   ArrowUpDown,
+  Settings,
 } from "lucide-react";
 
 // ── Video Links Panel (per section) ──────────────────────────────────────────
@@ -248,6 +250,7 @@ export default function AccountsPage() {
   const [allAccounts, setAllAccounts] = useState<any[]>([]);
   const [loadingAccounts, setLoadingAccounts] = useState(false);
   const [editingAccountId, setEditingAccountId] = useState<string | null>(null);
+  const [showColorSettings, setShowColorSettings] = useState(false);
 
   const fetchSections = useCallback(async () => {
     try {
@@ -310,8 +313,8 @@ export default function AccountsPage() {
 
     // Sort by color priority then username / folder name alphabetically based on searchMode and sortDirection
     return matched.sort((a, b) => {
-      const orderA = colorOrder[a.color || "zinc"] || 99;
-      const orderB = colorOrder[b.color || "zinc"] || 99;
+      const orderA = a.colorRef?.order ?? colorOrder[a.color || "zinc"] ?? 99;
+      const orderB = b.colorRef?.order ?? colorOrder[b.color || "zinc"] ?? 99;
       if (orderA !== orderB) {
         return sortDirection === "asc" ? orderA - orderB : orderB - orderA;
       }
@@ -380,13 +383,22 @@ export default function AccountsPage() {
             Manage your TikTok accounts organized by sections and groups
           </p>
         </div>
-        <button
-          onClick={() => setShowCreate(true)}
-          className="flex items-center gap-2 bg-purple-600 hover:bg-purple-500 text-white text-sm font-semibold px-4 py-2.5 rounded-xl transition-all"
-        >
-          <Plus className="w-4 h-4" />
-          New Section
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setShowColorSettings(true)}
+            className="flex items-center gap-2 bg-white/5 border border-white/10 hover:bg-white/10 text-white text-sm font-semibold px-4 py-2.5 rounded-xl transition-all"
+          >
+            <Settings className="w-4 h-4 text-purple-400" />
+            Color Settings
+          </button>
+          <button
+            onClick={() => setShowCreate(true)}
+            className="flex items-center gap-2 bg-purple-600 hover:bg-purple-500 text-white text-sm font-semibold px-4 py-2.5 rounded-xl transition-all"
+          >
+            <Plus className="w-4 h-4" />
+            New Section
+          </button>
+        </div>
       </div>
 
       {/* Search and Accounts List */}
@@ -462,8 +474,8 @@ export default function AccountsPage() {
           ) : (
             <div className="grid gap-3 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4">
               {filteredAccounts.map((acc) => {
-                const colKey = acc.color || "zinc";
-                const baseColor = COLOR_MAP[colKey] || COLOR_MAP.zinc;
+                const colKey = acc.colorRef?.color || acc.color || "zinc";
+                const baseColor = COLOR_MAP[colKey] || (colKey.startsWith("#") ? colKey : null) || COLOR_MAP.zinc;
                 const isSpecialColor = colKey !== "zinc" && colKey !== "gray";
                 return (
                   <button
@@ -695,6 +707,15 @@ export default function AccountsPage() {
             />
           </div>
         </div>
+      )}
+      {/* Account Color Settings Modal */}
+      {showColorSettings && (
+        <ColorSettingsModal
+          onClose={() => {
+            setShowColorSettings(false);
+            fetchAllAccounts();
+          }}
+        />
       )}
     </div>
   );

@@ -238,7 +238,7 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
   const [showSmartExport, setShowSmartExport] = useState(false);
   const [smartExportSearch, setSmartExportSearch] = useState("");
   const [searchingExportFolders, setSearchingExportFolders] = useState(false);
-  const [searchedExportFolders, setSearchedExportFolders] = useState<{ id: string; name: string; mappedAccount: { id: string; tiktokUsername: string } | null }[]>([]);
+  const [searchedExportFolders, setSearchedExportFolders] = useState<{ id: string; name: string; defaultPostCount: number; mappedAccount: { id: string; tiktokUsername: string } | null }[]>([]);
   const [selectedExportFolders, setSelectedExportFolders] = useState<{ id: string; name: string; count: number; mappedAccount: { id: string; tiktokUsername: string } | null }[]>([]);
   const [includeExportedSmartExport, setIncludeExportedSmartExport] = useState(false);
   const [exportPreview, setExportPreview] = useState<{
@@ -3250,7 +3250,7 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
                                 onClick={() => {
                                   setSelectedExportFolders((prev) => {
                                     const next = [...prev];
-                                    next[index] = { ...next[index], count: Math.max(1, next[index].count - 1) };
+                                    next[index] = { ...next[index], count: Math.max(0, next[index].count - 1) };
                                     return next;
                                   });
                                 }}
@@ -3320,7 +3320,7 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
                           onClick={() => {
                             setSelectedExportFolders((prev) => [
                               ...prev,
-                              { ...folder, count: 1 },
+                              { ...folder, count: folder.defaultPostCount ?? 1 },
                             ]);
                             setSearchedExportFolders([]);
                             setSmartExportSearch("");

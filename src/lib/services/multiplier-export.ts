@@ -30,18 +30,40 @@ export async function searchDriveFolders(query: string) {
 
   const folders = res.data.files || [];
 
+  // Retrieve global fallback default count setting
+  const fallbackSetting = await prisma.appSetting.findUnique({
+    where: { key: "defaultPostCountFallback" },
+  });
+  const defaultFallback = fallbackSetting ? parseInt(fallbackSetting.value, 10) : 1;
+  const defaultFallbackCount = isNaN(defaultFallback) ? 1 : defaultFallback;
+
   // Find all accounts linked to these folder IDs
   const folderIds = folders.map((f) => f.id).filter(Boolean) as string[];
   const mappedAccounts = await prisma.managedAccount.findMany({
     where: { driveFolderId: { in: folderIds } },
-    select: { id: true, driveFolderId: true, tiktokUsername: true },
+    select: {
+      id: true,
+      driveFolderId: true,
+      tiktokUsername: true,
+      colorId: true,
+      colorRef: {
+        select: {
+          defaultPostCount: true,
+        },
+      },
+    },
   });
 
   return folders.map((f) => {
     const acc = mappedAccounts.find((a) => a.driveFolderId === f.id);
+    let defaultCount = defaultFallbackCount;
+    if (acc && acc.colorRef) {
+      defaultCount = acc.colorRef.defaultPostCount;
+    }
     return {
       id: f.id,
       name: f.name,
+      defaultPostCount: defaultCount,
       mappedAccount: acc ? { id: acc.id, tiktokUsername: acc.tiktokUsername } : null,
     };
   });
@@ -65,6 +87,9 @@ export async function previewSmartExport(
   if (!groupIds || groupIds.length === 0) {
     throw new Error("No groups selected");
   }
+
+  // Filter out folders with 0 count (excluded accounts/folders)
+  const activeFolderCounts = folderCounts.filter((f) => f.count > 0);
 
   // 1. Fetch completed outputs for selected groups
   const completedOutputs = await prisma.multiplierOutput.findMany({
@@ -111,7 +136,7 @@ export async function previewSmartExport(
 
   // Total available completed videos
   const totalAvailable = completedOutputs.length;
-  const assigned = folderCounts.reduce((sum, f) => sum + f.count, 0);
+  const assigned = activeFolderCounts.reduce((sum, f) => sum + f.count, 0);
   const videosLeft = Math.max(0, totalAvailable - assigned);
 
   const videoBudget = {
@@ -121,7 +146,7 @@ export async function previewSmartExport(
   };
 
   // Sort folders by count descending to solve the hardest/most constrained assignments first
-  const sortedFolders = [...folderCounts].sort((a, b) => b.count - a.count);
+  const sortedFolders = [...activeFolderCounts].sort((a, b) => b.count - a.count);
 
   const assignments: {
     driveFolderId: string;
