@@ -1042,13 +1042,17 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
 
     setGeneratingAiHooks(true);
     try {
+      let adjustedPrompt = customPrompt;
+      if (adjustedPrompt) {
+        adjustedPrompt = adjustedPrompt.replace(/Generate exactly \d+/i, `Generate exactly ${aiHookCount}`);
+      }
       const res = await fetch(`/api/managed/multiplier/groups/${selectedGroup.id}/hooks/ai`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           count: aiHookCount,
           useCampaignContext: true,
-          customPrompt: customPrompt || undefined,
+          customPrompt: adjustedPrompt || undefined,
         }),
       });
 

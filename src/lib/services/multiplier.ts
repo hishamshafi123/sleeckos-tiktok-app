@@ -207,7 +207,7 @@ export async function generateHooks(groupId: string, count: number, useCampaignC
   try {
     const wordList = JSON.parse(group.transcript);
     if (Array.isArray(wordList)) {
-      rawText = wordList.map((w: any) => w.text || "").join(" ");
+      rawText = wordList.map((w: any) => w.word || w.text || "").join(" ");
     } else {
       rawText = String(group.transcript);
     }
@@ -244,6 +244,8 @@ Format your response strictly as a JSON array of strings, like this:
 ["First hook headline", "Second hook headline", "Third hook headline"]
 Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate only the raw JSON array.`;
   } else {
+    // Sync hooks count in custom prompt if specified
+    prompt = prompt.replace(/Generate exactly \d+/i, `Generate exactly ${count}`);
     // Always append strict JSON format instructions if not present to ensure parseability
     if (!prompt.includes("Format your response strictly as a JSON array of strings")) {
       prompt += `\n\nFormat your response strictly as a JSON array of strings, like this:\n["First hook headline", "Second hook headline", "Third hook headline"]\nDo not add any other markdown wrapper like \`\`\`json or text blocks. Generate only the raw JSON array.`;
