@@ -624,7 +624,7 @@ export default function GenresDashboard() {
       const res = await fetch("/api/managed/genres/tracks/lyrical", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ trackId: lgTrackId, model: "base", device: "cpu" }),
+        body: JSON.stringify({ trackId: lgTrackId, model: "tiny", device: "cpu" }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Transcription failed");

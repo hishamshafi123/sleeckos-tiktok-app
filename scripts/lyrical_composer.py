@@ -286,7 +286,7 @@ def parse_hex_color(hex_str):
 # ==============================================================================
 # 3. TRANSCRIPTION & CAPTION CHUNKING LAYER
 # ==============================================================================
-def transcribe_audio(media_path, model_size="base", device="cpu"):
+def transcribe_audio(media_path, model_size="tiny", device="cpu"):
     """
     Uses stable-ts combined with faster-whisper to extract exact word-level
     timestamps, preventing drifting during musical intros or instrumentals.
@@ -296,8 +296,14 @@ def transcribe_audio(media_path, model_size="base", device="cpu"):
     # Select appropriate compute type
     compute_type = "float16" if device == "cuda" else "float32"
     
-    # Load model
-    model = stable_whisper.load_faster_whisper(model_size, device=device, compute_type=compute_type)
+    # Load model with threads limited to 1 on CPU to prevent OOM
+    cpu_threads = 1 if device == "cpu" else 4
+    model = stable_whisper.load_faster_whisper(
+        model_size,
+        device=device,
+        compute_type=compute_type,
+        cpu_threads=cpu_threads
+    )
     
     print(f"[*] Transcribing audio track from: {media_path}")
     start_time = time.time()
@@ -1263,7 +1269,7 @@ if __name__ == "__main__":
     parser.add_argument("--transcription-json", default=None, help="Aligned word-level JSON string to bypass Whisper transcription entirely.")
     
     # 3. Transcription settings
-    parser.add_argument("--model", default="base", help="stable-ts whisper model size (tiny, base, small, medium, large). Default: base")
+    parser.add_argument("--model", default="tiny", help="stable-ts whisper model size (tiny, base, small, medium, large). Default: tiny")
     parser.add_argument("--device", default="cpu", help="Compute hardware device ('cpu' or 'cuda'). Default: cpu")
     parser.add_argument("--save-json", default=None, help="Path to write the aligned word-level JSON metadata.")
     

@@ -128,7 +128,7 @@ export async function transcribeGroup(groupId: string): Promise<string> {
     `-i "${videoLocalPath}"`,
     `-o "/dev/null"`,
     `--save-json "${tempJsonPath}"`,
-    `--model "base"`,
+    `--model "tiny"`,
     `--device "cpu"`,
   ].join(" ");
 
