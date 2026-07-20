@@ -143,6 +143,20 @@ Add / edit / delete / regenerate a single hook.
 
 Errors: `400` missing/invalid fields or (regenerate) no transcript; `404` group not found.
 
+### `POST /api/multiplier/groups/bulk-delete`
+
+Delete or clear multiple groups at once.
+
+**Request:** `{ groupIds: string[]; mode: "outputs" | "full" }`
+
+- `outputs` — delete only the rendered videos (local files + DB rows); the groups
+  themselves (source videos, hooks, style) stay in the builder, reset to `DRAFT`.
+- `full` — delete the groups entirely (variation files, output files, hooks, DB rows).
+
+**Responses `200`:** `{ success: true, mode, clearedGroups?, deletedOutputs?, deletedGroups? }`
+
+Errors: `400` missing `groupIds` or invalid `mode`.
+
 ---
 
 ## Rendering

@@ -266,6 +266,11 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
   const [smartVidsPerAccount, setSmartVidsPerAccount] = useState(3);
   const [includeExported, setIncludeExported] = useState(false);
 
+  // Builder sidebar checkbox selection + filter (separate from the queue selection above)
+  const [builderSelectedIds, setBuilderSelectedIds] = useState<Set<string>>(new Set());
+  const [builderGroupSearch, setBuilderGroupSearch] = useState("");
+  const [bulkDeleting, setBulkDeleting] = useState(false);
+
   // Smart Export state
   const [showSmartExport, setShowSmartExport] = useState(false);
   const [smartExportSearch, setSmartExportSearch] = useState("");
@@ -1579,27 +1584,87 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
     }
   };
 
-  // Delete entire Group
-  const handleDeleteGroup = async (groupId: string) => {
-    if (!confirm("Are you sure you want to delete this Multiplier Group and all associated files?")) return;
-
+  // ── Bulk delete / clear outputs ─────────────────────────────────────────
+  // Goes through POST /api/multiplier/groups/bulk-delete:
+  //   mode "outputs" — delete only rendered videos; groups stay in the builder as DRAFT
+  //   mode "full"    — delete the groups entirely (source videos, hooks, outputs)
+  const bulkDeleteGroups = async (groupIds: string[], mode: "outputs" | "full") => {
+    if (groupIds.length === 0) return;
+    setBulkDeleting(true);
     try {
-      const res = await fetch(`/api/managed/multiplier?groupId=${groupId}`, {
-        method: "DELETE",
+      const res = await fetch("/api/multiplier/groups/bulk-delete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ groupIds, mode }),
       });
 
-      if (!res.ok) throw new Error("Deletion failed");
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "Delete request failed");
 
-      toast.success("Group deleted.");
-      setSelectedGroup(null);
+      if (mode === "outputs") {
+        toast.success(`Cleared ${data.deletedOutputs ?? 0} rendered video(s) across ${data.clearedGroups ?? groupIds.length} group(s). The groups stay in the builder as drafts.`);
+      } else {
+        toast.success(`Permanently deleted ${data.deletedGroups ?? groupIds.length} group(s).`);
+      }
+
+      // Drop the affected ids from both selection sets
+      setSelectedGroupIds((prev) => {
+        const next = new Set(prev);
+        groupIds.forEach((id) => next.delete(id));
+        return next;
+      });
+      setBuilderSelectedIds((prev) => {
+        const next = new Set(prev);
+        groupIds.forEach((id) => next.delete(id));
+        return next;
+      });
+
+      // Full delete removes the group everywhere — reset the wizard if it was loaded
+      // (fetchData keeps a stale selectedGroup for missing ids, so clear it explicitly)
+      if (mode === "full" && selectedGroup && groupIds.includes(selectedGroup.id)) {
+        setSelectedGroup(null);
+      }
+
       await fetchData();
     } catch (err: any) {
-      toast.error(err.message);
+      toast.error(err.message || "Failed to delete groups");
+    } finally {
+      setBulkDeleting(false);
     }
   };
 
+  // Delete entire Group (permanent — removes it from the builder too)
+  const handleDeleteGroup = async (groupId: string) => {
+    if (!confirm("Permanently delete this group including source videos, hooks and all rendered videos? This cannot be undone.")) return;
+    await bulkDeleteGroups([groupId], "full");
+  };
+
+  // Queue selection: clear only the rendered videos, keep the groups in the builder
+  const handleClearSelectedOutputs = async () => {
+    const ids = Array.from(selectedGroupIds);
+    if (ids.length === 0) return;
+    if (!confirm(`Delete the rendered videos of ${ids.length} group(s)? The groups themselves stay in the builder.`)) return;
+    await bulkDeleteGroups(ids, "outputs");
+  };
+
+  // Queue selection: permanently delete the selected groups
+  const handleDeleteSelectedGroups = async () => {
+    const ids = Array.from(selectedGroupIds);
+    if (ids.length === 0) return;
+    if (!confirm(`Permanently delete ${ids.length} group(s) including source videos, hooks and all rendered videos? This cannot be undone.`)) return;
+    await bulkDeleteGroups(ids, "full");
+  };
+
+  // Builder sidebar selection: permanently delete the checked groups
+  const handleDeleteBuilderSelectedGroups = async () => {
+    const ids = Array.from(builderSelectedIds);
+    if (ids.length === 0) return;
+    if (!confirm(`Permanently delete ${ids.length} group(s) including source videos, hooks and all rendered videos? This cannot be undone.`)) return;
+    await bulkDeleteGroups(ids, "full");
+  };
+
   const handleDeleteAllGroups = async () => {
-    if (!confirm("Are you sure you want to delete ALL multiplier groups/batches and all associated video files? This action is permanent and cannot be undone.")) return;
+    if (!confirm("Are you sure you want to delete ALL multiplier groups/batches and all associated video files? This deletes EVERYTHING everywhere — including every group and its source data in the Group Builder. This action is permanent and cannot be undone.")) return;
 
     try {
       const res = await fetch("/api/managed/multiplier?groupId=all", {
@@ -1969,54 +2034,167 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
               <div className="flex-1 flex flex-col items-center justify-center text-center p-4 text-[#71717a]">
                 <Layers className="w-10 h-10 mb-2 opacity-30" />
                 <p className="text-xs">No active groups.</p>
+                <p className="text-[10px] mt-1 opacity-70">Create one with New Group to get started.</p>
               </div>
-            ) : (
-              <div className="flex-1 overflow-y-auto space-y-2 pr-2 custom-scrollbar">
-                {groups.map((group) => {
-                  const isSel = selectedGroup?.id === group.id;
-                  return (
-                    <div
-                      key={group.id}
-                      onClick={() => handleSelectGroup(group)}
-                      className={`p-3 rounded-lg border cursor-pointer transition-all flex justify-between items-center ${
-                        isSel
-                          ? "bg-[#27272a] border-[#E11D48]"
-                          : "bg-[#09090b] border-[#27272a] hover:bg-[#18181b]"
-                      }`}
+            ) : (() => {
+              const query = builderGroupSearch.trim().toLowerCase();
+              // Groups arrive newest-first — filtering preserves that order
+              const filteredGroups = query
+                ? groups.filter((g) => g.name.toLowerCase().includes(query))
+                : groups;
+              const allFilteredSelected =
+                filteredGroups.length > 0 && filteredGroups.every((g) => builderSelectedIds.has(g.id));
+              return (
+                <>
+                  {/* Filter */}
+                  <div className="relative mb-3">
+                    <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-[#71717a] pointer-events-none" />
+                    <input
+                      type="text"
+                      value={builderGroupSearch}
+                      onChange={(e) => setBuilderGroupSearch(e.target.value)}
+                      placeholder="Filter groups..."
+                      className="w-full bg-[#09090b] border border-[#27272a] rounded-lg pl-8 pr-3 py-2 text-xs focus:outline-none focus:border-[#E11D48] placeholder:text-[#52525b]"
+                    />
+                  </div>
+
+                  {/* List header: select-all (filtered) + count */}
+                  <div className="flex items-center justify-between mb-2 px-1">
+                    <button
+                      onClick={() => {
+                        if (allFilteredSelected) {
+                          setBuilderSelectedIds(new Set());
+                        } else {
+                          setBuilderSelectedIds(new Set(filteredGroups.map((g) => g.id)));
+                        }
+                      }}
+                      className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-[#71717a] hover:text-[#fafafa] transition-colors cursor-pointer"
                     >
-                      <div className="truncate flex-1">
-                        <p className="font-semibold text-sm truncate">{group.name}</p>
-                        <p className="text-xs text-[#71717a] truncate mt-0.5">
-                          {group.campaign?.title || "No Campaign"}
-                        </p>
-                      </div>
+                      {allFilteredSelected ? (
+                        <CheckSquare className="w-3.5 h-3.5 text-[#E11D48]" />
+                      ) : (
+                        <Square className="w-3.5 h-3.5" />
+                      )}
+                      Select All
+                    </button>
+                    <span className="text-[10px] text-[#52525b]">
+                      {filteredGroups.length} group{filteredGroups.length !== 1 ? "s" : ""}
+                    </span>
+                  </div>
+
+                  {/* Bulk action bar */}
+                  {builderSelectedIds.size > 0 && (
+                    <div className="mb-3 flex items-center justify-between gap-2 bg-[#09090b] border border-[#27272a] rounded-lg px-3 py-2">
+                      <span className="text-[10px] font-semibold text-[#a1a1aa]">
+                        {builderSelectedIds.size} selected
+                      </span>
                       <div className="flex items-center gap-2">
-                        <span
-                          className={`w-2.5 h-2.5 rounded-full ${
-                            group.status === "COMPLETED"
-                              ? "bg-green-500"
-                              : group.status === "FAILED"
-                              ? "bg-red-500"
-                              : group.status === "RENDERING" || group.status === "QUEUED"
-                              ? "bg-amber-500 animate-pulse"
-                              : "bg-gray-500"
-                          }`}
-                        />
                         <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleDeleteGroup(group.id);
-                          }}
-                          className="text-[#71717a] hover:text-red-500 transition-colors p-1"
+                          onClick={handleDeleteBuilderSelectedGroups}
+                          disabled={bulkDeleting}
+                          className="px-2 py-1 bg-red-500/10 hover:bg-red-500/20 text-red-500 border border-red-500/20 rounded text-[10px] font-semibold flex items-center gap-1 transition-all disabled:opacity-50 cursor-pointer"
                         >
-                          <Trash className="w-3.5 h-3.5" />
+                          {bulkDeleting ? (
+                            <Loader2 className="w-3 h-3 animate-spin" />
+                          ) : (
+                            <Trash className="w-3 h-3" />
+                          )}
+                          Delete ({builderSelectedIds.size})
+                        </button>
+                        <button
+                          onClick={() => setBuilderSelectedIds(new Set())}
+                          className="text-[10px] text-[#71717a] hover:text-[#fafafa] transition-colors font-medium cursor-pointer"
+                        >
+                          Clear
                         </button>
                       </div>
                     </div>
-                  );
-                })}
-              </div>
-            )}
+                  )}
+
+                  {filteredGroups.length === 0 ? (
+                    <div className="flex-1 flex flex-col items-center justify-center text-center p-4 text-[#71717a]">
+                      <Search className="w-8 h-8 mb-2 opacity-30" />
+                      <p className="text-xs">No groups match &quot;{builderGroupSearch.trim()}&quot;.</p>
+                    </div>
+                  ) : (
+                    <div className="flex-1 overflow-y-auto space-y-2 pr-2 custom-scrollbar">
+                      {filteredGroups.map((group) => {
+                        const isSel = selectedGroup?.id === group.id;
+                        const isChecked = builderSelectedIds.has(group.id);
+                        return (
+                          <div
+                            key={group.id}
+                            onClick={() => handleSelectGroup(group)}
+                            className={`p-3 rounded-lg border cursor-pointer transition-all flex items-start gap-2.5 ${
+                              isSel
+                                ? "bg-[#27272a] border-[#E11D48]"
+                                : "bg-[#09090b] border-[#27272a] hover:bg-[#18181b]"
+                            }`}
+                          >
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setBuilderSelectedIds((prev) => {
+                                  const next = new Set(prev);
+                                  if (next.has(group.id)) {
+                                    next.delete(group.id);
+                                  } else {
+                                    next.add(group.id);
+                                  }
+                                  return next;
+                                });
+                              }}
+                              className="mt-0.5 text-[#71717a] hover:text-[#fafafa] transition-colors flex-shrink-0 cursor-pointer"
+                              title={isChecked ? "Deselect group" : "Select group"}
+                            >
+                              {isChecked ? (
+                                <CheckSquare className="w-4 h-4 text-[#E11D48]" />
+                              ) : (
+                                <Square className="w-4 h-4" />
+                              )}
+                            </button>
+                            <div className="truncate flex-1 min-w-0">
+                              <p className="font-semibold text-sm truncate">{group.name}</p>
+                              <p className="text-xs text-[#71717a] truncate mt-0.5">
+                                {group.campaign?.title || "No Campaign"}
+                              </p>
+                              <div className="flex items-center gap-2 mt-1.5">
+                                <span
+                                  className={`px-1.5 py-0.5 rounded text-[9px] uppercase font-extrabold ${
+                                    group.status === "COMPLETED"
+                                      ? "bg-green-500/10 text-green-500"
+                                      : group.status === "FAILED"
+                                      ? "bg-red-500/10 text-red-500"
+                                      : group.status === "RENDERING" || group.status === "QUEUED"
+                                      ? "bg-amber-500/10 text-amber-500"
+                                      : "bg-zinc-500/10 text-zinc-400"
+                                  }`}
+                                >
+                                  {group.status}
+                                </span>
+                                <span className="text-[10px] text-[#52525b] whitespace-nowrap">
+                                  {group.variations.length} videos · {group.hooks.length} hooks
+                                </span>
+                              </div>
+                            </div>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleDeleteGroup(group.id);
+                              }}
+                              className="text-[#71717a] hover:text-red-500 transition-colors p-1 flex-shrink-0"
+                              title="Permanently delete this group"
+                            >
+                              <Trash className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </>
+              );
+            })()}
           </div>
 
           {/* Group Editor / Setup Cockpit */}
@@ -3356,7 +3534,7 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
                         <button
                           onClick={() => handleDeleteGroup(group.id)}
                           className="p-1 bg-[#18181b] hover:bg-red-500/10 text-[#71717a] hover:text-red-500 border border-[#27272a] rounded-lg transition-all flex items-center justify-center"
-                          title="Delete Batch"
+                          title="Permanently delete this group (source videos, hooks and rendered videos)"
                         >
                           <Trash className="w-3.5 h-3.5" />
                         </button>
@@ -3858,6 +4036,27 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
               className="px-4 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-full flex items-center gap-1.5 transition-all shadow-md cursor-pointer"
             >
               <Upload className="w-3.5 h-3.5" /> Smart Export
+            </button>
+            <button
+              onClick={handleClearSelectedOutputs}
+              disabled={bulkDeleting}
+              title="Delete only the rendered videos of the selected groups — the groups themselves stay in the builder"
+              className="px-4 py-1.5 bg-[#27272a] hover:bg-[#3f3f46] disabled:opacity-40 disabled:cursor-not-allowed text-[#e4e4e7] text-xs font-bold rounded-full flex items-center gap-1.5 transition-all shadow-md cursor-pointer"
+            >
+              {bulkDeleting ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <Trash2 className="w-3.5 h-3.5" />
+              )}
+              Clear outputs ({selectedGroupIds.size})
+            </button>
+            <button
+              onClick={handleDeleteSelectedGroups}
+              disabled={bulkDeleting}
+              title="Permanently delete the selected groups including source videos, hooks and all rendered videos"
+              className="px-4 py-1.5 bg-red-600 hover:bg-red-700 disabled:opacity-40 disabled:cursor-not-allowed text-white text-xs font-bold rounded-full flex items-center gap-1.5 transition-all shadow-md cursor-pointer"
+            >
+              <Trash className="w-3.5 h-3.5" /> Delete groups ({selectedGroupIds.size})
             </button>
             <button
               onClick={() => setSelectedGroupIds(new Set())}

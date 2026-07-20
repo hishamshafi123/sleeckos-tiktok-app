@@ -1143,3 +1143,58 @@ export async function bulkRenderGroups(groupIds: string[], opts?: { fresh?: bool
 
   return { queued, skipped };
 }
+
+// ─── Bulk Delete / Clear ─────────────────────────────────────────────────────
+
+function deleteLocalUpload(relativeRef: string | null | undefined) {
+  if (!relativeRef) return;
+  try {
+    const p = path.join(process.cwd(), "public", relativeRef);
+    if (fs.existsSync(p)) fs.unlinkSync(p);
+  } catch {}
+}
+
+// Deletes ONLY the rendered outputs (files + rows) of the given groups and
+// resets them to DRAFT — the groups themselves (source videos, hooks, style)
+// stay alive in the builder. This is the queue-dashboard "clear" action.
+export async function clearGroupOutputs(groupIds: string[]): Promise<{ clearedGroups: number; deletedOutputs: number }> {
+  const groups = await prisma.multiplierGroup.findMany({
+    where: { id: { in: groupIds } },
+    include: { outputs: { select: { id: true, outputRef: true } } },
+  });
+
+  let deletedOutputs = 0;
+  for (const g of groups) {
+    for (const o of g.outputs) {
+      deleteLocalUpload(o.outputRef);
+      deletedOutputs++;
+    }
+    await prisma.multiplierOutput.deleteMany({ where: { groupId: g.id } });
+    await prisma.multiplierGroup.update({
+      where: { id: g.id },
+      data: { status: "DRAFT", errorMessage: null },
+    });
+  }
+
+  return { clearedGroups: groups.length, deletedOutputs };
+}
+
+// Deletes groups entirely — variation files, output files, and the DB rows
+// (cascade removes variations, hooks, outputs). The full "delete group" action.
+export async function deleteGroups(groupIds: string[]): Promise<{ deletedGroups: number }> {
+  const groups = await prisma.multiplierGroup.findMany({
+    where: { id: { in: groupIds } },
+    include: {
+      variations: { select: { videoRef: true } },
+      outputs: { select: { outputRef: true } },
+    },
+  });
+
+  for (const g of groups) {
+    for (const v of g.variations) deleteLocalUpload(v.videoRef);
+    for (const o of g.outputs) deleteLocalUpload(o.outputRef);
+    await prisma.multiplierGroup.delete({ where: { id: g.id } });
+  }
+
+  return { deletedGroups: groups.length };
+}
