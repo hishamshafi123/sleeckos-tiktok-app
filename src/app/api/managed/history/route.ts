@@ -15,6 +15,7 @@ import { can } from "@/lib/services/permissions";
  *   ?from=YYYY-MM-DD     — start date
  *   ?to=YYYY-MM-DD       — end date
  *   ?limit=200           — max results
+ *   ?sort=latest         — latest | oldest | views (latest = publish time desc, newest on top)
  *
  * Response: { posts: [...], summary: { published, failed, skipped, withLinks, successRate, views, likes, comments, shares } }
  * "published" counts PUBLISHED + PENDING_DELETION + DELETED (post-publish lifecycle states).
@@ -37,8 +38,17 @@ export async function GET(req: NextRequest) {
   const from = url.searchParams.get("from");
   const to = url.searchParams.get("to");
   const limit = Math.min(Number(url.searchParams.get("limit")) || 200, 1000);
+  // Sort: latest = publish time desc (fall back to ingest time); oldest; most views
+  const sort = url.searchParams.get("sort") || "latest";
 
   const PUBLISHED_STATES = ["PUBLISHED", "PENDING_DELETION", "DELETED"];
+
+  const orderBy: any[] =
+    sort === "oldest"
+      ? [{ publishedAt: { sort: "asc", nulls: "last" } }, { createdAt: "asc" }]
+      : sort === "views"
+      ? [{ viewCount: "desc" }, { publishedAt: { sort: "desc", nulls: "last" } }]
+      : [{ publishedAt: { sort: "desc", nulls: "last" } }, { createdAt: "desc" }];
 
   // Build where clause
   const where: Record<string, unknown> = {};
@@ -79,7 +89,7 @@ export async function GET(req: NextRequest) {
   const [posts, statusGroups, metricSums, linksCount] = await Promise.all([
     prisma.scheduledPost.findMany({
       where,
-      orderBy: [{ createdAt: "desc" }],
+      orderBy,
       take: limit,
       include: {
         account: {

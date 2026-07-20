@@ -38,6 +38,7 @@ type HistoryPost = {
     id: string;
     tiktokUsername: string;
     tiktokAvatarUrl: string | null;
+    driveFolderId: string | null;
     driveFolderName: string | null;
     group: { name: string; section: { id: string; name: string } };
   };
@@ -136,6 +137,7 @@ export default function HistoryPage() {
   const [hashtagFilter, setHashtagFilter] = useState("");
   const [fromDate, setFromDate] = useState("");
   const [toDate, setToDate] = useState("");
+  const [sortFilter, setSortFilter] = useState("latest");
 
   const hasActiveFilters =
     sectionFilter !== "" ||
@@ -144,7 +146,8 @@ export default function HistoryPage() {
     hashtagFilter !== "" ||
     hashtagInput !== "" ||
     fromDate !== "" ||
-    toDate !== "";
+    toDate !== "" ||
+    sortFilter !== "latest";
 
   const clearFilters = () => {
     setSectionFilter("");
@@ -154,6 +157,7 @@ export default function HistoryPage() {
     setHashtagFilter("");
     setFromDate("");
     setToDate("");
+    setSortFilter("latest");
   };
 
   // Fetch sections for dropdown
@@ -204,6 +208,7 @@ export default function HistoryPage() {
       if (hashtagFilter) params.set("hashtag", hashtagFilter);
       if (fromDate) params.set("from", fromDate);
       if (toDate) params.set("to", toDate);
+      params.set("sort", sortFilter);
       params.set("limit", String(LIMIT));
 
       const res = await fetch(`/api/managed/history?${params}`);
@@ -218,7 +223,7 @@ export default function HistoryPage() {
     } finally {
       setLoading(false);
     }
-  }, [sectionFilter, accountFilter, statusFilter, hashtagFilter, fromDate, toDate]);
+  }, [sectionFilter, accountFilter, statusFilter, hashtagFilter, fromDate, toDate, sortFilter]);
 
   useEffect(() => {
     fetchPosts();
@@ -426,6 +431,18 @@ export default function HistoryPage() {
           </select>
         </div>
         <div>
+          <label className={labelCls}>Sort</label>
+          <select
+            value={sortFilter}
+            onChange={(e) => setSortFilter(e.target.value)}
+            className={`${inputCls} cursor-pointer w-36`}
+          >
+            <option value="latest">Latest first</option>
+            <option value="oldest">Oldest first</option>
+            <option value="views">Most views</option>
+          </select>
+        </div>
+        <div>
           <label className={labelCls}>From</label>
           <input
             type="date"
@@ -557,16 +574,34 @@ export default function HistoryPage() {
                       <div className="flex items-center gap-2">
                         <AccountAvatar username={post.account.tiktokUsername} url={post.account.tiktokAvatarUrl} />
                         <div className="flex flex-col min-w-0">
-                          <span className="text-zinc-100 font-medium whitespace-nowrap">
+                          <a
+                            href={`https://www.tiktok.com/@${post.account.tiktokUsername}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-zinc-100 font-medium whitespace-nowrap hover:text-[#E11D48] hover:underline underline-offset-2 transition-colors"
+                            title={`Open @${post.account.tiktokUsername} on TikTok`}
+                          >
                             @{post.account.tiktokUsername}
-                          </span>
+                          </a>
                           <span className="text-[10px] text-zinc-500 whitespace-nowrap">
                             {post.account.group.name} · {post.account.group.section.name}
                           </span>
                           {post.account.driveFolderName && (
-                            <span className="text-[10px] text-zinc-600 truncate max-w-[140px]" title={post.account.driveFolderName}>
-                              {post.account.driveFolderName}
-                            </span>
+                            post.account.driveFolderId ? (
+                              <a
+                                href={`https://drive.google.com/drive/folders/${post.account.driveFolderId}`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-[10px] text-zinc-500 hover:text-zinc-200 hover:underline underline-offset-2 truncate max-w-[140px] transition-colors"
+                                title={`Open Drive folder: ${post.account.driveFolderName}`}
+                              >
+                                {post.account.driveFolderName}
+                              </a>
+                            ) : (
+                              <span className="text-[10px] text-zinc-600 truncate max-w-[140px]" title={post.account.driveFolderName}>
+                                {post.account.driveFolderName}
+                              </span>
+                            )
                           )}
                         </div>
                       </div>
