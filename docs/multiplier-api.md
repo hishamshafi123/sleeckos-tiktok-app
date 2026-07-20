@@ -218,6 +218,12 @@ Compute a feasible distribution plan without starting the export. Each account's
 Existing constraints still apply: an account can't receive more videos than there are
 groups with remaining completed outputs, and no group repeats within one account.
 
+Assignment is fair round-robin: each group's videos are dealt one at a time to the
+eligible account with the fewest assigned videos, so when demand exceeds supply the
+videos spread near-evenly instead of starving the accounts dealt to last. Accounts
+that can't be fully satisfied keep their partial videos (`videoIds.length < count`)
+and are also listed in `unfulfillable` with their partial `assignedCount`.
+
 **Request:**
 
 ```ts
@@ -250,8 +256,10 @@ Errors: `400` missing `groupIds`/`accounts`.
 
 ### `POST /api/multiplier/smart-export/run`
 
-Same request body as preview. Computes the plan server-side, drops unfulfillable
-accounts, and starts a background `SmartExportJob` (with `days` recorded on the job).
+Same request body as preview. Computes the plan server-side and runs every account
+that received at least one video — partial plans included; only accounts with
+`assignedCount === 0` are excluded. Starts a background `SmartExportJob` (with `days`
+recorded on the job).
 
 **Response `200`:**
 
@@ -263,7 +271,7 @@ accounts, and starts a background `SmartExportJob` (with `days` recorded on the 
 }
 ```
 
-Errors: `400` missing fields, or nothing fulfillable (`{ error, budget, unfulfillable }`).
+Errors: `400` missing fields, or no account received any videos (`{ error, budget, unfulfillable }`).
 
 Note: when a job is created, each included `MultiplierOutput` records its destination
 on `exportDestinationFolderId` / `exportDestinationFolderName` (visible in the queue

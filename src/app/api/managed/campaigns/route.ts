@@ -24,6 +24,7 @@ export async function GET() {
         infoContent: true,
         postedCount: true,
         failedCount: true,
+        exportedCount: true,
       },
     });
 

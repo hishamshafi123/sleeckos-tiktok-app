@@ -2,6 +2,7 @@ import prisma from "@/lib/db";
 import { getMultiplierDriveClient } from "@/app/api/managed/multiplier/google/drive-helper";
 import { naturalCompare } from "@/lib/utils/sorting";
 import { downloadFromR2 } from "@/lib/services/storage";
+import { assignVideosFairRoundRobin } from "@/lib/services/smart-export-assign";
 import fs from "fs";
 import path from "path";
 
@@ -226,67 +227,19 @@ export async function previewSmartExport(
     videosLeft,
   };
 
-  // Sort folders by count descending to solve the hardest/most constrained assignments first
-  const sortedFolders = [...activeFolderCounts].sort((a, b) => b.count - a.count);
+  // Fair round-robin dealing: each group's (shuffled) videos are dealt one at a
+  // time to the eligible folder with the fewest assigned videos, so demand
+  // exceeding supply no longer starves the folders dealt to last.
+  const videoIdsByGroup: Record<string, string[]> = {};
+  groupIds.forEach((gId) => {
+    videoIdsByGroup[gId] = outputsByGroup[gId].map((o) => o.id);
+  });
 
-  const assignments: {
-    driveFolderId: string;
-    driveFolderName: string;
-    videoIds: string[];
-  }[] = [];
-
-  const unfulfillable: {
-    driveFolderId: string;
-    driveFolderName: string;
-    requestedCount: number;
-    assignedCount: number;
-    reason: string;
-  }[] = [];
-
-  // Track remaining outputs per group using counters
-  const remainingCounts = { ...outputsByGroup };
-
-  for (const folder of sortedFolders) {
-    const assignedVideoIds: string[] = [];
-    const usedGroupIds = new Set<string>();
-
-    for (let step = 0; step < folder.count; step++) {
-      // Find candidate groups that still have videos and haven't contributed to this folder yet
-      const candidates = groupIds.filter(
-        (gId) => !usedGroupIds.has(gId) && remainingCounts[gId].length > 0
-      );
-
-      if (candidates.length === 0) {
-        break;
-      }
-
-      // Greedy choice: select from the candidate group that has the MOST remaining available videos
-      candidates.sort((a, b) => remainingCounts[b].length - remainingCounts[a].length);
-      const chosenGroup = candidates[0];
-
-      // Pop the next video
-      const video = remainingCounts[chosenGroup].pop()!;
-      assignedVideoIds.push(video.id);
-      usedGroupIds.add(chosenGroup);
-    }
-
-    // Record results
-    assignments.push({
-      driveFolderId: folder.id,
-      driveFolderName: folder.name,
-      videoIds: assignedVideoIds,
-    });
-
-    if (assignedVideoIds.length < folder.count) {
-      unfulfillable.push({
-        driveFolderId: folder.id,
-        driveFolderName: folder.name,
-        requestedCount: folder.count,
-        assignedCount: assignedVideoIds.length,
-        reason: `Needs ${folder.count} distinct groups, but only ${assignedVideoIds.length} groups have remaining completed videos.`,
-      });
-    }
-  }
+  const { assignments, unfulfillable } = assignVideosFairRoundRobin(
+    groupIds,
+    videoIdsByGroup,
+    activeFolderCounts
+  );
 
   return {
     videoBudget,
@@ -536,6 +489,7 @@ async function processExportQueue() {
       }
 
       // 4. Mark success
+      const groupCampaignId: string | null = (video as any).group?.campaignId || null;
       await prisma.$transaction([
         prisma.smartExportAssignment.update({
           where: { id: assignment.id },
@@ -549,6 +503,27 @@ async function processExportQueue() {
             exportDestinationFolderId: assignment.driveFolderId,
           },
         }),
+        // Durable campaign stat: survives later deletion of the group/output rows
+        ...(groupCampaignId
+          ? [
+              prisma.campaign.update({
+                where: { id: groupCampaignId },
+                data: { exportedCount: { increment: 1 } },
+              }),
+              prisma.campaignEvent.create({
+                data: {
+                  campaignId: groupCampaignId,
+                  type: "export",
+                  meta: {
+                    driveFolderId: assignment.driveFolderId,
+                    groupId: video.groupId,
+                    groupName: (video as any).group?.name || null,
+                    jobId: assignment.jobId,
+                  },
+                },
+              }),
+            ]
+          : []),
       ]);
 
       console.log(`[Smart Export Worker] Upload complete for assignment: ${assignment.id}`);

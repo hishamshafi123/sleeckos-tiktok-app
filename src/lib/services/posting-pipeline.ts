@@ -354,6 +354,17 @@ export async function confirmPublished(jobId: string, tiktokVideoId?: string, pl
       where: { id: job.campaignId },
       data: { postedCount: { increment: 1 } },
     });
+    await prisma.campaignEvent.create({
+      data: {
+        campaignId: job.campaignId,
+        type: "post_success",
+        meta: {
+          accountId: job.accountId,
+          driveFileName: job.driveFileName,
+          tiktokPostUrl: platformPostUrl || null,
+        },
+      },
+    });
   }
 }
 
@@ -475,6 +486,17 @@ export async function handleFailure(jobId: string, errorMsg: string) {
       await prisma.campaign.update({
         where: { id: job.campaignId },
         data: { failedCount: { increment: 1 } },
+      });
+      await prisma.campaignEvent.create({
+        data: {
+          campaignId: job.campaignId,
+          type: "post_failed",
+          meta: {
+            accountId: job.accountId,
+            driveFileName: job.driveFileName,
+            failureReason: errorMsg,
+          },
+        },
       });
     }
   } else {

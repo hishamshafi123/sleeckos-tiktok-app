@@ -21,7 +21,10 @@ import {
   CheckSquare,
   FolderOpen,
   TrendingUp,
-  BarChart3
+  BarChart3,
+  Upload,
+  CheckCircle2,
+  AlertCircle
 } from "lucide-react";
 import { toast } from "sonner";
 import { Campaign, CampaignResource, CampaignStatus } from "@prisma/client";
@@ -52,6 +55,46 @@ interface CampaignDetailClientProps {
     }[];
   };
 }
+
+type StatsRange = "today" | "7d" | "30d" | "all";
+
+interface CampaignStats {
+  totals: { exported: number; posted: number; failed: number; postSuccessRate: number };
+  rangeTotals: { exported: number; posted: number; failed: number };
+  daily: { date: string; exported: number; posted: number; failed: number }[];
+  recentEvents: {
+    id: string;
+    type: "export" | "post_success" | "post_failed";
+    count: number;
+    meta: {
+      accountUsername?: string;
+      accountId?: string;
+      driveFileName?: string;
+      groupName?: string;
+      failureReason?: string;
+      tiktokPostUrl?: string;
+    };
+    createdAt: string;
+  }[];
+}
+
+const RANGE_OPTIONS: { value: StatsRange; label: string }[] = [
+  { value: "today", label: "Today" },
+  { value: "7d", label: "7D" },
+  { value: "30d", label: "30D" },
+  { value: "all", label: "All" },
+];
+
+const timeAgo = (dateStr: string) => {
+  const mins = Math.floor((Date.now() - new Date(dateStr).getTime()) / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+};
+
+const formatRate = (rate: number) => (rate % 1 === 0 ? `${rate}` : rate.toFixed(1));
 
 export default function CampaignDetailClient({ campaign: initialCampaign, exportAnalytics }: CampaignDetailClientProps) {
   const router = useRouter();
@@ -95,6 +138,38 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
   const [selectedSectionId, setSelectedSectionId] = useState("");
   const [newFolderName, setNewFolderName] = useState("");
   const [isCreatingFolder, setIsCreatingFolder] = useState(false);
+
+  // Campaign activity stats (range-filtered)
+  const [statsRange, setStatsRange] = useState<StatsRange>("7d");
+  const [stats, setStats] = useState<CampaignStats | null>(null);
+  const [statsLoading, setStatsLoading] = useState(true);
+  const [statsError, setStatsError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const controller = new AbortController();
+
+    const fetchStats = async () => {
+      setStatsLoading(true);
+      setStatsError(null);
+      try {
+        const res = await fetch(`/api/campaigns/${campaign.id}/stats?range=${statsRange}`, {
+          signal: controller.signal,
+        });
+        if (!res.ok) throw new Error(`Request failed with status ${res.status}`);
+        const data: CampaignStats = await res.json();
+        setStats(data);
+      } catch (err) {
+        if (err instanceof Error && err.name === "AbortError") return;
+        setStats(null);
+        setStatsError(err instanceof Error ? err.message : "Failed to load campaign stats");
+      } finally {
+        if (!controller.signal.aborted) setStatsLoading(false);
+      }
+    };
+
+    fetchStats();
+    return () => controller.abort();
+  }, [campaign.id, statsRange]);
 
   useEffect(() => {
     // Fetch sections
@@ -572,6 +647,178 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
     );
   };
 
+  // CSS grouped bar chart: Exported (zinc) vs Posted (emerald) vs Failed (red) per day
+  const renderActivityChart = () => {
+    if (!stats) return null;
+
+    const daily = stats.daily;
+    const hasActivity = daily.some((d) => d.exported > 0 || d.posted > 0 || d.failed > 0);
+
+    if (daily.length === 0 || !hasActivity) {
+      return (
+        <div className="bg-zinc-950/40 border border-[#27272a] rounded p-8 text-center select-none">
+          <BarChart3 className="w-5 h-5 text-zinc-600 mx-auto mb-2" />
+          <p className="text-[11px] text-zinc-500 italic">No activity in this range.</p>
+        </div>
+      );
+    }
+
+    const maxCount = Math.max(5, ...daily.flatMap((d) => [d.exported, d.posted, d.failed]));
+    const labelEvery = Math.max(1, Math.ceil(daily.length / 8));
+    const formatDay = (dateStr: string) =>
+      new Date(`${dateStr}T00:00:00`).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+    const barHeight = (v: number) => ({
+      height: `${(v / maxCount) * 100}%`,
+      minHeight: v > 0 ? 2 : 0,
+    });
+
+    return (
+      <div className="bg-zinc-950/40 border border-[#27272a] rounded p-3.5 space-y-2 select-none">
+        {/* Legend */}
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3 text-[10px] text-zinc-400">
+            <span className="flex items-center gap-1">
+              <span className="w-2 h-2 rounded-sm bg-zinc-400 inline-block" /> Exported
+            </span>
+            <span className="flex items-center gap-1">
+              <span className="w-2 h-2 rounded-sm bg-emerald-500 inline-block" /> Posted
+            </span>
+            <span className="flex items-center gap-1">
+              <span className="w-2 h-2 rounded-sm bg-red-500 inline-block" /> Failed
+            </span>
+          </div>
+          <span className="text-[9px] text-zinc-600 font-mono">per day</span>
+        </div>
+
+        {/* Plot area */}
+        <div className="relative h-36">
+          {/* Grid lines + Y labels */}
+          {[1, 0.75, 0.5, 0.25, 0].map((ratio) => (
+            <div
+              key={ratio}
+              className="absolute left-0 right-0 border-t border-dashed border-[#27272a] pointer-events-none"
+              style={{ top: `${(1 - ratio) * 100}%` }}
+            >
+              <span className="absolute -top-2 left-0 text-[8px] text-zinc-600 font-mono bg-[#09090b] pr-1">
+                {Math.round(maxCount * ratio)}
+              </span>
+            </div>
+          ))}
+
+          {/* Bars */}
+          <div className="absolute inset-0 pl-7 flex items-end gap-[3px] overflow-x-auto">
+            {daily.map((d) => (
+              <div
+                key={d.date}
+                className="flex-1 min-w-[14px] h-full flex items-end justify-center gap-[2px]"
+                title={`${formatDay(d.date)} — ${d.exported} exported, ${d.posted} posted, ${d.failed} failed`}
+              >
+                <div className="w-1.5 sm:w-2 rounded-sm bg-zinc-400 hover:bg-zinc-300 transition-colors" style={barHeight(d.exported)} />
+                <div className="w-1.5 sm:w-2 rounded-sm bg-emerald-500 hover:bg-emerald-400 transition-colors" style={barHeight(d.posted)} />
+                <div className="w-1.5 sm:w-2 rounded-sm bg-red-500 hover:bg-red-400 transition-colors" style={barHeight(d.failed)} />
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* X-axis labels (sparse) */}
+        <div className="pl-7 flex gap-[3px] overflow-x-auto">
+          {daily.map((d, i) => (
+            <div key={d.date} className="flex-1 min-w-[14px] text-center text-[8px] text-zinc-600 font-mono truncate">
+              {i % labelEvery === 0 ? formatDay(d.date) : ""}
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  };
+
+  // Recent activity feed event presentation
+  const renderEventRow = (e: CampaignStats["recentEvents"][number]) => {
+    let icon = <Upload size={13} className="text-zinc-400 flex-shrink-0" />;
+    let text = "Export to Drive folder";
+
+    if (e.type === "post_success") {
+      icon = <CheckCircle2 size={13} className="text-emerald-500 flex-shrink-0" />;
+      text = e.meta.accountUsername ? `Posted to @${e.meta.accountUsername}` : "Post published";
+    } else if (e.type === "post_failed") {
+      icon = <AlertCircle size={13} className="text-red-500 flex-shrink-0" />;
+      text = `Post failed${e.meta.accountUsername ? ` for @${e.meta.accountUsername}` : ""}${
+        e.meta.failureReason ? ` — ${e.meta.failureReason}` : ""
+      }`;
+    } else if (e.meta.driveFileName) {
+      text = `Export to Drive folder — ${e.meta.driveFileName}`;
+    }
+
+    return (
+      <div
+        key={e.id}
+        className="flex items-center justify-between gap-3 bg-zinc-950/40 border border-[#27272a] rounded px-2.5 py-1.5"
+      >
+        <div className="flex items-center gap-2 min-w-0">
+          {icon}
+          <p className="text-[11px] text-zinc-300 truncate" title={text}>
+            {text}
+            {e.count > 1 && <span className="text-zinc-500 font-mono"> ×{e.count}</span>}
+          </p>
+          {e.type === "post_success" && e.meta.tiktokPostUrl && (
+            <a
+              href={e.meta.tiktokPostUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-[10px] text-blue-400 hover:text-blue-300 font-semibold flex-shrink-0 hover:underline"
+            >
+              View
+            </a>
+          )}
+        </div>
+        <span className="text-[9px] text-zinc-600 font-mono flex-shrink-0">{timeAgo(e.createdAt)}</span>
+      </div>
+    );
+  };
+
+  // Lifetime stat cards (header row) — fed by the stats endpoint totals
+  const renderLifetimeStats = () => {
+    const card = (label: string, value: React.ReactNode, valueClass: string) => (
+      <div key={label} className="bg-[#18181b]/10 border border-[#27272a] rounded p-3 space-y-1 text-center">
+        <span className="text-[10px] text-zinc-500 font-medium uppercase tracking-wider block">{label}</span>
+        {statsLoading && !stats ? (
+          <span className="block h-5 w-14 mx-auto bg-zinc-800 rounded animate-pulse" />
+        ) : (
+          <span className={`text-base font-bold font-mono ${valueClass}`}>{value}</span>
+        )}
+      </div>
+    );
+
+    const postAttempts = stats ? stats.totals.posted + stats.totals.failed : 0;
+    const rate = stats?.totals.postSuccessRate ?? 0;
+    const rateClass =
+      postAttempts === 0
+        ? "text-zinc-500"
+        : rate >= 90
+        ? "text-emerald-400"
+        : rate >= 70
+        ? "text-amber-400"
+        : "text-red-400";
+
+    return (
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        {card("Videos Exported", stats ? stats.totals.exported.toLocaleString() : "—", "text-zinc-100")}
+        {card("Posts Successful", stats ? stats.totals.posted.toLocaleString() : "—", "text-emerald-400")}
+        {card(
+          "Posts Failed",
+          stats ? stats.totals.failed.toLocaleString() : "—",
+          stats && stats.totals.failed > 0 ? "text-red-400" : "text-zinc-500"
+        )}
+        {card(
+          "Post Success Rate",
+          !stats ? "—" : postAttempts === 0 ? "—" : `${formatRate(rate)}%`,
+          rateClass
+        )}
+      </div>
+    );
+  };
+
   return (
     <div className="space-y-6 text-zinc-100 bg-[#09090b]">
       {/* Workspace Header */}
@@ -616,6 +863,9 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
           </button>
         </div>
       </div>
+
+      {/* Lifetime Header Stats */}
+      {renderLifetimeStats()}
 
       {/* Main Grid Layout */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -732,6 +982,97 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
             {renderProjectionChart()}
           </div>
 
+          {/* Campaign Activity (range-filtered stats) */}
+          <div className="border border-[#27272a] rounded-md bg-[#09090b] p-5 space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-[#27272a] pb-3">
+              <h3 className="text-sm font-semibold text-zinc-200 flex items-center gap-2">
+                <BarChart3 className="w-4 h-4 text-[#E11D48]" />
+                Campaign Activity
+              </h3>
+
+              {/* Range segmented control */}
+              <div
+                role="group"
+                aria-label="Stats time range"
+                className="flex bg-[#09090b] border border-[#27272a] rounded p-0.5 text-[10px] font-semibold text-zinc-400 self-start sm:self-auto"
+              >
+                {RANGE_OPTIONS.map((opt) => (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    aria-pressed={statsRange === opt.value}
+                    onClick={() => setStatsRange(opt.value)}
+                    className={`px-2.5 py-1 rounded transition focus:outline-none focus-visible:ring-1 focus-visible:ring-zinc-500 ${
+                      statsRange === opt.value ? "bg-[#E11D48] text-white" : "hover:text-zinc-200"
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Error state */}
+            {statsError && (
+              <div className="flex items-start gap-2.5 bg-red-950/20 border border-red-900/30 text-red-400 rounded p-3 text-xs">
+                <AlertTriangle size={15} className="mt-0.5 flex-shrink-0" />
+                <div>
+                  <span className="font-semibold">Failed to load activity stats:</span> {statsError}
+                </div>
+              </div>
+            )}
+
+            {/* Loading skeleton (initial load) */}
+            {statsLoading && !stats && !statsError && (
+              <div className="space-y-3">
+                <div className="h-3.5 w-56 bg-zinc-900 rounded animate-pulse" />
+                <div className="h-40 bg-zinc-900/60 border border-[#27272a] rounded animate-pulse" />
+                <div className="space-y-1.5">
+                  {[0, 1, 2, 3].map((i) => (
+                    <div key={i} className="h-8 bg-zinc-900/60 border border-[#27272a] rounded animate-pulse" />
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Stats content */}
+            {stats && (
+              <div className={`space-y-4 transition ${statsLoading ? "opacity-50 pointer-events-none" : ""}`}>
+                {/* Range totals strip */}
+                <p className="text-[11px] text-zinc-500">
+                  In this range:{" "}
+                  <span className="text-zinc-300 font-mono">{stats.rangeTotals.exported.toLocaleString()}</span> exported
+                  <span className="text-zinc-700"> · </span>
+                  <span className="text-emerald-400 font-mono">{stats.rangeTotals.posted.toLocaleString()}</span> posted
+                  <span className="text-zinc-700"> · </span>
+                  <span
+                    className={`font-mono ${stats.rangeTotals.failed > 0 ? "text-red-400" : "text-zinc-500"}`}
+                  >
+                    {stats.rangeTotals.failed.toLocaleString()}
+                  </span>{" "}
+                  failed
+                </p>
+
+                {/* Daily activity chart */}
+                {renderActivityChart()}
+
+                {/* Recent activity feed */}
+                <div className="space-y-2 pt-1">
+                  <h4 className="text-[11px] font-semibold text-zinc-400 uppercase tracking-wider">Recent Activity</h4>
+                  <div className="space-y-1.5 max-h-[420px] overflow-y-auto pr-1">
+                    {stats.recentEvents.length > 0 ? (
+                      stats.recentEvents.map(renderEventRow)
+                    ) : (
+                      <p className="text-[11px] text-zinc-500 italic text-center py-3">
+                        No recent activity in this range.
+                      </p>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+
           {/* Export Analytics & Live Tracker Section */}
           <div className="border border-[#27272a] rounded-md bg-[#09090b] p-5 space-y-5">
             <div className="flex items-center justify-between border-b border-[#27272a] pb-3">
@@ -789,18 +1130,6 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
                     ? (exportAnalytics.totalExported / exportAnalytics.dailyExports.length).toFixed(1)
                     : "0"}
                   <span className="text-[9px] text-zinc-500 lowercase font-normal">/day</span>
-                </span>
-              </div>
-              <div className="bg-[#18181b]/10 border border-[#27272a] rounded p-3 space-y-1">
-                <span className="text-[10px] text-zinc-500 font-medium uppercase tracking-wider block">Posted</span>
-                <span className="text-base font-bold text-emerald-400 font-mono">
-                  {(campaign.postedCount ?? 0).toLocaleString()}
-                </span>
-              </div>
-              <div className="bg-[#18181b]/10 border border-[#27272a] rounded p-3 space-y-1">
-                <span className="text-[10px] text-zinc-500 font-medium uppercase tracking-wider block">Failed</span>
-                <span className={`text-base font-bold font-mono ${(campaign.failedCount ?? 0) > 0 ? "text-red-400" : "text-zinc-500"}`}>
-                  {(campaign.failedCount ?? 0).toLocaleString()}
                 </span>
               </div>
             </div>

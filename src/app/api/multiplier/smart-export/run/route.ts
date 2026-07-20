@@ -33,11 +33,9 @@ export async function POST(req: NextRequest) {
       includeExported: !!includeExported,
     });
 
-    // Only fully fulfillable folders make it into the run
-    const unfulfillableIds = new Set(preview.unfulfillable.map((u) => u.driveFolderId));
-    const plan = preview.assignments.filter(
-      (a) => !unfulfillableIds.has(a.driveFolderId) && a.videoIds.length > 0
-    );
+    // Partial plans are fine: run every folder that received at least one video.
+    // Only folders with assignedCount === 0 are excluded; if ALL are 0 → 400 below.
+    const plan = preview.assignments.filter((a) => a.videoIds.length > 0);
 
     if (plan.length === 0) {
       return NextResponse.json(
