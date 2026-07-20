@@ -376,6 +376,87 @@ export async function pollJobStatus(jobId: string) {
 }
 
 /**
+ * Post the next available video for an account immediately ("post now" flow).
+ * Shared by the post-now API route and the agent layer. Throws Errors with
+ * user-facing messages; callers map them to HTTP statuses or tool results.
+ */
+export async function postNowForAccount(accountId: string): Promise<{ jobId: string; fileName: string }> {
+  const account = await prisma.managedAccount.findUnique({
+    where: { id: accountId },
+    include: { group: { include: { section: true } } },
+  });
+
+  if (!account) {
+    throw new Error("Account not found");
+  }
+  if (!account.driveConnected || !account.driveFolderId) {
+    throw new Error("No Google Drive folder linked. Link a folder first in Settings.");
+  }
+  if (!account.postpeerAccountId) {
+    throw new Error("No PostPeer Account ID set. Add it in the account settings.");
+  }
+
+  // 1. Ingest files from Drive to update the database state
+  try {
+    await ingestDriveFiles(account.id);
+  } catch (err: any) {
+    throw new Error(`Drive folder ingestion failed: ${err.message || String(err)}`);
+  }
+
+  // 2. Claim the next AVAILABLE post atomically
+  const job = await claimNextVideo(account.id, "post-now-button");
+  if (!job) {
+    throw new Error("No unposted video files in the linked Drive folder.");
+  }
+
+  // 3. Compute caption (section overrides group/account)
+  let caption = "";
+  const sec = account.group.section;
+  const sectionHasConfig = (sec.descFixedTextEnabled && sec.descFixedText?.trim()) || (sec.descTags && sec.descTagCount > 0);
+
+  if (sectionHasConfig) {
+    if (sec.descFixedTextEnabled && sec.descFixedText?.trim()) {
+      caption = sec.descFixedText.trim();
+    }
+  } else if (account.captionSource === "FILENAME") {
+    caption = job.driveFileName!.replace(/\.[^.]+$/, "");
+  } else if (account.captionSource === "DEFAULT") {
+    if (account.group.defaultDescription) {
+      caption = account.group.defaultDescription;
+    } else if (account.defaultCaption) {
+      caption = account.defaultCaption;
+    }
+  }
+
+  if (sec.descTags && sec.descTagCount > 0) {
+    const allTags = sec.descTags
+      .split(",")
+      .map((t: string) => t.trim())
+      .filter((t: string) => t.length > 0);
+    if (allTags.length > 0) {
+      const shuffled = [...allTags].sort(() => Math.random() - 0.5);
+      const picked = shuffled.slice(0, Math.min(sec.descTagCount, allTags.length));
+      const tagLine = picked.join(" ");
+      caption = caption ? `${caption}\n\n${tagLine}` : tagLine;
+    }
+  }
+
+  // 4. Asynchronously start the upload & publish process (handled by pipeline)
+  (async () => {
+    try {
+      await uploadAndPublish(job.id, caption);
+      // Run an immediate status poll to complete it faster if upload is quick
+      await new Promise((resolve) => setTimeout(resolve, 5000));
+      await pollJobStatus(job.id);
+    } catch (err) {
+      console.error(`[PostNow] Background publish failed for job ${job.id}:`, err);
+    }
+  })();
+
+  return { jobId: job.id, fileName: job.driveFileName || "video.mp4" };
+}
+
+/**
  * 5. Confirm published post, set 5-minute delayed deletion.
  */
 export async function confirmPublished(jobId: string, tiktokVideoId?: string, platformPostUrl?: string) {

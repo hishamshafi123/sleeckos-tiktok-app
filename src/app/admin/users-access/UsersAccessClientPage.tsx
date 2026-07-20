@@ -64,10 +64,11 @@ const TOOLS = [
   { key: "sourcing", label: "Sourcing Feed", desc: "Manage YouTube content sources, niches, and automated fetches." },
   { key: "users_access", label: "Users & Access", desc: "Edit system roles, statuses, and specific tool overrides." },
   { key: "lms", label: "LMS Academy", desc: "Access onboarding and editor training lessons." },
+  { key: "agent", label: "AI Agent", desc: "Voice/text assistant that can run actions across the platform." },
 ];
 
 const ROLE_DEFAULTS: Record<string, string[]> = {
-  admin: ["overview", "accounts", "analytics", "post_queue", "history", "clip_mixer", "style_studio", "composer", "multiplier", "campaigns", "projects", "data_vault", "sourcing", "users_access", "lms"],
+  admin: ["overview", "accounts", "analytics", "post_queue", "history", "clip_mixer", "style_studio", "composer", "multiplier", "campaigns", "projects", "data_vault", "sourcing", "users_access", "lms", "agent"],
   team_lead: ["lms"],
   editor: ["lms"],
   curator: ["lms"],

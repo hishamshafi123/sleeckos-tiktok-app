@@ -10,6 +10,10 @@ import * as styleStudio from "@/lib/services/style-studio";
 import * as projects from "@/lib/services/projects";
 import * as lms from "@/lib/services/lms";
 import * as permissions from "@/lib/services/permissions";
+import prisma from "@/lib/db";
+import { postNowForAccount } from "@/lib/services/posting-pipeline";
+import { bulkRenderGroups } from "@/lib/services/multiplier";
+import { naturalCompare } from "@/lib/utils/sorting";
 
 // ─── Types ─────────────────────────────────────────────
 
@@ -490,6 +494,374 @@ const actions: ActionDefinition[] = [
     isRisky: true,
     execute: async (userId, p) =>
       permissions.setRole(userId, p.targetUserId, p.roleKey),
+  },
+
+  // ── Managed Accounts ───────────────────────────────────
+
+  {
+    name: "search_accounts",
+    description: "Search managed TikTok accounts by username. Returns up to 25 accounts with their color, section/group, posting schedule, and connection state.",
+    parameters: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "Username substring to filter by (case-insensitive). Omit to list all accounts." },
+      },
+      required: [],
+    },
+    requiredPermission: "accounts",
+    isRisky: false,
+    execute: async (_userId, p) => {
+      const accounts = await prisma.managedAccount.findMany({
+        where: p.query
+          ? { tiktokUsername: { contains: String(p.query).trim(), mode: "insensitive" } }
+          : {},
+        include: { group: { include: { section: true } } },
+      });
+      accounts.sort((a, b) => naturalCompare(a.tiktokUsername, b.tiktokUsername));
+      return accounts.slice(0, 25).map((a) => ({
+        username: a.tiktokUsername,
+        displayName: a.tiktokDisplayName || undefined,
+        color: a.color,
+        section: a.group.section.name,
+        group: a.group.name,
+        postTimeSlots: a.postTimeSlots,
+        postDays: a.postDays,
+        connectionState: a.connectionState,
+        driveFolderName: a.driveFolderName || undefined,
+      }));
+    },
+  },
+  {
+    name: "post_now_accounts",
+    description: "Immediately post the next available video for each given account username (the same as pressing 'Post Now' on the account). Reports per-account success or failure.",
+    parameters: {
+      type: "object",
+      properties: {
+        usernames: {
+          type: "array",
+          description: "Exact TikTok usernames to post for (case-insensitive, @ prefix optional)",
+          items: { type: "string", description: "A TikTok username" },
+        },
+      },
+      required: ["usernames"],
+    },
+    requiredPermission: "accounts",
+    isRisky: true,
+    execute: async (_userId, p) => {
+      const results: { username: string; ok: boolean; fileName?: string; error?: string }[] = [];
+      for (const raw of p.usernames as string[]) {
+        const username = String(raw).trim().replace(/^@/, "");
+        if (!username) continue;
+        const account = await prisma.managedAccount.findFirst({
+          where: { tiktokUsername: { equals: username, mode: "insensitive" } },
+          select: { id: true, tiktokUsername: true },
+        });
+        if (!account) {
+          results.push({ username, ok: false, error: "Account not found" });
+          continue;
+        }
+        try {
+          const { fileName } = await postNowForAccount(account.id);
+          results.push({ username: account.tiktokUsername, ok: true, fileName });
+        } catch (err: any) {
+          results.push({ username: account.tiktokUsername, ok: false, error: err?.message || String(err) });
+        }
+      }
+      return results;
+    },
+  },
+  {
+    name: "update_account_schedule",
+    description: "Update an account's posting schedule: time slots (HH:MM, 24h), post days (1=Monday .. 7=Sunday), and/or timezone (IANA name). Only provided fields are changed.",
+    parameters: {
+      type: "object",
+      properties: {
+        username: { type: "string", description: "Exact TikTok username (case-insensitive)" },
+        slots: {
+          type: "array",
+          description: "Posting time slots in HH:MM 24h format, e.g. [\"09:00\", \"18:30\"]",
+          items: { type: "string", description: "A HH:MM time slot" },
+        },
+        days: {
+          type: "array",
+          description: "Days of the week to post, 1=Monday through 7=Sunday",
+          items: { type: "number", description: "Day number 1-7" },
+        },
+        timezone: { type: "string", description: "IANA timezone name, e.g. \"America/New_York\"" },
+      },
+      required: ["username"],
+    },
+    requiredPermission: "accounts",
+    isRisky: true,
+    execute: async (_userId, p) => {
+      const account = await prisma.managedAccount.findFirst({
+        where: { tiktokUsername: { equals: String(p.username).trim().replace(/^@/, ""), mode: "insensitive" } },
+        select: { id: true, tiktokUsername: true },
+      });
+      if (!account) throw new Error(`Account not found: ${p.username}`);
+
+      const data: { postTimeSlots?: string; postDays?: string; postTimezone?: string } = {};
+
+      if (p.slots !== undefined) {
+        if (!Array.isArray(p.slots) || p.slots.length === 0) {
+          throw new Error("slots must be a non-empty array of HH:MM times");
+        }
+        for (const slot of p.slots) {
+          if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(String(slot).trim())) {
+            throw new Error(`Invalid time slot "${slot}". Use HH:MM 24h format, e.g. "09:00".`);
+          }
+        }
+        data.postTimeSlots = p.slots.map((s: string) => String(s).trim()).join(",");
+      }
+
+      if (p.days !== undefined) {
+        if (!Array.isArray(p.days) || p.days.length === 0) {
+          throw new Error("days must be a non-empty array of day numbers (1=Monday .. 7=Sunday)");
+        }
+        const days = p.days.map((d: any) => Number(d));
+        for (const d of days) {
+          if (!Number.isInteger(d) || d < 1 || d > 7) {
+            throw new Error(`Invalid day "${d}". Use 1=Monday through 7=Sunday.`);
+          }
+        }
+        data.postDays = [...new Set(days)].sort((a, b) => a - b).join(",");
+      }
+
+      if (p.timezone !== undefined) {
+        const tz = String(p.timezone).trim();
+        try {
+          new Intl.DateTimeFormat("en-US", { timeZone: tz });
+        } catch {
+          throw new Error(`Invalid timezone "${tz}". Use an IANA name like "America/New_York".`);
+        }
+        data.postTimezone = tz;
+      }
+
+      if (Object.keys(data).length === 0) {
+        throw new Error("Nothing to update. Provide slots, days, and/or timezone.");
+      }
+
+      const updated = await prisma.managedAccount.update({
+        where: { id: account.id },
+        data,
+      });
+      return {
+        username: updated.tiktokUsername,
+        postTimeSlots: updated.postTimeSlots,
+        postDays: updated.postDays,
+        postTimezone: updated.postTimezone,
+      };
+    },
+  },
+  {
+    name: "set_account_color",
+    description: "Set an account's color label. The color must exist in the account colors table (matched case-insensitively).",
+    parameters: {
+      type: "object",
+      properties: {
+        username: { type: "string", description: "Exact TikTok username (case-insensitive)" },
+        color: { type: "string", description: "Color name/key from the account colors table" },
+      },
+      required: ["username", "color"],
+    },
+    requiredPermission: "accounts",
+    isRisky: false,
+    execute: async (_userId, p) => {
+      const account = await prisma.managedAccount.findFirst({
+        where: { tiktokUsername: { equals: String(p.username).trim().replace(/^@/, ""), mode: "insensitive" } },
+        select: { id: true, tiktokUsername: true },
+      });
+      if (!account) throw new Error(`Account not found: ${p.username}`);
+
+      const colors = await prisma.accountColor.findMany({ orderBy: { order: "asc" } });
+      const match = colors.find(
+        (c) => c.color.toLowerCase() === String(p.color).trim().toLowerCase()
+      );
+      if (!match) {
+        const available = colors.map((c) => c.color).join(", ");
+        throw new Error(
+          `Unknown color "${p.color}". Available colors: ${available || "none configured"}`
+        );
+      }
+
+      const updated = await prisma.managedAccount.update({
+        where: { id: account.id },
+        data: { color: match.color, colorId: match.id },
+      });
+      return { username: updated.tiktokUsername, color: updated.color };
+    },
+  },
+  {
+    name: "set_posts_per_day",
+    description: "Set how many times per day an account posts by generating evenly spaced time slots. The system enforces a 3-hour minimum gap, so slots are generated 3 hours apart starting at startHour (e.g. 3/day from 9 → 09:00,12:00,15:00).",
+    parameters: {
+      type: "object",
+      properties: {
+        username: { type: "string", description: "Exact TikTok username (case-insensitive)" },
+        postsPerDay: { type: "number", description: "Posts per day (1-6)" },
+        startHour: { type: "number", description: "Hour of the first slot, 0-23 (default 9)" },
+      },
+      required: ["username", "postsPerDay"],
+    },
+    requiredPermission: "accounts",
+    isRisky: true,
+    execute: async (_userId, p) => {
+      const postsPerDay = Number(p.postsPerDay);
+      if (!Number.isInteger(postsPerDay) || postsPerDay < 1 || postsPerDay > 6) {
+        throw new Error("postsPerDay must be an integer between 1 and 6");
+      }
+      const startHour = p.startHour !== undefined ? Number(p.startHour) : 9;
+      if (!Number.isInteger(startHour) || startHour < 0 || startHour > 23) {
+        throw new Error("startHour must be an integer between 0 and 23");
+      }
+
+      const account = await prisma.managedAccount.findFirst({
+        where: { tiktokUsername: { equals: String(p.username).trim().replace(/^@/, ""), mode: "insensitive" } },
+        select: { id: true, tiktokUsername: true },
+      });
+      if (!account) throw new Error(`Account not found: ${p.username}`);
+
+      // Slots must respect the 3-hour minimum gap the scheduler enforces
+      const slots: string[] = [];
+      for (let i = 0; i < postsPerDay; i++) {
+        const hour = (startHour + i * 3) % 24;
+        slots.push(`${String(hour).padStart(2, "0")}:00`);
+      }
+
+      const updated = await prisma.managedAccount.update({
+        where: { id: account.id },
+        data: { postTimeSlots: slots.join(",") },
+      });
+      return {
+        username: updated.tiktokUsername,
+        postsPerDay,
+        postTimeSlots: updated.postTimeSlots,
+      };
+    },
+  },
+
+  // ── Multiplier ─────────────────────────────────────────
+
+  {
+    name: "get_render_queue_status",
+    description: "Get the multiplier render queue status: output counts by status plus the names of groups currently queued or rendering.",
+    parameters: { type: "object", properties: {}, required: [] },
+    requiredPermission: "multiplier",
+    isRisky: false,
+    execute: async () => {
+      const statusCounts = await prisma.multiplierOutput.groupBy({
+        by: ["status"],
+        _count: { _all: true },
+      });
+      const outputsByStatus: Record<string, number> = {};
+      for (const row of statusCounts) {
+        outputsByStatus[row.status] = row._count._all;
+      }
+
+      const activeGroups = await prisma.multiplierGroup.findMany({
+        where: { status: { in: ["QUEUED", "RENDERING"] } },
+        select: { name: true, status: true },
+        orderBy: { createdAt: "asc" },
+      });
+
+      return {
+        outputsByStatus,
+        queuedGroups: activeGroups.filter((g) => g.status === "QUEUED").map((g) => g.name),
+        renderingGroups: activeGroups.filter((g) => g.status === "RENDERING").map((g) => g.name),
+      };
+    },
+  },
+  {
+    name: "render_groups",
+    description: "Queue renders for multiplier groups by name (matched case-insensitively). Groups already queued/rendering or missing variations/hooks are skipped with a reason.",
+    parameters: {
+      type: "object",
+      properties: {
+        groupNames: {
+          type: "array",
+          description: "Multiplier group names to render",
+          items: { type: "string", description: "A multiplier group name" },
+        },
+      },
+      required: ["groupNames"],
+    },
+    requiredPermission: "multiplier",
+    isRisky: true,
+    execute: async (_userId, p) => {
+      const ids: string[] = [];
+      const nameById = new Map<string, string>();
+      const skipped: { name: string; reason: string }[] = [];
+
+      for (const raw of p.groupNames as string[]) {
+        const name = String(raw).trim();
+        if (!name) continue;
+        const group = await prisma.multiplierGroup.findFirst({
+          where: { name: { equals: name, mode: "insensitive" } },
+          select: { id: true, name: true },
+        });
+        if (!group) {
+          skipped.push({ name, reason: "Group not found" });
+          continue;
+        }
+        ids.push(group.id);
+        nameById.set(group.id, group.name);
+      }
+
+      const queued: string[] = [];
+      if (ids.length > 0) {
+        const result = await bulkRenderGroups(ids);
+        for (const id of result.queued) {
+          queued.push(nameById.get(id) || id);
+        }
+        for (const s of result.skipped) {
+          skipped.push({ name: nameById.get(s.groupId) || s.groupId, reason: s.reason });
+        }
+      }
+
+      return { queued, skipped };
+    },
+  },
+
+  // ── Campaigns (stats) ──────────────────────────────────
+
+  {
+    name: "get_campaign_stats",
+    description: "Get posting stats for a campaign by title (matched case-insensitively): exported/posted/failed counts and post success rate.",
+    parameters: {
+      type: "object",
+      properties: {
+        campaignName: { type: "string", description: "Campaign title" },
+      },
+      required: ["campaignName"],
+    },
+    requiredPermission: "campaigns",
+    isRisky: false,
+    execute: async (_userId, p) => {
+      const title = String(p.campaignName).trim();
+      let campaign = await prisma.campaign.findFirst({
+        where: { title: { equals: title, mode: "insensitive" } },
+      });
+      if (!campaign) {
+        campaign = await prisma.campaign.findFirst({
+          where: { title: { contains: title, mode: "insensitive" } },
+        });
+      }
+      if (!campaign) throw new Error(`Campaign not found: ${p.campaignName}`);
+
+      const totalAttempts = campaign.postedCount + campaign.failedCount;
+      return {
+        title: campaign.title,
+        status: campaign.status,
+        type: campaign.type,
+        exportedCount: campaign.exportedCount,
+        postedCount: campaign.postedCount,
+        failedCount: campaign.failedCount,
+        postSuccessRate:
+          totalAttempts > 0
+            ? Math.round((campaign.postedCount / totalAttempts) * 100) / 100
+            : null,
+      };
+    },
   },
 ];
 

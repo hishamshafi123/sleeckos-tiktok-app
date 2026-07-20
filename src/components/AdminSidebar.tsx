@@ -17,7 +17,8 @@ import {
   FolderOpen,
   Key,
   GraduationCap,
-  Database
+  Database,
+  Bot
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -39,6 +40,7 @@ const OPERATIONS_NAV = [
   { href: "/admin/vault", label: "Data Vault", icon: Database, toolKey: "data_vault" },
   { href: "/admin/vault/kpi", label: "Employee KPI", icon: BarChart3, toolKey: "data_vault" },
   { href: "/admin/sourcing", label: "Sourcing Feed", icon: Sparkles, toolKey: "sourcing" },
+  { href: "/admin/agent", label: "AI Agent", icon: Bot, toolKey: "agent" },
 ];
 
 const PEOPLE_NAV = [

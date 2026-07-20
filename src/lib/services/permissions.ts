@@ -16,6 +16,7 @@ export const ALL_TOOLS = [
   "sourcing",
   "users_access",
   "lms",
+  "agent",
 ];
 
 export const DEFAULT_ROLES = [
