@@ -487,6 +487,9 @@ export async function composeOutput(
     // veryfast ~3-5x faster than medium on the shared CPU; the 8M maxrate cap
     // keeps file sizes bounded, so the tradeoff is only a slight efficiency loss.
     "-preset", "veryfast",
+    // x264 sizes its thread pool from the HOST core count and ignores the
+    // container's CPU limit — pin it so 2 concurrent renders don't thrash.
+    "-threads", "2",
     "-crf", "26",
     "-maxrate", "8M",
     "-bufsize", "16M",
@@ -562,40 +565,78 @@ export async function triggerQueueWorker() {
   });
 }
 
+// 2 concurrent renders: each ffmpeg is pinned to -threads 2, so two workers
+// keep ~4 threads busy — sized for the app container's raised 3-core limit.
+// More than 2 would oversubscribe the shared CPU (renders are CPU-bound) and
+// starve the web server; it would not make total throughput any faster.
+const RENDER_CONCURRENCY = 2;
+
 async function processRenderQueue() {
-  console.log("[Multiplier Worker] Starting processing render queue...");
+  console.log(`[Multiplier Worker] Starting processing render queue (concurrency ${RENDER_CONCURRENCY})...`);
 
   // A previous process may have died mid-render — recover before starting.
   await recoverStaleRenderingOutputs().catch((err) => {
     console.error("[Multiplier Worker] Stale-output recovery failed:", err);
   });
 
+  await Promise.all(Array.from({ length: RENDER_CONCURRENCY }, (_, i) => renderWorkerLoop(i + 1)));
+
+  // Sweep: groups stuck in QUEUED/RENDERING whose outputs are all terminal
+  // (e.g. after a restart or a pause) get their correct final status.
+  try {
+    const stuckGroups = await prisma.multiplierGroup.findMany({
+      where: { status: { in: ["QUEUED", "RENDERING"] } },
+      include: { outputs: { select: { status: true } } },
+    });
+    for (const g of stuckGroups) {
+      const anyActive = g.outputs.some((o) => o.status === "PENDING" || o.status === "RENDERING");
+      if (anyActive) continue;
+      const hasFailed = g.outputs.some((o) => o.status === "FAILED");
+      await prisma.multiplierGroup.update({
+        where: { id: g.id },
+        data: { status: hasFailed ? "FAILED" : "COMPLETED" },
+      });
+    }
+  } catch (err) {
+    console.error("[Multiplier Worker] Group status sweep failed:", err);
+  }
+}
+
+async function renderWorkerLoop(workerId: number) {
   while (true) {
     if (isRenderPaused) {
-      console.log("[Multiplier Worker] Paused by operator. Stopping loop.");
+      console.log(`[Multiplier Worker ${workerId}] Paused by operator. Stopping loop.`);
       break;
     }
 
-    const output = await prisma.multiplierOutput.findFirst({
+    // Atomic claim: flip exactly one PENDING output so two workers never
+    // render the same video.
+    const candidate = await prisma.multiplierOutput.findFirst({
       where: { status: "PENDING" },
+      orderBy: { createdAt: "asc" },
+      select: { id: true },
+    });
+
+    if (!candidate) {
+      console.log(`[Multiplier Worker ${workerId}] Queue empty. Going to sleep.`);
+      break;
+    }
+
+    const claimed = await prisma.multiplierOutput.updateMany({
+      where: { id: candidate.id, status: "PENDING" },
+      data: { status: "RENDERING" },
+    });
+    if (claimed.count === 0) continue; // another worker claimed it first
+
+    const output = await prisma.multiplierOutput.findUnique({
+      where: { id: candidate.id },
       include: {
         group: true,
         variation: true,
         hook: true,
       },
-      orderBy: { createdAt: "asc" },
     });
-
-    if (!output) {
-      console.log("[Multiplier Worker] Queue empty. Going to sleep.");
-      break;
-    }
-
-    // Update state to RENDERING
-    await prisma.multiplierOutput.update({
-      where: { id: output.id },
-      data: { status: "RENDERING" },
-    });
+    if (!output) continue;
 
     // Update parent group status to RENDERING
     await prisma.multiplierGroup.update({
@@ -689,26 +730,6 @@ async function processRenderQueue() {
 
       await updateParentGroupStatus(output.groupId);
     }
-  }
-
-  // Sweep: groups stuck in QUEUED/RENDERING whose outputs are all terminal
-  // (e.g. after a restart or a pause) get their correct final status.
-  try {
-    const stuckGroups = await prisma.multiplierGroup.findMany({
-      where: { status: { in: ["QUEUED", "RENDERING"] } },
-      include: { outputs: { select: { status: true } } },
-    });
-    for (const g of stuckGroups) {
-      const anyActive = g.outputs.some((o) => o.status === "PENDING" || o.status === "RENDERING");
-      if (anyActive) continue;
-      const hasFailed = g.outputs.some((o) => o.status === "FAILED");
-      await prisma.multiplierGroup.update({
-        where: { id: g.id },
-        data: { status: hasFailed ? "FAILED" : "COMPLETED" },
-      });
-    }
-  } catch (err) {
-    console.error("[Multiplier Worker] Group status sweep failed:", err);
   }
 }
 

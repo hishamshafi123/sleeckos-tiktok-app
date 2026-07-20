@@ -41,8 +41,11 @@ services:
     deploy:
       resources:
         limits:
-          memory: 2g
-          cpus: "1.5"
+          # Sized for a shared VPS (vinci-clips also runs here): 2 concurrent
+          # renders (2 ffmpeg x -threads 2) + web server, leaving ~1.5 cores
+          # for the other app, Postgres and the OS. RAM has headroom (16GB total).
+          memory: 4g
+          cpus: "2.5"
 
 volumes:
   pgdata:

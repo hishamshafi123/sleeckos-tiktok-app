@@ -1,5 +1,6 @@
 export const dynamic = "force-dynamic";
 import { NextRequest, NextResponse } from "next/server";
+import prisma from "@/lib/db";
 import fs from "fs";
 import path from "path";
 
@@ -14,6 +15,7 @@ const PRUNE_DIRS = [
   "public/uploads/renders",
   "public/uploads/clip-mixer-renders",
   "public/uploads/multiplier/renders",
+  "public/uploads/multiplier/temp",
   "public/uploads/genres/archives",
 ];
 
@@ -62,6 +64,38 @@ export async function GET(req: NextRequest) {
     } catch (dirErr) {
       console.error(`[Prune Cron] Failed to read directory ${absDir}:`, dirErr);
     }
+  }
+
+  // ── Multiplier archives: local .tar files older than 1 day ──────────────
+  // Every archive is uploaded to R2 at prep time, and the /api/uploads handler
+  // redirects to R2 when the local file is gone — local tars are duplicates.
+  const archivesResult = { deleted: 0, failed: 0, skipped: 0 };
+  const archivesDir = path.join(process.cwd(), "public", "uploads", "multiplier", "archives");
+  results["public/uploads/multiplier/archives (*.tar)"] = archivesResult;
+  try {
+    if (fs.existsSync(archivesDir)) {
+      for (const file of await fs.promises.readdir(archivesDir)) {
+        if (!file.endsWith(".tar")) {
+          archivesResult.skipped++; // keep status_*.json and anything else
+          continue;
+        }
+        const filePath = path.join(archivesDir, file);
+        try {
+          const stat = await fs.promises.stat(filePath);
+          if (stat.isFile() && stat.mtimeMs < oneDayAgo) {
+            await fs.promises.unlink(filePath);
+            archivesResult.deleted++;
+          } else {
+            archivesResult.skipped++;
+          }
+        } catch (err) {
+          console.error(`[Prune Cron] Failed to process archive ${filePath}:`, err);
+          archivesResult.failed++;
+        }
+      }
+    }
+  } catch (err) {
+    console.error("[Prune Cron] Failed to read archives dir:", err);
   }
 
   return NextResponse.json({
