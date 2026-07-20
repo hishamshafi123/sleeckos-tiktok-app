@@ -542,7 +542,13 @@ export default function HistoryPage() {
                     <td className="py-2.5 px-4 whitespace-nowrap">
                       <span
                         className={`text-[10px] font-semibold px-2 py-0.5 rounded border ${STATUS_STYLES[post.status] ?? STATUS_STYLES.SKIPPED}`}
-                        title={post.rawStatus !== post.status ? `Lifecycle state: ${post.rawStatus}` : undefined}
+                        title={
+                          post.errorMessage
+                            ? `${post.status === "FAILED" ? "Failure reason" : "Reason"}: ${post.errorMessage}`
+                            : post.rawStatus !== post.status
+                            ? `Lifecycle state: ${post.rawStatus}`
+                            : undefined
+                        }
                       >
                         {post.status}
                       </span>
@@ -583,6 +589,11 @@ export default function HistoryPage() {
                       </p>
                       {post.status === "FAILED" && post.errorMessage && (
                         <p className="text-[10px] text-red-400/70 truncate mt-0.5" title={post.errorMessage}>
+                          {post.errorMessage}
+                        </p>
+                      )}
+                      {post.status === "SKIPPED" && post.errorMessage && (
+                        <p className="text-[10px] text-amber-400/70 truncate mt-0.5" title={post.errorMessage}>
                           {post.errorMessage}
                         </p>
                       )}
