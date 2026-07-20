@@ -192,6 +192,30 @@ async function runScheduler() {
         continue;
       }
 
+      // Minimum 3-hour gap between posts per account (automated pipeline only —
+      // the manual "Post Now" button in Managed Accounts overrides this).
+      // No back-to-back posting: anything published or in-flight within the
+      // last 3 hours blocks the next automated post.
+      const threeHoursAgo = new Date(now.getTime() - 3 * 60 * 60 * 1000);
+      const activityWithinGap = await prisma.scheduledPost.findFirst({
+        where: {
+          accountId: account.id,
+          OR: [
+            { publishedAt: { gte: threeHoursAgo } },
+            {
+              status: { in: ["CLAIMED", "UPLOADING", "PROCESSING", "DOWNLOADING"] },
+              createdAt: { gte: threeHoursAgo },
+            },
+          ],
+        },
+        select: { id: true, publishedAt: true },
+      });
+
+      if (activityWithinGap) {
+        results[accountKey] = "skipped_min_gap_3h";
+        continue;
+      }
+
       // ── Ingest Drive files & Claim next unposted file atomically ─────────
       try {
         await ingestDriveFiles(account.id);

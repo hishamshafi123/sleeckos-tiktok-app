@@ -7,13 +7,18 @@ import { can } from "@/lib/services/permissions";
 /**
  * GET /api/managed/history
  *
- * Returns published/skipped posts with optional filters:
+ * Returns published/skipped/failed posts plus aggregate summary:
  *   ?section=sectionId   — filter by section
- *   ?status=PUBLISHED    — filter by status (PUBLISHED | SKIPPED | all)
+ *   ?accountId=accountId — filter by managed account
+ *   ?status=PUBLISHED    — filter by status (PUBLISHED | SKIPPED | FAILED | all)
  *   ?hashtag=#fyp        — filter captions containing this hashtag
  *   ?from=YYYY-MM-DD     — start date
  *   ?to=YYYY-MM-DD       — end date
  *   ?limit=200           — max results
+ *
+ * Response: { posts: [...], summary: { published, failed, skipped, withLinks, successRate, views, likes, comments, shares } }
+ * "published" counts PUBLISHED + PENDING_DELETION + DELETED (post-publish lifecycle states).
+ * Summary respects every active filter.
  */
 export async function GET(req: NextRequest) {
   const session = await getSession();
@@ -26,29 +31,35 @@ export async function GET(req: NextRequest) {
 
   const url = new URL(req.url);
   const sectionId = url.searchParams.get("section");
+  const accountId = url.searchParams.get("accountId");
   const statusFilter = url.searchParams.get("status") || "all";
   const hashtag = url.searchParams.get("hashtag");
   const from = url.searchParams.get("from");
   const to = url.searchParams.get("to");
   const limit = Math.min(Number(url.searchParams.get("limit")) || 200, 1000);
 
+  const PUBLISHED_STATES = ["PUBLISHED", "PENDING_DELETION", "DELETED"];
+
   // Build where clause
   const where: Record<string, unknown> = {};
 
   // Status filter
   if (statusFilter === "PUBLISHED") {
-    where.status = { in: ["PUBLISHED", "PENDING_DELETION", "DELETED"] };
+    where.status = { in: PUBLISHED_STATES };
   } else if (statusFilter === "SKIPPED") {
     where.status = "SKIPPED";
   } else if (statusFilter === "FAILED") {
     where.status = "FAILED";
   } else {
-    where.status = { in: ["PUBLISHED", "PENDING_DELETION", "DELETED", "SKIPPED", "FAILED"] };
+    where.status = { in: [...PUBLISHED_STATES, "SKIPPED", "FAILED"] };
   }
 
-  // Section filter
+  // Section / account filters
   if (sectionId) {
     where.account = { group: { sectionId } };
+  }
+  if (accountId) {
+    where.accountId = accountId;
   }
 
   // Date filter
@@ -65,35 +76,75 @@ export async function GET(req: NextRequest) {
     where.caption = { contains: tag, mode: "insensitive" };
   }
 
-  const posts = await prisma.scheduledPost.findMany({
-    where,
-    orderBy: [{ createdAt: "desc" }],
-    take: limit,
-    include: {
-      account: {
-        select: {
-          tiktokUsername: true,
-          tiktokAvatarUrl: true,
-          driveFolderId: true,
-          driveFolderName: true,
-          group: { select: { name: true, section: { select: { id: true, name: true } } } },
+  const [posts, statusGroups, metricSums, linksCount] = await Promise.all([
+    prisma.scheduledPost.findMany({
+      where,
+      orderBy: [{ createdAt: "desc" }],
+      take: limit,
+      include: {
+        account: {
+          select: {
+            id: true,
+            tiktokUsername: true,
+            tiktokAvatarUrl: true,
+            driveFolderId: true,
+            driveFolderName: true,
+            group: { select: { name: true, section: { select: { id: true, name: true } } } },
+          },
         },
       },
-    },
-  });
+    }),
+    prisma.scheduledPost.groupBy({
+      by: ["status"],
+      where,
+      _count: { _all: true },
+    }),
+    prisma.scheduledPost.aggregate({
+      where,
+      _sum: { viewCount: true, likeCount: true, commentCount: true, shareCount: true },
+    }),
+    prisma.scheduledPost.count({ where: { ...where, tiktokPostUrl: { not: null } } }),
+  ]);
 
-  // Serialize BigInt fields
+  // Normalize lifecycle states: PUBLISHED/PENDING_DELETION/DELETED all mean published
+  let published = 0;
+  let failed = 0;
+  let skipped = 0;
+  for (const g of statusGroups) {
+    if (PUBLISHED_STATES.includes(g.status)) published += g._count._all;
+    else if (g.status === "FAILED") failed += g._count._all;
+    else if (g.status === "SKIPPED") skipped += g._count._all;
+  }
+  const attempts = published + failed;
+
+  const summary = {
+    published,
+    failed,
+    skipped,
+    withLinks: linksCount,
+    successRate: attempts > 0 ? Math.round((published / attempts) * 100) : 0,
+    views: metricSums._sum.viewCount?.toString() ?? "0",
+    likes: metricSums._sum.likeCount?.toString() ?? "0",
+    comments: metricSums._sum.commentCount?.toString() ?? "0",
+    shares: metricSums._sum.shareCount?.toString() ?? "0",
+  };
+
+  // Serialize BigInt fields + derive display fields
   const serialized = posts.map((p) => {
     const videoUrl = p.tiktokPostUrl
       || (p.tiktokVideoId && p.account.tiktokUsername
         ? `https://www.tiktok.com/@${p.account.tiktokUsername}/video/${p.tiktokVideoId}`
         : null);
+    const campaignMatch = p.driveFileName?.match(/^\(([^)]+)\)/);
 
     return {
       id: p.id,
-      status: p.status,
+      // Normalized status for display: lifecycle states collapse into PUBLISHED
+      status: PUBLISHED_STATES.includes(p.status) ? "PUBLISHED" : p.status,
+      rawStatus: p.status,
       caption: p.caption,
       driveFileName: p.driveFileName,
+      campaign: campaignMatch ? campaignMatch[1].trim() : null,
       tiktokPostUrl: videoUrl,
       tiktokVideoId: p.tiktokVideoId,
       publishedAt: p.publishedAt,
@@ -107,7 +158,7 @@ export async function GET(req: NextRequest) {
     };
   });
 
-  return NextResponse.json(serialized);
+  return NextResponse.json({ posts: serialized, summary });
 }
 
 /**
