@@ -35,6 +35,38 @@ export async function ingestDriveFiles(accountId: string) {
     const files = await listVideoFilesInFolder(account.driveFolderId, account.id);
     let ingestedCount = 0;
 
+    // Retire jobs whose source file was deleted from Drive — otherwise they
+    // keep getting claimed and fail on every attempt forever.
+    const liveFileIds = new Set(files.map((f) => f.id).filter(Boolean));
+    const staleJobs = await prisma.postJob.findMany({
+      where: {
+        accountId: account.id,
+        state: { in: ["AVAILABLE", "CLAIMED"] },
+      },
+      select: { id: true, driveFileId: true },
+    });
+    const vanished = staleJobs.filter((j) => !liveFileIds.has(j.driveFileId));
+    if (vanished.length > 0) {
+      await prisma.postJob.updateMany({
+        where: { id: { in: vanished.map((j) => j.id) } },
+        data: {
+          state: "DELETED",
+          failureReason: "Source file removed from Google Drive",
+          lockedAt: null,
+          lockedBy: null,
+        },
+      });
+      await prisma.scheduledPost.updateMany({
+        where: {
+          accountId: account.id,
+          driveFileId: { in: vanished.map((j) => j.driveFileId) },
+          status: { in: ["QUEUED", "CLAIMED"] },
+        },
+        data: { status: "SKIPPED", errorMessage: "Source file removed from Google Drive" },
+      });
+      console.log(`[Ingestion] Retired ${vanished.length} job(s) whose Drive file was deleted (account ${accountId})`);
+    }
+
     for (const file of files) {
       if (!file.id) continue;
 
@@ -240,8 +272,35 @@ export async function uploadAndPublish(jobId: string, captionOverride?: string) 
 
     return updatedJob;
   } catch (err: any) {
+    const msg = err?.message || String(err);
+    // The Drive file was deleted out from under the job — retire it
+    // terminally instead of burning retries that can never succeed.
+    const fileGone =
+      Number(err?.code) === 404 ||
+      Number(err?.status) === 404 ||
+      /file not found|notfound|does not exist/i.test(msg);
     console.error(`[Posting Pipeline] Upload failed for job ${jobId}:`, err);
-    await handleFailure(jobId, err.message || String(err));
+    if (fileGone) {
+      await prisma.postJob.update({
+        where: { id: jobId },
+        data: {
+          state: "DELETED",
+          failureReason: "Source file removed from Google Drive",
+          lockedAt: null,
+          lockedBy: null,
+        },
+      });
+      await prisma.scheduledPost.updateMany({
+        where: {
+          driveFileId: job.driveFileId,
+          accountId: job.accountId,
+          status: { in: ["QUEUED", "CLAIMED"] },
+        },
+        data: { status: "SKIPPED", errorMessage: "Source file removed from Google Drive" },
+      });
+    } else {
+      await handleFailure(jobId, msg);
+    }
     throw err;
   }
 }
