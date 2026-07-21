@@ -4537,7 +4537,7 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
         return (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-sm">
             <div
-              className="bg-[#18181b] rounded-2xl border border-[#27272a] p-6 max-w-5xl w-full mx-4 shadow-2xl space-y-4 flex flex-col h-[85vh] overflow-hidden text-white"
+              className="bg-[#18181b] rounded-2xl border border-[#27272a] p-6 max-w-5xl w-full mx-4 shadow-2xl flex flex-col h-[90vh] overflow-hidden text-white"
               onClick={(e) => e.stopPropagation()}
             >
               {/* Header */}
@@ -4557,157 +4557,59 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
                 </button>
               </div>
 
-              {/* Pinned intro & schedule controls */}
-              <div className="flex-shrink-0 space-y-3 text-xs">
-                <p className="text-[#71717a] leading-relaxed">
-                  Distribute and mix completed videos from the selected <span className="text-[#fafafa] font-bold">{selectedGroupIds.size} groups</span> directly into Google Drive folders. No two videos in the same folder will come from the same group to prevent duplication issues.
-                </p>
-
-                {/* Posting schedule: days multiplier */}
-                <div className="bg-[#27272a]/20 border border-[#27272a] rounded-xl p-3.5 flex items-center justify-between">
-                  <span className="text-[#a1a1aa] leading-normal">
-                    Folder counts are set to <span className="font-bold text-[#fafafa]">default posts/day × days</span>.
-                  </span>
-                  <div className="flex items-center gap-2 flex-shrink-0">
-                    <span className="text-[#e4e4e7] font-medium">Days</span>
-                    <div className="flex items-center bg-[#09090b] border border-[#27272a] rounded-lg overflow-hidden">
-                      <button
-                        type="button"
-                        onClick={() => handleExportDaysChange(exportDays - 1)}
-                        disabled={exportDays <= 1}
-                        className="p-1.5 hover:bg-[#27272a] text-[#a1a1aa] hover:text-white transition-colors cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
-                      >
-                        <Minus className="w-3.5 h-3.5" />
-                      </button>
-                      <input
-                        type="number"
-                        min={1}
-                        max={90}
-                        value={exportDays}
-                        onChange={(e) => handleExportDaysChange(parseInt(e.target.value) || 1)}
-                        className="w-12 bg-transparent text-center text-xs font-bold text-white font-mono focus:outline-none"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => handleExportDaysChange(exportDays + 1)}
-                        className="p-1.5 hover:bg-[#27272a] text-[#a1a1aa] hover:text-white transition-colors cursor-pointer"
-                      >
-                        <Plus className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-                  </div>
-                </div>
-
-                {total - unexported > 0 && (
-                  <div className="bg-[#27272a]/20 border border-[#27272a] rounded-xl p-3.5 flex items-center justify-between">
-                    <span className="text-[#a1a1aa] leading-normal">
-                      <span className="font-bold text-[#fafafa]">{total - unexported}</span> of the {total} completed videos are already exported.
+              {/* BODY: two independently scrolling panes (stacked below md) */}
+              <div className="flex-1 min-h-0 flex flex-col md:flex-row pt-4 text-xs">
+                {/* LEFT pane: fixed toolbar/search/paste rows + scrollable results grid */}
+                <div className="order-2 md:order-1 flex-1 min-w-0 min-h-0 flex flex-col space-y-2">
+                  {/* Slim toolbar: mix info, days stepper, include-exported toggle (fixed) */}
+                  <div className="flex-shrink-0 flex items-center gap-x-3 gap-y-1.5 flex-wrap">
+                    <span className="text-[10px] text-[#71717a] leading-snug">
+                      Mixing <span className="text-[#fafafa] font-bold">{selectedGroupIds.size} groups</span> — no folder gets two videos from the same group. Counts = default posts/day × days.
                     </span>
-                    <label className="flex items-center gap-2 text-[#e4e4e7] font-medium cursor-pointer flex-shrink-0">
-                      <input
-                        type="checkbox"
-                        checked={includeExportedSmartExport}
-                        onChange={(e) => {
-                          setIncludeExportedSmartExport(e.target.checked);
-                          setExportPreview(null);
-                        }}
-                        className="rounded border-[#27272a] bg-[#09090b] text-blue-600 focus:ring-blue-600/30 w-3.5 h-3.5 cursor-pointer"
-                      />
-                      <span>Include previously exported</span>
-                    </label>
-                  </div>
-                )}
-
-              </div>
-
-              {/* TOP ZONE (pinned, capped): summary line stays fixed; tab list scrolls internally
-                  so the search + results zone below never gets pushed down */}
-              <div className="flex-shrink-0 space-y-1.5 text-xs">
-                <div className="flex items-center justify-between gap-3">
-                  <h4 className="font-bold uppercase tracking-wider text-[10px] text-[#71717a] flex-shrink-0">
-                    Selected Accounts
-                  </h4>
-                  <p
-                    className="text-[10px] font-semibold text-[#a1a1aa] truncate"
-                    title={`Per-account count capped at ${selectedGroupIds.size} selected groups`}
-                  >
-                    {selectedExportFolders.length} selected · {assignedCount} total videos
-                  </p>
-                </div>
-                {/* ~2.5 rows of tabs (tab ≈26px + 6px gap, 16px container padding) — never grows past this */}
-                <div className="flex flex-wrap gap-1.5 content-start p-2 bg-[#09090b] border border-[#27272a] rounded-xl max-h-[96px] overflow-y-auto custom-scrollbar">
-                  {sortedSelected.length === 0 ? (
-                    <p className="text-[10px] text-[#71717a] italic px-1 py-0.5">
-                      No accounts selected — click, drag across, or paste from the results below to add.
-                    </p>
-                  ) : (
-                    sortedSelected.map((folder) => {
-                      const colKey = folder.mappedAccount?.color || "zinc";
-                      const baseColor = COLOR_MAP[colKey] || (colKey.startsWith("#") ? colKey : null) || COLOR_MAP.zinc;
-                      const origIndex = selectedExportFolders.findIndex((f) => f.id === folder.id);
-                      return (
-                        <div
-                          key={folder.id}
-                          className="flex items-center gap-1 pl-1.5 pr-1 py-1 rounded-md border text-[11px] font-medium text-white"
-                          style={{ borderColor: `${baseColor}55`, borderLeft: `3px solid ${baseColor}`, backgroundColor: `${baseColor}14` }}
+                    <div className="flex items-center gap-1.5 flex-shrink-0">
+                      <span className="text-[#e4e4e7] font-medium">Days</span>
+                      <div className="flex items-center bg-[#09090b] border border-[#27272a] rounded-lg overflow-hidden">
+                        <button
+                          type="button"
+                          onClick={() => handleExportDaysChange(exportDays - 1)}
+                          disabled={exportDays <= 1}
+                          className="p-1.5 hover:bg-[#27272a] text-[#a1a1aa] hover:text-white transition-colors cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
                         >
-                          <span className="truncate max-w-[130px]" title={exportDisplayName(folder)}>
-                            {exportDisplayName(folder)}
-                          </span>
-                          <div className="flex items-center bg-[#09090b]/80 border border-[#27272a] rounded overflow-hidden flex-shrink-0">
-                            <button
-                              type="button"
-                              onClick={() => {
-                                if (origIndex !== -1) {
-                                  setSelectedExportFolders((prev) => {
-                                    const next = [...prev];
-                                    next[origIndex] = { ...next[origIndex], count: Math.max(0, next[origIndex].count - 1) };
-                                    return next;
-                                  });
-                                }
-                              }}
-                              className="px-1 py-0.5 hover:bg-[#27272a] text-[#a1a1aa] hover:text-white transition-colors cursor-pointer"
-                            >
-                              <Minus className="w-2.5 h-2.5" />
-                            </button>
-                            <span className="w-6 text-center text-[10px] font-bold text-white font-mono">{folder.count}</span>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                if (folder.count >= selectedGroupIds.size) {
-                                  toast.error(`Per-folder count cannot exceed selected groups (${selectedGroupIds.size})!`);
-                                  return;
-                                }
-                                if (origIndex !== -1) {
-                                  setSelectedExportFolders((prev) => {
-                                    const next = [...prev];
-                                    next[origIndex] = { ...next[origIndex], count: next[origIndex].count + 1 };
-                                    return next;
-                                  });
-                                }
-                              }}
-                              className="px-1 py-0.5 hover:bg-[#27272a] text-[#a1a1aa] hover:text-white transition-colors cursor-pointer"
-                            >
-                              <Plus className="w-2.5 h-2.5" />
-                            </button>
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => setSelectedExportFolders((prev) => prev.filter((f) => f.id !== folder.id))}
-                            className="text-[#71717a] hover:text-white transition-colors cursor-pointer flex-shrink-0"
-                            title="Remove from selection"
-                          >
-                            <X className="w-3 h-3" />
-                          </button>
-                        </div>
-                      );
-                    })
-                  )}
-                </div>
-              </div>
+                          <Minus className="w-3.5 h-3.5" />
+                        </button>
+                        <input
+                          type="number"
+                          min={1}
+                          max={90}
+                          value={exportDays}
+                          onChange={(e) => handleExportDaysChange(parseInt(e.target.value) || 1)}
+                          className="w-12 bg-transparent text-center text-xs font-bold text-white font-mono focus:outline-none"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => handleExportDaysChange(exportDays + 1)}
+                          className="p-1.5 hover:bg-[#27272a] text-[#a1a1aa] hover:text-white transition-colors cursor-pointer"
+                        >
+                          <Plus className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                    {total - unexported > 0 && (
+                      <label className="flex items-center gap-1.5 text-[#e4e4e7] font-medium cursor-pointer flex-shrink-0">
+                        <input
+                          type="checkbox"
+                          checked={includeExportedSmartExport}
+                          onChange={(e) => {
+                            setIncludeExportedSmartExport(e.target.checked);
+                            setExportPreview(null);
+                          }}
+                          className="rounded border-[#27272a] bg-[#09090b] text-blue-600 focus:ring-blue-600/30 w-3.5 h-3.5 cursor-pointer"
+                        />
+                        <span>Include previously exported ({total - unexported})</span>
+                      </label>
+                    )}
+                  </div>
 
-              {/* BOTTOM ZONE: search + mode toggle + paste + results tab grid */}
-              <div className="flex-1 min-h-0 flex flex-col space-y-2 text-xs">
                 <div className="flex items-center gap-2 flex-shrink-0">
                   <div className="relative flex-1">
                     <Search className="absolute left-3 top-2.5 w-4 h-4 text-[#71717a]" />
@@ -4857,56 +4759,148 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
                   )}
                 </div>
 
-                {exportPreview && exportPreview.unfulfillable.length > 0 && (
-                  <div className="flex-shrink-0 bg-red-500/10 border border-red-500/20 rounded-xl p-3.5 space-y-2 text-red-400 max-h-[120px] overflow-y-auto custom-scrollbar">
-                    <p className="font-bold text-[10px] uppercase tracking-wider flex items-center gap-1.5">
-                      <AlertCircle className="w-4 h-4" /> Feasibility Warning: Unfulfillable Folders
-                    </p>
-                    <ul className="list-disc pl-4 space-y-1 text-[10px] leading-normal">
-                      {exportPreview.unfulfillable.map((unf, idx) => (
-                        <li key={idx}>
-                          <span className="font-bold text-white">{unf.driveFolderName}</span>: {unf.reason}
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-              </div>
+                </div>{/* end LEFT pane */}
 
-              {/* Footer Summary & Action Buttons */}
-              <div className="flex-shrink-0 border-t border-[#27272a] pt-4 space-y-4">
-                <div className="flex justify-between items-center bg-[#09090b] border border-[#27272a] rounded-xl px-4 py-3 text-xs">
-                  <div className="text-center flex-1">
-                    <p className="text-[#71717a] text-[10px] uppercase font-bold">Total Available</p>
-                    <p className="font-bold text-[#fafafa] text-sm mt-0.5">{totalCompleted}</p>
-                  </div>
-                  <div className="w-[1px] h-6 bg-[#27272a]"></div>
-                  <div className="text-center flex-1">
-                    <p className="text-[#71717a] text-[10px] uppercase font-bold">Assigned</p>
-                    <p className="font-bold text-blue-400 text-sm mt-0.5">{assignedCount}</p>
-                  </div>
-                  <div className="w-[1px] h-6 bg-[#27272a]"></div>
-                  <div className="text-center flex-1">
-                    <p className="text-[#71717a] text-[10px] uppercase font-bold">Left to Assign</p>
-                    <p className={`font-extrabold text-sm mt-0.5 ${overAllocated ? "text-red-500" : "text-green-400"}`}>
-                      {overAllocated ? 0 : totalCompleted - assignedCount}
+                {/* RIGHT pane: selection + budget (own scroll regions; stacked above results below md) */}
+                <div className="order-1 md:order-2 w-full md:w-[300px] xl:w-[340px] flex-shrink-0 border-b md:border-b-0 md:border-l border-[#27272a] pb-3 mb-3 md:pb-0 md:mb-0 md:pl-4 flex flex-col max-h-[120px] md:max-h-none overflow-y-auto md:overflow-visible custom-scrollbar">
+                  <div className="flex-shrink-0 pb-2">
+                    <h4 className="font-bold uppercase tracking-wider text-[10px] text-[#71717a]">
+                      Selected Accounts
+                    </h4>
+                    <p
+                      className="text-[10px] font-semibold text-[#a1a1aa] mt-0.5"
+                      title={`Per-account count capped at ${selectedGroupIds.size} selected groups`}
+                    >
+                      {selectedExportFolders.length} selected · {assignedCount} total videos
                     </p>
+                  </div>
+
+                  {/* Selected tabs: internal scroll on desktop; whole pane scrolls (capped) below md */}
+                  <div className="flex-shrink-0 md:flex-1 md:min-h-0 md:overflow-y-auto custom-scrollbar bg-[#09090b] border border-[#27272a] rounded-xl p-2">
+                    {sortedSelected.length === 0 ? (
+                      <p className="text-[10px] text-[#71717a] italic px-1 py-0.5">
+                        No accounts selected — click, drag across, or paste from the results to add.
+                      </p>
+                    ) : (
+                      <div className="flex flex-col gap-1.5">
+                        {sortedSelected.map((folder) => {
+                          const colKey = folder.mappedAccount?.color || "zinc";
+                          const baseColor = COLOR_MAP[colKey] || (colKey.startsWith("#") ? colKey : null) || COLOR_MAP.zinc;
+                          const origIndex = selectedExportFolders.findIndex((f) => f.id === folder.id);
+                          return (
+                            <div
+                              key={folder.id}
+                              className="flex items-center gap-2 pl-2 pr-1.5 py-1.5 rounded-md border text-[11px] font-medium text-white"
+                              style={{ borderColor: `${baseColor}55`, borderLeft: `3px solid ${baseColor}`, backgroundColor: `${baseColor}14` }}
+                            >
+                              <span className="truncate flex-1 min-w-0" title={exportDisplayName(folder)}>
+                                {exportDisplayName(folder)}
+                              </span>
+                              <div className="flex items-center bg-[#09090b]/80 border border-[#27272a] rounded overflow-hidden flex-shrink-0">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    if (origIndex !== -1) {
+                                      setSelectedExportFolders((prev) => {
+                                        const next = [...prev];
+                                        next[origIndex] = { ...next[origIndex], count: Math.max(0, next[origIndex].count - 1) };
+                                        return next;
+                                      });
+                                    }
+                                  }}
+                                  className="px-1 py-0.5 hover:bg-[#27272a] text-[#a1a1aa] hover:text-white transition-colors cursor-pointer"
+                                >
+                                  <Minus className="w-2.5 h-2.5" />
+                                </button>
+                                <span className="w-6 text-center text-[10px] font-bold text-white font-mono">{folder.count}</span>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    if (folder.count >= selectedGroupIds.size) {
+                                      toast.error(`Per-folder count cannot exceed selected groups (${selectedGroupIds.size})!`);
+                                      return;
+                                    }
+                                    if (origIndex !== -1) {
+                                      setSelectedExportFolders((prev) => {
+                                        const next = [...prev];
+                                        next[origIndex] = { ...next[origIndex], count: next[origIndex].count + 1 };
+                                        return next;
+                                      });
+                                    }
+                                  }}
+                                  className="px-1 py-0.5 hover:bg-[#27272a] text-[#a1a1aa] hover:text-white transition-colors cursor-pointer"
+                                >
+                                  <Plus className="w-2.5 h-2.5" />
+                                </button>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => setSelectedExportFolders((prev) => prev.filter((f) => f.id !== folder.id))}
+                                className="text-[#71717a] hover:text-white transition-colors cursor-pointer flex-shrink-0"
+                                title="Remove from selection"
+                              >
+                                <X className="w-3 h-3" />
+                              </button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Fixed bottom block: feasibility warnings (only with real items) + budget */}
+                  <div className="flex-shrink-0 pt-2 space-y-2">
+                    {exportPreview && exportPreview.unfulfillable.length > 0 && (
+                      <div className="bg-red-500/10 border border-red-500/20 rounded-xl p-3 space-y-2 text-red-400 max-h-[120px] overflow-y-auto custom-scrollbar">
+                        <p className="font-bold text-[10px] uppercase tracking-wider flex items-center gap-1.5">
+                          <AlertCircle className="w-4 h-4 flex-shrink-0" /> Feasibility Warning: Unfulfillable Folders
+                        </p>
+                        <ul className="list-disc pl-4 space-y-1 text-[10px] leading-normal">
+                          {exportPreview.unfulfillable.map((unf, idx) => (
+                            <li key={idx}>
+                              <span className="font-bold text-white">{unf.driveFolderName}</span>: {unf.reason}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+
+                    <div className="bg-[#09090b] border border-[#27272a] rounded-xl px-3 py-2.5 space-y-1.5">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[#71717a] text-[10px] uppercase font-bold">Total Available</span>
+                        <span className="font-bold text-[#fafafa] text-xs">{totalCompleted}</span>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <span className="text-[#71717a] text-[10px] uppercase font-bold">Assigned</span>
+                        <span className="font-bold text-blue-400 text-xs">{assignedCount}</span>
+                      </div>
+                      <div className="flex items-center justify-between border-t border-[#27272a] pt-1.5">
+                        <span className="text-[#71717a] text-[10px] uppercase font-bold">Left to Assign</span>
+                        <span className={`font-extrabold text-xs ${overAllocated ? "text-red-500" : "text-green-400"}`}>
+                          {overAllocated ? 0 : totalCompleted - assignedCount}
+                        </span>
+                      </div>
+                    </div>
                   </div>
                 </div>
+              </div>
 
-                {overAllocated && (
-                  <div className="text-center text-[10px] text-red-500 font-bold bg-red-500/10 py-1.5 rounded-lg border border-red-500/20">
-                    ⚠️ Over-allocation warning: You have assigned more videos than available. Please reduce folder counts.
-                  </div>
-                )}
+              {/* Footer: over-allocation warning / run error (only when active) + action buttons */}
+              <div className="flex-shrink-0 border-t border-[#27272a] mt-4 pt-4 flex flex-wrap items-center gap-3">
+                <div className="flex-1 min-w-[220px] space-y-1.5">
+                  {overAllocated && (
+                    <div className="text-[10px] text-red-500 font-bold bg-red-500/10 py-1.5 px-3 rounded-lg border border-red-500/20 flex items-center gap-1.5">
+                      <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" /> Over-allocation warning: You have assigned more videos than available. Please reduce folder counts.
+                    </div>
+                  )}
+                  {exportRunError && (
+                    <div className="text-[10px] text-red-500 font-bold bg-red-500/10 py-1.5 px-3 rounded-lg border border-red-500/20 flex items-center gap-1.5">
+                      <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" /> {exportRunError}
+                    </div>
+                  )}
+                </div>
 
-                {exportRunError && (
-                  <div className="text-center text-[10px] text-red-500 font-bold bg-red-500/10 py-1.5 rounded-lg border border-red-500/20 flex items-center justify-center gap-1.5">
-                    <AlertCircle className="w-3.5 h-3.5" /> {exportRunError}
-                  </div>
-                )}
-
-                <div className="flex justify-end gap-3">
+                <div className="flex justify-end gap-3 flex-shrink-0 ml-auto">
                   <button
                     onClick={() => {
                       setShowSmartExport(false);
