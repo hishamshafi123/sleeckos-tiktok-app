@@ -646,12 +646,12 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
 
   // Paste-to-select: newline/comma-separated usernames, matched case-insensitively
   // against accounts (mode=account). Additive — never clears the current selection.
-  const handleExportPasteSelect = async () => {
+  const handleExportPasteSelect = async (rawOverride?: string) => {
     if (exportPasteLoading) return;
     const terms = Array.from(
       new Set(
-        exportPasteInput
-          .split(/[\n,]+/)
+        (rawOverride ?? exportPasteInput)
+          .split(/[\s,;]+/)
           .map((s) => s.trim().replace(/^@+/, "").toLowerCase())
           .filter(Boolean)
       )
@@ -708,6 +708,7 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
       setExportPasteResult({ selected: additions.length, notFound, skippedRed });
     } finally {
       setExportPasteLoading(false);
+      setExportPasteInput("");
     }
   };
 
@@ -4643,9 +4644,18 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
                 <div className="flex items-center gap-2 flex-shrink-0">
                   <input
                     type="text"
-                    placeholder="Paste account names…"
+                    placeholder="Paste account names (spaces, commas or newlines)…"
                     value={exportPasteInput}
                     onChange={(e) => setExportPasteInput(e.target.value)}
+                    onPaste={(e) => {
+                      // Auto-select as soon as a list is pasted — no Enter needed
+                      const text = e.clipboardData.getData("text");
+                      if (text.trim()) {
+                        e.preventDefault();
+                        setExportPasteInput(text);
+                        handleExportPasteSelect(text);
+                      }
+                    }}
                     onKeyDown={(e) => {
                       if (e.key === "Enter") {
                         e.preventDefault();
@@ -4656,7 +4666,7 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
                   />
                   <button
                     type="button"
-                    onClick={handleExportPasteSelect}
+                    onClick={() => handleExportPasteSelect()}
                     disabled={exportPasteLoading || !exportPasteInput.trim()}
                     className="px-3 py-1.5 bg-[#27272a] hover:bg-[#3f3f46] disabled:opacity-40 disabled:cursor-not-allowed text-white text-[11px] font-semibold rounded-lg transition-colors cursor-pointer flex items-center gap-1.5 flex-shrink-0"
                   >
