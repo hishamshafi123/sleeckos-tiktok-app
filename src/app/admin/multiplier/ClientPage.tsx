@@ -289,6 +289,28 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
   const [pollingJobDetails, setPollingJobDetails] = useState(false);
   const [exportDays, setExportDays] = useState(1);
   const [exportRunError, setExportRunError] = useState<string | null>(null);
+  // Smart Export selector: search mode (account username vs drive folder name)
+  const [smartExportSearchMode, setSmartExportSearchMode] = useState<"account" | "drive">("account");
+  // Smart Export selector: drag-to-select state (refs so pointer handlers stay stable)
+  const [exportDragPainting, setExportDragPainting] = useState(false);
+  const exportDragRef = useRef<{
+    pointerId: number | null;
+    startX: number;
+    startY: number;
+    pendingId: string | null;
+    dragging: boolean;
+    lastX: number;
+    lastY: number;
+    snapshot: typeof selectedExportFolders | null;
+  }>({ pointerId: null, startX: 0, startY: 0, pendingId: null, dragging: false, lastX: 0, lastY: 0, snapshot: null });
+  const exportLastClickedRef = useRef<string | null>(null);
+  const exportResultsContainerRef = useRef<HTMLDivElement>(null);
+  const exportAutoScrollRef = useRef<number | null>(null);
+  const exportAutoScrollDirRef = useRef(0);
+  // Smart Export selector: paste-to-select state
+  const [exportPasteInput, setExportPasteInput] = useState("");
+  const [exportPasteLoading, setExportPasteLoading] = useState(false);
+  const [exportPasteResult, setExportPasteResult] = useState<{ selected: number; notFound: string[]; skippedRed: string[] } | null>(null);
 
   // Bulk intake state
   const [bulkCampaignId, setBulkCampaignId] = useState("");
@@ -409,7 +431,27 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
     return () => clearTimeout(timer);
   }, [showSmartExport, selectedGroupIds, selectedExportFolders, includeExportedSmartExport]);
 
-  const handleSearchExportFolders = async (val: string) => {
+  // Row shape returned by /api/accounts/search (both modes)
+  type AccountSearchRow = {
+    driveFolderId: string;
+    driveFolderName: string;
+    color: string | null;
+    defaultPostCount: number;
+    account: { id: string; tiktokUsername: string } | null;
+  };
+
+  // Map one /api/accounts/search result row into the local folder-selection shape
+  // (id/name/count/mappedAccount) so preview + run payloads stay unchanged.
+  const mapAccountSearchResult = (r: AccountSearchRow, mode: "account" | "drive") => ({
+    id: r.driveFolderId as string,
+    name: (mode === "account" ? r.account?.tiktokUsername || r.driveFolderName : r.driveFolderName) as string,
+    defaultPostCount: r.defaultPostCount as number,
+    mappedAccount: r.account
+      ? { id: r.account.id as string, tiktokUsername: r.account.tiktokUsername as string, color: (r.color ?? undefined) as string | undefined }
+      : null,
+  });
+
+  const handleSearchExportFolders = async (val: string, mode: "account" | "drive" = smartExportSearchMode) => {
     setSmartExportSearch(val);
     if (!val.trim()) {
       setSearchedExportFolders([]);
@@ -417,15 +459,254 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
     }
     setSearchingExportFolders(true);
     try {
-      const res = await fetch(`/api/managed/multiplier/smart-export/folders?q=${encodeURIComponent(val)}`);
+      const res = await fetch(`/api/accounts/search?q=${encodeURIComponent(val)}&mode=${mode}`);
       if (res.ok) {
         const data = await res.json();
-        setSearchedExportFolders(data.folders || []);
+        setSearchedExportFolders(((data.results || []) as AccountSearchRow[]).map((r) => mapAccountSearchResult(r, mode)));
       }
     } catch (err) {
       console.error("Folder search failed:", err);
     } finally {
       setSearchingExportFolders(false);
+    }
+  };
+
+  const handleExportSearchModeChange = (mode: "account" | "drive") => {
+    setSmartExportSearchMode(mode);
+    if (smartExportSearch.trim()) handleSearchExportFolders(smartExportSearch, mode);
+  };
+
+  // Red accounts (banned/excluded, defaultPostCount 0) are not selectable anywhere.
+  const isRedExportResult = (f: { defaultPostCount?: number; mappedAccount?: { color?: string } | null }) => {
+    const colKey = (f.mappedAccount?.color || "").toLowerCase();
+    const hex = COLOR_MAP[colKey] || (colKey.startsWith("#") ? colKey : null);
+    return colKey === "red" || hex === COLOR_MAP.red || (f.defaultPostCount ?? 1) <= 0;
+  };
+
+  // Standard count prefill: default posts/day × days, clamped to the selected group count.
+  const prefillExportCount = (defaultPostCount?: number) =>
+    Math.max(1, Math.min((defaultPostCount ?? 1) * exportDays, Math.max(1, selectedGroupIds.size)));
+
+  const exportDisplayName = (f: { name: string; mappedAccount?: { tiktokUsername: string } | null }) =>
+    f.mappedAccount && f.name === f.mappedAccount.tiktokUsername ? `@${f.name}` : f.name;
+
+  // Visible results order (natural numeric sort) — used by drag/shift-range selection
+  const getSortedExportResults = () => [...searchedExportFolders].sort((a, b) => naturalCompare(a.name || "", b.name || ""));
+
+  const toggleExportFolder = (folder: (typeof searchedExportFolders)[number]) => {
+    if (isRedExportResult(folder)) return;
+    setSelectedExportFolders((prev) =>
+      prev.some((f) => f.id === folder.id)
+        ? prev.filter((f) => f.id !== folder.id)
+        : [...prev, { ...folder, count: prefillExportCount(folder.defaultPostCount) }]
+    );
+  };
+
+  // Additive-only add used by drag-paint, shift-range and paste: never toggles off,
+  // skips red and already-selected ids.
+  const addExportFoldersById = (ids: string[]) => {
+    const results = getSortedExportResults();
+    setSelectedExportFolders((prev) => {
+      const have = new Set(prev.map((f) => f.id));
+      const additions = ids
+        .map((id) => results.find((r) => r.id === id))
+        .filter((r): r is (typeof results)[number] => !!r && !have.has(r.id) && !isRedExportResult(r))
+        .map((r) => ({ ...r, count: prefillExportCount(r.defaultPostCount) }));
+      return additions.length > 0 ? [...prev, ...additions] : prev;
+    });
+  };
+
+  // Auto-scroll the results grid while drag-painting near its top/bottom edge.
+  const stopExportAutoScroll = () => {
+    exportAutoScrollDirRef.current = 0;
+    if (exportAutoScrollRef.current != null) {
+      cancelAnimationFrame(exportAutoScrollRef.current);
+      exportAutoScrollRef.current = null;
+    }
+  };
+
+  const startExportAutoScroll = () => {
+    if (exportAutoScrollRef.current != null) return;
+    const tick = () => {
+      const container = exportResultsContainerRef.current;
+      const d = exportDragRef.current;
+      if (!container || !d.dragging || exportAutoScrollDirRef.current === 0) {
+        exportAutoScrollRef.current = null;
+        return;
+      }
+      container.scrollTop += exportAutoScrollDirRef.current * 14;
+      // Keep paint-selecting newly revealed tabs while the pointer is held still.
+      const el = document.elementFromPoint(d.lastX, d.lastY);
+      const tab = el?.closest?.("[data-export-tab]") as HTMLElement | null;
+      if (tab?.dataset.exportTab) addExportFoldersById([tab.dataset.exportTab]);
+      exportAutoScrollRef.current = requestAnimationFrame(tick);
+    };
+    exportAutoScrollRef.current = requestAnimationFrame(tick);
+  };
+
+  const resetExportDrag = () => {
+    exportDragRef.current = { pointerId: null, startX: 0, startY: 0, pendingId: null, dragging: false, lastX: 0, lastY: 0, snapshot: null };
+    setExportDragPainting(false);
+    stopExportAutoScroll();
+  };
+
+  const handleExportGridPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return;
+    const tab = (e.target as HTMLElement).closest("[data-export-tab]") as HTMLElement | null;
+    if (!tab?.dataset.exportTab) return;
+    const folder = getSortedExportResults().find((f) => f.id === tab.dataset.exportTab);
+    if (!folder || isRedExportResult(folder)) return;
+    e.preventDefault(); // suppress text selection / focus steal while painting
+    exportDragRef.current = {
+      pointerId: e.pointerId,
+      startX: e.clientX,
+      startY: e.clientY,
+      pendingId: folder.id,
+      dragging: false,
+      lastX: e.clientX,
+      lastY: e.clientY,
+      snapshot: selectedExportFolders,
+    };
+    try {
+      exportResultsContainerRef.current?.setPointerCapture(e.pointerId);
+    } catch {}
+  };
+
+  const handleExportGridPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    const d = exportDragRef.current;
+    if (d.pointerId !== e.pointerId || !d.pendingId) return;
+    d.lastX = e.clientX;
+    d.lastY = e.clientY;
+    if (!d.dragging) {
+      // 5px movement threshold separates click from drag-paint
+      if (Math.hypot(e.clientX - d.startX, e.clientY - d.startY) <= 5) return;
+      d.dragging = true;
+      setExportDragPainting(true);
+      addExportFoldersById([d.pendingId]);
+    }
+    const el = document.elementFromPoint(e.clientX, e.clientY);
+    const tab = el?.closest?.("[data-export-tab]") as HTMLElement | null;
+    if (tab?.dataset.exportTab) addExportFoldersById([tab.dataset.exportTab]);
+    // Auto-scroll when within ~40px of the grid's top/bottom edge
+    const container = exportResultsContainerRef.current;
+    if (container) {
+      const rect = container.getBoundingClientRect();
+      let dir = 0;
+      if (e.clientY < rect.top + 40) dir = -1;
+      else if (e.clientY > rect.bottom - 40) dir = 1;
+      if (dir !== exportAutoScrollDirRef.current) {
+        exportAutoScrollDirRef.current = dir;
+        if (dir !== 0) startExportAutoScroll();
+        else stopExportAutoScroll();
+      }
+    }
+  };
+
+  const handleExportGridPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    const d = exportDragRef.current;
+    if (d.pointerId !== e.pointerId || !d.pendingId) return;
+    const wasDragging = d.dragging;
+    const pendingId = d.pendingId;
+    resetExportDrag();
+    if (wasDragging) return; // drag end: additions stay, never toggle
+    const results = getSortedExportResults();
+    const folder = results.find((f) => f.id === pendingId);
+    if (!folder) return;
+    // Shift-click extends the selection over the visible results order
+    if (e.shiftKey && exportLastClickedRef.current) {
+      const order = results.map((f) => f.id);
+      const a = order.indexOf(exportLastClickedRef.current);
+      const b = order.indexOf(pendingId);
+      if (a !== -1 && b !== -1) {
+        const [lo, hi] = a < b ? [a, b] : [b, a];
+        addExportFoldersById(order.slice(lo, hi + 1));
+        return;
+      }
+    }
+    // Plain click / Ctrl/Cmd-click toggles a single tab
+    toggleExportFolder(folder);
+    if (!e.metaKey && !e.ctrlKey) exportLastClickedRef.current = pendingId;
+  };
+
+  // Esc cancels an in-progress drag and reverts to the pre-drag snapshot
+  useEffect(() => {
+    if (!showSmartExport) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      const d = exportDragRef.current;
+      if (!d.pendingId) return;
+      if (d.dragging && d.snapshot) setSelectedExportFolders(d.snapshot);
+      resetExportDrag();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showSmartExport]);
+
+  // Paste-to-select: newline/comma-separated usernames, matched case-insensitively
+  // against accounts (mode=account). Additive — never clears the current selection.
+  const handleExportPasteSelect = async () => {
+    if (exportPasteLoading) return;
+    const terms = Array.from(
+      new Set(
+        exportPasteInput
+          .split(/[\n,]+/)
+          .map((s) => s.trim().replace(/^@+/, "").toLowerCase())
+          .filter(Boolean)
+      )
+    ).slice(0, 100);
+    if (terms.length === 0) return;
+    setExportPasteLoading(true);
+    setExportPasteResult(null);
+    try {
+      const notFound: string[] = [];
+      const skippedRed: string[] = [];
+      const matched: (typeof searchedExportFolders)[number][] = [];
+      // One search per unique term, in chunks of 10 to avoid flooding the server
+      for (let i = 0; i < terms.length; i += 10) {
+        const chunk = terms.slice(i, i + 10);
+        const chunkResults = await Promise.all(
+          chunk.map(async (term) => {
+            try {
+              const res = await fetch(`/api/accounts/search?q=${encodeURIComponent(term)}&mode=account`);
+              if (!res.ok) return { term, raw: null as AccountSearchRow | null };
+              const data = await res.json();
+              const results = (data.results || []) as AccountSearchRow[];
+              const exact = results.find((r) => r.account?.tiktokUsername?.toLowerCase() === term);
+              return { term, raw: exact || (results.length === 1 ? results[0] : null) };
+            } catch {
+              return { term, raw: null as AccountSearchRow | null };
+            }
+          })
+        );
+        for (const { term, raw } of chunkResults) {
+          if (!raw) {
+            notFound.push(term);
+            continue;
+          }
+          const item = mapAccountSearchResult(raw, "account");
+          if (isRedExportResult(item)) {
+            skippedRed.push(term);
+            continue;
+          }
+          matched.push(item);
+        }
+      }
+      const already = new Set(selectedExportFolders.map((f) => f.id));
+      const seen = new Set<string>();
+      const additions = matched
+        .filter((m) => !already.has(m.id) && !seen.has(m.id) && (seen.add(m.id), true))
+        .map((m) => ({ ...m, count: prefillExportCount(m.defaultPostCount) }));
+      if (additions.length > 0) {
+        setSelectedExportFolders((prev) => {
+          const have = new Set(prev.map((f) => f.id));
+          const fresh = additions.filter((a) => !have.has(a.id));
+          return fresh.length > 0 ? [...prev, ...fresh] : prev;
+        });
+      }
+      setExportPasteResult({ selected: additions.length, notFound, skippedRed });
+    } finally {
+      setExportPasteLoading(false);
     }
   };
 
@@ -462,6 +743,7 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
 
       toast.success("Smart Export queued successfully!");
       setExportingJobId(data.jobId);
+      resetExportDrag();
       setShowSmartExport(false);
       fetchData();
     } catch (err: any) {
@@ -4203,7 +4485,7 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
         return (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-sm">
             <div
-              className="bg-[#18181b] rounded-2xl border border-[#27272a] p-6 max-w-4xl w-full mx-4 shadow-2xl space-y-6 flex flex-col max-h-[90vh] overflow-hidden text-white"
+              className="bg-[#18181b] rounded-2xl border border-[#27272a] p-6 max-w-5xl w-full mx-4 shadow-2xl space-y-4 flex flex-col h-[85vh] overflow-hidden text-white"
               onClick={(e) => e.stopPropagation()}
             >
               {/* Header */}
@@ -4215,6 +4497,7 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
                   onClick={() => {
                     setShowSmartExport(false);
                     setSelectedExportFolders([]);
+                    resetExportDrag();
                   }}
                   className="text-[#71717a] hover:text-[#fafafa] transition-all cursor-pointer"
                 >
@@ -4222,8 +4505,8 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
                 </button>
               </div>
 
-              {/* Scrollable Content Area */}
-              <div className="flex-1 overflow-y-auto space-y-5 pr-1 custom-scrollbar text-xs">
+              {/* Pinned intro & schedule controls */}
+              <div className="flex-shrink-0 space-y-3 text-xs">
                 <p className="text-[#71717a] leading-relaxed">
                   Distribute and mix completed videos from the selected <span className="text-[#fafafa] font-bold">{selectedGroupIds.size} groups</span> directly into Google Drive folders. No two videos in the same folder will come from the same group to prevent duplication issues.
                 </p>
@@ -4283,226 +4566,252 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
                   </div>
                 )}
 
-                {/* Selected accounts chips tray */}
-                {sortedSelected.length > 0 && (
-                  <div className="space-y-2">
-                    <h4 className="font-bold text-[#fafafa] uppercase tracking-wider text-[10px] text-[#71717a]">Selected Accounts Tray</h4>
-                    <div className="flex flex-wrap gap-2 p-3 bg-[#09090b] border border-[#27272a] rounded-xl">
-                      {sortedSelected.map((folder) => {
-                        const colKey = folder.mappedAccount?.color || "zinc";
-                        const baseColor = COLOR_MAP[colKey] || (colKey.startsWith("#") ? colKey : null) || COLOR_MAP.zinc;
-                        return (
-                          <div
-                            key={folder.id}
-                            className="flex items-center gap-1.5 px-2.5 py-1 bg-white/5 rounded-lg border border-white/10 text-white text-[11px] font-medium transition-all"
-                            style={{ borderLeft: `3px solid ${baseColor}` }}
-                          >
-                            <span className="truncate max-w-[150px]">{folder.name}</span>
+              </div>
+
+              {/* TOP ZONE (pinned): selected accounts as compact tabs with inline counts */}
+              <div className="flex-shrink-0 space-y-1.5 text-xs">
+                <div className="flex items-center justify-between">
+                  <h4 className="font-bold uppercase tracking-wider text-[10px] text-[#71717a]">
+                    Selected Accounts <span className="text-[#fafafa]">{selectedExportFolders.length}</span>
+                  </h4>
+                  <p className="text-[9px] text-[#71717a]">Per-account count capped at {selectedGroupIds.size} selected groups</p>
+                </div>
+                <div className="flex flex-wrap gap-1.5 content-start p-2 bg-[#09090b] border border-[#27272a] rounded-xl max-h-[132px] overflow-y-auto custom-scrollbar">
+                  {sortedSelected.length === 0 ? (
+                    <p className="text-[10px] text-[#71717a] italic px-1 py-0.5">
+                      No accounts selected — click, drag across, or paste from the results below to add.
+                    </p>
+                  ) : (
+                    sortedSelected.map((folder) => {
+                      const colKey = folder.mappedAccount?.color || "zinc";
+                      const baseColor = COLOR_MAP[colKey] || (colKey.startsWith("#") ? colKey : null) || COLOR_MAP.zinc;
+                      const origIndex = selectedExportFolders.findIndex((f) => f.id === folder.id);
+                      return (
+                        <div
+                          key={folder.id}
+                          className="flex items-center gap-1 pl-1.5 pr-1 py-1 rounded-md border text-[11px] font-medium text-white"
+                          style={{ borderColor: `${baseColor}55`, borderLeft: `3px solid ${baseColor}`, backgroundColor: `${baseColor}14` }}
+                        >
+                          <span className="truncate max-w-[130px]" title={exportDisplayName(folder)}>
+                            {exportDisplayName(folder)}
+                          </span>
+                          <div className="flex items-center bg-[#09090b]/80 border border-[#27272a] rounded overflow-hidden flex-shrink-0">
                             <button
                               type="button"
                               onClick={() => {
-                                setSelectedExportFolders((prev) => prev.filter((f) => f.id !== folder.id));
+                                if (origIndex !== -1) {
+                                  setSelectedExportFolders((prev) => {
+                                    const next = [...prev];
+                                    next[origIndex] = { ...next[origIndex], count: Math.max(0, next[origIndex].count - 1) };
+                                    return next;
+                                  });
+                                }
                               }}
-                              className="text-[#71717a] hover:text-white transition-colors cursor-pointer"
+                              className="px-1 py-0.5 hover:bg-[#27272a] text-[#a1a1aa] hover:text-white transition-colors cursor-pointer"
                             >
-                              <X className="w-3 h-3" />
+                              <Minus className="w-2.5 h-2.5" />
                             </button>
+                            <span className="w-6 text-center text-[10px] font-bold text-white font-mono">{folder.count}</span>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (folder.count >= selectedGroupIds.size) {
+                                  toast.error(`Per-folder count cannot exceed selected groups (${selectedGroupIds.size})!`);
+                                  return;
+                                }
+                                if (origIndex !== -1) {
+                                  setSelectedExportFolders((prev) => {
+                                    const next = [...prev];
+                                    next[origIndex] = { ...next[origIndex], count: next[origIndex].count + 1 };
+                                    return next;
+                                  });
+                                }
+                              }}
+                              className="px-1 py-0.5 hover:bg-[#27272a] text-[#a1a1aa] hover:text-white transition-colors cursor-pointer"
+                            >
+                              <Plus className="w-2.5 h-2.5" />
+                            </button>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setSelectedExportFolders((prev) => prev.filter((f) => f.id !== folder.id))}
+                            className="text-[#71717a] hover:text-white transition-colors cursor-pointer flex-shrink-0"
+                            title="Remove from selection"
+                          >
+                            <X className="w-3 h-3" />
+                          </button>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+
+              {/* BOTTOM ZONE: search + mode toggle + paste + results tab grid */}
+              <div className="flex-1 min-h-0 flex flex-col space-y-2 text-xs">
+                <div className="flex items-center gap-2 flex-shrink-0">
+                  <div className="relative flex-1">
+                    <Search className="absolute left-3 top-2.5 w-4 h-4 text-[#71717a]" />
+                    <input
+                      type="text"
+                      placeholder={smartExportSearchMode === "account" ? "Search account names…" : "Search Google Drive folders…"}
+                      value={smartExportSearch}
+                      onChange={(e) => handleSearchExportFolders(e.target.value)}
+                      className="w-full bg-[#09090b] border border-[#27272a] rounded-xl pl-9 pr-4 py-2 text-white placeholder-[#71717a] text-xs focus:outline-none focus:border-[#E11D48]"
+                    />
+                    {searchingExportFolders && (
+                      <Loader2 className="absolute right-3 top-2.5 w-4 h-4 animate-spin text-[#E11D48]" />
+                    )}
+                  </div>
+                  <div className="flex items-center bg-[#09090b] border border-[#27272a] rounded-lg overflow-hidden flex-shrink-0">
+                    {(["account", "drive"] as const).map((m) => (
+                      <button
+                        key={m}
+                        type="button"
+                        onClick={() => handleExportSearchModeChange(m)}
+                        className={`px-2.5 py-1.5 text-[10px] font-bold transition-colors cursor-pointer ${
+                          smartExportSearchMode === m ? "bg-[#E11D48] text-white" : "text-[#a1a1aa] hover:text-white"
+                        }`}
+                      >
+                        {m === "account" ? "Account Name" : "Google Drive"}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 flex-shrink-0">
+                  <input
+                    type="text"
+                    placeholder="Paste account names…"
+                    value={exportPasteInput}
+                    onChange={(e) => setExportPasteInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        handleExportPasteSelect();
+                      }
+                    }}
+                    className="flex-1 bg-[#09090b] border border-[#27272a] rounded-lg px-3 py-1.5 text-white placeholder-[#71717a] text-[11px] focus:outline-none focus:border-[#E11D48]"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleExportPasteSelect}
+                    disabled={exportPasteLoading || !exportPasteInput.trim()}
+                    className="px-3 py-1.5 bg-[#27272a] hover:bg-[#3f3f46] disabled:opacity-40 disabled:cursor-not-allowed text-white text-[11px] font-semibold rounded-lg transition-colors cursor-pointer flex items-center gap-1.5 flex-shrink-0"
+                  >
+                    {exportPasteLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Check className="w-3 h-3" />}
+                    Go
+                  </button>
+                </div>
+                {exportPasteResult && (
+                  <div className="flex items-center gap-2 flex-shrink-0 bg-[#09090b] border border-[#27272a] rounded-lg px-2.5 py-1.5 text-[10px] text-[#a1a1aa]">
+                    <span className="flex-1 truncate" title={[...exportPasteResult.notFound, ...exportPasteResult.skippedRed].join(", ")}>
+                      <span className="font-bold text-green-400">{exportPasteResult.selected} selected</span>
+                      {exportPasteResult.notFound.length > 0 && (
+                        <>
+                          {" · "}
+                          <span className="font-bold text-[#fafafa]">{exportPasteResult.notFound.length} not found</span>
+                          {" "}({exportPasteResult.notFound.slice(0, 5).join(", ")}{exportPasteResult.notFound.length > 5 ? ", …" : ""})
+                        </>
+                      )}
+                      {exportPasteResult.skippedRed.length > 0 && (
+                        <>
+                          {" · "}
+                          <span className="font-bold text-red-400">{exportPasteResult.skippedRed.length} skipped red</span>
+                          {" "}({exportPasteResult.skippedRed.slice(0, 5).join(", ")}{exportPasteResult.skippedRed.length > 5 ? ", …" : ""})
+                        </>
+                      )}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setExportPasteResult(null)}
+                      className="text-[#71717a] hover:text-white transition-colors cursor-pointer flex-shrink-0"
+                      title="Dismiss"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  </div>
+                )}
+
+                {/* Results: wrapping grid of compact colored tabs (click / drag / shift / ctrl) */}
+                <div
+                  ref={exportResultsContainerRef}
+                  onPointerDown={handleExportGridPointerDown}
+                  onPointerMove={handleExportGridPointerMove}
+                  onPointerUp={handleExportGridPointerUp}
+                  onPointerCancel={() => resetExportDrag()}
+                  className="flex-1 min-h-0 overflow-y-auto custom-scrollbar bg-[#09090b] border border-[#27272a] rounded-xl p-2 select-none"
+                  style={{ touchAction: exportDragPainting ? "none" : "pan-y" }}
+                >
+                  {!smartExportSearch.trim() ? (
+                    <div className="h-full flex items-center justify-center text-[#71717a] text-[11px] italic">
+                      Search accounts or folders…
+                    </div>
+                  ) : sortedResults.length === 0 ? (
+                    !searchingExportFolders && (
+                      <div className="h-full flex items-center justify-center text-[#71717a] text-[11px] italic">
+                        No results for &ldquo;{smartExportSearch}&rdquo;.
+                      </div>
+                    )
+                  ) : (
+                    <div className="flex flex-wrap gap-1.5 content-start">
+                      {sortedResults.map((folder) => {
+                        const colKey = folder.mappedAccount?.color || "zinc";
+                        const baseColor = COLOR_MAP[colKey] || (colKey.startsWith("#") ? colKey : null) || COLOR_MAP.zinc;
+                        const isSelected = selectedExportFolders.some((f) => f.id === folder.id);
+                        const isRed = isRedExportResult(folder);
+                        return (
+                          <div
+                            key={folder.id}
+                            data-export-tab={folder.id}
+                            role="button"
+                            tabIndex={isRed ? -1 : 0}
+                            aria-disabled={isRed}
+                            title={isRed ? "Red accounts are excluded" : undefined}
+                            onKeyDown={(e) => {
+                              if (isRed) return;
+                              if (e.key === "Enter" || e.key === " ") {
+                                e.preventDefault();
+                                toggleExportFolder(folder);
+                                exportLastClickedRef.current = folder.id;
+                              }
+                            }}
+                            className={`flex items-center gap-1 px-2 py-1 rounded-md border text-[11px] font-medium transition-colors ${
+                              isRed
+                                ? "opacity-40 cursor-not-allowed text-[#71717a]"
+                                : "text-[#e4e4e7] hover:text-white cursor-pointer"
+                            }`}
+                            style={{
+                              borderColor: isSelected ? "#E11D48" : `${baseColor}33`,
+                              borderLeft: `3px solid ${baseColor}`,
+                              backgroundColor: isSelected ? "rgba(225, 29, 72, 0.12)" : isRed ? "transparent" : `${baseColor}14`,
+                              boxShadow: isSelected ? "0 0 0 1px #E11D48 inset" : undefined,
+                            }}
+                          >
+                            {isSelected && <Check className="w-3 h-3 text-[#E11D48] flex-shrink-0" />}
+                            <span className="truncate max-w-[150px]">{exportDisplayName(folder)}</span>
+                            <span className="text-[9px] text-[#71717a] font-mono flex-shrink-0">·{folder.defaultPostCount ?? 1}/day</span>
                           </div>
                         );
                       })}
                     </div>
+                  )}
+                </div>
+
+                {exportPreview && exportPreview.unfulfillable.length > 0 && (
+                  <div className="flex-shrink-0 bg-red-500/10 border border-red-500/20 rounded-xl p-3.5 space-y-2 text-red-400 max-h-[120px] overflow-y-auto custom-scrollbar">
+                    <p className="font-bold text-[10px] uppercase tracking-wider flex items-center gap-1.5">
+                      <AlertCircle className="w-4 h-4" /> Feasibility Warning: Unfulfillable Folders
+                    </p>
+                    <ul className="list-disc pl-4 space-y-1 text-[10px] leading-normal">
+                      {exportPreview.unfulfillable.map((unf, idx) => (
+                        <li key={idx}>
+                          <span className="font-bold text-white">{unf.driveFolderName}</span>: {unf.reason}
+                        </li>
+                      ))}
+                    </ul>
                   </div>
                 )}
-
-                {/* Two Column Grid */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-start">
-                  
-                  {/* Left Column: Search & Results */}
-                  <div className="space-y-3">
-                    <h4 className="font-bold text-[#fafafa] uppercase tracking-wider text-[10px] text-[#71717a]">Search Drive Folders</h4>
-                    
-                    <div className="relative">
-                      <Search className="absolute left-3 top-2.5 w-4 h-4 text-[#71717a]" />
-                      <input
-                        type="text"
-                        placeholder="Type folder name to search..."
-                        value={smartExportSearch}
-                        onChange={(e) => handleSearchExportFolders(e.target.value)}
-                        className="w-full bg-[#09090b] border border-[#27272a] rounded-xl pl-9 pr-4 py-2 text-white placeholder-[#71717a] text-xs focus:outline-none focus:border-blue-500"
-                      />
-                      {searchingExportFolders && (
-                        <Loader2 className="absolute right-3 top-2.5 w-4 h-4 animate-spin text-blue-500" />
-                      )}
-                    </div>
-
-                    {sortedResults.length > 0 && (
-                      <div className="bg-[#09090b] border border-[#27272a] rounded-xl max-h-[300px] overflow-y-auto divide-y divide-[#27272a] pr-1 custom-scrollbar">
-                        {sortedResults.map((folder) => {
-                          const colKey = folder.mappedAccount?.color || "zinc";
-                          const baseColor = COLOR_MAP[colKey] || (colKey.startsWith("#") ? colKey : null) || COLOR_MAP.zinc;
-                          const isSelected = selectedExportFolders.some((f) => f.id === folder.id);
-
-                          return (
-                            <div
-                              key={folder.id}
-                              onClick={() => {
-                                if (isSelected) {
-                                  setSelectedExportFolders((prev) => prev.filter((f) => f.id !== folder.id));
-                                } else {
-                                  setSelectedExportFolders((prev) => [
-                                    ...prev,
-                                    {
-                                      ...folder,
-                                      count: Math.max(1, Math.min((folder.defaultPostCount ?? 1) * exportDays, selectedGroupIds.size)),
-                                    },
-                                  ]);
-                                }
-                              }}
-                              className={`p-2.5 hover:bg-[#18181b] cursor-pointer flex justify-between items-center transition-colors ${
-                                isSelected ? "bg-blue-500/5" : ""
-                              }`}
-                              style={{ borderLeft: `3px solid ${baseColor}` }}
-                            >
-                              <div className="flex items-center gap-2.5 truncate mr-3">
-                                <input
-                                  type="checkbox"
-                                  checked={isSelected}
-                                  readOnly
-                                  className="rounded border-[#27272a] bg-[#09090b] text-blue-600 focus:ring-blue-600/30 w-3.5 h-3.5 cursor-pointer"
-                                />
-                                <div className="truncate">
-                                  <p className="font-medium text-gray-200 truncate">{folder.name}</p>
-                                  <div className="flex items-center gap-1.5 mt-0.5 truncate">
-                                    <span
-                                      className="w-2 h-2 rounded-full flex-shrink-0"
-                                      style={{ backgroundColor: baseColor }}
-                                    />
-                                    <span className="text-[10px] text-[#71717a] font-medium flex-shrink-0">
-                                      {colKey} · {folder.defaultPostCount ?? 1}/day
-                                    </span>
-                                    {folder.mappedAccount && (
-                                      <span className="text-[10px] text-blue-400 font-medium truncate">
-                                        · linked to @{folder.mappedAccount.tiktokUsername}
-                                      </span>
-                                    )}
-                                  </div>
-                                </div>
-                              </div>
-                              <Plus className={`w-4 h-4 text-[#71717a] hover:text-white flex-shrink-0 transition-transform ${isSelected ? "rotate-45 text-red-400 hover:text-red-300" : ""}`} />
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
-                    {smartExportSearch && !searchingExportFolders && sortedResults.length === 0 && (
-                      <p className="text-[10px] text-[#71717a] italic">No folders found matching search query.</p>
-                    )}
-                  </div>
-
-                  {/* Right Column: Counts, Mix Rules & Warnings */}
-                  <div className="space-y-4">
-                    <h4 className="font-bold text-[#fafafa] uppercase tracking-wider text-[10px] text-[#71717a]">Export Volumes Configuration</h4>
-                    
-                    {sortedSelected.length === 0 ? (
-                      <div className="bg-[#09090b] border border-[#27272a] border-dashed rounded-xl p-8 text-center text-[#71717a]">
-                        No folders selected yet. Search and select folders on the left.
-                      </div>
-                    ) : (
-                      <div className="space-y-2 max-h-[300px] overflow-y-auto pr-1 custom-scrollbar">
-                        {sortedSelected.map((folder) => {
-                          const colKey = folder.mappedAccount?.color || "zinc";
-                          const baseColor = COLOR_MAP[colKey] || (colKey.startsWith("#") ? colKey : null) || COLOR_MAP.zinc;
-                          
-                          const origIndex = selectedExportFolders.findIndex((f) => f.id === folder.id);
-
-                          return (
-                            <div
-                              key={folder.id}
-                              className="flex items-center justify-between p-3 bg-blue-500/5 hover:bg-blue-500/10 border border-blue-500/20 rounded-xl transition-all"
-                              style={{ borderLeft: `3px solid ${baseColor}` }}
-                            >
-                              <div className="truncate flex-1 mr-3">
-                                <p className="font-semibold text-white truncate">{folder.name}</p>
-                                {folder.mappedAccount && (
-                                  <p className="text-[10px] text-blue-400 mt-0.5 font-medium">
-                                    Maps to Account: @{folder.mappedAccount.tiktokUsername}
-                                  </p>
-                                )}
-                              </div>
-                              <div className="flex items-center gap-3 flex-shrink-0">
-                                <div className="flex items-center bg-[#09090b] border border-[#27272a] rounded-lg overflow-hidden">
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      if (origIndex !== -1) {
-                                        setSelectedExportFolders((prev) => {
-                                          const next = [...prev];
-                                          next[origIndex] = { ...next[origIndex], count: Math.max(0, next[origIndex].count - 1) };
-                                          return next;
-                                        });
-                                      }
-                                    }}
-                                    className="p-1.5 hover:bg-[#27272a] text-[#a1a1aa] hover:text-white transition-colors cursor-pointer"
-                                  >
-                                    <Minus className="w-3.5 h-3.5" />
-                                  </button>
-                                  <span className="w-8 text-center text-xs font-bold text-white font-mono">
-                                    {folder.count}
-                                  </span>
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      if (folder.count >= selectedGroupIds.size) {
-                                        toast.error(`Per-folder count cannot exceed selected groups (${selectedGroupIds.size})!`);
-                                        return;
-                                      }
-                                      if (origIndex !== -1) {
-                                        setSelectedExportFolders((prev) => {
-                                          const next = [...prev];
-                                          next[origIndex] = { ...next[origIndex], count: next[origIndex].count + 1 };
-                                          return next;
-                                        });
-                                      }
-                                    }}
-                                    className="p-1.5 hover:bg-[#27272a] text-[#a1a1aa] hover:text-white transition-colors cursor-pointer"
-                                  >
-                                    <Plus className="w-3.5 h-3.5" />
-                                  </button>
-                                </div>
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setSelectedExportFolders((prev) => prev.filter((f) => f.id !== folder.id));
-                                  }}
-                                  className="p-1.5 bg-red-500/10 hover:bg-red-500/20 text-red-500 rounded-lg transition-colors cursor-pointer"
-                                  title="Remove folder"
-                                >
-                                  <X className="w-3.5 h-3.5" />
-                                </button>
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
-
-                    {exportPreview && exportPreview.unfulfillable.length > 0 && (
-                      <div className="bg-red-500/10 border border-red-500/20 rounded-xl p-3.5 space-y-2 text-red-400">
-                        <p className="font-bold text-[10px] uppercase tracking-wider flex items-center gap-1.5">
-                          <AlertCircle className="w-4 h-4" /> Feasibility Warning: Unfulfillable Folders
-                        </p>
-                        <ul className="list-disc pl-4 space-y-1 text-[10px] leading-normal">
-                          {exportPreview.unfulfillable.map((unf, idx) => (
-                            <li key={idx}>
-                              <span className="font-bold text-white">{unf.driveFolderName}</span>: {unf.reason}
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
-                    )}
-                  </div>
-
-                </div>
               </div>
 
               {/* Footer Summary & Action Buttons */}
@@ -4543,6 +4852,7 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
                     onClick={() => {
                       setShowSmartExport(false);
                       setSelectedExportFolders([]);
+                      resetExportDrag();
                     }}
                     className="px-4 py-2 bg-[#27272a] hover:bg-[#3f3f46] text-white text-xs font-semibold rounded-lg transition-colors cursor-pointer"
                   >
