@@ -51,11 +51,18 @@ export async function GET(
     };
   });
 
-  // Sort naturally by driveFolderName using naturalCompare
+  // Sort naturally by driveFolderName ("POL ACC 2" before "POL ACC 10");
+  // accounts without a linked folder sort last, username as tiebreak.
+  // The section page re-sorts client-side, this just guarantees a sane default order.
   sanitizedAccounts.sort((a: any, b: any) => {
-    const nameA = a.driveFolderName || "";
-    const nameB = b.driveFolderName || "";
-    return naturalCompare(nameA, nameB);
+    const nameA = a.driveFolderName as string | null;
+    const nameB = b.driveFolderName as string | null;
+    if (nameA && !nameB) return 1;
+    if (!nameA && nameB) return -1;
+    const comp = nameA && nameB ? naturalCompare(nameA, nameB) : 0;
+    return comp !== 0
+      ? comp
+      : naturalCompare(a.tiktokUsername || "", b.tiktokUsername || "");
   });
 
   return NextResponse.json({

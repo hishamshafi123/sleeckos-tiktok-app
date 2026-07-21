@@ -110,17 +110,23 @@ export async function transcribeGroup(groupId: string): Promise<string> {
       cmd,
       {
         maxBuffer: 1024 * 1024 * 50,
-        timeout: 300000,
+        // Long videos can take well past 5 minutes on a shared CPU.
+        timeout: 900000,
         env: { ...process.env, HF_HOME: process.env.HF_HOME || "/home/nextjs/.cache/huggingface" },
       },
       async (error: any, stdout: string, stderr: string) => {
         if (error) {
           console.error("[Multiplier Transcribe] stable-ts execution failed:", stderr);
+          // Include the stderr tail so the item's error text shows WHY it failed
+          // (timeout, missing model, out of memory, etc.) without log access.
+          const stderrTail = (stderr || "").trim().slice(-300);
+          const reason = error.killed ? "worker timed out after 900s" : error.message;
+          const detail = `Transcription failed: ${reason}${stderrTail ? ` — stderr: ${stderrTail}` : ""}`;
           await prisma.multiplierGroup.update({
             where: { id: groupId },
-            data: { transcriptStatus: "FAILED", errorMessage: `Transcription failed: ${error.message}` },
+            data: { transcriptStatus: "FAILED", errorMessage: detail },
           });
-          return reject(error);
+          return reject(new Error(detail));
         }
 
         if (!fs.existsSync(tempJsonPath)) {
@@ -170,6 +176,37 @@ type GroupWithCampaign = {
     infoContent: string | null;
   } | null;
 };
+
+// Retry transient Gemini failures (rate limits, 5xx, network errors) with
+// exponential backoff. ApiError from @google/genai carries an HTTP `status`;
+// 400s/auth errors are permanent and surface immediately.
+function isRetryableGeminiError(err: any): boolean {
+  const status = err?.status;
+  if (typeof status === "number") {
+    return status === 429 || status === 500 || status === 502 || status === 503 || status === 504;
+  }
+  // No HTTP status → network-level failure (fetch failed, reset, timeout)
+  const msg = String(err?.message || "").toLowerCase();
+  return /fetch failed|econnreset|etimedout|econnrefused|socket|network|timed out/.test(msg);
+}
+
+const GEMINI_RETRY_DELAYS_MS = [2000, 8000, 20000]; // up to 3 attempts, + jitter
+
+async function callGeminiWithRetry<T>(fn: () => Promise<T>): Promise<T> {
+  for (let attempt = 0; attempt <= GEMINI_RETRY_DELAYS_MS.length; attempt++) {
+    try {
+      return await fn();
+    } catch (err: any) {
+      if (attempt === GEMINI_RETRY_DELAYS_MS.length || !isRetryableGeminiError(err)) {
+        throw err;
+      }
+      const delay = GEMINI_RETRY_DELAYS_MS[attempt] + Math.random() * 1000;
+      console.warn(`[Multiplier Gemini] Attempt ${attempt + 1} failed (${err?.status ?? err?.message}); retrying in ${Math.round(delay)}ms`);
+      await new Promise((r) => setTimeout(r, delay));
+    }
+  }
+  throw new Error("unreachable");
+}
 
 // Shared Gemini pipeline: builds the prompt, calls the model, parses hook texts.
 async function generateHookTexts(group: GroupWithCampaign, count: number, useCampaignContext: boolean, customPrompt?: string): Promise<string[]> {
@@ -229,13 +266,15 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
   }
 
   const ai = new GoogleGenAI({ apiKey });
-  const response = await ai.models.generateContent({
-    model: "gemini-2.5-flash",
-    contents: prompt,
-    config: {
-      systemInstruction,
-    },
-  });
+  const response = await callGeminiWithRetry(() =>
+    ai.models.generateContent({
+      model: "gemini-2.5-flash",
+      contents: prompt,
+      config: {
+        systemInstruction,
+      },
+    })
+  );
 
   const responseText = response.text || "";
   console.log("[Multiplier Gemini Response]:", responseText);
@@ -1014,7 +1053,7 @@ export async function processBulkBatch(jobId: string) {
     // Pipeline: Whisper transcription is CPU-bound → strictly sequential.
     // Gemini hook generation is network-bound → small concurrent pool that
     // picks up each video as soon as its transcript lands.
-    const HOOK_CONCURRENCY = 3;
+    const HOOK_CONCURRENCY = 2; // keep 429 pressure low; transcription is the long pole
     type HookTask = { itemId: string; groupId: string; fileName: string };
     const hookQueue: HookTask[] = [];
     let transcriptionDone = false;
@@ -1098,6 +1137,32 @@ export async function getBulkBatch(jobId: string) {
       },
     },
   });
+}
+
+// Re-queues every FAILED item that has a group (items that failed during
+// intake have no group and cannot be retried) and restarts the batch.
+// processBulkBatch skips READY items, so only the failed ones are redone.
+export async function retryFailedBulkItems(jobId: string): Promise<{ retried: number }> {
+  const job = await prisma.multiplierBatchJob.findUnique({ where: { id: jobId } });
+  if (!job) throw new Error("Batch job not found");
+
+  const reset = await prisma.multiplierBatchJobItem.updateMany({
+    where: { jobId, status: "FAILED", groupId: { not: null } },
+    data: { status: "TRANSCRIBING", error: null },
+  });
+
+  await prisma.multiplierBatchJob.update({
+    where: { id: jobId },
+    data: { status: "PROCESSING" },
+  });
+
+  // Fire-and-forget, same pattern as finalizeBulkBatch — the isBulkProcessing
+  // lock re-queues after 5s if another batch is currently running.
+  processBulkBatch(jobId).catch((err) => {
+    console.error(`[Multiplier Bulk Batch] Failed to reprocess job ${jobId}:`, err);
+  });
+
+  return { retried: reset.count };
 }
 
 // ─── Bulk Render ─────────────────────────────────────────────────────────────

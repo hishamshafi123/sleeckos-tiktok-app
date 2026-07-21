@@ -321,6 +321,7 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
   const [bulkUploadProgress, setBulkUploadProgress] = useState<{ current: number; total: number; fileName: string } | null>(null);
   const [bulkError, setBulkError] = useState<string | null>(null);
   const [batchJobs, setBatchJobs] = useState<BulkBatchJob[]>([]);
+  const [retryingBatchId, setRetryingBatchId] = useState<string | null>(null);
   const bulkFileInputRef = useRef<HTMLInputElement>(null);
 
   // Bulk render state
@@ -999,6 +1000,38 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
 
     return () => clearInterval(intervalId);
   }, [batchJobs]);
+
+  // Retry failed items: the endpoint resets FAILED items and flips the job back to
+  // PROCESSING — refetch the job once so the card reflects it and the poll effect above resumes watching it.
+  const handleRetryFailedItems = async (jobId: string) => {
+    if (retryingBatchId) return;
+    setRetryingBatchId(jobId);
+    try {
+      const res = await fetch(`/api/multiplier/batch-jobs/${jobId}/retry-failed`, { method: "POST" });
+      if (!res.ok) {
+        let msg = `Retry failed (${res.status})`;
+        try {
+          const err = await res.json();
+          msg = err.error || msg;
+        } catch {}
+        throw new Error(msg);
+      }
+      const data: { retried?: number } = await res.json().catch(() => ({}));
+      const jobRes = await fetch(`/api/multiplier/batch-jobs/${jobId}`);
+      if (jobRes.ok) {
+        const job = await jobRes.json();
+        setBatchJobs((prev) =>
+          prev.map((j) => (j.id === jobId ? { id: job.id, status: job.status, items: job.items || [] } : j))
+        );
+      }
+      const retried = data.retried ?? 0;
+      toast.success(`Retrying ${retried} failed item${retried === 1 ? "" : "s"}…`);
+    } catch (err: any) {
+      toast.error(err.message || "Failed to retry failed items");
+    } finally {
+      setRetryingBatchId(null);
+    }
+  };
 
   const handleViewGroupInBuilder = async (groupId: string) => {
     let target = groups.find((g) => g.id === groupId);
@@ -2549,11 +2582,11 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
                       e.stopPropagation();
                       if (uploadingFiles) return;
                       if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-                        const mp4Files = Array.from(e.dataTransfer.files).filter((f) => f.type === "video/mp4" || f.name.endsWith(".mp4"));
-                        if (mp4Files.length > 0) {
-                          handleUploadVariationsDirectly(mp4Files);
+                        const videoFiles = Array.from(e.dataTransfer.files).filter((f) => f.type.startsWith("video/") || /\.(mp4|mov|webm|mkv)$/i.test(f.name));
+                        if (videoFiles.length > 0) {
+                          handleUploadVariationsDirectly(videoFiles);
                         } else {
-                          toast.error("Please drop MP4 video files only.");
+                          toast.error("Please drop video files only (MP4, MOV, WebM, MKV).");
                         }
                       }
                     }}
@@ -2578,14 +2611,14 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
                       <>
                         <Upload className="w-8 h-8 text-[#71717a] mb-2" />
                         <p className="text-sm font-semibold">Click to browse or drop video files</p>
-                        <p className="text-xs text-[#71717a] mt-1">Accepts multiple .mp4 variations</p>
+                        <p className="text-xs text-[#71717a] mt-1">Accepts multiple video variations (MP4, MOV, WebM, MKV)</p>
                       </>
                     )}
                     <input
                       ref={fileInputRef}
                       type="file"
                       multiple
-                      accept="video/mp4"
+                      accept="video/*"
                       disabled={uploadingFiles}
                       onChange={(e) => {
                         if (e.target.files && e.target.files.length > 0) {
@@ -3458,19 +3491,36 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
                     <div key={job.id} className="bg-[#09090b] border border-[#27272a] rounded-xl p-4 space-y-3">
                       <div className="flex items-center justify-between gap-3">
                         <p className="text-xs font-semibold text-[#71717a] font-mono truncate">Batch {job.id.slice(0, 8)}</p>
-                        <span
-                          className={`text-xs font-semibold px-2.5 py-0.5 rounded-full flex-shrink-0 ${
-                            job.status === "COMPLETED"
-                              ? "bg-green-500/10 text-green-500"
-                              : job.status === "FAILED"
-                              ? "bg-red-500/10 text-red-500"
-                              : "bg-amber-500/10 text-amber-500 animate-pulse"
-                          }`}
-                        >
-                          {job.status}
-                          {job.status !== "PROCESSING" && ` · ${readyCount}/${job.items.length} ready`}
-                          {failedCount > 0 && ` · ${failedCount} failed`}
-                        </span>
+                        <div className="flex items-center gap-2 flex-shrink-0">
+                          {failedCount > 0 && (
+                            <button
+                              onClick={() => handleRetryFailedItems(job.id)}
+                              disabled={retryingBatchId === job.id}
+                              className="px-2.5 py-1 bg-[#27272a] hover:bg-[#3f3f46] disabled:opacity-50 disabled:cursor-not-allowed text-white text-[10px] font-semibold rounded-lg transition-colors cursor-pointer flex items-center gap-1.5"
+                              title="Reset failed items and process them again"
+                            >
+                              {retryingBatchId === job.id ? (
+                                <Loader2 className="w-3 h-3 animate-spin" />
+                              ) : (
+                                <RefreshCw className="w-3 h-3" />
+                              )}
+                              Retry failed ({failedCount})
+                            </button>
+                          )}
+                          <span
+                            className={`text-xs font-semibold px-2.5 py-0.5 rounded-full flex-shrink-0 ${
+                              job.status === "COMPLETED"
+                                ? "bg-green-500/10 text-green-500"
+                                : job.status === "FAILED"
+                                ? "bg-red-500/10 text-red-500"
+                                : "bg-amber-500/10 text-amber-500 animate-pulse"
+                            }`}
+                          >
+                            {job.status}
+                            {job.status !== "PROCESSING" && ` · ${readyCount}/${job.items.length} ready`}
+                            {failedCount > 0 && ` · ${failedCount} failed`}
+                          </span>
+                        </div>
                       </div>
                       <div className="divide-y divide-[#27272a]">
                         {job.items.map((item) => {
@@ -3488,11 +3538,13 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
                               </p>
                               {failed ? (
                                 <span
-                                  className="flex items-center gap-1.5 text-[10px] text-red-500 font-semibold flex-shrink-0 max-w-[50%] truncate"
+                                  className="flex items-start gap-1.5 text-[10px] text-red-500 font-semibold flex-shrink-0 max-w-[50%]"
                                   title={item.error || "Processing failed"}
                                 >
-                                  <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
-                                  Failed{item.error ? ` — ${item.error}` : ""}
+                                  <AlertCircle className="w-3.5 h-3.5 flex-shrink-0 mt-px" />
+                                  <span className="line-clamp-2 break-words min-w-0">
+                                    Failed{item.error ? ` — ${item.error}` : ""}
+                                  </span>
                                 </span>
                               ) : (
                                 <div className="flex items-center gap-3 flex-shrink-0">
@@ -4568,15 +4620,22 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
 
               </div>
 
-              {/* TOP ZONE (pinned): selected accounts as compact tabs with inline counts */}
+              {/* TOP ZONE (pinned, capped): summary line stays fixed; tab list scrolls internally
+                  so the search + results zone below never gets pushed down */}
               <div className="flex-shrink-0 space-y-1.5 text-xs">
-                <div className="flex items-center justify-between">
-                  <h4 className="font-bold uppercase tracking-wider text-[10px] text-[#71717a]">
-                    Selected Accounts <span className="text-[#fafafa]">{selectedExportFolders.length}</span>
+                <div className="flex items-center justify-between gap-3">
+                  <h4 className="font-bold uppercase tracking-wider text-[10px] text-[#71717a] flex-shrink-0">
+                    Selected Accounts
                   </h4>
-                  <p className="text-[9px] text-[#71717a]">Per-account count capped at {selectedGroupIds.size} selected groups</p>
+                  <p
+                    className="text-[10px] font-semibold text-[#a1a1aa] truncate"
+                    title={`Per-account count capped at ${selectedGroupIds.size} selected groups`}
+                  >
+                    {selectedExportFolders.length} selected · {assignedCount} total videos
+                  </p>
                 </div>
-                <div className="flex flex-wrap gap-1.5 content-start p-2 bg-[#09090b] border border-[#27272a] rounded-xl max-h-[132px] overflow-y-auto custom-scrollbar">
+                {/* ~2.5 rows of tabs (tab ≈26px + 6px gap, 16px container padding) — never grows past this */}
+                <div className="flex flex-wrap gap-1.5 content-start p-2 bg-[#09090b] border border-[#27272a] rounded-xl max-h-[96px] overflow-y-auto custom-scrollbar">
                   {sortedSelected.length === 0 ? (
                     <p className="text-[10px] text-[#71717a] italic px-1 py-0.5">
                       No accounts selected — click, drag across, or paste from the results below to add.

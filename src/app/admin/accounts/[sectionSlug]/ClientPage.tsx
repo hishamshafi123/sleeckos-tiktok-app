@@ -118,20 +118,30 @@ export default function SectionPage({
   const [descDirty, setDescDirty] = useState(false);
   const [savingSection, setSavingSection] = useState(false);
 
-  // Search accounts state
+  // Search accounts state — defaults to Google Drive mode so accounts load
+  // sorted by Drive folder name (natural numeric) ascending
   const [searchQuery, setSearchQuery] = useState("");
-  const [searchMode, setSearchMode] = useState<"account" | "drive">("account");
+  const [searchMode, setSearchMode] = useState<"account" | "drive">("drive");
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
 
   const filteredAccounts = useMemo(() => {
     if (!section) return [];
 
-    // Sort by username / folder name alphabetically based on searchMode and sortDirection using naturalCompare
+    // Sort by Drive folder name (natural numeric — "POL ACC 2" before "POL ACC 10")
+    // or by username, based on searchMode. In Drive mode, accounts without a
+    // linked folder sort last with username as tiebreak. Direction inverts the comparator.
     const sorted = [...section.accounts].sort((a, b) => {
-      const valA = searchMode === "drive" ? (a.driveFolderName || "") : a.tiktokUsername;
-      const valB = searchMode === "drive" ? (b.driveFolderName || "") : b.tiktokUsername;
-
-      const comp = naturalCompare(valA, valB);
+      let comp: number;
+      if (searchMode === "drive") {
+        const nameA = a.driveFolderName;
+        const nameB = b.driveFolderName;
+        if (nameA && !nameB) comp = 1;
+        else if (!nameA && nameB) comp = -1;
+        else comp = nameA && nameB ? naturalCompare(nameA, nameB) : 0;
+        if (comp === 0) comp = naturalCompare(a.tiktokUsername, b.tiktokUsername);
+      } else {
+        comp = naturalCompare(a.tiktokUsername, b.tiktokUsername);
+      }
       return sortDirection === "asc" ? comp : -comp;
     });
 
@@ -756,6 +766,25 @@ export default function SectionPage({
                       <p className="text-sm text-gray-500">
                         {acc.tiktokDisplayName}
                       </p>
+                      {/* Drive folder — the primary sort key, shown prominently for scanning */}
+                      {acc.driveConnected && acc.driveFolderId ? (
+                        <a
+                          href={`https://drive.google.com/drive/folders/${acc.driveFolderId}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="flex items-center gap-1 mt-0.5 text-xs font-semibold text-blue-400 hover:text-blue-300 transition-colors"
+                          title="Open Google Drive folder"
+                        >
+                          <FolderOpen className="w-3 h-3" />
+                          {acc.driveFolderName || "Drive linked"}
+                          <ExternalLink className="w-2.5 h-2.5 opacity-60" />
+                        </a>
+                      ) : (
+                        <span className="flex items-center gap-1 mt-0.5 text-xs font-medium text-yellow-500/80">
+                          <FolderOpen className="w-3 h-3" />
+                          No folder linked
+                        </span>
+                      )}
                     </div>
                   </div>
                   <div className="flex items-center gap-1.5">
@@ -865,24 +894,6 @@ export default function SectionPage({
                   >
                     {acc.postMode === "DIRECT" ? "Direct Post" : "Draft"}
                   </span>
-                  {acc.driveConnected && acc.driveFolderId ? (
-                    <a
-                      href={`https://drive.google.com/drive/folders/${acc.driveFolderId}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="flex items-center gap-1 bg-blue-500/10 hover:bg-blue-500/20 text-blue-400 border border-blue-500/20 hover:border-blue-500/30 px-2.5 py-1 rounded-full transition-all text-xs font-medium"
-                      title="Open Google Drive folder"
-                    >
-                      <FolderOpen className="w-3 h-3" />
-                      {acc.driveFolderName || "Drive linked"}
-                      <ExternalLink className="w-2.5 h-2.5 ml-0.5 opacity-60" />
-                    </a>
-                  ) : (
-                    <span className="flex items-center gap-1 bg-yellow-500/10 text-yellow-500 px-2.5 py-1 rounded-full text-xs font-medium">
-                      <FolderOpen className="w-3 h-3" />
-                      No folder linked
-                    </span>
-                  )}
                 </div>
 
                 {/* Edit panel */}
