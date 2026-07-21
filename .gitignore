@@ -52,3 +52,6 @@ dev.db
 /scripts/__pycache__
 *.pyc
 
+
+# Local screenshot drop folder
+kimi image input/
