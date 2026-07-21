@@ -143,9 +143,7 @@ export async function POST(req: Request) {
     const sectionAccounts = await prisma.managedAccount.findMany({
       where: {
         isActive: true,
-        group: {
-          sectionId: folder.sectionId,
-        },
+        sectionId: folder.sectionId,
       },
       orderBy: { tiktokUsername: "asc" },
     });

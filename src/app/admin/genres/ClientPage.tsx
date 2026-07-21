@@ -335,6 +335,14 @@ interface Account {
   driveFolderName: string | null;
   driveConnected?: boolean;
   googleOAuthConnected?: boolean;
+  section?: {
+    id: string;
+    name: string;
+    slug: string;
+    color: string;
+  } | null;
+  // Groups were removed — derived from `section` in fetchAccounts so the
+  // section→group→account tree below keeps working (one group per section).
   group: {
     id: string;
     name: string;
@@ -1603,9 +1611,17 @@ export default function GenresDashboard() {
       const res = await fetch("/api/managed/genres/accounts");
       if (res.ok) {
         const data = await res.json();
-        setAccounts(data);
-        if (data.length > 0 && !selectedAccountId) {
-          setSelectedAccountId(data[0].id);
+        // Groups were removed — derive a one-group-per-section shim so the
+        // existing section→group→account tree keeps working unchanged.
+        const accounts = (data as Account[]).map((a) => ({
+          ...a,
+          group: a.section
+            ? { id: a.section.id, name: a.section.name, slug: a.section.slug, section: a.section }
+            : null,
+        }));
+        setAccounts(accounts);
+        if (accounts.length > 0 && !selectedAccountId) {
+          setSelectedAccountId(accounts[0].id);
         }
       }
     } catch {

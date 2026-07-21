@@ -5,7 +5,7 @@ import { getSession } from "@/lib/session";
 import { can } from "@/lib/services/permissions";
 import { naturalCompare } from "@/lib/utils/sorting";
 
-// GET /api/managed/sections/by-slug/[slug] — find section by slug with groups
+// GET /api/managed/sections/by-slug/[slug] — find section by slug with its accounts
 export async function GET(
   _req: NextRequest,
   { params }: { params: Promise<{ slug: string }> }
@@ -22,28 +22,17 @@ export async function GET(
   const section = await prisma.accountSection.findUnique({
     where: { slug },
     include: {
-      groups: {
-        orderBy: { sortOrder: "asc" },
+      accounts: {
+        orderBy: { createdAt: "desc" },
         include: {
-          accounts: {
-            orderBy: { createdAt: "desc" },
+          colorRef: true,
+          _count: {
             select: {
-              id: true,
-              tiktokUsername: true,
-              tiktokDisplayName: true,
-              tiktokAvatarUrl: true,
-              followerCount: true,
-              isActive: true,
-              driveConnected: true,
-              driveFolderId: true,
-              driveFolderName: true,
-              postTimeHour: true,
-              postTimeMinute: true,
-              postTimezone: true,
-              tokenExpiresAt: true,
+              scheduledPosts: {
+                where: { status: { in: ["PUBLISHED", "PENDING_DELETION", "DELETED"] } },
+              },
             },
           },
-          _count: { select: { accounts: true } },
         },
       },
     },
@@ -53,17 +42,24 @@ export async function GET(
     return NextResponse.json({ error: "Section not found" }, { status: 404 });
   }
 
-  // Sort each group's accounts list naturally by driveFolderName
-  const sectionObj = JSON.parse(JSON.stringify(section));
-  for (const group of sectionObj.groups || []) {
-    if (group.accounts && Array.isArray(group.accounts)) {
-      group.accounts.sort((a: any, b: any) => {
-        const nameA = a.driveFolderName || "";
-        const nameB = b.driveFolderName || "";
-        return naturalCompare(nameA, nameB);
-      });
-    }
-  }
+  // Sanitizing sensitive tokens from the API payload
+  const sanitizedAccounts = (section as any).accounts.map((acc: any) => {
+    const { googleAccessToken, googleRefreshToken, ...rest } = acc as any;
+    return {
+      ...rest,
+      googleOAuthConnected: !!googleRefreshToken,
+    };
+  });
 
-  return NextResponse.json(sectionObj);
+  // Sort naturally by driveFolderName using naturalCompare
+  sanitizedAccounts.sort((a: any, b: any) => {
+    const nameA = a.driveFolderName || "";
+    const nameB = b.driveFolderName || "";
+    return naturalCompare(nameA, nameB);
+  });
+
+  return NextResponse.json({
+    ...section,
+    accounts: sanitizedAccounts,
+  });
 }

@@ -5,6 +5,8 @@ import {
   ingestDriveFiles,
   claimNextVideo,
   uploadAndPublish,
+  buildPostCaption,
+  resolveCampaignFixedText,
 } from "@/lib/services/posting-pipeline";
 import { toZonedTime } from "date-fns-tz";
 
@@ -82,11 +84,7 @@ async function runScheduler() {
   const accounts = await prisma.managedAccount.findMany({
     where: { isActive: true, driveConnected: true },
     include: {
-      group: {
-        include: {
-          section: true,
-        },
-      },
+      section: true,
     },
   });
 
@@ -113,13 +111,9 @@ async function runScheduler() {
         continue;
       }
 
-      // Check section and group active status (hierarchical toggle)
-      if (!account.group.section.isActive) {
+      // Check section active status (hierarchical toggle)
+      if (!account.section.isActive) {
         results[accountKey] = "skipped_section_disabled";
-        continue;
-      }
-      if (!account.group.isActive) {
-        results[accountKey] = "skipped_group_disabled";
         continue;
       }
 
@@ -229,46 +223,13 @@ async function runScheduler() {
         continue;
       }
 
-      // ── Caption (section is STRONGEST, then group, then account) ──────
-      // Section-level description overrides everything.
-      let caption = "";
-      const sec = account.group.section;
+      // ── Caption (campaign fixedText is STRONGEST, then filename/account) ──
+      const campaignFixedText = await resolveCampaignFixedText(job.campaignId);
+      const sec = account.section;
 
-      console.log(`[PostScheduler] Caption build for ${accountKey}: captionSource=${account.captionSource}, section.descTags=${sec.descTags ? `"${sec.descTags}"` : "null"}, section.descTagCount=${sec.descTagCount}, section.descFixedText=${sec.descFixedText ? `"${sec.descFixedText}"` : "null"}, section.descFixedTextEnabled=${sec.descFixedTextEnabled}`);
+      console.log(`[PostScheduler] Caption build for ${accountKey}: captionSource=${account.captionSource}, campaign.fixedText=${campaignFixedText ? `"${campaignFixedText}"` : "null"}, section.descTags=${sec.descTags ? `"${sec.descTags}"` : "null"}, section.descTagCount=${sec.descTagCount}`);
 
-      // 1. Base text — section config takes full control when present
-      const sectionHasConfig = (sec.descFixedTextEnabled && sec.descFixedText?.trim()) || (sec.descTags && sec.descTagCount > 0);
-
-      if (sectionHasConfig) {
-        // Section owns the description — use fixed text if set, otherwise just tags (added below)
-        if (sec.descFixedTextEnabled && sec.descFixedText?.trim()) {
-          caption = sec.descFixedText.trim();
-        }
-        // No fallback to account/group — tags will be appended in step 2
-      } else if (account.captionSource === "FILENAME") {
-        caption = job.driveFileName!.replace(/\.[^.]+$/, "");
-      } else if (account.captionSource === "DEFAULT") {
-        // Fallback only when section has NO config at all
-        if (account.group.defaultDescription) {
-          caption = account.group.defaultDescription;
-        } else if (account.defaultCaption) {
-          caption = account.defaultCaption;
-        }
-      }
-
-      // 2. Always append section random tags
-      if (sec.descTags && sec.descTagCount > 0) {
-        const allTags = sec.descTags
-          .split(",")
-          .map((t: string) => t.trim())
-          .filter((t: string) => t.length > 0);
-        if (allTags.length > 0) {
-          const shuffled = [...allTags].sort(() => Math.random() - 0.5);
-          const picked = shuffled.slice(0, Math.min(sec.descTagCount, allTags.length));
-          const tagLine = picked.join(" ");
-          caption = caption ? `${caption}\n\n${tagLine}` : tagLine;
-        }
-      }
+      const caption = buildPostCaption(account, job, campaignFixedText);
 
       console.log(`[PostScheduler] Final caption for ${accountKey}: "${caption.substring(0, 200)}"`);
 

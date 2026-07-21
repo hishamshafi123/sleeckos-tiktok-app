@@ -40,10 +40,9 @@ export async function GET(req: NextRequest) {
             tiktokAvatarUrl: true,
             driveFolderId: true,
             driveFolderName: true,
-            group: {
+            section: {
               select: {
                 name: true,
-                section: { select: { name: true } },
               },
             },
           },

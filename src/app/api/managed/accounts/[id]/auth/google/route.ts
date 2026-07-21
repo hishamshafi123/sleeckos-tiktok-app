@@ -27,10 +27,9 @@ export async function GET(
     return NextResponse.json({ error: "Account not found" }, { status: 404 });
   }
 
-  // Read section and group slugs to redirect back on callback
+  // Read section slug to redirect back on callback
   const section = req.nextUrl.searchParams.get("section") || "";
-  const group = req.nextUrl.searchParams.get("group") || "";
-  const oauthState = `${id}:${section}:${group}`;
+  const oauthState = `${id}:${section}`;
 
   // Check if OAuth Client details are set in environment
   const clientId = process.env.GOOGLE_CLIENT_ID;
@@ -58,7 +57,7 @@ export async function GET(
     access_type: "offline", // requests a refresh token
     prompt: "consent",      // forces consent to guarantee refresh token is returned
     scope: ["https://www.googleapis.com/auth/drive"],
-    state: oauthState,      // pass account ID and slugs through state
+    state: oauthState,      // pass account ID and section slug through state
   });
 
   return NextResponse.redirect(authUrl);

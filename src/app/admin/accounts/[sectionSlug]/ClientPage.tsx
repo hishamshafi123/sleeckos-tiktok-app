@@ -1,45 +1,64 @@
 "use client";
-import { useState, useEffect, useCallback, use, useMemo } from "react";
+import { useState, useEffect, useCallback, useRef, use, useMemo } from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { toast } from "sonner";
+import ManagedAccountEditForm from "@/components/ManagedAccountEditForm";
+import { naturalCompare } from "@/lib/utils/sorting";
 import {
   Plus,
   Loader2,
-  X,
-  Users,
-  Trash2,
   ChevronRight,
+  Trash2,
   Power,
   FileText,
   Save,
-  ToggleLeft,
-  ToggleRight,
   Search,
+  Play,
+  Pause,
+  Clock,
+  FolderOpen,
+  Settings,
+  ExternalLink,
+  AlertCircle,
+  CheckCircle2,
+  Zap,
+  ArrowUpDown,
 } from "lucide-react";
 
 type Account = {
   id: string;
+  tiktokOpenId: string;
   tiktokUsername: string;
   tiktokDisplayName: string;
   tiktokAvatarUrl: string;
   followerCount: number;
+  followingCount: number;
+  likesCount: number;
+  videoCount: number;
+  isVerified: boolean;
   isActive: boolean;
   driveConnected: boolean;
+  driveFolderId: string | null;
+  driveFolderName: string | null;
   postTimeHour: number;
   postTimeMinute: number;
   postTimezone: string;
+  postDays: string;
+  postMode: string;
+  postTimeSlots: string;
+  postpeerAccountId: string | null;
+  defaultCaption: string | null;
+  captionSource: string;
   tokenExpiresAt: string;
-};
-
-type Group = {
-  id: string;
-  name: string;
-  slug: string;
-  description: string | null;
-  defaultDescription: string | null;
-  isActive: boolean;
-  accounts: Account[];
-  _count: { accounts: number };
+  _count: { scheduledPosts: number };
+  googleOAuthConnected?: boolean;
+  connectionState?: string;
+  lastCheckedAt?: string | null;
+  lastError?: string | null;
+  color?: string;
+  colorId?: string;
+  colorRef?: { id: string; color: string; meaning: string; defaultPostCount: number } | null;
 };
 
 type Section = {
@@ -48,12 +67,32 @@ type Section = {
   slug: string;
   color: string;
   defaultDescription: string | null;
-  descFixedText: string | null;
-  descFixedTextEnabled: boolean;
   descTags: string | null;
   descTagCount: number;
   isActive: boolean;
-  groups: Group[];
+  accounts: Account[];
+};
+
+const DAYS = [
+  { num: "1", label: "Mon" },
+  { num: "2", label: "Tue" },
+  { num: "3", label: "Wed" },
+  { num: "4", label: "Thu" },
+  { num: "5", label: "Fri" },
+  { num: "6", label: "Sat" },
+  { num: "7", label: "Sun" },
+];
+
+const COLOR_MAP: Record<string, string> = {
+  red: "#ef4444",
+  orange: "#f97316",
+  yellow: "#f59e0b",
+  green: "#10b981",
+  blue: "#3b82f6",
+  purple: "#8b5cf6",
+  pink: "#ec4899",
+  zinc: "#71717a",
+  gray: "#71717a",
 };
 
 export default function SectionPage({
@@ -62,54 +101,78 @@ export default function SectionPage({
   params: Promise<{ sectionSlug: string }>;
 }) {
   const { sectionSlug } = use(params);
+  const searchParams = useSearchParams();
   const [section, setSection] = useState<Section | null>(null);
   const [loading, setLoading] = useState(true);
-  const [showCreateGroup, setShowCreateGroup] = useState(false);
-  const [groupName, setGroupName] = useState("");
-  const [groupDesc, setGroupDesc] = useState("");
-  const [creating, setCreating] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [postingNow, setPostingNow] = useState<string | null>(null);
+  const [showAddForm, setShowAddForm] = useState(false);
+  const [addForm, setAddForm] = useState({ tiktokUsername: "", postpeerAccountId: "" });
+  const [addingAccount, setAddingAccount] = useState(false);
+  const [clockTick, setClockTick] = useState(0);
 
-  // Section-level structured description editing
-  const [sectionDesc, setSectionDesc] = useState("");
-  const [sectionDescDirty, setSectionDescDirty] = useState(false);
-  const [savingSection, setSavingSection] = useState(false);
-
-  // Structured description fields
-  const [fixedText, setFixedText] = useState("");
-  const [fixedTextEnabled, setFixedTextEnabled] = useState(true);
+  // Section-level structured description editing (hashtag pool only —
+  // fixed text moved to Campaigns, see /admin/migration-report)
   const [descTags, setDescTags] = useState("");
   const [descTagCount, setDescTagCount] = useState(3);
   const [descDirty, setDescDirty] = useState(false);
+  const [savingSection, setSavingSection] = useState(false);
 
-  // Group-level description editing
-  const [editingGroupDesc, setEditingGroupDesc] = useState<string | null>(null);
-  const [groupDescValue, setGroupDescValue] = useState("");
-
-  // Search accounts & groups state
+  // Search accounts state
   const [searchQuery, setSearchQuery] = useState("");
+  const [searchMode, setSearchMode] = useState<"account" | "drive">("account");
+  const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
 
-  const filteredGroups = useMemo(() => {
+  const filteredAccounts = useMemo(() => {
     if (!section) return [];
-    if (!searchQuery.trim()) return section.groups;
+
+    // Sort by username / folder name alphabetically based on searchMode and sortDirection using naturalCompare
+    const sorted = [...section.accounts].sort((a, b) => {
+      const valA = searchMode === "drive" ? (a.driveFolderName || "") : a.tiktokUsername;
+      const valB = searchMode === "drive" ? (b.driveFolderName || "") : b.tiktokUsername;
+
+      const comp = naturalCompare(valA, valB);
+      return sortDirection === "asc" ? comp : -comp;
+    });
+
+    if (!searchQuery.trim()) return sorted;
     const query = searchQuery.toLowerCase().trim();
-    return section.groups.map(group => {
-      // Filter accounts matching search
-      const matchingAccounts = group.accounts.filter(
-        acc =>
+    return sorted.filter((acc) => {
+      if (searchMode === "drive") {
+        return (
+          (acc.driveFolderName || "").toLowerCase().includes(query) ||
+          (acc.driveFolderId || "").toLowerCase().includes(query)
+        );
+      } else {
+        return (
           acc.tiktokUsername.toLowerCase().includes(query) ||
           acc.tiktokDisplayName.toLowerCase().includes(query)
-      );
-      // Group matches if its name matches OR it has matching accounts
-      const groupMatches = group.name.toLowerCase().includes(query);
-      if (groupMatches || matchingAccounts.length > 0) {
-        return {
-          ...group,
-          accounts: matchingAccounts.length > 0 ? matchingAccounts : group.accounts
-        };
+        );
       }
-      return null;
-    }).filter((g): g is NonNullable<typeof g> => g !== null);
-  }, [section, searchQuery]);
+    });
+  }, [section, searchQuery, searchMode, sortDirection]);
+
+  const clockRef = useRef<ReturnType<typeof setInterval>>(undefined);
+
+  // Tick the clock every second for live timezone display
+  useEffect(() => {
+    clockRef.current = setInterval(() => setClockTick((t) => t + 1), 1000);
+    return () => clearInterval(clockRef.current);
+  }, []);
+
+  const getTimeInZone = (tz: string) => {
+    try {
+      return new Date().toLocaleTimeString("en-US", {
+        timeZone: tz,
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hour12: true,
+      });
+    } catch {
+      return "--:--";
+    }
+  };
 
   const fetchSection = useCallback(async () => {
     try {
@@ -117,10 +180,6 @@ export default function SectionPage({
       if (res.ok) {
         const data = await res.json();
         setSection(data);
-        setSectionDesc(data.defaultDescription || "");
-        setSectionDescDirty(false);
-        setFixedText(data.descFixedText || "");
-        setFixedTextEnabled(data.descFixedTextEnabled ?? true);
         setDescTags(data.descTags || "");
         setDescTagCount(data.descTagCount ?? 3);
         setDescDirty(false);
@@ -136,46 +195,62 @@ export default function SectionPage({
     fetchSection();
   }, [fetchSection]);
 
-  const handleCreateGroup = async () => {
-    if (!groupName.trim() || !section) return;
-    setCreating(true);
+  // Handle Google Drive OAuth Redirect Alerts
+  useEffect(() => {
+    const success = searchParams.get("google_success");
+    const error = searchParams.get("google_error");
+    const username = searchParams.get("username");
+
+    if (success) {
+      toast.success(`Google Drive connected successfully for @${username}!`);
+      // Clean query params
+      const newUrl = window.location.pathname;
+      window.history.replaceState({}, "", newUrl);
+      fetchSection();
+    } else if (error) {
+      toast.error(`Google Drive connection failed: ${error}`);
+      // Clean query params
+      const newUrl = window.location.pathname;
+      window.history.replaceState({}, "", newUrl);
+    }
+  }, [searchParams, fetchSection]);
+
+  const addAccountManual = async () => {
+    if (!addForm.tiktokUsername.trim()) { toast.error("Enter a TikTok username"); return; }
+    if (!section) return;
+    setAddingAccount(true);
     try {
-      const res = await fetch("/api/managed/groups", {
+      const res = await fetch("/api/managed/accounts/add-manual", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          sectionId: section.id,
-          name: groupName.trim(),
-          description: groupDesc.trim() || null,
-        }),
+        body: JSON.stringify({ sectionId: section.id, ...addForm }),
       });
-      if (!res.ok) {
-        const data = await res.json();
-        throw new Error(data.error || "Failed");
-      }
-      toast.success(`Group "${groupName}" created`);
-      setGroupName("");
-      setGroupDesc("");
-      setShowCreateGroup(false);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to add");
+      toast.success(`@${addForm.tiktokUsername} added!`);
+      setAddForm({ tiktokUsername: "", postpeerAccountId: "" });
+      setShowAddForm(false);
       fetchSection();
-    } catch (err: unknown) {
-      toast.error(err instanceof Error ? err.message : "Creation failed");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed");
     } finally {
-      setCreating(false);
+      setAddingAccount(false);
     }
   };
 
-  const handleDeleteGroup = async (id: string, name: string) => {
-    if (!confirm(`Delete "${name}" and all its accounts?`)) return;
+  const postNow = async (acc: Account) => {
+    if (!acc.driveConnected) { toast.error("Link a Drive folder first"); return; }
+    setPostingNow(acc.id);
     try {
-      const res = await fetch(`/api/managed/groups/${id}`, {
-        method: "DELETE",
-      });
-      if (!res.ok) throw new Error("Delete failed");
-      toast.success(`Group "${name}" deleted`);
+      const res = await fetch(`/api/managed/accounts/${acc.id}/post-now`, { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Post failed");
+      toast.success(data.message || "Posting now...");
       fetchSection();
-    } catch {
-      toast.error("Failed to delete group");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to post");
+    } finally {
+      setPostingNow(null);
     }
   };
 
@@ -196,7 +271,7 @@ export default function SectionPage({
     }
   };
 
-  // ── Section description save ────────────────────────────────────────────────
+  // ── Section hashtag pool save ───────────────────────────────────────────────
   const saveSectionDesc = async () => {
     if (!section) return;
     setSavingSection(true);
@@ -205,8 +280,6 @@ export default function SectionPage({
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          descFixedText: fixedText.trim(),
-          descFixedTextEnabled: fixedTextEnabled,
           descTags: descTags.trim(),
           descTagCount: descTagCount,
         }),
@@ -214,8 +287,6 @@ export default function SectionPage({
       if (!res.ok) throw new Error("Failed");
       setSection({
         ...section,
-        descFixedText: fixedText.trim() || null,
-        descFixedTextEnabled: fixedTextEnabled,
         descTags: descTags.trim() || null,
         descTagCount,
       });
@@ -228,41 +299,51 @@ export default function SectionPage({
     }
   };
 
-  // ── Group toggle ────────────────────────────────────────────────────────────
-  const toggleGroup = async (groupId: string, currentActive: boolean) => {
+  const toggleActive = async (acc: Account) => {
     try {
-      const res = await fetch(`/api/managed/groups/${groupId}`, {
+      const res = await fetch(`/api/managed/accounts/${acc.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ isActive: !currentActive }),
+        body: JSON.stringify({ isActive: !acc.isActive }),
       });
-      if (!res.ok) throw new Error("Failed");
-      toast.success(currentActive ? "Group disabled" : "Group enabled");
+      if (!res.ok) throw new Error("Update failed");
+      toast.success(
+        `@${acc.tiktokUsername} ${!acc.isActive ? "activated" : "paused"}`
+      );
       fetchSection();
     } catch {
-      toast.error("Failed to toggle group");
+      toast.error("Failed to update");
     }
   };
 
-  // ── Group description save ──────────────────────────────────────────────────
-  const saveGroupDesc = async (groupId: string) => {
+  const deleteAccount = async (acc: Account) => {
+    if (
+      !confirm(
+        `Remove @${acc.tiktokUsername} from this section? This will delete all scheduled posts.`
+      )
+    )
+      return;
     try {
-      const res = await fetch(`/api/managed/groups/${groupId}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ defaultDescription: groupDescValue.trim() }),
+      const res = await fetch(`/api/managed/accounts/${acc.id}`, {
+        method: "DELETE",
       });
-      if (!res.ok) throw new Error("Failed");
-      toast.success("Group description saved");
-      setEditingGroupDesc(null);
+      if (!res.ok) throw new Error("Delete failed");
+      toast.success(`@${acc.tiktokUsername} removed`);
       fetchSection();
     } catch {
-      toast.error("Failed to save description");
+      toast.error("Failed to remove account");
     }
+  };
+
+  const startEdit = (acc: Account) => {
+    setEditingId(acc.id);
   };
 
   const formatTime = (h: number, m: number) =>
     `${h.toString().padStart(2, "0")}:${m.toString().padStart(2, "0")}`;
+
+  const isTokenExpired = (expiresAt: string) =>
+    new Date(expiresAt) < new Date();
 
   if (loading) {
     return (
@@ -325,64 +406,28 @@ export default function SectionPage({
               </button>
             </div>
             <p className="text-gray-500 text-sm">
-              {section.groups.length} group
-              {section.groups.length !== 1 ? "s" : ""} ·{" "}
-              {section.groups.reduce(
-                (s, g) => s + g._count.accounts,
-                0
-              )}{" "}
-              accounts
+              {section.accounts.length} account
+              {section.accounts.length !== 1 ? "s" : ""}
             </p>
           </div>
         </div>
         <button
-          onClick={() => setShowCreateGroup(true)}
-          className="flex items-center gap-2 bg-purple-600 hover:bg-purple-500 text-white text-sm font-semibold px-4 py-2.5 rounded-xl transition-all"
+          onClick={() => setShowAddForm(!showAddForm)}
+          className="flex items-center gap-2 bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold px-4 py-2.5 rounded-xl transition-all"
         >
           <Plus className="w-4 h-4" />
-          New Group
+          Add Account
         </button>
       </div>
 
-      {/* Section-level Structured Description */}
+      {/* Section-level Hashtag Pool (fixed text moved to Campaigns) */}
       <div className="glass border border-white/5 rounded-2xl p-5 space-y-4">
         <div className="flex items-center gap-2 text-sm font-semibold text-gray-300">
           <FileText className="w-4 h-4 text-purple-400" />
           Video Description Builder
           <span className="text-xs font-normal text-gray-600 ml-1">
-            Applied to all accounts in this section (unless overridden at group or account level)
+            Hashtags applied to all accounts in this section
           </span>
-        </div>
-
-        {/* Fixed Text Block */}
-        <div className="bg-white/3 border border-white/5 rounded-xl p-4 space-y-3">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-bold text-gray-400 uppercase tracking-wide">Fixed Text</span>
-            <button
-              onClick={() => {
-                setFixedTextEnabled(!fixedTextEnabled);
-                setDescDirty(true);
-              }}
-              className="flex items-center gap-1.5 text-xs font-semibold transition-colors"
-            >
-              {fixedTextEnabled ? (
-                <><ToggleRight className="w-5 h-5 text-green-400" /><span className="text-green-400">ON</span></>
-              ) : (
-                <><ToggleLeft className="w-5 h-5 text-gray-600" /><span className="text-gray-600">OFF</span></>
-              )}
-            </button>
-          </div>
-          <textarea
-            value={fixedText}
-            onChange={(e) => {
-              setFixedText(e.target.value);
-              setDescDirty(true);
-            }}
-            placeholder="Enter fixed text that always appears at the top of the description (e.g. Follow for more! 🎵)"
-            rows={2}
-            disabled={!fixedTextEnabled}
-            className={`w-full bg-black/20 border border-white/10 rounded-lg px-3 py-2.5 text-white text-sm placeholder-gray-600 focus:outline-none focus:border-purple-500 transition-colors resize-none ${!fixedTextEnabled ? 'opacity-40' : ''}`}
-          />
         </div>
 
         {/* Tags Pool Block */}
@@ -429,16 +474,22 @@ export default function SectionPage({
         </div>
 
         {/* Preview */}
-        {(fixedText || descTags) && (
+        {descTags && (
           <div className="bg-black/30 border border-white/5 rounded-xl p-3 space-y-1">
             <span className="text-[10px] font-bold text-gray-500 uppercase tracking-wide">Preview (example)</span>
             <div className="text-xs text-gray-300 whitespace-pre-wrap">
-              {fixedTextEnabled && fixedText ? fixedText.trim() : ''}
-              {fixedTextEnabled && fixedText && descTags ? '\n\n' : ''}
               {descTags ? descTags.split(",").filter(t => t.trim()).slice(0, descTagCount).map(t => t.trim()).join(" ") : ''}
             </div>
           </div>
         )}
+
+        <p className="text-[10px] text-gray-600">
+          Fixed description text now lives on Campaigns. Old Section/Group texts are preserved in the{" "}
+          <Link href="/admin/migration-report" className="text-purple-400 hover:text-purple-300 underline underline-offset-2">
+            Migration Report
+          </Link>{" "}
+          for manual reassignment.
+        </p>
 
         {/* Save button */}
         {descDirty && (
@@ -465,259 +516,389 @@ export default function SectionPage({
         </div>
       )}
 
-      {/* Create Group Dialog */}
-      {showCreateGroup && (
-        <div className="glass border border-purple-500/20 rounded-2xl p-6 space-y-4">
+      {/* Manual Add Form */}
+      {showAddForm && (
+        <div className="glass border border-purple-500/20 rounded-2xl p-5 space-y-3">
           <div className="flex items-center justify-between">
-            <h3 className="font-semibold text-white">Create Group</h3>
-            <button
-              onClick={() => setShowCreateGroup(false)}
-              className="text-gray-500 hover:text-white"
+            <h3 className="text-white font-semibold text-sm">Add TikTok Account</h3>
+            <a
+              href={`/api/managed/tiktok/auth?sectionId=${section.id}`}
+              className="text-xs text-purple-400 hover:text-purple-300 font-semibold transition-colors"
             >
-              <X className="w-4 h-4" />
+              Connect via TikTok OAuth →
+            </a>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className="text-xs text-gray-500 mb-1 block">TikTok Username *</label>
+              <input
+                type="text"
+                value={addForm.tiktokUsername}
+                onChange={(e) => setAddForm({ ...addForm, tiktokUsername: e.target.value })}
+                placeholder="@username"
+                className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-white text-sm placeholder-gray-600 focus:outline-none focus:border-purple-500"
+              />
+            </div>
+            <div>
+              <label className="text-xs text-gray-500 mb-1 block">PostPeer Account ID</label>
+              <input
+                type="text"
+                value={addForm.postpeerAccountId}
+                onChange={(e) => setAddForm({ ...addForm, postpeerAccountId: e.target.value })}
+                placeholder="e.g. 6a009951aebd14fd48e032c9"
+                className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-white text-sm font-mono placeholder-gray-600 focus:outline-none focus:border-purple-500"
+              />
+            </div>
+          </div>
+          <div className="flex gap-2">
+            <button
+              onClick={addAccountManual}
+              disabled={addingAccount}
+              className="flex items-center gap-2 bg-purple-600 hover:bg-purple-500 text-white text-sm font-semibold px-4 py-2 rounded-xl transition-all disabled:opacity-50"
+            >
+              {addingAccount && <Loader2 className="w-3 h-3 animate-spin" />}
+              Add Account
+            </button>
+            <button
+              onClick={() => setShowAddForm(false)}
+              className="text-gray-500 hover:text-white text-sm px-3 py-2 rounded-xl transition-all"
+            >
+              Cancel
             </button>
           </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-300 mb-2">
-              Group Name
-            </label>
-            <input
-              type="text"
-              value={groupName}
-              onChange={(e) => setGroupName(e.target.value)}
-              placeholder='e.g. "US Politics", "EDM", "Memes"'
-              className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white placeholder-gray-600 focus:outline-none focus:border-purple-500 transition-colors text-sm"
-              onKeyDown={(e) => e.key === "Enter" && handleCreateGroup()}
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-300 mb-2">
-              Description (optional)
-            </label>
-            <input
-              type="text"
-              value={groupDesc}
-              onChange={(e) => setGroupDesc(e.target.value)}
-              placeholder="Short description of this group"
-              className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white placeholder-gray-600 focus:outline-none focus:border-purple-500 transition-colors text-sm"
-            />
-          </div>
-          <button
-            onClick={handleCreateGroup}
-            disabled={!groupName.trim() || creating}
-            className="bg-purple-600 hover:bg-purple-500 disabled:opacity-40 text-white text-sm font-semibold px-5 py-2.5 rounded-xl transition-all flex items-center gap-2"
-          >
-            {creating && <Loader2 className="w-4 h-4 animate-spin" />}
-            Create Group
-          </button>
         </div>
       )}
 
-      {/* Search and Groups List */}
-      {section.groups.length > 0 && (
-        <div className="relative max-w-md">
-          <input
-            type="text"
-            placeholder="Search accounts or groups in this section..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full bg-white/5 border border-white/10 rounded-xl pl-10 pr-4 py-2.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-purple-500 transition-colors"
-          />
-          <Search className="w-4 h-4 text-gray-500 absolute left-3.5 top-1/2 -translate-y-1/2" />
-          {searchQuery && (
+      {/* Search and Accounts List */}
+      {section.accounts.length > 0 && (
+        <div className="flex flex-col sm:flex-row gap-3 items-stretch sm:items-center max-w-xl">
+          <div className="relative flex-1">
+            <input
+              type="text"
+              placeholder={searchMode === "account" ? "Search accounts in this section..." : "Search Google Drive folders/emails..."}
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="w-full bg-white/5 border border-white/10 rounded-xl pl-10 pr-8 py-2.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-purple-500 transition-colors"
+            />
+            <Search className="w-4 h-4 text-gray-500 absolute left-3.5 top-1/2 -translate-y-1/2" />
+            {searchQuery && (
+              <button
+                onClick={() => setSearchQuery("")}
+                className="text-gray-500 hover:text-white absolute right-3 top-1/2 -translate-y-1/2 text-xs font-bold font-mono p-1"
+              >
+                ×
+              </button>
+            )}
+          </div>
+
+          <div className="flex items-center gap-2 flex-shrink-0">
+            <div className="flex bg-white/5 border border-white/10 rounded-xl p-1 gap-1">
+              <button
+                onClick={() => {
+                  setSearchMode("account");
+                  setSearchQuery("");
+                }}
+                className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
+                  searchMode === "account"
+                    ? "bg-purple-600 text-white shadow"
+                    : "text-gray-400 hover:text-white"
+                }`}
+              >
+                Account Name
+              </button>
+              <button
+                onClick={() => {
+                  setSearchMode("drive");
+                  setSearchQuery("");
+                }}
+                className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
+                  searchMode === "drive"
+                    ? "bg-purple-600 text-white shadow"
+                    : "text-gray-400 hover:text-white"
+                }`}
+              >
+                Google Drive
+              </button>
+            </div>
+
             <button
-              onClick={() => setSearchQuery("")}
-              className="text-gray-500 hover:text-white absolute right-3.5 top-1/2 -translate-y-1/2 text-xs font-bold font-mono"
+              onClick={() => setSortDirection(sortDirection === "asc" ? "desc" : "asc")}
+              className="flex items-center gap-1 bg-white/5 border border-white/10 rounded-xl px-3 py-2 hover:bg-white/10 text-xs font-medium text-gray-300 hover:text-white transition-all"
+              title={sortDirection === "asc" ? "Ascending Sort" : "Descending Sort"}
             >
-              ×
+              <ArrowUpDown className="w-3.5 h-3.5" />
+              <span className="uppercase tracking-wider font-mono font-bold">{sortDirection}</span>
             </button>
-          )}
+          </div>
         </div>
       )}
 
-      {section.groups.length === 0 && !showCreateGroup ? (
+      {section.accounts.length === 0 ? (
         <div className="glass border border-white/5 rounded-2xl p-12 text-center">
-          <Users className="w-12 h-12 text-gray-600 mx-auto mb-4" />
+          <Plus className="w-12 h-12 text-gray-600 mx-auto mb-4" />
           <h3 className="text-lg font-semibold text-white mb-2">
-            No groups yet
+            No accounts yet
           </h3>
           <p className="text-gray-500 text-sm mb-6">
-            Create groups to organize your TikTok accounts
+            Add TikTok accounts to start managing them
           </p>
           <button
-            onClick={() => setShowCreateGroup(true)}
-            className="bg-purple-600 hover:bg-purple-500 text-white text-sm font-semibold px-5 py-2.5 rounded-xl transition-all inline-flex items-center gap-2"
+            onClick={() => setShowAddForm(true)}
+            className="inline-flex items-center gap-2 bg-purple-600 hover:bg-purple-500 text-white text-sm font-semibold px-5 py-2.5 rounded-xl transition-all"
           >
             <Plus className="w-4 h-4" />
-            Create First Group
+            Add First Account
           </button>
         </div>
       ) : (
-        <div className="space-y-4">
-          {filteredGroups.length === 0 ? (
+        <div className="space-y-3">
+          {filteredAccounts.length === 0 ? (
             <div className="glass border border-white/5 rounded-2xl p-8 text-center text-gray-500 text-sm">
-              No matching accounts or groups found for "{searchQuery}"
+              No matching accounts found for "{searchQuery}"
             </div>
           ) : (
-            filteredGroups.map((group) => (
-            <div
-              key={group.id}
-              className={`glass border border-white/5 rounded-2xl overflow-hidden hover:border-white/10 transition-all ${
-                !group.isActive ? "opacity-50" : ""
-              }`}
-            >
-              <div className="p-6">
-                <div className="flex items-start justify-between mb-4">
-                  <div className="flex-1">
-                    <div className="flex items-center gap-3">
-                      <Link
-                        href={`/admin/accounts/${section.slug}/${group.slug}`}
-                        className="text-lg font-bold text-white hover:underline"
-                      >
-                        {group.name}
-                      </Link>
-                      {/* Group toggle */}
-                      <button
-                        onClick={() => toggleGroup(group.id, group.isActive)}
-                        className={`flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium transition-all ${
-                          group.isActive
-                            ? "bg-green-500/10 text-green-400 hover:bg-green-500/20"
-                            : "bg-red-500/10 text-red-400 hover:bg-red-500/20"
+            filteredAccounts.map((acc) => {
+              const colKey = acc.colorRef?.color || acc.color || "zinc";
+              const baseColor = COLOR_MAP[colKey] || (colKey.startsWith("#") ? colKey : null) || COLOR_MAP.zinc;
+              const isSpecialColor = colKey !== "zinc" && colKey !== "gray";
+              return (
+                <div
+                  key={acc.id}
+                  className="glass border rounded-2xl overflow-hidden transition-all"
+                  style={{
+                    borderLeft: `4px solid ${baseColor}`,
+                    borderColor: isSpecialColor ? `${baseColor}60` : undefined,
+                    backgroundColor: isSpecialColor ? `${baseColor}1f` : undefined,
+                    boxShadow: isSpecialColor ? `0 4px 20px ${baseColor}08` : undefined,
+                  }}
+                >
+                  <div className="p-5">
+                {/* Top row */}
+                <div className="flex items-center justify-between mb-4">
+                  <div className="flex items-center gap-3">
+                    <div className="relative">
+                      <img
+                        src={acc.tiktokAvatarUrl || "/default-avatar.png"}
+                        alt={acc.tiktokUsername}
+                        className="w-12 h-12 rounded-full object-cover"
+                      />
+                      <div
+                        className={`absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 rounded-full border-2 border-[#0a0a0f] ${
+                          acc.isActive ? "bg-green-500" : "bg-gray-500"
                         }`}
-                        title={group.isActive ? "Disable group" : "Enable group"}
-                      >
-                        {group.isActive ? (
-                          <ToggleRight className="w-3.5 h-3.5" />
-                        ) : (
-                          <ToggleLeft className="w-3.5 h-3.5" />
-                        )}
-                        {group.isActive ? "On" : "Off"}
-                      </button>
+                      />
                     </div>
-                    {group.description && (
-                      <p className="text-sm text-gray-500 mt-0.5">
-                        {group.description}
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="font-bold text-white">
+                          @{acc.tiktokUsername}
+                        </span>
+                        {acc.isVerified && (
+                          <span className="text-blue-400 text-xs">✓</span>
+                        )}
+                        {acc.connectionState === "needs_reauth" && (
+                          <div className="flex items-center gap-1.5">
+                            <span className="flex items-center gap-1 text-[10px] text-red-400 bg-red-400/10 px-2 py-0.5 rounded-full">
+                              <AlertCircle className="w-3.5 h-3.5" />
+                              Needs Re-auth
+                            </span>
+                            <a
+                              href={`/api/managed/tiktok/auth?sectionId=${section.id}`}
+                              className="text-[10px] text-purple-400 hover:text-purple-300 bg-purple-500/10 border border-purple-500/20 px-2 py-0.5 rounded-full transition-all font-semibold"
+                              title="Reconnect this TikTok account"
+                            >
+                              Reconnect
+                            </a>
+                          </div>
+                        )}
+                        {acc.connectionState === "not_found" && (
+                          <div className="flex items-center gap-1.5">
+                            <span className="flex items-center gap-1 text-[10px] text-red-400 bg-red-400/10 px-2 py-0.5 rounded-full" title={acc.lastError || ""}>
+                              <AlertCircle className="w-3.5 h-3.5" />
+                              Not Found
+                            </span>
+                            <button
+                              onClick={() => startEdit(acc)}
+                              className="text-[10px] text-amber-400 hover:text-amber-300 bg-amber-500/10 border border-amber-500/20 px-2 py-0.5 rounded-full transition-all font-semibold"
+                              title="Open Settings to update PostPeer ID"
+                            >
+                              Fix ID
+                            </button>
+                          </div>
+                        )}
+                        {acc.connectionState === "checking" && (
+                          <span className="flex items-center gap-1 text-[10px] text-amber-400 bg-amber-400/10 px-2 py-0.5 rounded-full animate-pulse">
+                            <Loader2 className="w-3 h-3 animate-spin" />
+                            Checking...
+                          </span>
+                        )}
+                        {(acc.connectionState === "healthy" || (!acc.connectionState && !isTokenExpired(acc.tokenExpiresAt))) && (
+                          <span className="flex items-center gap-1 text-[10px] text-green-400 bg-green-400/10 px-2 py-0.5 rounded-full">
+                            <CheckCircle2 className="w-3.5 h-3.5" />
+                            Healthy
+                          </span>
+                        )}
+                        {!acc.connectionState && isTokenExpired(acc.tokenExpiresAt) && (
+                          <div className="flex items-center gap-1.5">
+                            <span className="flex items-center gap-1 text-[10px] text-red-400 bg-red-400/10 px-2 py-0.5 rounded-full">
+                              <AlertCircle className="w-3.5 h-3.5" />
+                              Token expired
+                            </span>
+                            <a
+                              href={`/api/managed/tiktok/auth?sectionId=${section.id}`}
+                              className="text-[10px] text-purple-400 hover:text-purple-300 bg-purple-500/10 border border-purple-500/20 px-2 py-0.5 rounded-full transition-all font-semibold"
+                            >
+                              Reconnect
+                            </a>
+                          </div>
+                        )}
+                      </div>
+                      <p className="text-sm text-gray-500">
+                        {acc.tiktokDisplayName}
                       </p>
-                    )}
+                    </div>
                   </div>
-                  <div className="flex items-center gap-2">
-                    <Link
-                      href={`/admin/accounts/${section.slug}/${group.slug}`}
-                      className="text-sm text-purple-400 hover:text-purple-300 font-medium transition-colors"
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      onClick={() => postNow(acc)}
+                      disabled={postingNow === acc.id || !acc.driveConnected || !acc.postpeerAccountId}
+                      className="flex items-center gap-1 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/20 text-amber-400 text-xs font-semibold px-3 py-1.5 rounded-lg transition-all disabled:opacity-40"
+                      title={!acc.driveConnected ? "Link Drive folder first" : !acc.postpeerAccountId ? "Set PostPeer Account ID first" : "Post next video now"}
                     >
-                      Manage →
-                    </Link>
+                      {postingNow === acc.id ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <Zap className="w-3.5 h-3.5" />
+                      )}
+                      Post Now
+                    </button>
+                    <button
+                      onClick={() => toggleActive(acc)}
+                      className={`p-2 rounded-lg transition-all ${
+                        acc.isActive
+                          ? "text-green-400 hover:bg-green-400/10"
+                          : "text-gray-500 hover:bg-white/5"
+                      }`}
+                      title={acc.isActive ? "Pause" : "Activate"}
+                    >
+                      {acc.isActive ? (
+                        <Pause className="w-4 h-4" />
+                      ) : (
+                        <Play className="w-4 h-4" />
+                      )}
+                    </button>
                     <button
                       onClick={() =>
-                        handleDeleteGroup(group.id, group.name)
+                        editingId === acc.id
+                          ? setEditingId(null)
+                          : startEdit(acc)
                       }
-                      className="p-1.5 rounded-lg text-gray-600 hover:text-red-400 hover:bg-red-400/10 transition-all"
+                      className="p-2 rounded-lg text-gray-500 hover:text-white hover:bg-white/5 transition-all"
+                      title="Settings"
                     >
-                      <Trash2 className="w-3.5 h-3.5" />
+                      <Settings className="w-4 h-4" />
+                    </button>
+                    <button
+                      onClick={() => deleteAccount(acc)}
+                      className="p-2 rounded-lg text-gray-600 hover:text-red-400 hover:bg-red-400/10 transition-all"
+                      title="Remove"
+                    >
+                      <Trash2 className="w-4 h-4" />
                     </button>
                   </div>
                 </div>
 
-                {/* Group-level Video Description */}
-                <div className="mb-4">
-                  {editingGroupDesc === group.id ? (
-                    <div className="space-y-2">
-                      <textarea
-                        value={groupDescValue}
-                        onChange={(e) => setGroupDescValue(e.target.value)}
-                        placeholder="Group video description (overrides section description)..."
-                        rows={2}
-                        className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white text-xs placeholder-gray-600 focus:outline-none focus:border-purple-500 transition-colors resize-none"
-                        autoFocus
-                      />
-                      <div className="flex items-center gap-2">
-                        <button
-                          onClick={() => saveGroupDesc(group.id)}
-                          className="flex items-center gap-1.5 bg-purple-600 hover:bg-purple-500 text-white text-xs font-semibold px-3 py-1.5 rounded-lg transition-all"
-                        >
-                          <Save className="w-3 h-3" />
-                          Save
-                        </button>
-                        <button
-                          onClick={() => setEditingGroupDesc(null)}
-                          className="text-xs text-gray-500 hover:text-white transition-colors"
-                        >
-                          Cancel
-                        </button>
-                      </div>
-                    </div>
-                  ) : (
-                    <button
-                      onClick={() => {
-                        setEditingGroupDesc(group.id);
-                        setGroupDescValue(group.defaultDescription || "");
-                      }}
-                      className="flex items-center gap-1.5 text-xs text-gray-500 hover:text-purple-400 transition-colors"
+                {/* Stats row */}
+                <div className="flex items-center gap-5 text-sm mb-3">
+                  <div>
+                    <span className="text-white font-semibold">
+                      {acc.followerCount.toLocaleString()}
+                    </span>
+                    <span className="text-gray-600 ml-1">followers</span>
+                  </div>
+                  <div>
+                    <span className="text-white font-semibold">
+                      {acc.likesCount.toLocaleString()}
+                    </span>
+                    <span className="text-gray-600 ml-1">likes</span>
+                  </div>
+                  <div>
+                    <span className="text-white font-semibold">
+                      {acc.videoCount.toLocaleString()}
+                    </span>
+                    <span className="text-gray-600 ml-1">videos</span>
+                  </div>
+                  <div>
+                    <span className="text-white font-semibold">
+                      {acc._count.scheduledPosts}
+                    </span>
+                    <span className="text-gray-600 ml-1">published</span>
+                  </div>
+                </div>
+
+                {/* Info chips */}
+                <div className="flex flex-wrap gap-2 text-xs">
+                  {/* Live clock in account timezone */}
+                  <span className="flex items-center gap-1 bg-purple-500/10 text-purple-400 px-2.5 py-1 rounded-full font-mono" key={clockTick}>
+                    🕐 {getTimeInZone(acc.postTimezone)}
+                    <span className="text-purple-400/60 ml-0.5">{acc.postTimezone.split("/").pop()?.replace(/_/g, " ")}</span>
+                  </span>
+                  <span className="flex items-center gap-1 bg-white/5 text-gray-400 px-2.5 py-1 rounded-full">
+                    <Clock className="w-3 h-3" />
+                    {(acc.postTimeSlots || formatTime(acc.postTimeHour, acc.postTimeMinute)).split(",").map(s => s.trim()).join(" · ")}
+                  </span>
+                  <span className="flex items-center gap-1 bg-white/5 text-gray-400 px-2.5 py-1 rounded-full">
+                    📅{" "}
+                    {acc.postDays
+                      .split(",")
+                      .map(
+                        (d) => DAYS.find((day) => day.num === d)?.label || d
+                      )
+                      .join(", ")}
+                  </span>
+                  <span
+                    className={`px-2.5 py-1 rounded-full ${
+                      acc.postMode === "DIRECT"
+                        ? "bg-green-500/10 text-green-400"
+                        : "bg-blue-500/10 text-blue-400"
+                    }`}
+                  >
+                    {acc.postMode === "DIRECT" ? "Direct Post" : "Draft"}
+                  </span>
+                  {acc.driveConnected && acc.driveFolderId ? (
+                    <a
+                      href={`https://drive.google.com/drive/folders/${acc.driveFolderId}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex items-center gap-1 bg-blue-500/10 hover:bg-blue-500/20 text-blue-400 border border-blue-500/20 hover:border-blue-500/30 px-2.5 py-1 rounded-full transition-all text-xs font-medium"
+                      title="Open Google Drive folder"
                     >
-                      <FileText className="w-3 h-3" />
-                      {group.defaultDescription
-                        ? `Description: ${group.defaultDescription.substring(0, 60)}${group.defaultDescription.length > 60 ? "..." : ""}`
-                        : "Set group video description..."}
-                    </button>
+                      <FolderOpen className="w-3 h-3" />
+                      {acc.driveFolderName || "Drive linked"}
+                      <ExternalLink className="w-2.5 h-2.5 ml-0.5 opacity-60" />
+                    </a>
+                  ) : (
+                    <span className="flex items-center gap-1 bg-yellow-500/10 text-yellow-500 px-2.5 py-1 rounded-full text-xs font-medium">
+                      <FolderOpen className="w-3 h-3" />
+                      No folder linked
+                    </span>
                   )}
                 </div>
 
-                {/* Account avatars preview */}
-                {group.accounts.length > 0 ? (
-                  <div className="space-y-2">
-                    {group.accounts.slice(0, 5).map((acc) => (
-                      <div
-                        key={acc.id}
-                        className="flex items-center justify-between px-3 py-2.5 rounded-xl bg-white/3 hover:bg-white/5 transition-colors"
-                      >
-                        <div className="flex items-center gap-3">
-                          <img
-                            src={acc.tiktokAvatarUrl || "/default-avatar.png"}
-                            alt={acc.tiktokUsername}
-                            className="w-8 h-8 rounded-full object-cover"
-                          />
-                          <div>
-                            <p className="text-sm font-medium text-white">
-                              @{acc.tiktokUsername}
-                            </p>
-                            <p className="text-xs text-gray-500">
-                              {acc.followerCount.toLocaleString()} followers
-                            </p>
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-3 text-xs">
-                          <span
-                            className={`px-2 py-0.5 rounded-full ${
-                              acc.isActive
-                                ? "bg-green-500/10 text-green-400"
-                                : "bg-gray-500/10 text-gray-500"
-                            }`}
-                          >
-                            {acc.isActive ? "Active" : "Paused"}
-                          </span>
-                          <span className="text-gray-600">
-                            {formatTime(acc.postTimeHour, acc.postTimeMinute)}
-                          </span>
-                          {acc.driveConnected && (
-                            <span className="text-blue-400" title="Drive linked">
-                              📂
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                    ))}
-                    {group.accounts.length > 5 && (
-                      <p className="text-xs text-gray-600 text-center pt-1">
-                        +{group.accounts.length - 5} more accounts
-                      </p>
-                    )}
+                {/* Edit panel */}
+                {editingId === acc.id && (
+                  <div className="mt-4 pt-4 border-t border-white/5">
+                    <ManagedAccountEditForm
+                      accountId={acc.id}
+                      onClose={() => setEditingId(null)}
+                      onSave={() => fetchSection()}
+                    />
                   </div>
-                ) : (
-                  <p className="text-sm text-gray-600">No accounts yet</p>
                 )}
               </div>
             </div>
-          )))}
+          );
+        }))}
         </div>
       )}
     </div>

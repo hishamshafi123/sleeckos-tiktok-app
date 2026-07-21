@@ -49,9 +49,7 @@ export async function GET(
       { tiktokVideoId: { not: null } },
     ],
     account: {
-      group: {
-        sectionId,
-      },
+      sectionId,
     },
   };
 
@@ -84,7 +82,7 @@ export async function GET(
         select: {
           tiktokUsername: true,
           tiktokAvatarUrl: true,
-          group: {
+          section: {
             select: {
               name: true,
             },
@@ -112,7 +110,7 @@ export async function GET(
         publishedAt: p.publishedAt || p.createdAt,
         username: p.account.tiktokUsername,
         avatarUrl: p.account.tiktokAvatarUrl,
-        groupName: p.account.group.name,
+        sectionName: p.account.section.name,
       };
     }),
   });

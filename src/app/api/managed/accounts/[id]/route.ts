@@ -70,8 +70,8 @@ export async function PATCH(
   // Profile
   if (body.tiktokUsername !== undefined) data.tiktokUsername = body.tiktokUsername.replace(/^@/, "");
 
-  // Group reassignment
-  if (body.groupId !== undefined) data.groupId = body.groupId;
+  // Section reassignment
+  if (body.sectionId !== undefined) data.sectionId = body.sectionId;
 
   // Account color tag
   if (body.color !== undefined) data.color = body.color;
@@ -149,7 +149,7 @@ export async function GET(
     where: { id },
     include: {
       colorRef: true,
-      group: { include: { section: true } },
+      section: true,
       scheduledPosts: {
         orderBy: { scheduledFor: "desc" },
         take: 20,

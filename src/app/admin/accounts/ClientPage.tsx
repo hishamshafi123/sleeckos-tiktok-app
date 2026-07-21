@@ -8,7 +8,6 @@ import { naturalCompare } from "@/lib/utils/sorting";
 import {
   Plus,
   FolderOpen,
-  Users,
   MonitorPlay,
   Loader2,
   Trash2,
@@ -37,7 +36,7 @@ type VideoLink = {
   publishedAt: string | null;
   username: string;
   avatarUrl: string;
-  groupName: string;
+  sectionName: string;
 };
 
 function VideoLinksPanel({ sectionId, sectionColor }: { sectionId: string; sectionColor: string }) {
@@ -170,7 +169,7 @@ function VideoLinksPanel({ sectionId, sectionColor }: { sectionId: string; secti
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-1.5">
                           <span className="text-xs text-gray-300 font-medium truncate">@{v.username}</span>
-                          <span className="text-[9px] text-gray-600">{v.groupName}</span>
+                          <span className="text-[9px] text-gray-600">{v.sectionName}</span>
                         </div>
                         <p className="text-[10px] text-gray-500 truncate">
                           {v.caption?.slice(0, 60) || "No caption"}
@@ -203,14 +202,7 @@ type Section = {
   isActive: boolean;
   defaultDescription: string | null;
   sortOrder: number;
-  totalGroups: number;
   totalAccounts: number;
-  groups: {
-    id: string;
-    name: string;
-    slug: string;
-    _count: { accounts: number };
-  }[];
 };
 
 const COLOR_PRESETS = [
@@ -347,7 +339,7 @@ export default function AccountsPage() {
   };
 
   const handleDelete = async (id: string, name: string) => {
-    if (!confirm(`Delete "${name}" and all its groups and accounts?`)) return;
+    if (!confirm(`Delete "${name}" and all its accounts?`)) return;
     try {
       const res = await fetch(`/api/managed/sections/${id}`, {
         method: "DELETE",
@@ -375,7 +367,7 @@ export default function AccountsPage() {
         <div>
           <h1 className="text-2xl font-bold text-white">TikTok Accounts</h1>
           <p className="text-gray-500 mt-1">
-            Manage your TikTok accounts organized by sections and groups
+            Manage your TikTok accounts organized by sections
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -502,7 +494,7 @@ export default function AccountsPage() {
                       </p>
                       <div className="flex items-center gap-1.5 mt-1">
                         <span className="text-[9px] font-semibold text-gray-500 truncate">
-                          {acc.group.section.name} / {acc.group.name}
+                          {acc.section.name}
                         </span>
                       </div>
                     </div>
@@ -628,43 +620,11 @@ export default function AccountsPage() {
 
                 <div className="flex items-center gap-4 text-sm text-gray-400 mb-5">
                   <span className="flex items-center gap-1.5">
-                    <FolderOpen className="w-3.5 h-3.5" />
-                    {section.totalGroups} group
-                    {section.totalGroups !== 1 ? "s" : ""}
-                  </span>
-                  <span className="flex items-center gap-1.5">
                     <MonitorPlay className="w-3.5 h-3.5" />
                     {section.totalAccounts} account
                     {section.totalAccounts !== 1 ? "s" : ""}
                   </span>
                 </div>
-
-                {/* Groups preview */}
-                {section.groups.length > 0 ? (
-                  <div className="space-y-1.5 mb-4">
-                    {section.groups.slice(0, 4).map((g) => (
-                      <Link
-                        key={g.id}
-                        href={`/admin/accounts/${section.slug}/${g.slug}`}
-                        className="flex items-center justify-between px-3 py-2 rounded-lg bg-white/3 hover:bg-white/5 transition-colors"
-                      >
-                        <span className="text-sm text-gray-300">{g.name}</span>
-                        <span className="text-xs text-gray-600">
-                          {g._count.accounts} acc
-                        </span>
-                      </Link>
-                    ))}
-                    {section.groups.length > 4 && (
-                      <p className="text-xs text-gray-600 text-center pt-1">
-                        +{section.groups.length - 4} more groups
-                      </p>
-                    )}
-                  </div>
-                ) : (
-                  <p className="text-xs text-gray-600 mb-4">
-                    No groups yet — click to add one
-                  </p>
-                )}
 
                 <VideoLinksPanel sectionId={section.id} sectionColor={section.color} />
 

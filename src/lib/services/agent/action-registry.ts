@@ -500,7 +500,7 @@ const actions: ActionDefinition[] = [
 
   {
     name: "search_accounts",
-    description: "Search managed TikTok accounts by username. Returns up to 25 accounts with their color, section/group, posting schedule, and connection state.",
+    description: "Search managed TikTok accounts by username. Returns up to 25 accounts with their color, section, posting schedule, and connection state.",
     parameters: {
       type: "object",
       properties: {
@@ -515,15 +515,14 @@ const actions: ActionDefinition[] = [
         where: p.query
           ? { tiktokUsername: { contains: String(p.query).trim(), mode: "insensitive" } }
           : {},
-        include: { group: { include: { section: true } } },
+        include: { section: true },
       });
       accounts.sort((a, b) => naturalCompare(a.tiktokUsername, b.tiktokUsername));
       return accounts.slice(0, 25).map((a) => ({
         username: a.tiktokUsername,
         displayName: a.tiktokDisplayName || undefined,
         color: a.color,
-        section: a.group.section.name,
-        group: a.group.name,
+        section: a.section.name,
         postTimeSlots: a.postTimeSlots,
         postDays: a.postDays,
         connectionState: a.connectionState,

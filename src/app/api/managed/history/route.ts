@@ -66,7 +66,7 @@ export async function GET(req: NextRequest) {
 
   // Section / account filters
   if (sectionId) {
-    where.account = { group: { sectionId } };
+    where.account = { sectionId };
   }
   if (accountId) {
     where.accountId = accountId;
@@ -99,7 +99,7 @@ export async function GET(req: NextRequest) {
             tiktokAvatarUrl: true,
             driveFolderId: true,
             driveFolderName: true,
-            group: { select: { name: true, section: { select: { id: true, name: true } } } },
+            section: { select: { id: true, name: true } },
           },
         },
       },

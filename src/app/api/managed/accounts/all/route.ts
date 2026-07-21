@@ -27,16 +27,10 @@ export async function GET() {
       color: true,
       colorId: true,
       colorRef: true,
-      group: {
+      section: {
         select: {
           name: true,
           slug: true,
-          section: {
-            select: {
-              name: true,
-              slug: true,
-            }
-          },
         },
       },
     },

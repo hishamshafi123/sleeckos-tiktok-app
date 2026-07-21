@@ -16,15 +16,15 @@ export async function POST(req: NextRequest) {
   }
 
   const body = await req.json();
-  const { groupId, tiktokUsername, postpeerAccountId } = body as {
-    groupId: string;
+  const { sectionId, tiktokUsername, postpeerAccountId } = body as {
+    sectionId: string;
     tiktokUsername: string;
     postpeerAccountId?: string;
   };
 
-  if (!groupId || !tiktokUsername?.trim()) {
+  if (!sectionId || !tiktokUsername?.trim()) {
     return NextResponse.json(
-      { error: "Group ID and TikTok username are required." },
+      { error: "Section ID and TikTok username are required." },
       { status: 400 }
     );
   }
@@ -40,13 +40,12 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // Verify group exists
-  const group = await prisma.accountGroup.findUnique({
-    where: { id: groupId },
-    include: { section: true },
+  // Verify section exists
+  const section = await prisma.accountSection.findUnique({
+    where: { id: sectionId },
   });
-  if (!group) {
-    return NextResponse.json({ error: "Group not found" }, { status: 404 });
+  if (!section) {
+    return NextResponse.json({ error: "Section not found" }, { status: 404 });
   }
 
   // Check for duplicate username in this group
@@ -64,7 +63,7 @@ export async function POST(req: NextRequest) {
 
   const account = await prisma.managedAccount.create({
     data: {
-      groupId,
+      sectionId,
       tiktokUsername: username,
       tiktokDisplayName: username,
       postpeerAccountId: postpeerAccountId?.trim() || null,

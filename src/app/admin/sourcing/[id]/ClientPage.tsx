@@ -14,7 +14,7 @@ type Account = {
   tiktokDisplayName: string;
   tiktokAvatarUrl: string;
   isActive: boolean;
-  group: { name: string; section: { name: string } };
+  section: { name: string } | null;
 };
 
 type Source = {
@@ -59,7 +59,7 @@ type AllAccount = {
   id: string;
   tiktokUsername: string;
   tiktokAvatarUrl: string;
-  group: { name: string; section: { name: string } };
+  section: { name: string } | null;
 };
 
 function formatCount(n: string | number) {
@@ -223,7 +223,7 @@ export default function NichePage({ params }: { params: Promise<{ id: string }> 
   const filteredAccounts = allAccounts.filter(a =>
     !assignedIds.has(a.id) &&
     (a.tiktokUsername.toLowerCase().includes(accountSearch.toLowerCase()) ||
-     a.group.name.toLowerCase().includes(accountSearch.toLowerCase()))
+     (a.section?.name || "").toLowerCase().includes(accountSearch.toLowerCase()))
   );
 
   return (
@@ -278,7 +278,7 @@ export default function NichePage({ params }: { params: Promise<{ id: string }> 
                 <button onClick={() => setShowAccountPicker(false)}><X className="w-4 h-4 text-gray-500" /></button>
               </div>
               <input value={accountSearch} onChange={e => setAccountSearch(e.target.value)}
-                placeholder="Search by username or group..."
+                placeholder="Search by username or section..."
                 className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-white text-sm placeholder-gray-600 focus:outline-none focus:border-purple-500" />
               <div className="max-h-60 overflow-y-auto space-y-1">
                 {filteredAccounts.length === 0 ? (
@@ -289,7 +289,7 @@ export default function NichePage({ params }: { params: Promise<{ id: string }> 
                       <img src={a.tiktokAvatarUrl || "/default-avatar.png"} className="w-7 h-7 rounded-full object-cover" alt={a.tiktokUsername} />
                       <div>
                         <p className="text-white text-sm font-medium">@{a.tiktokUsername}</p>
-                        <p className="text-gray-600 text-xs">{a.group.section.name} → {a.group.name}</p>
+                        <p className="text-gray-600 text-xs">{a.section?.name}</p>
                       </div>
                     </div>
                     <button onClick={() => addAccount(a.id)}
@@ -316,7 +316,7 @@ export default function NichePage({ params }: { params: Promise<{ id: string }> 
                     <img src={a.tiktokAvatarUrl || "/default-avatar.png"} className="w-9 h-9 rounded-full object-cover" alt={a.tiktokUsername} />
                     <div>
                       <p className="text-white font-semibold text-sm">@{a.tiktokUsername}</p>
-                      <p className="text-gray-600 text-xs">{a.group.section.name} → {a.group.name}</p>
+                      <p className="text-gray-600 text-xs">{a.section?.name}</p>
                     </div>
                   </div>
                   <button onClick={() => removeAccount(a.id, a.tiktokUsername)}

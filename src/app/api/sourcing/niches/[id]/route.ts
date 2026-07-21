@@ -30,7 +30,7 @@ export async function GET(
               tiktokDisplayName: true,
               tiktokAvatarUrl: true,
               isActive: true,
-              group: { select: { name: true, section: { select: { name: true } } } },
+              section: { select: { name: true } },
             },
           },
         },

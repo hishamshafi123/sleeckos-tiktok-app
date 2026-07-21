@@ -132,6 +132,9 @@ model Campaign {
   
   // Rich info content
   infoContent            String?     @db.Text
+
+  // Fixed text prepended to auto-post descriptions (resolved per post via PostJob.campaignId)
+  fixedText              String?
   
   // Resources
   resources              CampaignResource[]
@@ -183,39 +186,20 @@ model AccountSection {
   color                String         @default("#8b5cf6")
   icon                 String?
   defaultDescription   String?        // Legacy — kept for backward compat
-  descFixedText        String?        // Fixed text portion of description
-  descFixedTextEnabled Boolean        @default(true)  // Toggle for fixed text
   descTags             String?        // Comma-separated tag pool (e.g. "#music,#viral,#fyp")
   descTagCount         Int            @default(3)     // How many tags to randomly select per video
   isActive             Boolean        @default(true)  // Master toggle
   sortOrder            Int            @default(0)
   createdAt            DateTime       @default(now())
   updatedAt            DateTime       @updatedAt
-  groups               AccountGroup[]
+  accounts             ManagedAccount[]
   clipFolders          ClipFolder[]
-}
-
-model AccountGroup {
-  id                 String         @id @default(uuid())
-  sectionId          String
-  section            AccountSection @relation(fields: [sectionId], references: [id], onDelete: Cascade)
-  name               String
-  slug               String
-  description        String?
-  defaultDescription String?        // Group-level video description (overrides section)
-  isActive           Boolean        @default(true) // Group toggle — disables all accounts in group
-  sortOrder          Int            @default(0)
-  createdAt          DateTime       @default(now())
-  updatedAt          DateTime       @updatedAt
-  accounts           ManagedAccount[]
-
-  @@unique([sectionId, slug])
 }
 
 model ManagedAccount {
   id                    String       @id @default(uuid())
-  groupId               String
-  group                 AccountGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  sectionId             String
+  section               AccountSection @relation(fields: [sectionId], references: [id], onDelete: Cascade)
 
   // TikTok identity (from Login Kit OAuth — optional when using PostPeer)
   tiktokOpenId          String?      @unique
@@ -285,6 +269,8 @@ model ManagedAccount {
   clipMixerItems        ClipMixerItem[]
   sheetCells            SheetCell[]
   warmupEnrollment      WarmupEnrollment?
+
+  @@index([sectionId])
 }
 
 model AccountColor {

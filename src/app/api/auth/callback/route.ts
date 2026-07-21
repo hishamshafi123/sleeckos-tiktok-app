@@ -18,11 +18,11 @@ export async function GET(request: Request) {
   const cookieStore = await cookies();
   const savedNonce = cookieStore.get("oauth_state")?.value;
 
-  // Parse state: "nonce:flow" or "nonce:managed:groupId"
+  // Parse state: "nonce:flow" or "nonce:managed:sectionId"
   const stateParts = stateParam.split(":");
   const receivedNonce = stateParts[0] || "";
   const flow = stateParts[1] || "login";
-  const managedGroupId = flow === "managed" ? stateParts[2] : null;
+  const managedSectionId = flow === "managed" ? stateParts[2] : null;
 
   const errorRedirect = (reason: string, redirectPath?: string) =>
     NextResponse.redirect(
@@ -80,22 +80,21 @@ export async function GET(request: Request) {
   // ══════════════════════════════════════════════════════════════════════════
   // MANAGED FLOW — adding a TikTok account to the management panel
   // ══════════════════════════════════════════════════════════════════════════
-  if (flow === "managed" && managedGroupId) {
-    // Verify the group exists
-    const group = await prisma.accountGroup.findUnique({
-      where: { id: managedGroupId },
-      include: { section: true },
+  if (flow === "managed" && managedSectionId) {
+    // Verify the section exists
+    const section = await prisma.accountSection.findUnique({
+      where: { id: managedSectionId },
     });
 
-    if (!group) {
-      return errorRedirect("group_not_found", "/admin/accounts");
+    if (!section) {
+      return errorRedirect("section_not_found", "/admin/accounts");
     }
 
     // Upsert the managed account
     await prisma.managedAccount.upsert({
       where: { tiktokOpenId: tokenData.open_id },
       create: {
-        groupId: managedGroupId,
+        sectionId: managedSectionId,
         tiktokOpenId: tokenData.open_id,
         tiktokUnionId: tiktokUser.union_id ?? null,
         tiktokUsername: username,
@@ -120,7 +119,7 @@ export async function GET(request: Request) {
         statsUpdatedAt: new Date(),
       },
       update: {
-        groupId: managedGroupId,
+        sectionId: managedSectionId,
         tiktokUsername: username,
         tiktokDisplayName: tiktokUser.display_name || "Unknown",
         tiktokAvatarUrl: tiktokUser.avatar_url || "",
@@ -145,9 +144,9 @@ export async function GET(request: Request) {
       },
     });
 
-    // Redirect back to the group page
+    // Redirect back to the section page
     return NextResponse.redirect(
-      `${baseUrl}/admin/accounts/${group.section.slug}/${group.slug}`
+      `${baseUrl}/admin/accounts/${section.slug}`
     );
   }
 

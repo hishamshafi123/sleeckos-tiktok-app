@@ -1,54 +1,13 @@
 export const dynamic = "force-dynamic";
-import { NextRequest, NextResponse } from "next/server";
-import prisma from "@/lib/db";
-import { getSession } from "@/lib/session";
-import { can } from "@/lib/services/permissions";
+import { NextResponse } from "next/server";
 
-// POST /api/managed/groups — create a group in a section
-export async function POST(req: NextRequest) {
-  const session = await getSession();
-  if (!session) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-  if (!(await can(session.userId, "accounts"))) {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-  }
+// Groups were removed — accounts now belong directly to Sections.
+const GONE = { error: "Groups were removed; accounts now belong directly to Sections" };
 
-  const { sectionId, name, description } = await req.json();
-  if (!sectionId || !name?.trim()) {
-    return NextResponse.json(
-      { error: "sectionId and name are required" },
-      { status: 400 }
-    );
-  }
+export async function GET() {
+  return NextResponse.json(GONE, { status: 410 });
+}
 
-  // Verify section exists
-  const section = await prisma.accountSection.findUnique({
-    where: { id: sectionId },
-  });
-  if (!section) {
-    return NextResponse.json({ error: "Section not found" }, { status: 404 });
-  }
-
-  const slug = name
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/(^-|-$)/g, "");
-
-  const maxOrder = await prisma.accountGroup.aggregate({
-    where: { sectionId },
-    _max: { sortOrder: true },
-  });
-
-  const group = await prisma.accountGroup.create({
-    data: {
-      sectionId,
-      name: name.trim(),
-      slug,
-      description: description?.trim() || null,
-      sortOrder: (maxOrder._max.sortOrder ?? -1) + 1,
-    },
-  });
-
-  return NextResponse.json(group, { status: 201 });
+export async function POST() {
+  return NextResponse.json(GONE, { status: 410 });
 }

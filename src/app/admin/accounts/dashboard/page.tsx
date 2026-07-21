@@ -19,10 +19,9 @@ export default async function AccountsDashboard() {
   const weekAgo = new Date(todayStart.getTime() - 7 * 86400000);
   const monthAgo = new Date(todayStart.getTime() - 30 * 86400000);
 
-  const [totalAccounts, totalSections, totalGroups, postsToday, postsWeek, postsMonth, failedPosts, recentPosts] = await Promise.all([
+  const [totalAccounts, totalSections, postsToday, postsWeek, postsMonth, failedPosts, recentPosts] = await Promise.all([
     prisma.managedAccount.count(),
     prisma.accountSection.count(),
-    prisma.accountGroup.count(),
     prisma.scheduledPost.count({ where: { status: { in: ["PUBLISHED", "PENDING_DELETION", "DELETED"] }, publishedAt: { gte: todayStart } } }),
     prisma.scheduledPost.count({ where: { status: { in: ["PUBLISHED", "PENDING_DELETION", "DELETED"] }, publishedAt: { gte: weekAgo } } }),
     prisma.scheduledPost.count({ where: { status: { in: ["PUBLISHED", "PENDING_DELETION", "DELETED"] }, publishedAt: { gte: monthAgo } } }),
@@ -32,7 +31,7 @@ export default async function AccountsDashboard() {
       take: 15,
       include: {
         account: {
-          select: { tiktokUsername: true, tiktokAvatarUrl: true, group: { select: { name: true, section: { select: { name: true } } } } },
+          select: { tiktokUsername: true, tiktokAvatarUrl: true, section: { select: { name: true } } },
         },
       },
     }),
@@ -75,14 +74,10 @@ export default async function AccountsDashboard() {
       )}
 
       {/* Platform stats */}
-      <div className="grid grid-cols-3 gap-4 text-center">
+      <div className="grid grid-cols-2 gap-4 text-center">
         <div className="glass border border-white/5 rounded-2xl p-5">
           <div className="text-2xl font-black text-white">{totalSections}</div>
           <div className="text-sm text-gray-500">Sections</div>
-        </div>
-        <div className="glass border border-white/5 rounded-2xl p-5">
-          <div className="text-2xl font-black text-white">{totalGroups}</div>
-          <div className="text-sm text-gray-500">Groups</div>
         </div>
         <div className="glass border border-white/5 rounded-2xl p-5">
           <div className="text-2xl font-black text-white">{totalAccounts}</div>
@@ -98,7 +93,7 @@ export default async function AccountsDashboard() {
             <thead>
               <tr className="border-b border-white/5">
                 <th className="text-left px-4 py-3 text-gray-500 font-medium">Account</th>
-                <th className="text-left px-4 py-3 text-gray-500 font-medium">Section / Group</th>
+                <th className="text-left px-4 py-3 text-gray-500 font-medium">Section</th>
                 <th className="text-left px-4 py-3 text-gray-500 font-medium">Caption</th>
                 <th className="text-left px-4 py-3 text-gray-500 font-medium">Status</th>
                 <th className="text-left px-4 py-3 text-gray-500 font-medium">Error / Info</th>
@@ -114,7 +109,7 @@ export default async function AccountsDashboard() {
                       <span className="text-white text-xs">@{post.account.tiktokUsername}</span>
                     </div>
                   </td>
-                  <td className="px-4 py-3 text-gray-500 text-xs">{post.account.group.section.name} / {post.account.group.name}</td>
+                  <td className="px-4 py-3 text-gray-500 text-xs">{post.account.section.name}</td>
                   <td className="px-4 py-3 text-gray-400 text-xs max-w-[200px] truncate">{post.caption || "—"}</td>
                   <td className="px-4 py-3">
                     <span className={`text-xs px-2 py-0.5 rounded-full ${

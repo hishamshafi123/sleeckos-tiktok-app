@@ -1,102 +1,17 @@
 export const dynamic = "force-dynamic";
-import { NextRequest, NextResponse } from "next/server";
-import prisma from "@/lib/db";
-import { getSession } from "@/lib/session";
-import { can } from "@/lib/services/permissions";
+import { NextResponse } from "next/server";
 
-// GET /api/managed/groups/[id] — get group with accounts
-export async function GET(
-  _req: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
-) {
-  const session = await getSession();
-  if (!session) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-  if (!(await can(session.userId, "accounts"))) {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-  }
+// Groups were removed — accounts now belong directly to Sections.
+const GONE = { error: "Groups were removed; accounts now belong directly to Sections" };
 
-  const { id } = await params;
-  const group = await prisma.accountGroup.findUnique({
-    where: { id },
-    include: {
-      section: true,
-      accounts: {
-        orderBy: { createdAt: "desc" },
-        include: {
-          _count: { select: { scheduledPosts: true } },
-        },
-      },
-    },
-  });
-
-  if (!group) {
-    return NextResponse.json({ error: "Group not found" }, { status: 404 });
-  }
-
-  return NextResponse.json(group);
+export async function GET() {
+  return NextResponse.json(GONE, { status: 410 });
 }
 
-// PATCH /api/managed/groups/[id] — update group
-export async function PATCH(
-  req: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
-) {
-  const session = await getSession();
-  if (!session) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-  if (!(await can(session.userId, "accounts"))) {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-  }
-
-  const { id } = await params;
-  const body = await req.json();
-  const data: Record<string, unknown> = {};
-
-  if (body.name !== undefined) {
-    data.name = body.name.trim();
-    data.slug = body.name
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/(^-|-$)/g, "");
-  }
-  if (body.description !== undefined) data.description = body.description;
-  if (body.defaultDescription !== undefined) data.defaultDescription = body.defaultDescription || null;
-  if (body.isActive !== undefined) data.isActive = body.isActive;
-  if (body.sortOrder !== undefined) data.sortOrder = body.sortOrder;
-
-  const group = await prisma.accountGroup.update({
-    where: { id },
-    data,
-  });
-
-  // Cascade isActive to all accounts in this group
-  if (body.isActive !== undefined) {
-    await prisma.managedAccount.updateMany({
-      where: { groupId: id },
-      data: { isActive: body.isActive },
-    });
-  }
-
-  return NextResponse.json(group);
+export async function PATCH() {
+  return NextResponse.json(GONE, { status: 410 });
 }
 
-// DELETE /api/managed/groups/[id] — delete group (cascades accounts)
-export async function DELETE(
-  _req: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
-) {
-  const session = await getSession();
-  if (!session) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-  if (!(await can(session.userId, "accounts"))) {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-  }
-
-  const { id } = await params;
-  await prisma.accountGroup.delete({ where: { id } });
-  return NextResponse.json({ ok: true });
+export async function DELETE() {
+  return NextResponse.json(GONE, { status: 410 });
 }

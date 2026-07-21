@@ -11,13 +11,13 @@ export async function GET(req: NextRequest) {
 
   const appUrl = process.env.APP_URL || "https://sleeckos.com";
 
-  // Parse state (accountId:sectionSlug:groupSlug)
-  const [accountId, section, group] = (state || "").split(":");
+  // Parse state (accountId:sectionSlug — legacy states were accountId:sectionSlug:groupSlug)
+  const [accountId, section] = (state || "").split(":");
 
   // Build the original dashboard redirect URL to send users back on errors/successes
   let dashboardUrl = `${appUrl}/admin/accounts`;
-  if (section && group) {
-    dashboardUrl = `${appUrl}/admin/accounts/${section}/${group}`;
+  if (section) {
+    dashboardUrl = `${appUrl}/admin/accounts/${section}`;
   }
 
   if (error) {

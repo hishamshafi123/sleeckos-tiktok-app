@@ -376,6 +376,67 @@ export async function pollJobStatus(jobId: string) {
 }
 
 /**
+ * Resolve the fixed description text for a post's campaign, if any.
+ * Returns null when the job has no campaign or the campaign has no fixedText.
+ */
+export async function resolveCampaignFixedText(campaignId: string | null): Promise<string | null> {
+  if (!campaignId) return null;
+  const campaign = await prisma.campaign.findUnique({
+    where: { id: campaignId },
+    select: { fixedText: true },
+  });
+  return campaign?.fixedText ?? null;
+}
+
+/**
+ * Build the post caption. Shared by the cron post-scheduler and the manual
+ * "post now" flow so both produce identical captions.
+ *
+ * Chain (strongest first):
+ *  1. Campaign fixedText — when the job's campaignId resolves to a Campaign
+ *     with non-empty fixedText, that text is the description base.
+ *  2. captionSource FILENAME → the Drive file name (minus extension);
+ *     captionSource DEFAULT → the account's defaultCaption.
+ *  3. Section hashtag pool — descTagCount random tags from
+ *     account.section.descTags are always appended when configured.
+ */
+export function buildPostCaption(
+  account: {
+    captionSource: string;
+    defaultCaption: string | null;
+    section: { descTags: string | null; descTagCount: number };
+  },
+  job: { driveFileName: string | null },
+  campaignFixedText?: string | null
+): string {
+  let caption = "";
+
+  if (campaignFixedText?.trim()) {
+    caption = campaignFixedText.trim();
+  } else if (account.captionSource === "FILENAME") {
+    caption = (job.driveFileName || "").replace(/\.[^.]+$/, "");
+  } else if (account.captionSource === "DEFAULT") {
+    caption = account.defaultCaption || "";
+  }
+
+  const sec = account.section;
+  if (sec.descTags && sec.descTagCount > 0) {
+    const allTags = sec.descTags
+      .split(",")
+      .map((t: string) => t.trim())
+      .filter((t: string) => t.length > 0);
+    if (allTags.length > 0) {
+      const shuffled = [...allTags].sort(() => Math.random() - 0.5);
+      const picked = shuffled.slice(0, Math.min(sec.descTagCount, allTags.length));
+      const tagLine = picked.join(" ");
+      caption = caption ? `${caption}\n\n${tagLine}` : tagLine;
+    }
+  }
+
+  return caption;
+}
+
+/**
  * Post the next available video for an account immediately ("post now" flow).
  * Shared by the post-now API route and the agent layer. Throws Errors with
  * user-facing messages; callers map them to HTTP statuses or tool results.
@@ -383,7 +444,7 @@ export async function pollJobStatus(jobId: string) {
 export async function postNowForAccount(accountId: string): Promise<{ jobId: string; fileName: string }> {
   const account = await prisma.managedAccount.findUnique({
     where: { id: accountId },
-    include: { group: { include: { section: true } } },
+    include: { section: true },
   });
 
   if (!account) {
@@ -409,37 +470,9 @@ export async function postNowForAccount(accountId: string): Promise<{ jobId: str
     throw new Error("No unposted video files in the linked Drive folder.");
   }
 
-  // 3. Compute caption (section overrides group/account)
-  let caption = "";
-  const sec = account.group.section;
-  const sectionHasConfig = (sec.descFixedTextEnabled && sec.descFixedText?.trim()) || (sec.descTags && sec.descTagCount > 0);
-
-  if (sectionHasConfig) {
-    if (sec.descFixedTextEnabled && sec.descFixedText?.trim()) {
-      caption = sec.descFixedText.trim();
-    }
-  } else if (account.captionSource === "FILENAME") {
-    caption = job.driveFileName!.replace(/\.[^.]+$/, "");
-  } else if (account.captionSource === "DEFAULT") {
-    if (account.group.defaultDescription) {
-      caption = account.group.defaultDescription;
-    } else if (account.defaultCaption) {
-      caption = account.defaultCaption;
-    }
-  }
-
-  if (sec.descTags && sec.descTagCount > 0) {
-    const allTags = sec.descTags
-      .split(",")
-      .map((t: string) => t.trim())
-      .filter((t: string) => t.length > 0);
-    if (allTags.length > 0) {
-      const shuffled = [...allTags].sort(() => Math.random() - 0.5);
-      const picked = shuffled.slice(0, Math.min(sec.descTagCount, allTags.length));
-      const tagLine = picked.join(" ");
-      caption = caption ? `${caption}\n\n${tagLine}` : tagLine;
-    }
-  }
+  // 3. Compute caption (campaign fixedText overrides filename/account caption)
+  const campaignFixedText = await resolveCampaignFixedText(job.campaignId);
+  const caption = buildPostCaption(account, job, campaignFixedText);
 
   // 4. Asynchronously start the upload & publish process (handled by pipeline)
   (async () => {

@@ -29,19 +29,12 @@ export async function GET() {
         driveFolderName: true,
         driveConnected: true,
         googleRefreshToken: true,
-        group: {
+        section: {
           select: {
             id: true,
             name: true,
             slug: true,
-            section: {
-              select: {
-                id: true,
-                name: true,
-                slug: true,
-                color: true,
-              }
-            }
+            color: true,
           },
         },
         genreConfigs: {

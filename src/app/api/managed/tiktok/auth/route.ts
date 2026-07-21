@@ -4,8 +4,8 @@ import { cookies } from "next/headers";
 import { getSession } from "@/lib/session";
 import crypto from "crypto";
 
-// GET /api/managed/tiktok/auth?groupId=X
-// Initiates TikTok OAuth for adding a managed account to a specific group
+// GET /api/managed/tiktok/auth?sectionId=X
+// Initiates TikTok OAuth for adding a managed account to a specific section
 export async function GET(request: Request) {
   const session = await getSession();
   if (!session || session.role !== "ADMIN") {
@@ -13,14 +13,14 @@ export async function GET(request: Request) {
   }
 
   const url = new URL(request.url);
-  const groupId = url.searchParams.get("groupId");
-  if (!groupId) {
-    return NextResponse.json({ error: "groupId is required" }, { status: 400 });
+  const sectionId = url.searchParams.get("sectionId");
+  if (!sectionId) {
+    return NextResponse.json({ error: "sectionId is required" }, { status: 400 });
   }
 
   const nonce = crypto.randomBytes(16).toString("hex");
-  // State format: "nonce:managed:groupId"
-  const state = `${nonce}:managed:${groupId}`;
+  // State format: "nonce:managed:sectionId"
+  const state = `${nonce}:managed:${sectionId}`;
 
   const cookieStore = await cookies();
   cookieStore.set("oauth_state", nonce, {

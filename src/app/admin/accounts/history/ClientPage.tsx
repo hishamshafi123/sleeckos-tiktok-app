@@ -40,7 +40,7 @@ type HistoryPost = {
     tiktokAvatarUrl: string | null;
     driveFolderId: string | null;
     driveFolderName: string | null;
-    group: { name: string; section: { id: string; name: string } };
+    section: { id: string; name: string };
   };
 };
 
@@ -584,7 +584,7 @@ export default function HistoryPage() {
                             @{post.account.tiktokUsername}
                           </a>
                           <span className="text-[10px] text-zinc-500 whitespace-nowrap">
-                            {post.account.group.name} · {post.account.group.section.name}
+                            {post.account.section.name}
                           </span>
                           {post.account.driveFolderName && (
                             post.account.driveFolderId ? (

@@ -17,19 +17,13 @@ export async function GET() {
   const sections = await prisma.accountSection.findMany({
     orderBy: { sortOrder: "asc" },
     include: {
-      groups: {
-        orderBy: { sortOrder: "asc" },
-        include: {
-          _count: { select: { accounts: true } },
-        },
-      },
+      _count: { select: { accounts: true } },
     },
   });
 
   const enriched = sections.map((s) => ({
     ...s,
-    totalGroups: s.groups.length,
-    totalAccounts: s.groups.reduce((sum: number, g) => sum + g._count.accounts, 0),
+    totalAccounts: s._count.accounts,
   }));
 
   return NextResponse.json(enriched);

@@ -32,7 +32,7 @@ type QueuePost = {
     tiktokAvatarUrl: string;
     driveFolderId: string | null;
     driveFolderName: string | null;
-    group: { name: string; section: { name: string } };
+    section: { name: string };
   };
 };
 
@@ -420,8 +420,7 @@ export default function QueuePage() {
                           @{post.account.tiktokUsername}
                         </span>
                         <span className="text-gray-600 text-xs flex items-center gap-1.5 flex-wrap">
-                          {post.account.group.section.name} /{" "}
-                          {post.account.group.name}
+                          {post.account.section.name}
                           {post.account.driveFolderId && (
                             <a
                               href={`https://drive.google.com/drive/folders/${post.account.driveFolderId}`}
