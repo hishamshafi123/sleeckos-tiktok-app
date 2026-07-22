@@ -1022,6 +1022,16 @@ interface QueueState {
   paused: boolean;
   processing: boolean;
   staleRendering: number;
+  pendingItems?: number;
+  active?: {
+    batchId: string;
+    batchName: string;
+    itemId: string;
+    position: number;
+    totalInBatch: number;
+    startedAt: string;
+  } | null;
+  batchCounts?: Record<string, number>;
 }
 
 const HISTORY_FILTERS: { key: HistoryFilter; label: string }[] = [
@@ -1406,6 +1416,55 @@ function BatchHistoryList({ onOpenBatch }: { onOpenBatch: (id: string) => void }
         </div>
       </div>
 
+      {/* Live queue status strip — what's happening right now */}
+      {queue && (
+        <div className="flex items-center gap-3 flex-wrap bg-[#18181b] border border-[#27272a] rounded-lg px-3 py-2">
+          {queue.paused ? (
+            <span className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wide text-amber-400">
+              <span className="w-1.5 h-1.5 rounded-full bg-amber-400" /> Paused
+            </span>
+          ) : queue.active ? (
+            <span className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wide text-emerald-400">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" /> Rendering
+            </span>
+          ) : (queue.pendingItems ?? 0) > 0 ? (
+            <span className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wide text-amber-400">
+              <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" /> Queued
+            </span>
+          ) : (
+            <span className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wide text-zinc-500">
+              <span className="w-1.5 h-1.5 rounded-full bg-zinc-600" /> Idle
+            </span>
+          )}
+
+          {queue.active && !queue.paused && (
+            <span className="text-[11px] text-zinc-300 truncate min-w-0">
+              <button
+                type="button"
+                onClick={() => onOpenBatch(queue.active!.batchId)}
+                className="font-semibold text-white hover:text-[#E11D48] hover:underline underline-offset-2 transition-colors cursor-pointer"
+                title="Open this batch"
+              >
+                {queue.active.batchName}
+              </button>
+              {" — video "}
+              <span className="font-mono text-emerald-400">{queue.active.position}/{queue.active.totalInBatch}</span>
+              {" · started "}
+              {fmtRelative(queue.active.startedAt)}
+            </span>
+          )}
+
+          <span className="text-[10px] text-zinc-500 ml-auto whitespace-nowrap">
+            {(queue.pendingItems ?? 0) > 0 && <span className="text-amber-400/90 font-semibold">{queue.pendingItems} video{queue.pendingItems === 1 ? "" : "s"} queued · </span>}
+            {(queue.batchCounts?.QUEUED ?? 0) + (queue.batchCounts?.RENDERING ?? 0) > 0 && (
+              <span>{(queue.batchCounts?.QUEUED ?? 0) + (queue.batchCounts?.RENDERING ?? 0)} active batches · </span>
+            )}
+            {queue.batchCounts?.COMPLETED ? <span className="text-emerald-400/80">{queue.batchCounts.COMPLETED} completed</span> : null}
+            {queue.batchCounts?.FAILED ? <span className="text-red-400/80"> · {queue.batchCounts.FAILED} failed</span> : null}
+          </span>
+        </div>
+      )}
+
       {/* Toolbar — filter chips + search */}
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div className="flex items-center gap-1.5 flex-wrap">
@@ -1516,6 +1575,7 @@ function BatchHistoryList({ onOpenBatch }: { onOpenBatch: (id: string) => void }
                 })
               }
               onOpen={() => onOpenBatch(b.id)}
+              live={queue?.active && queue.active.batchId === b.id ? { position: queue.active.position, totalInBatch: queue.active.totalInBatch } : null}
               dl={dlMap[b.id]}
               dlStarting={!!dlStarting[b.id]}
               onStartDownload={() => handleStartDownload(b.id)}
@@ -1653,6 +1713,7 @@ function BatchHistoryCard(props: {
   selected: boolean;
   onToggleSelect: () => void;
   onOpen: () => void;
+  live?: { position: number; totalInBatch: number } | null;
   dl?: DownloadStatus;
   dlStarting: boolean;
   onStartDownload: () => void;
@@ -1697,7 +1758,7 @@ function BatchHistoryCard(props: {
               {b.name}
             </button>
             <ModeChip mode={b.mode} />
-            <BatchStatusChip status={b.status} />
+            <BatchStatusChip status={b.status} live={props.live} />
           </div>
           {/* Meta line */}
           <p className="text-[10px] text-[#71717a] mt-1 flex items-center gap-1.5 flex-wrap">
@@ -1904,7 +1965,7 @@ function ConfirmDialog(props: {
   );
 }
 
-function BatchStatusChip({ status }: { status: string }) {
+function BatchStatusChip({ status, live }: { status: string; live?: { position: number; totalInBatch: number } | null }) {
   const cls =
     status === "COMPLETED"
       ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20"
@@ -1913,7 +1974,15 @@ function BatchStatusChip({ status }: { status: string }) {
         : status === "RENDERING" || status === "QUEUED"
           ? "bg-amber-500/10 text-amber-400 border-amber-500/20"
           : "bg-[#27272a]/50 text-[#a1a1aa] border-[#3f3f46]";
-  return <span className={`px-2 py-0.5 rounded-md border text-[9px] font-bold uppercase ${cls}`}>{status}</span>;
+  return (
+    <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md border text-[9px] font-bold uppercase ${cls}`}>
+      {status === "RENDERING" && <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />}
+      {status}
+      {live && status === "RENDERING" && (
+        <span className="normal-case font-mono text-amber-300/90">{live.position}/{live.totalInBatch}</span>
+      )}
+    </span>
+  );
 }
 
 // ── Batch status view (pool progress, retries, distribute, smart download) ──

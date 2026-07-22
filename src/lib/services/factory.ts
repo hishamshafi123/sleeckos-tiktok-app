@@ -885,10 +885,46 @@ export async function recoverStaleFactoryItems(staleMinutes = 2): Promise<number
 /** Queue state for the operator UI: pause/processing flags + stale-item count. */
 export async function getFactoryQueueOverview() {
   const staleBefore = new Date(Date.now() - 2 * 60 * 1000);
-  const staleRendering = await prisma.factoryBatchItem.count({
-    where: { status: "RENDERING", updatedAt: { lt: staleBefore } },
-  });
-  return { ...getFactoryQueueState(), staleRendering };
+  const [staleRendering, pendingItems, activeItem, batchGroups] = await Promise.all([
+    prisma.factoryBatchItem.count({
+      where: { status: "RENDERING", updatedAt: { lt: staleBefore } },
+    }),
+    prisma.factoryBatchItem.count({ where: { status: "PENDING" } }),
+    // The item currently being rendered (freshest RENDERING item)
+    prisma.factoryBatchItem.findFirst({
+      where: { status: "RENDERING" },
+      orderBy: { updatedAt: "desc" },
+      include: { batch: { select: { id: true, name: true } } },
+    }),
+    prisma.factoryBatch.groupBy({ by: ["status"], _count: { _all: true } }),
+  ]);
+
+  let active: {
+    batchId: string; batchName: string; itemId: string;
+    position: number; totalInBatch: number; startedAt: string;
+  } | null = null;
+  if (activeItem) {
+    const [position, totalInBatch] = await Promise.all([
+      // position = how many items of this batch are already terminal (+1 for the active one)
+      prisma.factoryBatchItem.count({
+        where: { batchId: activeItem.batchId, status: { in: ["COMPLETED", "FAILED", "CANCELED"] } },
+      }),
+      prisma.factoryBatchItem.count({ where: { batchId: activeItem.batchId } }),
+    ]);
+    active = {
+      batchId: activeItem.batchId,
+      batchName: activeItem.batch.name,
+      itemId: activeItem.id,
+      position: position + 1,
+      totalInBatch,
+      startedAt: activeItem.updatedAt.toISOString(),
+    };
+  }
+
+  const batchCounts: Record<string, number> = {};
+  for (const g of batchGroups) batchCounts[g.status] = g._count._all;
+
+  return { ...getFactoryQueueState(), staleRendering, pendingItems, active, batchCounts };
 }
 
 export async function pauseFactoryQueue() {
