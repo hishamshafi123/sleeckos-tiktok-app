@@ -48,8 +48,6 @@ type Account = {
   postMode: string;
   postTimeSlots: string;
   postpeerAccountId: string | null;
-  defaultCaption: string | null;
-  captionSource: string;
   tokenExpiresAt: string;
   _count: { scheduledPosts: number };
   googleOAuthConnected?: boolean;
@@ -66,7 +64,6 @@ type Section = {
   name: string;
   slug: string;
   color: string;
-  defaultDescription: string | null;
   descTags: string | null;
   descTagCount: number;
   isActive: boolean;

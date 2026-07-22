@@ -9,7 +9,6 @@ type BackupGroup = {
   name: string;
   slug: string;
   description: string | null;
-  defaultDescription: string | null;
 };
 
 type BackupSection = {
@@ -90,8 +89,9 @@ export default function MigrationReportClientPage() {
         <p className="text-zinc-500 mt-1 text-sm max-w-3xl">
           The Groups layer was removed and Section fixed text moved to Campaigns.
           Nothing was auto-assigned: the old values below are preserved verbatim from the migration backups.
-          Copy each text into the <span className="text-zinc-300 font-medium">fixedText</span> field of the
-          appropriate Campaign to reactivate it. Hashtag pools (<span className="text-zinc-300 font-medium">descTags</span>)
+          Add each text to the <span className="text-zinc-300 font-medium">Fixed texts</span> pool on the
+          appropriate Campaign&rsquo;s detail page to reactivate it — one entry per text; one is chosen at
+          random per post. Hashtag pools (<span className="text-zinc-300 font-medium">descTags</span>)
           are unchanged and still live on Sections.
         </p>
       </div>
@@ -160,10 +160,10 @@ export default function MigrationReportClientPage() {
                         <span className="text-sm font-medium text-zinc-200">{g.name}</span>
                         <span className="text-[10px] text-zinc-600 font-mono">/{g.slug}</span>
                       </div>
-                      {g.defaultDescription ? (
-                        <CopyBlock text={g.defaultDescription} label={`${g.name} default description`} />
+                      {g.description ? (
+                        <CopyBlock text={g.description} label={`${g.name} description`} />
                       ) : (
-                        <p className="text-[11px] text-zinc-600 italic">No default description</p>
+                        <p className="text-[11px] text-zinc-600 italic">No description</p>
                       )}
                     </div>
                   ))}

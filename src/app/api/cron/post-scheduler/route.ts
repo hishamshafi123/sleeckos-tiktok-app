@@ -6,7 +6,7 @@ import {
   claimNextVideo,
   uploadAndPublish,
   buildPostCaption,
-  resolveCampaignFixedText,
+  resolveCampaignCaptionConfig,
 } from "@/lib/services/posting-pipeline";
 import { toZonedTime } from "date-fns-tz";
 
@@ -223,13 +223,13 @@ async function runScheduler() {
         continue;
       }
 
-      // ── Caption (campaign fixedText is STRONGEST, then filename/account) ──
-      const campaignFixedText = await resolveCampaignFixedText(job.campaignId);
+      // ── Caption (campaign fixedTexts pool is STRONGEST, then filename) ──
+      const campaignConfig = await resolveCampaignCaptionConfig(job.campaignId);
       const sec = account.section;
 
-      console.log(`[PostScheduler] Caption build for ${accountKey}: captionSource=${account.captionSource}, campaign.fixedText=${campaignFixedText ? `"${campaignFixedText}"` : "null"}, section.descTags=${sec.descTags ? `"${sec.descTags}"` : "null"}, section.descTagCount=${sec.descTagCount}`);
+      console.log(`[PostScheduler] Caption build for ${accountKey}: campaign.fixedTexts=${campaignConfig?.fixedTexts.length ?? 0} entries, campaign.descTags=${campaignConfig?.descTags ? `"${campaignConfig.descTags}"` : "null"}, section.descTags=${sec.descTags ? `"${sec.descTags}"` : "null"}, section.descTagCount=${sec.descTagCount}`);
 
-      const caption = buildPostCaption(account, job, campaignFixedText);
+      const caption = buildPostCaption(account, job, campaignConfig);
 
       console.log(`[PostScheduler] Final caption for ${accountKey}: "${caption.substring(0, 200)}"`);
 

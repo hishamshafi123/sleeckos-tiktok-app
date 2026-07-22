@@ -27,8 +27,6 @@ type Account = {
   postDays: string;
   postMode: string;
   postTimeSlots: string;
-  defaultCaption: string | null;
-  captionSource: string;
   postpeerAccountId: string | null;
   googleOAuthConnected?: boolean;
   color?: string;
@@ -89,8 +87,6 @@ export default function ManagedAccountEditForm({
     postTimezone: "UTC",
     postDays: "1,2,3,4,5,6,7",
     postMode: "DIRECT",
-    defaultCaption: "",
-    captionSource: "FILENAME",
     postpeerAccountId: "",
     color: "zinc",
     colorId: "",
@@ -125,8 +121,6 @@ export default function ManagedAccountEditForm({
         postTimezone: data.postTimezone,
         postDays: data.postDays,
         postMode: data.postMode,
-        defaultCaption: data.defaultCaption || "",
-        captionSource: data.captionSource,
         postpeerAccountId: data.postpeerAccountId || "",
         color: data.color || "zinc",
         colorId: data.colorId || "",
@@ -396,69 +390,26 @@ export default function ManagedAccountEditForm({
         </div>
       </div>
 
-      {/* Mode + Caption */}
-      <div className="grid grid-cols-2 gap-3">
-        <div>
-          <label className="block text-xs text-gray-400 mb-1">
-            Post Mode
-          </label>
-          <select
-            disabled={isReadOnly}
-            value={editForm.postMode}
-            onChange={(e) =>
-              setEditForm({
-                ...editForm,
-                postMode: e.target.value,
-              })
-            }
-            className="w-full bg-[#111] border border-white/10 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-purple-500 disabled:opacity-40"
-          >
-            <option value="DIRECT">Direct Post</option>
-            <option value="DRAFT">Draft (Inbox)</option>
-          </select>
-        </div>
-        <div>
-          <label className="block text-xs text-gray-400 mb-1">
-            Caption Source
-          </label>
-          <select
-            disabled={isReadOnly}
-            value={editForm.captionSource}
-            onChange={(e) =>
-              setEditForm({
-                ...editForm,
-                captionSource: e.target.value,
-              })
-            }
-            className="w-full bg-[#111] border border-white/10 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-purple-500 disabled:opacity-40"
-          >
-            <option value="FILENAME">From filename</option>
-            <option value="TXT_FILE">From .txt file</option>
-            <option value="DEFAULT">Default caption</option>
-          </select>
-        </div>
+      {/* Mode */}
+      <div>
+        <label className="block text-xs text-gray-400 mb-1">
+          Post Mode
+        </label>
+        <select
+          disabled={isReadOnly}
+          value={editForm.postMode}
+          onChange={(e) =>
+            setEditForm({
+              ...editForm,
+              postMode: e.target.value,
+            })
+          }
+          className="w-full bg-[#111] border border-white/10 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-purple-500 disabled:opacity-40"
+        >
+          <option value="DIRECT">Direct Post</option>
+          <option value="DRAFT">Draft (Inbox)</option>
+        </select>
       </div>
-
-      {editForm.captionSource === "DEFAULT" && (
-        <div>
-          <label className="block text-xs text-gray-400 mb-1">
-            Default Caption
-          </label>
-          <textarea
-            disabled={isReadOnly}
-            value={editForm.defaultCaption}
-            onChange={(e) =>
-              setEditForm({
-                ...editForm,
-                defaultCaption: e.target.value,
-              })
-            }
-            rows={2}
-            className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-purple-500 resize-none disabled:opacity-40"
-            placeholder="Caption text with #hashtags..."
-          />
-        </div>
-      )}
 
       {/* Account Color Selection */}
       <div className="pt-2 border-t border-white/5">

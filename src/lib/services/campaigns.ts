@@ -95,6 +95,9 @@ export interface CreateCampaignData {
   avgViewsPerVideo?: number;
   videosPerAccountPerDay?: number;
   infoContent?: string;
+  fixedTexts?: string[];
+  descTags?: string;
+  descTagCount?: number;
   status?: CampaignStatus;
 }
 

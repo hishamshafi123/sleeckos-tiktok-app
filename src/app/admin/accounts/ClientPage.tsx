@@ -200,7 +200,6 @@ type Section = {
   color: string;
   icon: string | null;
   isActive: boolean;
-  defaultDescription: string | null;
   sortOrder: number;
   totalAccounts: number;
 };

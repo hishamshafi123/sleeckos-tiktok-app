@@ -55,11 +55,6 @@ export async function PATCH(
   
   if (body.isActive !== undefined) data.isActive = body.isActive;
 
-  // Caption settings
-  if (body.defaultCaption !== undefined)
-    data.defaultCaption = body.defaultCaption;
-  if (body.captionSource !== undefined) data.captionSource = body.captionSource;
-
   // Drive link
   if (body.driveFolderId !== undefined) {
     data.driveFolderId = body.driveFolderId;

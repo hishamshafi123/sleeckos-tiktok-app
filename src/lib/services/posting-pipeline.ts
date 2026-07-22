@@ -375,59 +375,72 @@ export async function pollJobStatus(jobId: string) {
   }
 }
 
+export interface CampaignCaptionConfig {
+  fixedTexts: string[];
+  descTags: string | null;
+  descTagCount: number;
+}
+
 /**
- * Resolve the fixed description text for a post's campaign, if any.
- * Returns null when the job has no campaign or the campaign has no fixedText.
+ * Resolve the caption config for a post's campaign, if any.
+ * Returns null when the job has no campaign.
  */
-export async function resolveCampaignFixedText(campaignId: string | null): Promise<string | null> {
+export async function resolveCampaignCaptionConfig(campaignId: string | null): Promise<CampaignCaptionConfig | null> {
   if (!campaignId) return null;
-  const campaign = await prisma.campaign.findUnique({
+  return prisma.campaign.findUnique({
     where: { id: campaignId },
-    select: { fixedText: true },
+    select: { fixedTexts: true, descTags: true, descTagCount: true },
   });
-  return campaign?.fixedText ?? null;
 }
 
 /**
  * Build the post caption. Shared by the cron post-scheduler and the manual
  * "post now" flow so both produce identical captions.
  *
- * Chain (strongest first):
- *  1. Campaign fixedText — when the job's campaignId resolves to a Campaign
- *     with non-empty fixedText, that text is the description base.
- *  2. captionSource FILENAME → the Drive file name (minus extension);
- *     captionSource DEFAULT → the account's defaultCaption.
- *  3. Section hashtag pool — descTagCount random tags from
- *     account.section.descTags are always appended when configured.
+ * Chain:
+ *  1. Base caption — one random pick from the campaign's fixedTexts pool
+ *     (trimmed, non-empty entries). Falls back to the Drive file name
+ *     (minus extension) when the pool is empty or there is no campaign.
+ *  2. Hashtags — when the campaign has a non-empty descTags pool it
+ *     overrides the section pool: descTagCount random tags are picked from
+ *     it. Otherwise the section pool (account.section.descTags /
+ *     descTagCount) is used.
  */
 export function buildPostCaption(
   account: {
-    captionSource: string;
-    defaultCaption: string | null;
     section: { descTags: string | null; descTagCount: number };
   },
   job: { driveFileName: string | null },
-  campaignFixedText?: string | null
+  campaign?: CampaignCaptionConfig | null
 ): string {
   let caption = "";
 
-  if (campaignFixedText?.trim()) {
-    caption = campaignFixedText.trim();
-  } else if (account.captionSource === "FILENAME") {
+  const fixedPool = (campaign?.fixedTexts || [])
+    .map((t) => t.trim())
+    .filter((t) => t.length > 0);
+  if (fixedPool.length > 0) {
+    caption = fixedPool[Math.floor(Math.random() * fixedPool.length)];
+  } else {
     caption = (job.driveFileName || "").replace(/\.[^.]+$/, "");
-  } else if (account.captionSource === "DEFAULT") {
-    caption = account.defaultCaption || "";
   }
 
+  // Campaign hashtag pool overrides the section pool when set
   const sec = account.section;
-  if (sec.descTags && sec.descTagCount > 0) {
-    const allTags = sec.descTags
+  let descTags = sec.descTags;
+  let descTagCount = sec.descTagCount;
+  if (campaign?.descTags?.trim()) {
+    descTags = campaign.descTags;
+    descTagCount = campaign.descTagCount;
+  }
+
+  if (descTags && descTagCount > 0) {
+    const allTags = descTags
       .split(",")
       .map((t: string) => t.trim())
       .filter((t: string) => t.length > 0);
     if (allTags.length > 0) {
       const shuffled = [...allTags].sort(() => Math.random() - 0.5);
-      const picked = shuffled.slice(0, Math.min(sec.descTagCount, allTags.length));
+      const picked = shuffled.slice(0, Math.min(descTagCount, allTags.length));
       const tagLine = picked.join(" ");
       caption = caption ? `${caption}\n\n${tagLine}` : tagLine;
     }
@@ -470,9 +483,9 @@ export async function postNowForAccount(accountId: string): Promise<{ jobId: str
     throw new Error("No unposted video files in the linked Drive folder.");
   }
 
-  // 3. Compute caption (campaign fixedText overrides filename/account caption)
-  const campaignFixedText = await resolveCampaignFixedText(job.campaignId);
-  const caption = buildPostCaption(account, job, campaignFixedText);
+  // 3. Compute caption (campaign fixedTexts pool overrides the filename fallback)
+  const campaignConfig = await resolveCampaignCaptionConfig(job.campaignId);
+  const caption = buildPostCaption(account, job, campaignConfig);
 
   // 4. Asynchronously start the upload & publish process (handled by pipeline)
   (async () => {
