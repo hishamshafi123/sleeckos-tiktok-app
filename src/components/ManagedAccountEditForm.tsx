@@ -30,6 +30,8 @@ type Account = {
   postpeerAccountId: string | null;
   googleOAuthConnected?: boolean;
   color?: string;
+  inputDriveFolderId?: string | null;
+  lastDriveSyncAt?: string | null;
 };
 
 const DAYS = [
@@ -100,6 +102,71 @@ export default function ManagedAccountEditForm({
   const [selectedFolderId, setSelectedFolderId] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
 
+  // Input Drive folder (Video Factory background sources) + usage ledger
+  const [inputFolderUrl, setInputFolderUrl] = useState("");
+  const [connectingInput, setConnectingInput] = useState(false);
+  const [syncingLedger, setSyncingLedger] = useState(false);
+  const [ledger, setLedger] = useState<{ total: number; unused: number; used: number; missing: number } | null>(null);
+
+  const fetchLedger = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/managed/accounts/${accountId}/drive/ledger`);
+      if (!res.ok) return;
+      const data = await res.json();
+      setLedger(data.stats ?? null);
+    } catch {}
+  }, [accountId]);
+
+  const parseFolderId = (raw: string): string | null => {
+    const trimmed = raw.trim();
+    if (/^[\w-]{25,}$/.test(trimmed)) return trimmed;
+    const m = trimmed.match(/folders\/([^/?&#]+)/);
+    return m ? m[1] : null;
+  };
+
+  const connectInputFolder = async () => {
+    const folderId = parseFolderId(inputFolderUrl);
+    if (!folderId) {
+      toast.error("Paste a Drive folder link or folder ID");
+      return;
+    }
+    setConnectingInput(true);
+    try {
+      const res = await fetch(`/api/managed/accounts/${accountId}/drive/connect`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ inputFolderId: folderId }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to connect folder");
+      toast.success(`Input folder connected: ${data.inputFolderName || folderId}`);
+      setInputFolderUrl("");
+      await fetchAccount();
+      // Auto-sync right after connecting so the ledger fills immediately
+      await syncLedger(true);
+    } catch (err: any) {
+      toast.error(err.message || "Failed to connect folder");
+    } finally {
+      setConnectingInput(false);
+    }
+  };
+
+  const syncLedger = async (silent = false) => {
+    setSyncingLedger(true);
+    try {
+      const res = await fetch(`/api/managed/accounts/${accountId}/drive/sync`, { method: "POST" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "Sync failed");
+      if (!silent) toast.success(`Synced — ${data.total ?? 0} files (${data.added ?? 0} new)`);
+      await fetchAccount();
+      await fetchLedger();
+    } catch (err: any) {
+      if (!silent) toast.error(err.message || "Sync failed");
+    } finally {
+      setSyncingLedger(false);
+    }
+  };
+
   const fetchAccount = useCallback(async () => {
     setLoading(true);
     try {
@@ -158,7 +225,8 @@ export default function ManagedAccountEditForm({
 
   useEffect(() => {
     fetchAccount();
-  }, [fetchAccount]);
+    fetchLedger();
+  }, [fetchAccount, fetchLedger]);
 
   const addSlot = () => {
     if (isReadOnly) return;
@@ -580,7 +648,82 @@ export default function ManagedAccountEditForm({
         )}
       </div>
 
-      {/* Action Buttons */}
+      {/* ── Input Drive Folder (Video Factory background sources) ── */}
+      <div className="pt-3 border-t border-white/5 space-y-3">
+        <h4 className="font-semibold text-white text-sm flex items-center gap-2">
+          <FolderOpen className="w-3.5 h-3.5 text-emerald-400" />
+          Input Drive Folder
+          <span className="text-[10px] font-normal text-zinc-500">Video Factory background sources</span>
+        </h4>
+
+        {account.inputDriveFolderId ? (
+          <div className="space-y-2">
+            <div className="bg-emerald-500/10 border border-emerald-500/20 rounded-xl px-4 py-3">
+              <p className="text-sm text-emerald-300 font-medium">Input folder connected</p>
+              <p className="text-[10px] text-zinc-500 font-mono truncate mt-0.5">{account.inputDriveFolderId}</p>
+              {account.lastDriveSyncAt && (
+                <p className="text-[10px] text-zinc-500 mt-1">
+                  Last synced {new Date(account.lastDriveSyncAt).toLocaleString()}
+                </p>
+              )}
+            </div>
+
+            {ledger && (
+              <div className="bg-[#111] border border-white/5 rounded-xl px-4 py-3 space-y-2">
+                <div className="flex items-center justify-between text-[11px]">
+                  <span className="text-zinc-400">Usage ledger</span>
+                  <span className="text-zinc-500 font-mono">{ledger.unused} unused · {ledger.used} used · {ledger.total} total{ledger.missing > 0 ? ` · ${ledger.missing} missing` : ""}</span>
+                </div>
+                <div className="h-1.5 bg-zinc-800 rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-emerald-500 rounded-full transition-all"
+                    style={{ width: `${ledger.total > 0 ? Math.round((ledger.used / ledger.total) * 100) : 0}%` }}
+                  />
+                </div>
+              </div>
+            )}
+
+            {!isReadOnly && (
+              <button
+                onClick={() => syncLedger()}
+                disabled={syncingLedger}
+                className="bg-zinc-900 border border-zinc-800 hover:bg-zinc-800 text-zinc-300 hover:text-white text-xs font-semibold px-3 py-1.5 rounded-lg transition-all flex items-center gap-1.5"
+              >
+                {syncingLedger ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : null}
+                Sync now
+              </button>
+            )}
+          </div>
+        ) : (
+          <p className="text-xs text-zinc-500 italic">No input folder set — the Video Factory reads background clips from here (or from a folder pasted per batch).</p>
+        )}
+
+        {!isReadOnly && (
+          <div className="space-y-2 bg-[#111] p-3 border border-white/5 rounded-xl">
+            <label className="block text-[10px] uppercase text-zinc-500 font-bold tracking-wider">
+              {account.inputDriveFolderId ? "Change input folder" : "Connect input folder"}
+            </label>
+            <div className="flex gap-2">
+              <input
+                type="text"
+                placeholder="https://drive.google.com/drive/folders/... or Folder ID"
+                value={inputFolderUrl}
+                onChange={(e) => setInputFolderUrl(e.target.value)}
+                className="flex-1 bg-black/40 border border-white/10 rounded-lg px-3 py-2 text-white text-xs placeholder-zinc-600 focus:outline-none focus:border-emerald-500"
+              />
+              <button
+                onClick={connectInputFolder}
+                disabled={connectingInput || !inputFolderUrl.trim()}
+                className="bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white text-xs font-semibold px-4 py-2 rounded-lg transition-all flex items-center gap-1.5"
+              >
+                {connectingInput && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                Connect
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+
       <div className="pt-4 border-t border-white/5 flex justify-end gap-2">
         <button
           onClick={onClose}

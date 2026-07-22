@@ -1478,12 +1478,14 @@ model WarmupEnrollment {
 // overlay cache, delivery/confirmation tracking, self-hosted font registry
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// Usage ledger for files in an account's INPUT Drive folder.
+/// Usage ledger for files in a Drive source folder.
 /// Names-only sync — files are never downloaded by the ledger.
+/// accountId is null for shared folders (pasted per-batch in the Video Factory);
+/// the ledger works per-folder, ownership by an account is only a legacy tag.
 model DriveFile {
-  id          String         @id @default(uuid())
-  accountId   String
-  account     ManagedAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  id          String          @id @default(uuid())
+  accountId   String?
+  account     ManagedAccount? @relation(fields: [accountId], references: [id], onDelete: Cascade)
   folderId    String
   driveFileId String
   name        String
@@ -1508,6 +1510,13 @@ model FactoryBatch {
   targetDuration    Float    @default(30)
   campaignId        String?
   styleIds          String[]
+  // Source of background clips: a pasted Drive folder shared by the whole batch
+  // (per-account input folders are only a wizard prefill hint, not the source).
+  sourceFolderId    String?
+  // Content pool — lyric mode: Track ids (round-robin, Track.maxReuse respected);
+  // quote mode: quote texts (round-robin).
+  trackIds          String[] @default([])
+  quotes            String[] @default([])
   status            String   @default("DRAFT") // DRAFT | QUEUED | RENDERING | COMPLETED | FAILED
   createdBy         String?
   createdAt         DateTime @default(now())
@@ -1530,6 +1539,10 @@ model FactoryBatchItem {
   status             String       @default("PENDING") // PENDING | RENDERING | COMPLETED | FAILED
   outputRef          String?
   outputDriveFileId  String?
+  // Render-first / distribute-later: null until a distribute run assigns this
+  // item to an account and uploads it to that account's output Drive folder.
+  distributedAt          DateTime?
+  distributedToAccountId String?
   error              String?      @db.Text
   createdAt          DateTime     @default(now())
   updatedAt          DateTime     @updatedAt

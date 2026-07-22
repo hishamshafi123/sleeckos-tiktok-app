@@ -1,8 +1,14 @@
 /**
- * Drive Ledger — names-only usage ledger for an account's INPUT Drive folder
- * (ManagedAccount.inputDriveFolderId). Files are never downloaded here; the
- * ledger only records names/ids and per-file usage so the Video Factory can
- * pick background clips without repeats until the pool is exhausted.
+ * Drive Ledger — names-only usage ledger for Drive source folders.
+ * Files are never downloaded here; the ledger only records names/ids and
+ * per-file usage so the Video Factory can pick background clips without
+ * repeats until the pool is exhausted.
+ *
+ * The ledger works PER FOLDER (unique [folderId, driveFileId]). Rows for a
+ * shared folder (pasted per-batch in the factory wizard) have accountId null;
+ * rows synced via an account's INPUT folder (ManagedAccount.inputDriveFolderId)
+ * are tagged with that account. The per-account functions below delegate to
+ * the folder-scoped primitives — signatures unchanged.
  *
  * The OUTPUT/posting folder remains ManagedAccount.driveFolderId — untouched.
  */
@@ -86,25 +92,45 @@ export async function connectAccountDrives(
 }
 
 /**
- * Names-only sync of the account's input folder into the DriveFile ledger.
+ * Names-only sync of ANY Drive folder into the DriveFile ledger (per-folder).
  * - New files appear as `unused`.
  * - Ledger rows absent from the listing become `missing` (history kept).
  * - Rows that reappear are restored (`unused`/`used` per timesUsed).
+ * - When `accountId` is given, untagged rows are claimed for that account and
+ *   its lastDriveSyncAt is bumped. Without accountId the drive client comes
+ *   from the master-OAuth → service-account chain (no specific account).
  */
-export async function syncDriveFolder(accountId: string): Promise<SyncResult> {
-  const account = await requireAccount(accountId);
-  if (!account.inputDriveFolderId) {
-    throw new Error("Account has no input Drive folder connected");
+export async function syncFolderById(
+  folderId: string,
+  accountId?: string | null,
+): Promise<SyncResult & { folderName: string }> {
+  if (!folderId?.trim()) throw new Error("folderId is required");
+  const cleanFolderId = folderId.trim();
+
+  const drive = accountId
+    ? await getDriveClient(accountId, true)
+    : await getDriveClient(undefined);
+
+  // Validate the folder resolves and grab its display name.
+  const meta = await drive.files.get({
+    fileId: cleanFolderId,
+    fields: "id,name,mimeType,trashed",
+    supportsAllDrives: true,
+  });
+  if (meta.data.mimeType !== "application/vnd.google-apps.folder") {
+    throw new Error("The provided ID is not a Google Drive folder");
   }
-  const folderId = account.inputDriveFolderId;
-  const drive = await getDriveClient(accountId, true);
+  if (meta.data.trashed) {
+    throw new Error("The provided folder is in the trash");
+  }
+  const folderName = meta.data.name ?? "";
 
   // Paginated listing, names/metadata only — no downloads.
   const liveFiles: { id: string; name: string; size?: string | null; mimeType?: string | null }[] = [];
   let pageToken: string | undefined;
   do {
     const res = await drive.files.list({
-      q: `'${folderId}' in parents and trashed = false`,
+      q: `'${cleanFolderId}' in parents and trashed = false`,
       fields: "nextPageToken, files(id,name,size,mimeType,trashed)",
       pageSize: 1000,
       pageToken,
@@ -118,19 +144,28 @@ export async function syncDriveFolder(accountId: string): Promise<SyncResult> {
     pageToken = res.data.nextPageToken ?? undefined;
   } while (pageToken);
 
+  // Ledger is per-folder: read rows by folderId regardless of ownership tag.
   const existing = await prisma.driveFile.findMany({
-    where: { accountId, folderId },
+    where: { folderId: cleanFolderId },
   });
   const existingByDriveId = new Map(existing.map((r) => [r.driveFileId, r]));
   const liveIds = new Set(liveFiles.map((f) => f.id));
+
+  // 0) Claim untagged rows for the syncing account (shared → account folder).
+  if (accountId) {
+    await prisma.driveFile.updateMany({
+      where: { folderId: cleanFolderId, accountId: null },
+      data: { accountId },
+    });
+  }
 
   // 1) New rows
   const newFiles = liveFiles.filter((f) => !existingByDriveId.has(f.id));
   if (newFiles.length > 0) {
     await prisma.driveFile.createMany({
       data: newFiles.map((f) => ({
-        accountId,
-        folderId,
+        accountId: accountId ?? null,
+        folderId: cleanFolderId,
         driveFileId: f.id,
         name: f.name,
         size: f.size ? BigInt(f.size) : null,
@@ -182,17 +217,32 @@ export async function syncDriveFolder(accountId: string): Promise<SyncResult> {
     }
   }
 
-  await prisma.managedAccount.update({
-    where: { id: accountId },
-    data: { lastDriveSyncAt: new Date() },
-  });
+  if (accountId) {
+    await prisma.managedAccount.update({
+      where: { id: accountId },
+      data: { lastDriveSyncAt: new Date() },
+    });
+  }
 
   return {
     total: liveFiles.length,
     added: newFiles.length,
     missing: newlyMissingIds.length,
     unchanged: liveFiles.length - newFiles.length,
+    folderName,
   };
+}
+
+/**
+ * Names-only sync of the account's input folder — delegates to syncFolderById.
+ */
+export async function syncDriveFolder(accountId: string): Promise<SyncResult> {
+  const account = await requireAccount(accountId);
+  if (!account.inputDriveFolderId) {
+    throw new Error("Account has no input Drive folder connected");
+  }
+  const { folderName: _folderName, ...result } = await syncFolderById(account.inputDriveFolderId, accountId);
+  return result;
 }
 
 /** Fisher–Yates shuffle (returns a new array). */
@@ -206,16 +256,17 @@ function shuffled<T>(items: T[]): T[] {
 }
 
 /**
- * Picks up to `count` ledger files: timesUsed = 0 first (randomized), then
- * least-used tiers ascending (randomized within tier). Never returns the same
- * file twice; excludes `missing`. Only call markFilesUsed AFTER a successful render.
+ * Picks up to `count` ledger files FROM A FOLDER: timesUsed = 0 first
+ * (randomized), then least-used tiers ascending (randomized within tier).
+ * Never returns the same file twice; excludes `missing`.
+ * Only call markFilesUsed AFTER a successful render.
  */
-export async function selectUnusedFiles(accountId: string, count: number): Promise<SelectResult> {
+export async function selectUnusedFilesByFolder(folderId: string, count: number): Promise<SelectResult> {
   if (count <= 0) {
     return { files: [], exhausted: false, availableUnused: 0 };
   }
   const rows = await prisma.driveFile.findMany({
-    where: { accountId, status: { not: "missing" } },
+    where: { folderId, status: { not: "missing" } },
     orderBy: [{ timesUsed: "asc" }, { name: "asc" }],
   });
 
@@ -235,6 +286,25 @@ export async function selectUnusedFiles(accountId: string, count: number): Promi
 
   const availableUnused = rows.filter((r) => r.timesUsed === 0).length;
   return { files, exhausted: count > availableUnused, availableUnused };
+}
+
+/**
+ * Per-account selection — delegates to the folder-scoped primitive using the
+ * account's current input folder. Accounts without an input folder select
+ * nothing (and read as exhausted).
+ */
+export async function selectUnusedFiles(accountId: string, count: number): Promise<SelectResult> {
+  if (count <= 0) {
+    return { files: [], exhausted: false, availableUnused: 0 };
+  }
+  const account = await prisma.managedAccount.findUnique({
+    where: { id: accountId },
+    select: { inputDriveFolderId: true },
+  });
+  if (!account?.inputDriveFolderId) {
+    return { files: [], exhausted: true, availableUnused: 0 };
+  }
+  return selectUnusedFilesByFolder(account.inputDriveFolderId, count);
 }
 
 /** Increments usage counters — call ONLY after a successful render. */
@@ -268,6 +338,24 @@ export async function getLedgerStats(accountId: string): Promise<LedgerStats> {
   const grouped = await prisma.driveFile.groupBy({
     by: ["status"],
     where: { accountId },
+    _count: { _all: true },
+  });
+  const stats: LedgerStats = { total: 0, unused: 0, used: 0, missing: 0 };
+  for (const g of grouped) {
+    const n = g._count._all;
+    stats.total += n;
+    if (g.status === "unused") stats.unused = n;
+    else if (g.status === "used") stats.used = n;
+    else if (g.status === "missing") stats.missing = n;
+  }
+  return stats;
+}
+
+/** Folder-scoped stats — used for shared (pasted) factory source folders. */
+export async function getFolderLedgerStats(folderId: string): Promise<LedgerStats> {
+  const grouped = await prisma.driveFile.groupBy({
+    by: ["status"],
+    where: { folderId },
     _count: { _all: true },
   });
   const stats: LedgerStats = { total: 0, unused: 0, used: 0, missing: 0 };
