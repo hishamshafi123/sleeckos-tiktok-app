@@ -143,7 +143,8 @@ export default function ManagedAccountEditForm({
       setInputFolderUrl("");
       await fetchAccount();
       // Auto-sync right after connecting so the ledger fills immediately
-      await syncLedger(true);
+      // (non-silent: sync errors must surface, not look like a silent success)
+      await syncLedger();
     } catch (err: any) {
       toast.error(err.message || "Failed to connect folder");
     } finally {

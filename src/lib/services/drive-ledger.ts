@@ -47,6 +47,34 @@ async function requireAccount(accountId: string) {
   return account;
 }
 
+// Which Google identity should a folder be shared with when access fails?
+// The service account email if configured, else the master/linked Google account.
+function driveAccessHint(): string {
+  try {
+    const b64 = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
+    if (b64) {
+      const json = JSON.parse(Buffer.from(b64, "base64").toString("utf-8"));
+      if (json.client_email) return json.client_email;
+    }
+  } catch {}
+  return "the Google account linked in SleeckOS";
+}
+
+// Wraps a Drive call and converts access errors into an actionable message.
+async function withDriveAccess<T>(promise: Promise<T>, folderId: string): Promise<T> {
+  try {
+    return await promise;
+  } catch (err: any) {
+    const status = Number(err?.code ?? err?.status ?? err?.response?.status);
+    if (status === 404 || status === 403) {
+      throw new Error(
+        `Folder not accessible to SleeckOS (Drive ${status}). Share the folder with ${driveAccessHint()} and try again. Folder: ${folderId}`
+      );
+    }
+    throw err;
+  }
+}
+
 /** JSON-safe shape (BigInt size -> number). */
 export function serializeDriveFile(file: DriveFile) {
   return {
@@ -68,12 +96,18 @@ export async function connectAccountDrives(
   }
   await requireAccount(accountId);
 
-  const drive = await getDriveClient(accountId, true);
-  const res = await drive.files.get({
-    fileId: inputFolderId.trim(),
-    fields: "id,name,mimeType,trashed",
-    supportsAllDrives: true,
-  });
+  // Full identity chain: account OAuth → master OAuth → service account.
+  // (useServiceAccount=false here — forcing the SA skips the master account
+  // that actually owns the folders and produces false "not found" errors.)
+  const drive = await getDriveClient(accountId, false);
+  const res = await withDriveAccess(
+    drive.files.get({
+      fileId: inputFolderId.trim(),
+      fields: "id,name,mimeType,trashed",
+      supportsAllDrives: true,
+    }),
+    inputFolderId.trim()
+  );
 
   const meta = res.data;
   if (meta.mimeType !== "application/vnd.google-apps.folder") {
@@ -108,15 +142,18 @@ export async function syncFolderById(
   const cleanFolderId = folderId.trim();
 
   const drive = accountId
-    ? await getDriveClient(accountId, true)
+    ? await getDriveClient(accountId, false)
     : await getDriveClient(undefined);
 
   // Validate the folder resolves and grab its display name.
-  const meta = await drive.files.get({
-    fileId: cleanFolderId,
-    fields: "id,name,mimeType,trashed",
-    supportsAllDrives: true,
-  });
+  const meta = await withDriveAccess(
+    drive.files.get({
+      fileId: cleanFolderId,
+      fields: "id,name,mimeType,trashed",
+      supportsAllDrives: true,
+    }),
+    cleanFolderId
+  );
   if (meta.data.mimeType !== "application/vnd.google-apps.folder") {
     throw new Error("The provided ID is not a Google Drive folder");
   }
