@@ -1,34 +1,41 @@
 /**
- * Video Factory service — mass-produces lyric/quote videos per TikTok account.
+ * Video Factory service — mass-produces lyric/quote videos into a render pool,
+ * then distributes them to TikTok accounts afterwards.
  *
- * Pipeline per FactoryBatchItem:
- *   select background source clips from the Drive ledger (unused-first,
- *   reserved in `sourceDriveFileIds` at plan time, `markFilesUsed` ONLY after
- *   a successful render+upload — a failed render leaves files unused)
- *   → download clips to a local temp dir → build background (mixing ON:
- *   stitched slices per variation-strength semantics ported from clip-mixer;
- *   OFF: whole clip looped) → lyric mode: resolve Track audio (trimStart/
- *   trimEnd) + synced lines from Track.lrcData shifted to 0 → transparent
- *   WebM overlay via Remotion, cached in OverlayCache by
- *   SHA-256(style+params+lyrics/quote+duration) with a `.ready` sentinel
- *   (self-healing: re-renders when file/sentinel missing) → FFmpeg compose
- *   720×1280/30fps/yuv420p/libx264 veryfast crf26 maxrate 8M/aac 128k/faststart
- *   → upload to the account's OUTPUT driveFolderId with campaign-bracket
- *   naming → markFilesUsed → COMPLETED → when an account drains, record a
- *   Delivery via Track D's createDelivery().
+ * Flow: RENDER FIRST, DISTRIBUTE AFTER.
+ *   1. The batch's source of background clips is ONE pasted Drive folder
+ *      (FactoryBatch.sourceFolderId, synced into the per-folder Drive ledger
+ *      with accountId = null). Per-account input folders are only a wizard
+ *      prefill hint — never the render source.
+ *   2. startBatchRender takes only a total video count: it plans account-less
+ *      FactoryBatchItems (styles/tracks/quotes come from the batch's own
+ *      content-pool columns), reserving ledger clips in `sourceDriveFileIds`
+ *      (markFilesUsed ONLY after a successful render — a failed render leaves
+ *      files unused). Recipe planning + fingerprint dedup unchanged (see below).
+ *   3. The worker renders each item into the pool: local mp4 in
+ *      public/uploads/factory-renders/ + R2 offload (Multiplier-output style).
+ *      NO Drive upload and NO Delivery at render time.
+ *   4. distributeBatch() on a COMPLETED batch deals pool items to accounts
+ *      (fair round-robin mixer from smart-export-assign, bucketed by styleId,
+ *      leftovers dealt fewest-first), uploads each assigned video to the
+ *      account's OUTPUT driveFolderId with campaign-bracket naming, marks
+ *      items distributed (distributedAt/distributedToAccountId), then records
+ *      a Delivery per account (Track D's createDelivery — postingMode:
+ *      postpeerAccountId && isActive → "auto_post", else "manual").
+ *   5. getFactoryDownloadStatus() packages all COMPLETED items into one tar
+ *      archive (background prep + status JSON + R2, the multiplier download
+ *      pattern) for Smart Download.
  *
- * Recipe planning is two-phase (mirrors the spec's "build background in the
- * worker" flow): startBatchRender stores a PLANNED recipe (clip ids + planned
- * trim starts/slice durations drawn against a nominal 8s clip window) and the
- * fingerprint is computed over those planned values; the worker materializes
- * real trim windows after ffprobe by proportionally mapping planned starts
- * onto each clip's real duration (preserves start/middle/end semantics).
+ * Recipe planning is two-phase: startBatchRender stores a PLANNED recipe (clip
+ * ids + planned trim starts/slice durations drawn against a nominal 8s clip
+ * window); the worker materializes real trim windows after ffprobe by
+ * proportionally mapping planned starts onto each clip's real duration.
  *
  * Uniqueness: recipeFingerprint = SHA-256 over clip ids + rounded planned
  * start times + audio ref (when mixingEnabled; over clip id + audio ref when
  * not). Duplicate fingerprints inside one batch are re-planned (≤100 tries),
- * then skipped. Pooled per-account ledger selection guarantees a file is
- * never used twice within a batch for that account.
+ * then skipped. Pooled per-folder ledger selection guarantees a file is never
+ * used twice within a batch.
  *
  * Concurrency: a single module-level worker lock drains QUEUED batches one at
  * a time, items sequentially (VPS-safe). "Allow reuse when exhausted" is a
@@ -44,11 +51,12 @@ import path from "path";
 import { exec } from "child_process";
 import { promisify } from "util";
 import type { FactoryBatch, SavedStyle, Track } from "@prisma/client";
-import { selectUnusedFiles, markFilesUsed, getLedgerStats } from "./drive-ledger";
+import { selectUnusedFilesByFolder, markFilesUsed, getLedgerStats } from "./drive-ledger";
 import { createDelivery } from "./distribution";
 import { downloadDriveFile, getDriveClient } from "../google";
 import { uploadToR2, downloadFromR2 } from "./storage";
 import { formatCampaignBracketPrefix } from "./multiplier-export";
+import { assignVideosFairRoundRobin } from "./smart-export-assign";
 
 const execAsync = promisify(exec);
 
@@ -60,6 +68,10 @@ const NOMINAL_CLIP_SECONDS = 8.0;
 const EST_SECONDS_PER_VIDEO = 20;
 /** Max attempts to draw a unique recipe fingerprint per item. */
 const MAX_RECIPE_ATTEMPTS = 100;
+/** Local public dir + R2 prefix for rendered pool videos. */
+const RENDER_DIR_PUBLIC = "/uploads/factory-renders";
+/** Local public dir + R2 prefix for Smart Download archives. */
+const ARCHIVE_DIR_PUBLIC = "/uploads/factory/archives";
 
 export type FactoryMode = "lyric" | "quote";
 
@@ -71,6 +83,12 @@ export interface CreateBatchInput {
   targetDuration: number; // seconds
   campaignId?: string | null;
   styleIds: string[];
+  /** Pasted Drive folder that supplies background clips for the whole batch. */
+  sourceFolderId: string;
+  /** lyric mode: ordered track pool (round-robin, Track.maxReuse respected) */
+  trackIds?: string[];
+  /** quote mode: quote texts (round-robin) */
+  quotes?: string[];
   createdBy?: string | null;
 }
 
@@ -79,12 +97,8 @@ export interface BatchAssignment {
   videoCount: number;
 }
 
-export interface RenderPoolInput {
-  assignments: BatchAssignment[];
-  /** lyric mode: ordered track pool distributed round-robin respecting Track.maxReuse */
-  trackIds?: string[];
-  /** quote mode: quote texts (one per line), distributed round-robin across items */
-  quotes?: string[];
+export interface RenderInput {
+  totalVideos: number;
   /** when false (default), exhaustion of unused source clips refuses the run */
   allowReuseWhenExhausted?: boolean;
 }
@@ -272,6 +286,22 @@ export async function createBatch(input: CreateBatchInput): Promise<FactoryBatch
   if (!Number.isFinite(targetDuration) || targetDuration < 5 || targetDuration > 600) {
     throw new Error("targetDuration must be between 5 and 600 seconds");
   }
+  if (!input.sourceFolderId?.trim()) {
+    throw new Error("A source Drive folder is required (paste and sync one in step 1)");
+  }
+
+  // Content pool lives on the batch — render takes only a total count.
+  let trackIds: string[] = [];
+  let quotes: string[] = [];
+  if (input.mode === "lyric") {
+    trackIds = (input.trackIds ?? []).filter((t) => typeof t === "string" && t.trim());
+    if (trackIds.length === 0) throw new Error("Add at least one lyric track");
+    const tracks = await prisma.track.findMany({ where: { id: { in: trackIds } }, select: { id: true } });
+    if (tracks.length !== trackIds.length) throw new Error("One or more tracks were not found");
+  } else {
+    quotes = (input.quotes ?? []).map((q) => String(q).trim()).filter(Boolean);
+    if (quotes.length === 0) throw new Error("Add at least one quote");
+  }
 
   return prisma.factoryBatch.create({
     data: {
@@ -282,6 +312,9 @@ export async function createBatch(input: CreateBatchInput): Promise<FactoryBatch
       targetDuration,
       campaignId: input.campaignId ?? null,
       styleIds: input.styleIds,
+      sourceFolderId: input.sourceFolderId.trim(),
+      trackIds,
+      quotes,
       status: "DRAFT",
       createdBy: input.createdBy ?? null,
     },
@@ -326,7 +359,11 @@ export async function getBatch(batchId: string) {
     where: { batchId },
     orderBy: { createdAt: "asc" },
   });
-  const accountIds = [...new Set(items.map((i) => i.accountId).filter(Boolean))] as string[];
+  // Account lookups cover both render-time accountId (legacy) and
+  // distribute-time distributedToAccountId.
+  const accountIds = [
+    ...new Set(items.flatMap((i) => [i.accountId, i.distributedToAccountId]).filter(Boolean)),
+  ] as string[];
   const accounts = await prisma.managedAccount.findMany({
     where: { id: { in: accountIds } },
     select: { id: true, tiktokUsername: true, tiktokDisplayName: true, color: true },
@@ -354,6 +391,7 @@ export async function getBatch(batchId: string) {
     items: items.map((i) => ({
       ...i,
       account: i.accountId ? accountMap.get(i.accountId) ?? null : null,
+      distributedToAccount: i.distributedToAccountId ? accountMap.get(i.distributedToAccountId) ?? null : null,
       track: i.trackId ? trackMap.get(i.trackId) ?? null : null,
       style: i.styleId ? styleMap.get(i.styleId) ?? null : null,
     })),
@@ -362,149 +400,90 @@ export async function getBatch(batchId: string) {
 
 // ── Pre-flight preview ───────────────────────────────────────────────────────
 
-export interface PreviewAccountResult {
-  accountId: string;
-  tiktokUsername: string;
-  videoCount: number;
+export interface PreviewResult {
+  sourceFolderId: string;
+  totalVideos: number;
   filesNeeded: number;
   availableUnused: number;
   exhausted: boolean;
-  hasInputFolder: boolean;
-  hasOutputFolder: boolean;
-  isActive: boolean;
-  warnings: string[];
-}
-
-export interface PreviewResult {
-  totalVideos: number;
-  totalFilesNeeded: number;
   stylesCount: number;
   estimatedSeconds: number;
-  accounts: PreviewAccountResult[];
   warnings: string[];
   canRender: boolean;
 }
 
-export async function previewBatch(batchId: string, input: RenderPoolInput): Promise<PreviewResult> {
+function validateRenderInput(batch: FactoryBatch, input: RenderInput) {
+  if (!batch.sourceFolderId) {
+    throw new Error("Batch has no source Drive folder — paste and sync one in step 1");
+  }
+  if (!Number.isInteger(input.totalVideos) || input.totalVideos < 1 || input.totalVideos > 2000) {
+    throw new Error("totalVideos must be an integer between 1 and 2000");
+  }
+  if (batch.mode === "lyric" && batch.trackIds.length === 0) {
+    throw new Error("Batch has no lyric tracks — add at least one in step 2");
+  }
+  if (batch.mode === "quote" && batch.quotes.length === 0) {
+    throw new Error("Batch has no quotes — add at least one in step 2");
+  }
+}
+
+export async function previewBatch(batchId: string, input: RenderInput): Promise<PreviewResult> {
   const batch = await prisma.factoryBatch.findUnique({ where: { id: batchId } });
   if (!batch) throw new Error("Batch not found");
-  validatePoolInput(batch, input);
+  validateRenderInput(batch, input);
 
   const allowReuse = !!input.allowReuseWhenExhausted;
   const perItem = filesPerItem(batch.mixingEnabled, batch.variationStrength, batch.targetDuration);
+  const filesNeeded = input.totalVideos * perItem;
   const warnings: string[] = [];
-  const accounts: PreviewAccountResult[] = [];
-  let totalVideos = 0;
-  let totalFilesNeeded = 0;
   let blocking = false;
 
-  for (const a of input.assignments) {
-    const account = await prisma.managedAccount.findUnique({ where: { id: a.accountId } });
-    if (!account) throw new Error(`Account ${a.accountId} not found`);
-    const accWarnings: string[] = [];
-    const filesNeeded = a.videoCount * perItem;
-    totalVideos += a.videoCount;
-    totalFilesNeeded += filesNeeded;
-
-    const hasInput = !!account.inputDriveFolderId;
-    const hasOutput = !!account.driveFolderId;
-    if (!hasInput) {
-      accWarnings.push(`@${account.tiktokUsername} has no input Drive folder connected (background clips source).`);
-      blocking = true;
-    }
-    if (!hasOutput) {
-      accWarnings.push(`@${account.tiktokUsername} has no output Drive folder connected — finished videos have nowhere to go.`);
-      blocking = true;
-    }
-
-    let availableUnused = 0;
-    let exhausted = false;
-    if (hasInput) {
-      // Dry-run selection: reads the ledger without consuming anything.
-      const sel = await selectUnusedFiles(a.accountId, filesNeeded);
-      availableUnused = sel.availableUnused;
-      exhausted = sel.exhausted;
-      if (exhausted) {
-        const msg =
-          `@${account.tiktokUsername} has only ${availableUnused} unused background clips but needs ${filesNeeded} ` +
-          `(${a.videoCount} videos × ${perItem} clips). ` +
-          (allowReuse
-            ? `Reuse is allowed — least-recently-used clips will repeat.`
-            : `Rendering will refuse until more clips are synced or "Allow reuse when exhausted" is enabled.`);
-        accWarnings.push(msg);
-        if (!allowReuse) blocking = true;
-      }
-    }
-
-    accounts.push({
-      accountId: a.accountId,
-      tiktokUsername: account.tiktokUsername,
-      videoCount: a.videoCount,
-      filesNeeded,
-      availableUnused,
-      exhausted,
-      hasInputFolder: hasInput,
-      hasOutputFolder: hasOutput,
-      isActive: account.isActive,
-      warnings: accWarnings,
-    });
+  // Dry-run selection against the batch's source folder: reads the ledger
+  // without consuming anything.
+  const sel = await selectUnusedFilesByFolder(batch.sourceFolderId!, filesNeeded);
+  const exhausted = sel.exhausted;
+  if (exhausted) {
+    warnings.push(
+      `The source folder has only ${sel.availableUnused} unused background clips but the batch needs ${filesNeeded} ` +
+      `(${input.totalVideos} videos × ${perItem} clips). ` +
+      (allowReuse
+        ? `Reuse is allowed — least-recently-used clips will repeat.`
+        : `Rendering will refuse until more clips are synced or "Allow reuse when exhausted" is enabled.`)
+    );
+    if (!allowReuse) blocking = true;
   }
 
   // Content-pool capacity checks.
   if (batch.mode === "lyric") {
-    const tracks = await prisma.track.findMany({ where: { id: { in: input.trackIds! } } });
+    const tracks = await prisma.track.findMany({ where: { id: { in: batch.trackIds } } });
     const finiteCaps = tracks.filter((t) => t.maxReuse !== null && t.maxReuse !== undefined);
     const hasUnlimited = tracks.some((t) => t.maxReuse === null || t.maxReuse === undefined);
     if (!hasUnlimited && finiteCaps.length > 0) {
       const capacity = finiteCaps.reduce((sum, t) => sum + Math.max(0, t.maxReuse ?? 0), 0);
-      if (capacity < totalVideos) {
+      if (capacity < input.totalVideos) {
         warnings.push(
-          `Selected tracks allow at most ${capacity} videos (sum of max-reuse), but ${totalVideos} are requested. Add more tracks or raise max-reuse.`
+          `Selected tracks allow at most ${capacity} videos (sum of max-reuse), but ${input.totalVideos} are requested. Add more tracks or raise max-reuse.`
         );
         blocking = true;
       }
     }
-  } else {
-    const quotes = (input.quotes ?? []).filter((q) => q.trim().length > 0);
-    if (quotes.length < totalVideos) {
-      warnings.push(
-        `${quotes.length} unique quotes for ${totalVideos} videos — quotes will repeat across accounts.`
-      );
-    }
+  } else if (batch.quotes.length < input.totalVideos) {
+    warnings.push(
+      `${batch.quotes.length} unique quotes for ${input.totalVideos} videos — quotes will repeat.`
+    );
   }
 
   return {
-    totalVideos,
-    totalFilesNeeded,
+    sourceFolderId: batch.sourceFolderId!,
+    totalVideos: input.totalVideos,
+    filesNeeded,
+    availableUnused: sel.availableUnused,
+    exhausted,
     stylesCount: batch.styleIds.length,
-    estimatedSeconds: totalVideos * EST_SECONDS_PER_VIDEO,
-    accounts,
+    estimatedSeconds: input.totalVideos * EST_SECONDS_PER_VIDEO,
     warnings,
-    canRender: !blocking && totalVideos > 0,
+    canRender: !blocking,
   };
-}
-
-function validatePoolInput(batch: FactoryBatch, input: RenderPoolInput) {
-  if (!Array.isArray(input.assignments) || input.assignments.length === 0) {
-    throw new Error("Select at least one account");
-  }
-  const seen = new Set<string>();
-  for (const a of input.assignments) {
-    if (!a.accountId) throw new Error("Assignment is missing accountId");
-    if (seen.has(a.accountId)) throw new Error("Each account can only appear once");
-    seen.add(a.accountId);
-    if (!Number.isInteger(a.videoCount) || a.videoCount < 1 || a.videoCount > 500) {
-      throw new Error("videoCount must be an integer between 1 and 500");
-    }
-  }
-  if (batch.mode === "lyric") {
-    if (!Array.isArray(input.trackIds) || input.trackIds.length === 0) {
-      throw new Error("Add at least one lyric track");
-    }
-  } else {
-    const quotes = (input.quotes ?? []).filter((q) => q.trim().length > 0);
-    if (quotes.length === 0) throw new Error("Add at least one quote");
-  }
 }
 
 // ── Render start ─────────────────────────────────────────────────────────────
@@ -515,7 +494,7 @@ export interface StartRenderResult {
   warnings: string[];
 }
 
-export async function startBatchRender(batchId: string, input: RenderPoolInput): Promise<StartRenderResult> {
+export async function startBatchRender(batchId: string, input: RenderInput): Promise<StartRenderResult> {
   const batch = await prisma.factoryBatch.findUnique({ where: { id: batchId } });
   if (!batch) throw new Error("Batch not found");
   if (batch.status === "RENDERING") throw new Error("Batch is already rendering");
@@ -523,16 +502,12 @@ export async function startBatchRender(batchId: string, input: RenderPoolInput):
   if (existingItems > 0) {
     throw new Error("Batch already has items — use retry-failed instead of re-rendering");
   }
-  validatePoolInput(batch, input);
+  validateRenderInput(batch, input);
 
   // Pre-flight gate: refuse on exhaustion unless reuse is explicitly allowed.
   const preview = await previewBatch(batchId, input);
   if (!preview.canRender) {
-    const details = [
-      ...preview.accounts.flatMap((a) => a.warnings),
-      ...preview.warnings,
-    ];
-    throw new Error(details[0] ?? "Pre-flight checks failed");
+    throw new Error(preview.warnings[0] ?? "Pre-flight checks failed");
   }
 
   const perItem = filesPerItem(batch.mixingEnabled, batch.variationStrength, batch.targetDuration);
@@ -541,16 +516,16 @@ export async function startBatchRender(batchId: string, input: RenderPoolInput):
   let itemsCreated = 0;
   let skippedDuplicates = 0;
 
-  // Content pools.
+  // Content pools come from the batch's own columns (render takes no assignments).
   let tracks: Track[] = [];
   if (batch.mode === "lyric") {
-    tracks = await prisma.track.findMany({ where: { id: { in: input.trackIds! } } });
-    if (tracks.length !== input.trackIds!.length) throw new Error("One or more tracks were not found");
-    // Preserve the caller's ordering for deterministic round-robin.
-    const order = new Map(input.trackIds!.map((id, idx) => [id, idx]));
+    tracks = await prisma.track.findMany({ where: { id: { in: batch.trackIds } } });
+    if (tracks.length !== batch.trackIds.length) throw new Error("One or more tracks were not found");
+    // Preserve the batch's ordering for deterministic round-robin.
+    const order = new Map(batch.trackIds.map((id, idx) => [id, idx]));
     tracks.sort((a, b) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0));
   }
-  const quotes = (input.quotes ?? []).map((q) => q.trim()).filter(Boolean);
+  const quotes = batch.quotes.map((q) => q.trim()).filter(Boolean);
   const trackUseCount = new Map<string, number>();
   let globalItemIndex = 0;
 
@@ -568,104 +543,104 @@ export async function startBatchRender(batchId: string, input: RenderPoolInput):
     return null;
   }
 
-  for (const assignment of input.assignments) {
-    // Pooled reservation: one ledger read per account, partitioned per item —
-    // a file can never appear twice in this batch for this account.
-    const pooled = await selectUnusedFiles(assignment.accountId, assignment.videoCount * perItem);
-    if (pooled.files.length < assignment.videoCount * perItem) {
-      warnings.push(
-        `Account ${assignment.accountId}: only ${pooled.files.length} clips available for ${assignment.videoCount * perItem} slots; later items may reuse fewer clips.`
-      );
+  // Pooled reservation: ONE ledger read against the batch's source folder,
+  // partitioned per item — a file can never appear twice in this batch.
+  const pooled = await selectUnusedFilesByFolder(batch.sourceFolderId!, input.totalVideos * perItem);
+  if (pooled.files.length < input.totalVideos * perItem) {
+    warnings.push(
+      `Source folder: only ${pooled.files.length} clips available for ${input.totalVideos * perItem} slots; later items may reuse fewer clips.`
+    );
+  }
+
+  for (let j = 0; j < input.totalVideos; j++) {
+    // Content for this item.
+    let track: Track | null = null;
+    let quoteText: string | null = null;
+    if (batch.mode === "lyric") {
+      track = nextTrack();
+      if (!track) {
+        warnings.push(`Track max-reuse capacity reached — remaining items skipped.`);
+        skippedDuplicates += input.totalVideos - j;
+        break;
+      }
+    } else {
+      quoteText = quotes[globalItemIndex % quotes.length];
+      globalItemIndex++;
     }
 
-    for (let j = 0; j < assignment.videoCount; j++) {
-      // Content for this item.
-      let track: Track | null = null;
-      let quoteText: string | null = null;
-      if (batch.mode === "lyric") {
-        track = nextTrack();
-        if (!track) {
-          warnings.push(`Track max-reuse capacity reached — remaining items skipped.`);
-          skippedDuplicates += assignment.videoCount - j;
-          break;
-        }
-      } else {
-        quoteText = quotes[globalItemIndex % quotes.length];
-        globalItemIndex++;
-      }
+    // Styles spread round-robin across the whole pool.
+    const styleId = batch.styleIds[j % batch.styleIds.length];
+    const durationSeconds =
+      batch.mode === "lyric" && track
+        ? Math.max(1.0, (track.trimEnd ?? track.trimStart + batch.targetDuration) - track.trimStart)
+        : batch.targetDuration;
 
-      const styleId = batch.styleIds[j % batch.styleIds.length];
-      const durationSeconds =
-        batch.mode === "lyric" && track
-          ? Math.max(1.0, (track.trimEnd ?? track.trimStart + batch.targetDuration) - track.trimStart)
-          : batch.targetDuration;
+    // Reserve this item's clips from the folder pool.
+    const reserved = pooled.files.slice(j * perItem, (j + 1) * perItem);
+    if (reserved.length === 0) {
+      warnings.push(`No clips left for item ${j + 1} — skipped.`);
+      skippedDuplicates++;
+      continue;
+    }
+    const ledgerIds = reserved.map((f) => f.id);
 
-      // Reserve this item's clips from the account pool.
-      const reserved = pooled.files.slice(j * perItem, (j + 1) * perItem);
-      if (reserved.length === 0) {
-        warnings.push(`Account ${assignment.accountId}: no clips left for item ${j + 1} — skipped.`);
-        skippedDuplicates++;
-        continue;
-      }
-      const ledgerIds = reserved.map((f) => f.id);
+    // Planned recipe + fingerprint with dedup (≤ MAX_RECIPE_ATTEMPTS draws).
+    const audioRef =
+      batch.mode === "lyric" && track
+        ? `${track.id}@${round1(track.trimStart)}-${track.trimEnd !== null ? round1(track.trimEnd) : "end"}`
+        : `quote:${createHash("sha256").update(quoteText ?? "").digest("hex").slice(0, 16)}`;
 
-      // Planned recipe + fingerprint with dedup (≤ MAX_RECIPE_ATTEMPTS draws).
-      const audioRef =
-        batch.mode === "lyric" && track
-          ? `${track.id}@${round1(track.trimStart)}-${track.trimEnd !== null ? round1(track.trimEnd) : "end"}`
-          : `quote:${createHash("sha256").update(quoteText ?? "").digest("hex").slice(0, 16)}`;
-
-      let recipe: FactoryRecipe | null = null;
-      let fingerprint = "";
-      let attempts = 0;
-      while (attempts < MAX_RECIPE_ATTEMPTS) {
-        const slices = planSlicesForItem({
-          ledgerIds,
-          itemIndex: j,
-          targetDuration: durationSeconds,
-          variationStrength: batch.variationStrength,
-        });
-        recipe = {
-          version: 1,
-          mixingEnabled: batch.mixingEnabled,
-          variationStrength: batch.variationStrength,
-          nominalClipSeconds: NOMINAL_CLIP_SECONDS,
-          slices,
-          durationSeconds: round1(durationSeconds),
-          styleId,
-          trackId: track?.id ?? null,
-          trimStart: track?.trimStart ?? 0,
-          trimEnd: track?.trimEnd ?? null,
-          quoteText,
-        };
-        fingerprint = calculateFactoryFingerprint(recipe, audioRef);
-        if (!usedFingerprints.has(fingerprint)) {
-          usedFingerprints.add(fingerprint);
-          break;
-        }
-        attempts++;
-        recipe = null;
-      }
-      if (!recipe) {
-        skippedDuplicates++;
-        continue;
-      }
-
-      await prisma.factoryBatchItem.create({
-        data: {
-          batchId,
-          accountId: assignment.accountId,
-          styleId,
-          trackId: track?.id ?? null,
-          quoteText,
-          recipe: recipe as any,
-          recipeFingerprint: fingerprint,
-          sourceDriveFileIds: ledgerIds,
-          status: "PENDING",
-        },
+    let recipe: FactoryRecipe | null = null;
+    let fingerprint = "";
+    let attempts = 0;
+    while (attempts < MAX_RECIPE_ATTEMPTS) {
+      const slices = planSlicesForItem({
+        ledgerIds,
+        itemIndex: j,
+        targetDuration: durationSeconds,
+        variationStrength: batch.variationStrength,
       });
-      itemsCreated++;
+      recipe = {
+        version: 1,
+        mixingEnabled: batch.mixingEnabled,
+        variationStrength: batch.variationStrength,
+        nominalClipSeconds: NOMINAL_CLIP_SECONDS,
+        slices,
+        durationSeconds: round1(durationSeconds),
+        styleId,
+        trackId: track?.id ?? null,
+        trimStart: track?.trimStart ?? 0,
+        trimEnd: track?.trimEnd ?? null,
+        quoteText,
+      };
+      fingerprint = calculateFactoryFingerprint(recipe, audioRef);
+      if (!usedFingerprints.has(fingerprint)) {
+        usedFingerprints.add(fingerprint);
+        break;
+      }
+      attempts++;
+      recipe = null;
     }
+    if (!recipe) {
+      skippedDuplicates++;
+      continue;
+    }
+
+    // Account-less: the item joins the render pool, distribution happens later.
+    await prisma.factoryBatchItem.create({
+      data: {
+        batchId,
+        accountId: null,
+        styleId,
+        trackId: track?.id ?? null,
+        quoteText,
+        recipe: recipe as any,
+        recipeFingerprint: fingerprint,
+        sourceDriveFileIds: ledgerIds,
+        status: "PENDING",
+      },
+    });
+    itemsCreated++;
   }
 
   if (itemsCreated === 0) {
@@ -856,9 +831,6 @@ async function processFactoryBatch(batchId: string): Promise<void> {
     });
     await prisma.factoryBatch.update({ where: { id: batchId }, data: { status: "RENDERING" } });
 
-    // Files delivered per account during THIS pass (drives createDelivery).
-    const deliveredByAccount = new Map<string, { name: string; driveFileId?: string }[]>();
-
     for (;;) {
       const item = await prisma.factoryBatchItem.findFirst({
         where: { batchId, status: "PENDING" },
@@ -870,12 +842,9 @@ async function processFactoryBatch(batchId: string): Promise<void> {
       if (!batchStillAlive) return; // deleted mid-run
 
       try {
-        const uploaded = await renderFactoryItem(item.id);
-        if (uploaded && item.accountId) {
-          const list = deliveredByAccount.get(item.accountId) ?? [];
-          list.push({ name: uploaded.fileName, driveFileId: uploaded.driveFileId });
-          deliveredByAccount.set(item.accountId, list);
-        }
+        // Renders into the pool only — Drive upload + Delivery happen later,
+        // in distributeBatch().
+        await renderFactoryItem(item.id);
       } catch (itemErr: any) {
         if (itemErr?.code === "P2025") return; // batch deleted mid-run
         console.error(`[Factory Worker] Item ${item.id} failed:`, itemErr);
@@ -887,41 +856,6 @@ async function processFactoryBatch(batchId: string): Promise<void> {
         } catch (updateErr: any) {
           if (updateErr?.code === "P2025") return;
           throw updateErr;
-        }
-      }
-
-      // Account drained? Record the delivery for this pass's uploads.
-      if (item.accountId) {
-        const remaining = await prisma.factoryBatchItem.count({
-          where: { batchId, accountId: item.accountId, status: { in: ["PENDING", "RENDERING"] } },
-        });
-        if (remaining === 0) {
-          const files = deliveredByAccount.get(item.accountId) ?? [];
-          if (files.length > 0) {
-            try {
-              const [account, batch] = await Promise.all([
-                prisma.managedAccount.findUnique({ where: { id: item.accountId } }),
-                prisma.factoryBatch.findUnique({ where: { id: batchId } }),
-              ]);
-              if (account && batch) {
-                await createDelivery({
-                  accountId: account.id,
-                  campaignId: batch.campaignId,
-                  batchId,
-                  videoCount: files.length,
-                  fileList: files,
-                  outputFolderId: account.driveFolderId,
-                  // Simple rule: wired to PostPeer (and active) → auto-posts.
-                  postingMode: account.postpeerAccountId && account.isActive ? "auto_post" : "manual",
-                });
-                console.log(`[Factory Worker] Delivery recorded for @${account.tiktokUsername} (${files.length} videos)`);
-              }
-            } catch (delErr) {
-              // Delivery tracking must never fail the render.
-              console.error(`[Factory Worker] createDelivery failed for account ${item.accountId}:`, delErr);
-            }
-            deliveredByAccount.delete(item.accountId);
-          }
         }
       }
     }
@@ -946,37 +880,40 @@ async function processFactoryBatch(batchId: string): Promise<void> {
 
 // ── Per-item render ──────────────────────────────────────────────────────────
 
-interface UploadedRef {
-  fileName: string;
-  driveFileId: string;
+/** Public path + R2 key of an item's rendered pool video. */
+function renderRefForItem(itemId: string) {
+  return {
+    publicPath: `${RENDER_DIR_PUBLIC}/render_${itemId}.mp4`,
+    r2Key: `uploads/factory-renders/render_${itemId}.mp4`,
+  };
 }
 
-async function renderFactoryItem(itemId: string): Promise<UploadedRef | null> {
+async function renderFactoryItem(itemId: string): Promise<void> {
   const item = await prisma.factoryBatchItem.findUnique({
     where: { id: itemId },
     include: { batch: true, track: true },
   });
   if (!item) throw new Error("Item not found");
-  if (!item.accountId) throw new Error("Item has no account");
   const recipe = item.recipe as unknown as FactoryRecipe | null;
   if (!recipe || !Array.isArray(recipe.slices) || recipe.slices.length === 0) {
     throw new Error("Item has no recipe");
   }
 
-  const account = await prisma.managedAccount.findUnique({ where: { id: item.accountId } });
-  if (!account) throw new Error("Account not found");
-  if (!account.driveFolderId) throw new Error(`@${account.tiktokUsername} has no output Drive folder`);
-
   await prisma.factoryBatchItem.update({ where: { id: itemId }, data: { status: "RENDERING", error: null } });
 
   const tempDir = path.join(process.cwd(), "public", "uploads", "factory", itemId);
   fs.mkdirSync(tempDir, { recursive: true });
+  const { publicPath, r2Key } = renderRefForItem(itemId);
+  const rendersDir = path.join(process.cwd(), "public", RENDER_DIR_PUBLIC);
+  fs.mkdirSync(rendersDir, { recursive: true });
+  const finalOutFile = path.join(process.cwd(), "public", publicPath);
   const localOutFile = path.join(tempDir, `render_${itemId}.mp4`);
   /** Ledger ids actually materialized into the render (marked used on success). */
   const usedLedgerIds: string[] = [];
 
   try {
     // 1) Download reserved source clips to temp + probe durations.
+    //    No account context: master-OAuth → service-account chain.
     const ledgerRows = await prisma.driveFile.findMany({ where: { id: { in: recipe.slices.map((s) => s.ledgerId) } } });
     const ledgerMap = new Map(ledgerRows.map((r) => [r.id, r]));
     const clipLocal = new Map<string, { path: string; duration: number }>();
@@ -984,7 +921,7 @@ async function renderFactoryItem(itemId: string): Promise<UploadedRef | null> {
       if (clipLocal.has(slice.ledgerId)) continue;
       const row = ledgerMap.get(slice.ledgerId);
       if (!row) throw new Error(`Reserved clip ${slice.ledgerId} is no longer in the ledger`);
-      const buf = await downloadDriveFile(row.driveFileId, account.id);
+      const buf = await downloadDriveFile(row.driveFileId, undefined, false);
       const clipPath = path.join(tempDir, `clip_${row.id}.mp4`);
       fs.writeFileSync(clipPath, buf);
       clipLocal.set(row.id, { path: clipPath, duration: await probeDuration(clipPath) });
@@ -1045,9 +982,15 @@ async function renderFactoryItem(itemId: string): Promise<UploadedRef | null> {
     console.log(`[Factory Worker] FFmpeg item ${itemId}: ${cmd.substring(0, 400)}...`);
     await execAsync(cmd, { timeout: 300000, maxBuffer: 10 * 1024 * 1024 });
 
-    // 6) Upload to the account's OUTPUT folder with campaign-bracket naming.
-    const fileName = await buildOutputFileName(item.batch, item, recipe);
-    const driveFileId = await uploadToOutputFolder(account, fileName, localOutFile);
+    // 6) Move into the pool (local) + offload to R2 — Multiplier-output style.
+    //    NO Drive upload, NO Delivery here: distribution happens later.
+    fs.copyFileSync(localOutFile, finalOutFile);
+    try {
+      await uploadToR2(finalOutFile, r2Key);
+    } catch (r2Err) {
+      // Local copy is authoritative; R2 is the durability/offload layer.
+      console.warn(`[Factory Worker] R2 offload failed for item ${itemId}:`, r2Err);
+    }
 
     // 7) Only now consume the ledger reservation.
     if (usedLedgerIds.length > 0) {
@@ -1056,11 +999,10 @@ async function renderFactoryItem(itemId: string): Promise<UploadedRef | null> {
 
     await prisma.factoryBatchItem.update({
       where: { id: itemId },
-      data: { status: "COMPLETED", outputRef: fileName, outputDriveFileId: driveFileId, error: null },
+      data: { status: "COMPLETED", outputRef: publicPath, error: null },
     });
-    return { fileName, driveFileId };
   } finally {
-    // 8) Local temp always goes away (spec: delete local temp after upload/failure).
+    // 8) Clip/audio temp always goes away; the pool render stays on disk.
     try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch {}
   }
 }
@@ -1296,7 +1238,7 @@ function slugify(text: string, maxLen: number): string {
 }
 
 /** `(Campaign Title) Campaign_slug hook_slug_<itemId>.mp4` — Smart Export convention. */
-async function buildOutputFileName(batch: FactoryBatch, item: { id: string; quoteText: string | null; track: Track | null }, recipe: FactoryRecipe): Promise<string> {
+async function buildOutputFileName(batch: FactoryBatch, item: { id: string; quoteText: string | null; track: Track | null }): Promise<string> {
   let campaignTitle: string | null = null;
   if (batch.campaignId) {
     const campaign = await prisma.campaign.findUnique({ where: { id: batch.campaignId }, select: { title: true, name: true } });
@@ -1341,6 +1283,412 @@ async function uploadToOutputFolder(
   });
   if (!res.data.id) throw new Error("Drive upload returned no file id");
   return res.data.id;
+}
+
+// ── Distribution (render-first / distribute-after) ───────────────────────────
+
+export interface DistributeInput {
+  assignments: BatchAssignment[];
+  /** when true, already-distributed COMPLETED items are eligible again */
+  allowRedistribute?: boolean;
+}
+
+export interface DistributeAccountResult {
+  accountId: string;
+  tiktokUsername: string;
+  requested: number;
+  assigned: number;
+  uploaded: number;
+  failed: number;
+  deliveryId: string | null;
+  warnings: string[];
+}
+
+export interface DistributeResult {
+  results: DistributeAccountResult[];
+  warnings: string[];
+  /** COMPLETED items skipped because they were distributed in an earlier run */
+  alreadyDistributed: number;
+  poolSize: number;
+}
+
+function validateAssignments(assignments: BatchAssignment[]) {
+  if (!Array.isArray(assignments) || assignments.length === 0) {
+    throw new Error("Select at least one account");
+  }
+  const seen = new Set<string>();
+  for (const a of assignments) {
+    if (!a.accountId) throw new Error("Assignment is missing accountId");
+    if (seen.has(a.accountId)) throw new Error("Each account can only appear once");
+    seen.add(a.accountId);
+    if (!Number.isInteger(a.videoCount) || a.videoCount < 1 || a.videoCount > 500) {
+      throw new Error("videoCount must be an integer between 1 and 500");
+    }
+  }
+}
+
+/**
+ * Deals the batch's render pool to accounts and uploads each assigned video to
+ * the account's OUTPUT driveFolderId (campaign-bracket naming), then records a
+ * Delivery per account.
+ *
+ * Fair dealing: items are bucketed by styleId and dealt with the Smart Export
+ * fair round-robin mixer (≤1 item per style-bucket per account, fewest-first);
+ * leftovers the mixer can't place (an account requesting more videos than
+ * there are buckets) are dealt fewest-first ignoring the bucket rule, so
+ * per-account counts are still met. Every item is used at most once per run.
+ *
+ * Double-distribution: by default only undistributed items (distributedAt null)
+ * are eligible and the number skipped is reported; allowRedistribute opts back
+ * in. Items are marked distributed ONLY after a successful Drive upload, and
+ * the upload name-dedup guard makes retried runs idempotent.
+ */
+export async function distributeBatch(batchId: string, input: DistributeInput): Promise<DistributeResult> {
+  const batch = await prisma.factoryBatch.findUnique({ where: { id: batchId } });
+  if (!batch) throw new Error("Batch not found");
+  validateAssignments(input.assignments);
+
+  const accounts = await prisma.managedAccount.findMany({
+    where: { id: { in: input.assignments.map((a) => a.accountId) } },
+  });
+  if (accounts.length !== input.assignments.length) throw new Error("One or more accounts were not found");
+  const accountMap = new Map(accounts.map((a) => [a.id, a]));
+
+  const alreadyDistributed = await prisma.factoryBatchItem.count({
+    where: { batchId, status: "COMPLETED", distributedAt: { not: null } },
+  });
+
+  const pool = await prisma.factoryBatchItem.findMany({
+    where: {
+      batchId,
+      status: "COMPLETED",
+      ...(input.allowRedistribute ? {} : { distributedAt: null }),
+    },
+    include: { track: true },
+    orderBy: { createdAt: "asc" },
+  });
+
+  if (pool.length === 0) {
+    throw new Error(
+      alreadyDistributed > 0
+        ? `No undistributed videos left in the pool — all ${alreadyDistributed} completed videos were already distributed. Enable re-distribute to send them again.`
+        : "No completed videos available to distribute"
+    );
+  }
+
+  const warnings: string[] = [];
+  if (alreadyDistributed > 0 && !input.allowRedistribute) {
+    warnings.push(`${alreadyDistributed} videos were already distributed and are skipped this run.`);
+  }
+  const totalRequested = input.assignments.reduce((s, a) => s + a.videoCount, 0);
+  if (totalRequested > pool.length) {
+    warnings.push(`Requested ${totalRequested} videos but only ${pool.length} are in the pool — some accounts will get fewer.`);
+  }
+
+  // Fair dealing: bucket by style, mixer first, leftovers fewest-first.
+  const byBucket = new Map<string, typeof pool>();
+  for (const item of pool) {
+    const key = item.styleId ?? "none";
+    const list = byBucket.get(key) ?? [];
+    list.push(item);
+    byBucket.set(key, list);
+  }
+  for (const list of byBucket.values()) shuffleInPlace(list);
+
+  const folders = input.assignments.map((a) => ({
+    id: a.accountId,
+    name: accountMap.get(a.accountId)?.tiktokUsername ?? a.accountId,
+    count: a.videoCount,
+  }));
+  const mixed = assignVideosFairRoundRobin(
+    [...byBucket.keys()],
+    Object.fromEntries([...byBucket.entries()].map(([k, v]) => [k, v.map((i) => i.id)])),
+    folders
+  );
+
+  const assignedByAccount = new Map<string, string[]>(mixed.assignments.map((a) => [a.driveFolderId, a.videoIds]));
+  const assignedIds = new Set(mixed.assignments.flatMap((a) => a.videoIds));
+  const leftovers = pool.filter((i) => !assignedIds.has(i.id)).map((i) => i.id);
+
+  // Second pass: meet per-account counts from the leftover pile, fewest-first.
+  const needed = new Map<string, number>(
+    input.assignments.map((a) => [a.accountId, a.videoCount - (assignedByAccount.get(a.accountId)?.length ?? 0)])
+  );
+  for (const leftoverId of leftovers) {
+    let target: string | null = null;
+    for (const [accountId, need] of needed) {
+      if (need <= 0) continue;
+      if (target === null || need > (needed.get(target) ?? 0)) target = accountId;
+    }
+    if (!target) break;
+    assignedByAccount.get(target)!.push(leftoverId);
+    needed.set(target, (needed.get(target) ?? 0) - 1);
+  }
+  for (const u of mixed.unfulfillable) {
+    const stillShort = needed.get(u.driveFolderId) ?? 0;
+    if (stillShort > 0) {
+      warnings.push(`@${u.driveFolderName}: requested ${u.requestedCount}, assigned ${u.requestedCount - stillShort} — pool exhausted.`);
+    }
+  }
+
+  const itemMap = new Map(pool.map((i) => [i.id, i]));
+  const results: DistributeAccountResult[] = [];
+
+  for (const assignment of input.assignments) {
+    const account = accountMap.get(assignment.accountId)!;
+    const accWarnings: string[] = [];
+    const itemIds = assignedByAccount.get(assignment.accountId) ?? [];
+    const uploadedFiles: { name: string; driveFileId?: string }[] = [];
+    let failed = 0;
+    let deliveryId: string | null = null;
+
+    if (itemIds.length > 0 && !account.driveFolderId) {
+      accWarnings.push(`@${account.tiktokUsername} has no output Drive folder — ${itemIds.length} assigned videos skipped.`);
+      failed = itemIds.length;
+    } else {
+      for (const itemId of itemIds) {
+        const item = itemMap.get(itemId)!;
+        try {
+          // Resolve the pool file (local first, R2 fallback).
+          if (!item.outputRef) throw new Error("Item has no render output");
+          const { r2Key } = renderRefForItem(item.id);
+          const absPath = path.join(process.cwd(), "public", item.outputRef);
+          if (!fs.existsSync(absPath)) {
+            await downloadFromR2(r2Key, absPath);
+          }
+          if (!fs.existsSync(absPath)) throw new Error("Render file missing locally and in R2");
+
+          const fileName = await buildOutputFileName(batch, item);
+          const driveFileId = await uploadToOutputFolder(account, fileName, absPath);
+
+          await prisma.factoryBatchItem.update({
+            where: { id: item.id },
+            data: {
+              distributedAt: new Date(),
+              distributedToAccountId: account.id,
+              outputDriveFileId: driveFileId,
+            },
+          });
+          uploadedFiles.push({ name: fileName, driveFileId });
+        } catch (upErr: any) {
+          failed++;
+          accWarnings.push(`@${account.tiktokUsername}: ${String(upErr?.message ?? upErr).slice(0, 200)}`);
+        }
+      }
+
+      if (uploadedFiles.length > 0) {
+        try {
+          const delivery = await createDelivery({
+            accountId: account.id,
+            campaignId: batch.campaignId,
+            batchId,
+            videoCount: uploadedFiles.length,
+            fileList: uploadedFiles,
+            outputFolderId: account.driveFolderId,
+            // Simple rule: wired to PostPeer (and active) → auto-posts.
+            postingMode: account.postpeerAccountId && account.isActive ? "auto_post" : "manual",
+          });
+          deliveryId = delivery.id;
+        } catch (delErr) {
+          // Delivery tracking must never fail the distribution.
+          console.error(`[Factory Distribute] createDelivery failed for account ${account.id}:`, delErr);
+          accWarnings.push(`@${account.tiktokUsername}: uploaded ${uploadedFiles.length} videos but recording the delivery failed.`);
+        }
+      }
+    }
+
+    results.push({
+      accountId: account.id,
+      tiktokUsername: account.tiktokUsername,
+      requested: assignment.videoCount,
+      assigned: itemIds.length,
+      uploaded: uploadedFiles.length,
+      failed,
+      deliveryId,
+      warnings: accWarnings,
+    });
+    console.log(`[Factory Distribute] @${account.tiktokUsername}: ${uploadedFiles.length}/${itemIds.length} uploaded`);
+  }
+
+  return { results, warnings, alreadyDistributed, poolSize: pool.length };
+}
+
+// ── Smart Download (multiplier pattern: status JSON + background tar prep) ───
+
+export interface FactoryDownloadStatus {
+  status: "PREPARING" | "COMPLETED" | "FAILED";
+  progress: number;
+  message: string;
+  downloadUrl: string | null;
+  size: number;
+  completedCount: number;
+  timestamp: number;
+  error?: string | null;
+}
+
+function factoryArchivePaths(batchId: string) {
+  const archivesDir = path.join(process.cwd(), "public", ARCHIVE_DIR_PUBLIC);
+  const archiveName = `factory_${batchId}_archive.tar`;
+  return {
+    archivesDir,
+    archiveName,
+    archivePath: path.join(archivesDir, archiveName),
+    statusPath: path.join(archivesDir, `status_${batchId}.json`),
+  };
+}
+
+/**
+ * Status-protocol entry point (mirrors /api/managed/multiplier/download):
+ * returns the current status JSON, kicking off a background archive prep when
+ * there is none, it is stale (>10 min PREPARING), the completed count changed,
+ * the archive vanished, or `force` is set.
+ */
+export async function getFactoryDownloadStatus(batchId: string, force = false): Promise<FactoryDownloadStatus> {
+  const batch = await prisma.factoryBatch.findUnique({ where: { id: batchId }, select: { id: true } });
+  if (!batch) throw new Error("Batch not found");
+
+  const completedCount = await prisma.factoryBatchItem.count({
+    where: { batchId, status: "COMPLETED" },
+  });
+  if (completedCount === 0) {
+    throw new Error("No completed videos available for download");
+  }
+
+  const { archivesDir, archivePath, statusPath } = factoryArchivePaths(batchId);
+  let startPrep = false;
+  let statusData: FactoryDownloadStatus | null = null;
+
+  if (fs.existsSync(statusPath)) {
+    try {
+      statusData = JSON.parse(fs.readFileSync(statusPath, "utf-8"));
+    } catch {
+      startPrep = true;
+    }
+  } else {
+    startPrep = true;
+  }
+
+  if (force || (statusData && statusData.completedCount !== completedCount)) startPrep = true;
+  if (statusData?.status === "PREPARING" && Date.now() - statusData.timestamp > 10 * 60 * 1000) startPrep = true;
+  if (statusData?.status === "COMPLETED" && !fs.existsSync(archivePath)) startPrep = true;
+
+  if (startPrep) {
+    fs.mkdirSync(archivesDir, { recursive: true });
+    statusData = {
+      status: "PREPARING",
+      progress: 0,
+      message: "Initializing archive preparation...",
+      downloadUrl: null,
+      size: 0,
+      completedCount,
+      timestamp: Date.now(),
+    };
+    fs.writeFileSync(statusPath, JSON.stringify(statusData, null, 2));
+    prepareFactoryArchive(batchId, completedCount).catch((err) => {
+      console.error(`[Factory Download] Background prep failed for ${batchId}:`, err);
+    });
+  }
+
+  return statusData!;
+}
+
+async function prepareFactoryArchive(batchId: string, completedCount: number): Promise<void> {
+  const { archivesDir, archiveName, archivePath, statusPath } = factoryArchivePaths(batchId);
+  const linkDir = path.join(archivesDir, `dl_${batchId}`);
+
+  const updateStatus = async (data: Partial<FactoryDownloadStatus>) => {
+    try {
+      const current = fs.existsSync(statusPath) ? JSON.parse(fs.readFileSync(statusPath, "utf-8")) : {};
+      fs.writeFileSync(
+        statusPath,
+        JSON.stringify(
+          {
+            status: "PREPARING",
+            progress: 0,
+            message: "",
+            downloadUrl: null,
+            size: 0,
+            completedCount,
+            timestamp: Date.now(),
+            ...current,
+            ...data,
+          },
+          null,
+          2
+        )
+      );
+    } catch (err) {
+      console.error("[Factory Download] Error writing status file:", err);
+    }
+  };
+
+  try {
+    await updateStatus({ status: "PREPARING", progress: 5, message: "Collecting videos..." });
+
+    const items = await prisma.factoryBatchItem.findMany({
+      where: { batchId, status: "COMPLETED" },
+      include: { track: true },
+      orderBy: { createdAt: "asc" },
+    });
+
+    const filePaths: { absPath: string; name: string }[] = [];
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      if (!item.outputRef) continue;
+      const absPath = path.join(process.cwd(), "public", item.outputRef);
+      if (!fs.existsSync(absPath)) {
+        await downloadFromR2(renderRefForItem(item.id).r2Key, absPath);
+      }
+      if (fs.existsSync(absPath)) {
+        const hookSource = item.track?.title || (item.quoteText || "video").split(/\s+/).slice(0, 8).join(" ");
+        filePaths.push({
+          absPath,
+          name: `${String(i + 1).padStart(3, "0")}_${slugify(hookSource, 40) || "video"}.mp4`,
+        });
+      }
+    }
+    if (filePaths.length === 0) throw new Error("Rendered video files not found on disk or in R2");
+
+    if (fs.existsSync(linkDir)) fs.rmSync(linkDir, { recursive: true });
+    fs.mkdirSync(linkDir, { recursive: true });
+
+    for (let i = 0; i < filePaths.length; i++) {
+      fs.copyFileSync(filePaths[i].absPath, path.join(linkDir, filePaths[i].name));
+      await updateStatus({
+        status: "PREPARING",
+        progress: Math.round(15 + (i / filePaths.length) * 35),
+        message: `Copying video ${i + 1} of ${filePaths.length}...`,
+      });
+    }
+
+    await updateStatus({ status: "PREPARING", progress: 60, message: "Packaging into tar archive..." });
+    await new Promise<void>((resolve, reject) => {
+      exec(`tar -cf "${archivePath}" -C "${linkDir}" .`, { maxBuffer: 200 * 1024 * 1024 }, (err, _, stderr) => {
+        try { fs.rmSync(linkDir, { recursive: true }); } catch {}
+        if (err) reject(new Error(`tar failed: ${stderr}`));
+        else resolve();
+      });
+    });
+
+    if (!fs.existsSync(archivePath)) throw new Error("tar completed but archive file not found on disk");
+
+    await uploadToR2(archivePath, `uploads/factory/archives/${archiveName}`);
+    const size = fs.statSync(archivePath).size;
+
+    await updateStatus({
+      status: "COMPLETED",
+      progress: 100,
+      message: "Archive prepared successfully!",
+      downloadUrl: `${ARCHIVE_DIR_PUBLIC}/${archiveName}`,
+      size,
+    });
+    console.log(`[Factory Download] Archive ready for batch ${batchId} (${(size / 1024 / 1024).toFixed(1)}MB)`);
+  } catch (err: any) {
+    console.error(`[Factory Download] Failed to prepare archive for ${batchId}:`, err);
+    try { if (fs.existsSync(linkDir)) fs.rmSync(linkDir, { recursive: true }); } catch {}
+    try { if (fs.existsSync(archivePath)) fs.unlinkSync(archivePath); } catch {}
+    await updateStatus({ status: "FAILED", progress: 100, message: err.message || String(err), error: err.message || String(err) });
+  }
 }
 
 // ── Ledger stats passthrough (used by routes for account enrichment) ─────────

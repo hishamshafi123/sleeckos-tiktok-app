@@ -9,8 +9,10 @@ import {
   ChevronLeft,
   ChevronRight,
   Clock,
+  Download,
   Factory,
   FileText,
+  FolderOpen,
   History,
   Layers,
   Loader2,
@@ -20,7 +22,6 @@ import {
   RefreshCw,
   Shuffle,
   Users,
-  X,
 } from "lucide-react";
 import FactoryAccountsPanel, { FactoryAccountSelection } from "./AccountsPanel";
 import TracksStep, { FactoryTrackRow } from "./TracksStep";
@@ -44,25 +45,25 @@ interface SavedStyleRow {
   tags?: string[];
 }
 
-interface PreviewAccountResult {
-  accountId: string;
-  tiktokUsername: string;
-  videoCount: number;
-  filesNeeded: number;
-  availableUnused: number;
-  exhausted: boolean;
-  hasInputFolder: boolean;
-  hasOutputFolder: boolean;
-  isActive: boolean;
-  warnings: string[];
+interface SourceSyncResult {
+  folderId: string;
+  folderName: string;
+  total: number;
+  added: number;
+  missing: number;
+  unchanged: number;
+  unused: number;
+  used: number;
 }
 
 interface PreviewResult {
+  sourceFolderId: string;
   totalVideos: number;
-  totalFilesNeeded: number;
+  filesNeeded: number;
+  availableUnused: number;
+  exhausted: boolean;
   stylesCount: number;
   estimatedSeconds: number;
-  accounts: PreviewAccountResult[];
   warnings: string[];
   canRender: boolean;
 }
@@ -74,6 +75,34 @@ interface BatchListRow {
   status: string;
   createdAt: string;
   itemCounts: { total: number; pending: number; rendering: number; completed: number; failed: number };
+}
+
+interface DistributeAccountResult {
+  accountId: string;
+  tiktokUsername: string;
+  requested: number;
+  assigned: number;
+  uploaded: number;
+  failed: number;
+  deliveryId: string | null;
+  warnings: string[];
+}
+
+interface DistributeResult {
+  results: DistributeAccountResult[];
+  warnings: string[];
+  alreadyDistributed: number;
+  poolSize: number;
+}
+
+interface DownloadStatus {
+  status: "PREPARING" | "COMPLETED" | "FAILED";
+  progress: number;
+  message: string;
+  downloadUrl: string | null;
+  size: number;
+  completedCount: number;
+  timestamp: number;
 }
 
 // ── Variation-strength copy (semantics ported from clip-mixer) ───────────────
@@ -90,13 +119,18 @@ const STEPS = [
   { n: 1, label: "Source" },
   { n: 2, label: "Audio & Text" },
   { n: 3, label: "Style" },
-  { n: 4, label: "Output" },
+  { n: 4, label: "Render" },
 ];
 
 function fmtMinutes(seconds: number): string {
   if (seconds < 60) return `${seconds}s`;
   const m = Math.floor(seconds / 60);
   return m < 60 ? `≈ ${m} min` : `≈ ${Math.floor(m / 60)}h ${m % 60}m`;
+}
+
+function fmtBytes(bytes: number): string {
+  if (bytes <= 0) return "0 MB";
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
 // ── Main ─────────────────────────────────────────────────────────────────────
@@ -114,6 +148,11 @@ export default function ClientPage({ session }: { session?: { userId: string; ro
   const [variationStrength, setVariationStrength] = useState(3);
   const [targetDuration, setTargetDuration] = useState(30);
   const [allowReuse, setAllowReuse] = useState(false);
+  // Source Drive folder (pasted per batch — THE render source)
+  const [sourceInput, setSourceInput] = useState("");
+  const [sourceSyncing, setSourceSyncing] = useState(false);
+  const [source, setSource] = useState<SourceSyncResult | null>(null);
+  const [sourceError, setSourceError] = useState<string | null>(null);
   const [mode, setMode] = useState<FactoryMode>("lyric");
   const [factoryTracks, setFactoryTracks] = useState<FactoryTrackRow[]>([]);
   const [tracksLoading, setTracksLoading] = useState(false);
@@ -122,8 +161,7 @@ export default function ClientPage({ session }: { session?: { userId: string; ro
   const [styles, setStyles] = useState<SavedStyleRow[]>([]);
   const [stylesLoading, setStylesLoading] = useState(false);
   const [selectedStyleIds, setSelectedStyleIds] = useState<string[]>([]);
-  const [accountsPanelOpen, setAccountsPanelOpen] = useState(false);
-  const [assignments, setAssignments] = useState<FactoryAccountSelection[]>([]);
+  const [totalVideos, setTotalVideos] = useState(10);
 
   // Batch creation / pre-flight / render
   const [batchId, setBatchId] = useState<string | null>(null);
@@ -215,6 +253,37 @@ export default function ClientPage({ session }: { session?: { userId: string; ro
     }
   }, [mode, filteredStyles]);
 
+  // ── Source folder sync ──
+
+  const handleSourceSync = async () => {
+    if (!sourceInput.trim() || sourceSyncing) return;
+    setSourceSyncing(true);
+    setSourceError(null);
+    try {
+      const res = await fetch("/api/factory/source/sync", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ folderId: sourceInput.trim() }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to sync folder");
+      setSource(data as SourceSyncResult);
+      markDirty();
+      toast.success(`Synced "${data.folderName}" — ${data.unused} unused of ${data.total} clips`);
+    } catch (err: any) {
+      setSource(null);
+      setSourceError(err.message || "Failed to sync folder");
+    } finally {
+      setSourceSyncing(false);
+    }
+  };
+
+  const clearSource = () => {
+    setSource(null);
+    setSourceError(null);
+    markDirty();
+  };
+
   // ── Batch lifecycle ──
 
   /** Creates the DRAFT batch on first use; re-creates it when batch-level fields changed. */
@@ -231,6 +300,9 @@ export default function ClientPage({ session }: { session?: { userId: string; ro
         targetDuration,
         campaignId: campaignId || null,
         styleIds: selectedStyleIds,
+        sourceFolderId: source?.folderId ?? "",
+        trackIds: mode === "lyric" ? selectedTrackIds : [],
+        quotes: mode === "quote" ? parsedQuotes : [],
       }),
     });
     const data = await res.json();
@@ -240,13 +312,6 @@ export default function ClientPage({ session }: { session?: { userId: string; ro
     return data.batch.id as string;
   };
 
-  const renderPoolPayload = () => ({
-    assignments: assignments.map((a) => ({ accountId: a.accountId, videoCount: a.count })),
-    trackIds: mode === "lyric" ? selectedTrackIds : undefined,
-    quotes: mode === "quote" ? parsedQuotes : undefined,
-    allowReuseWhenExhausted: allowReuse,
-  });
-
   const runPreview = useCallback(async () => {
     setPreviewLoading(true);
     setPreviewError(null);
@@ -255,7 +320,7 @@ export default function ClientPage({ session }: { session?: { userId: string; ro
       const res = await fetch(`/api/factory/batches/${id}/preview`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(renderPoolPayload()),
+        body: JSON.stringify({ totalVideos, allowReuseWhenExhausted: allowReuse }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Preview failed");
@@ -267,17 +332,17 @@ export default function ClientPage({ session }: { session?: { userId: string; ro
       setPreviewLoading(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [batchId, batchDirty, name, mode, mixingEnabled, variationStrength, targetDuration, campaignId, selectedStyleIds, assignments, selectedTrackIds, parsedQuotes, allowReuse]);
+  }, [batchId, batchDirty, name, mode, mixingEnabled, variationStrength, targetDuration, campaignId, selectedStyleIds, selectedTrackIds, parsedQuotes, source, totalVideos, allowReuse]);
 
-  // Auto pre-flight on step 4 (debounced against selection changes).
+  // Auto pre-flight on step 4 (debounced against input changes).
   useEffect(() => {
-    if (step !== 4 || assignments.length === 0) return;
+    if (step !== 4 || !source || totalVideos < 1) return;
     if (mode === "lyric" && selectedTrackIds.length === 0) return;
     if (mode === "quote" && parsedQuotes.length === 0) return;
     if (selectedStyleIds.length === 0) return;
     const t = setTimeout(() => runPreview(), 400);
     return () => clearTimeout(t);
-  }, [step, assignments, selectedTrackIds, parsedQuotes, allowReuse, selectedStyleIds, mode, runPreview]);
+  }, [step, source, totalVideos, selectedTrackIds, parsedQuotes, allowReuse, selectedStyleIds, mode, runPreview]);
 
   const handleRender = async () => {
     if (!preview?.canRender || rendering) return;
@@ -287,7 +352,7 @@ export default function ClientPage({ session }: { session?: { userId: string; ro
       const res = await fetch(`/api/factory/batches/${id}/render`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(renderPoolPayload()),
+        body: JSON.stringify({ totalVideos, allowReuseWhenExhausted: allowReuse }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to start render");
@@ -320,10 +385,13 @@ export default function ClientPage({ session }: { session?: { userId: string; ro
     setVariationStrength(3);
     setTargetDuration(30);
     setAllowReuse(false);
+    setSourceInput("");
+    setSource(null);
+    setSourceError(null);
     setSelectedTrackIds([]);
     setQuotesText("");
     setSelectedStyleIds([]);
-    setAssignments([]);
+    setTotalVideos(10);
     resetBatchLinkage();
     setStatusBatchId(null);
     setView("wizard");
@@ -331,10 +399,10 @@ export default function ClientPage({ session }: { session?: { userId: string; ro
 
   // ── Step validation ──
 
-  const step1Valid = name.trim().length > 0 && targetDuration >= 5 && targetDuration <= 600;
+  const step1Valid = name.trim().length > 0 && !!source && targetDuration >= 5 && targetDuration <= 600;
   const step2Valid = mode === "lyric" ? selectedTrackIds.length > 0 : parsedQuotes.length > 0;
   const step3Valid = selectedStyleIds.length > 0;
-  const step4Ready = assignments.length > 0 && !!preview?.canRender && !previewLoading;
+  const step4Ready = !!preview?.canRender && !previewLoading;
 
   const canContinue = step === 1 ? step1Valid : step === 2 ? step2Valid : step === 3 ? step3Valid : true;
 
@@ -383,7 +451,7 @@ export default function ClientPage({ session }: { session?: { userId: string; ro
           <div>
             <h1 className="text-lg font-bold text-white tracking-tight">Video Factory</h1>
             <p className="text-[11px] text-[#71717a]">
-              Mass-produce lyric & quote videos straight into each account&apos;s posting folder.
+              Render a pool of lyric & quote videos first — distribute to accounts or download afterwards.
             </p>
           </div>
         </div>
@@ -408,9 +476,7 @@ export default function ClientPage({ session }: { session?: { userId: string; ro
       </div>
 
       {view === "history" ? (
-        <BatchHistoryList
-          onOpenBatch={(id) => setStatusBatchId(id)}
-        />
+        <BatchHistoryList onOpenBatch={(id) => setStatusBatchId(id)} />
       ) : (
         <>
           {/* Progress rail */}
@@ -447,6 +513,69 @@ export default function ClientPage({ session }: { session?: { userId: string; ro
             {/* ── Step 1: Source ── */}
             {step === 1 && (
               <div className="space-y-5">
+                {/* Source Drive folder */}
+                <div>
+                  <label className="block text-[10px] font-bold uppercase tracking-wider text-[#71717a] mb-1.5">
+                    Source Drive folder * — background clips for the whole batch
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <div className="relative flex-1">
+                      <FolderOpen className="w-3.5 h-3.5 text-[#71717a] absolute left-2.5 top-1/2 -translate-y-1/2" />
+                      <input
+                        type="text"
+                        value={sourceInput}
+                        onChange={(e) => {
+                          setSourceInput(e.target.value);
+                          if (source) clearSource();
+                        }}
+                        placeholder="Paste a Drive folder URL or ID — e.g. an account's input clips folder…"
+                        className="w-full bg-[#09090b] border border-[#27272a] rounded-lg pl-8 pr-3 py-2 text-white placeholder-[#71717a] text-[12px] focus:outline-none focus:border-[#E11D48]"
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleSourceSync}
+                      disabled={sourceSyncing || !sourceInput.trim()}
+                      className="px-3 py-2 bg-[#27272a] hover:bg-[#3f3f46] disabled:opacity-40 disabled:cursor-not-allowed text-white text-[11px] font-semibold rounded-lg transition-colors cursor-pointer flex items-center gap-1.5 flex-shrink-0"
+                    >
+                      {sourceSyncing ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
+                      Sync & check
+                    </button>
+                  </div>
+                  {sourceError && (
+                    <p className="text-[10px] text-red-400 mt-1.5 flex items-center gap-1.5">
+                      <AlertCircle className="w-3 h-3 flex-shrink-0" />
+                      {sourceError}
+                    </p>
+                  )}
+                  {source && (
+                    <div className="mt-2 bg-[#09090b] border border-green-500/20 rounded-lg px-3 py-2 flex items-center gap-2 flex-wrap">
+                      <CheckCircle2 className="w-3.5 h-3.5 text-green-400 flex-shrink-0" />
+                      <span className="text-[11px] font-semibold text-white truncate">{source.folderName}</span>
+                      <span className="text-[10px] font-mono text-[#a1a1aa]">
+                        {source.total} clips · <span className="text-green-400">{source.unused} unused</span>
+                        {source.used > 0 ? ` · ${source.used} used` : ""}
+                        {source.added > 0 ? ` · +${source.added} new` : ""}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={handleSourceSync}
+                        className="ml-auto text-[10px] font-semibold text-[#71717a] hover:text-white transition-colors cursor-pointer flex items-center gap-1"
+                        title="Re-sync"
+                      >
+                        <RefreshCw className="w-2.5 h-2.5" />
+                        Re-sync
+                      </button>
+                    </div>
+                  )}
+                  {!source && !sourceError && (
+                    <p className="text-[10px] text-[#71717a] mt-1.5 leading-relaxed">
+                      The batch reads clips from this folder only — never from per-account input folders. Clip usage is
+                      tracked per folder: unused clips are picked first, and nothing repeats until the pool runs dry.
+                    </p>
+                  )}
+                </div>
+
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                   <div>
                     <label className="block text-[10px] font-bold uppercase tracking-wider text-[#71717a] mb-1.5">
@@ -465,7 +594,7 @@ export default function ClientPage({ session }: { session?: { userId: string; ro
                   </div>
                   <div>
                     <label className="block text-[10px] font-bold uppercase tracking-wider text-[#71717a] mb-1.5">
-                      Campaign (optional — adds “(Campaign)” to file names)
+                      Campaign (optional — adds “(Campaign)” to file names at distribute time)
                     </label>
                     <select
                       value={campaignId}
@@ -572,9 +701,9 @@ export default function ClientPage({ session }: { session?: { userId: string; ro
                 {/* Ledger behavior info */}
                 <div className="bg-[#09090b] border border-[#27272a] rounded-xl px-4 py-3 space-y-2">
                   <p className="text-[11px] text-[#a1a1aa] leading-relaxed">
-                    Background clips are picked from each account&apos;s input Drive folder <b className="text-white">unused-first</b>,
-                    so nothing repeats until the pool runs dry. When an account runs out of unused clips, pre-flight
-                    stops with a warning — sync more clips, or allow least-recently-used clips to repeat.
+                    Background clips are picked from the source folder <b className="text-white">unused-first</b>, so
+                    nothing repeats until the pool runs dry. When it runs out, pre-flight stops with a warning — sync
+                    more clips, or allow least-recently-used clips to repeat.
                   </p>
                   <label className="flex items-center gap-2 cursor-pointer select-none">
                     <input
@@ -654,7 +783,7 @@ export default function ClientPage({ session }: { session?: { userId: string; ro
                     />
                     <p className="text-[10px] text-[#71717a] leading-relaxed">
                       Quotes distribute round-robin across videos. Quote mode renders without background music in v1 —
-                      the overlay carries the video. Fewer quotes than videos means quotes repeat across accounts.
+                      the overlay carries the video. Fewer quotes than videos means quotes repeat.
                     </p>
                   </div>
                 )}
@@ -668,7 +797,7 @@ export default function ClientPage({ session }: { session?: { userId: string; ro
                   <p className="text-[10px] font-bold uppercase tracking-wider text-[#71717a]">
                     {mode === "lyric" ? "Lyric" : "Quote"} styles — pick at least one ({selectedStyleIds.length} selected)
                   </p>
-                  <p className="text-[10px] text-[#71717a]">Styles distribute round-robin across each account&apos;s videos</p>
+                  <p className="text-[10px] text-[#71717a]">Styles spread round-robin across the pool</p>
                 </div>
                 {stylesLoading ? (
                   <div className="flex items-center justify-center py-10 text-[#71717a]">
@@ -730,134 +859,100 @@ export default function ClientPage({ session }: { session?: { userId: string; ro
               </div>
             )}
 
-            {/* ── Step 4: Output & Accounts ── */}
+            {/* ── Step 4: Render ── */}
             {step === 4 && (
               <div className="space-y-4">
-                <div className="flex items-center justify-between flex-wrap gap-2">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                   <div>
-                    <p className="text-[12px] font-semibold text-white">
-                      {assignments.length === 0
-                        ? "No accounts selected yet"
-                        : `${assignments.length} accounts · ${assignments.reduce((s, a) => s + a.count, 0)} videos`}
-                    </p>
-                    <p className="text-[10px] text-[#71717a]">
-                      Finished videos land in each account&apos;s output Drive folder; deliveries are recorded automatically.
+                    <label className="block text-[10px] font-bold uppercase tracking-wider text-[#71717a] mb-1.5">
+                      Total videos to render
+                    </label>
+                    <input
+                      type="number"
+                      min={1}
+                      max={2000}
+                      value={totalVideos}
+                      onChange={(e) => setTotalVideos(Math.max(1, Math.min(2000, parseInt(e.target.value, 10) || 1)))}
+                      className="w-full bg-[#09090b] border border-[#27272a] rounded-lg px-3 py-2 text-white text-[12px] focus:outline-none focus:border-[#E11D48]"
+                    />
+                  </div>
+                  <div className="bg-[#09090b] border border-[#27272a] rounded-lg px-3 py-2">
+                    <p className="text-[9px] uppercase font-bold text-[#71717a]">Source pool</p>
+                    <p className="text-[11px] text-white font-semibold truncate">{source?.folderName}</p>
+                    <p className="text-[10px] font-mono text-[#a1a1aa]">
+                      {source ? `${source.unused} unused of ${source.total} clips` : ""}
                     </p>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => setAccountsPanelOpen(true)}
-                    className="flex items-center gap-1.5 px-3 py-2 bg-[#E11D48] hover:bg-[#be123c] text-white text-[11px] font-bold rounded-lg transition-colors cursor-pointer"
-                  >
-                    <Users className="w-3.5 h-3.5" />
-                    Select accounts
-                  </button>
                 </div>
 
-                {assignments.length > 0 && (
-                  <div className="flex flex-wrap gap-1.5">
-                    {assignments.map((a) => (
-                      <span
-                        key={a.accountId}
-                        className="flex items-center gap-1.5 px-2 py-1 rounded-md border border-[#27272a] bg-[#09090b] text-[10px] font-medium text-[#e4e4e7]"
-                      >
-                        @{a.username}
-                        <span className="font-mono text-[#71717a]">×{a.count}</span>
-                        <button
-                          type="button"
-                          onClick={() => setAssignments((prev) => prev.filter((x) => x.accountId !== a.accountId))}
-                          className="text-[#71717a] hover:text-white transition-colors cursor-pointer"
-                          title="Remove"
-                        >
-                          <X className="w-2.5 h-2.5" />
-                        </button>
-                      </span>
-                    ))}
-                  </div>
-                )}
+                <p className="text-[10px] text-[#71717a] leading-relaxed">
+                  Videos render into a pool first — no accounts involved. When the batch finishes, distribute the pool
+                  to accounts or download it as one archive from the status view.
+                </p>
 
                 {/* Pre-flight summary card */}
-                {assignments.length > 0 && (
-                  <div className="bg-[#09090b] border border-[#27272a] rounded-xl p-4 space-y-3">
-                    <div className="flex items-center justify-between">
-                      <h4 className="text-[11px] font-bold uppercase tracking-wider text-[#71717a]">Pre-flight summary</h4>
-                      <button
-                        type="button"
-                        onClick={runPreview}
-                        disabled={previewLoading}
-                        className="flex items-center gap-1 text-[10px] font-semibold text-[#a1a1aa] hover:text-white transition-colors cursor-pointer disabled:opacity-40"
-                      >
-                        <RefreshCw className={`w-3 h-3 ${previewLoading ? "animate-spin" : ""}`} />
-                        Refresh
-                      </button>
-                    </div>
-
-                    {previewLoading && !preview && (
-                      <div className="flex items-center justify-center py-6 text-[#71717a]">
-                        <Loader2 className="w-4 h-4 animate-spin" />
-                      </div>
-                    )}
-
-                    {previewError && (
-                      <div className="text-[11px] text-red-400 font-semibold bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2 flex items-center gap-2">
-                        <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
-                        {previewError}
-                      </div>
-                    )}
-
-                    {preview && (
-                      <>
-                        <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-                          {[
-                            { label: "Videos", value: String(preview.totalVideos) },
-                            { label: "Source clips needed", value: String(preview.totalFilesNeeded) },
-                            { label: "Styles", value: String(preview.stylesCount) },
-                            { label: "Estimated time", value: fmtMinutes(preview.estimatedSeconds), icon: true },
-                          ].map((c) => (
-                            <div key={c.label} className="bg-[#18181b] border border-[#27272a] rounded-lg px-3 py-2">
-                              <p className="text-[9px] uppercase font-bold text-[#71717a] flex items-center gap-1">
-                                {c.icon && <Clock className="w-2.5 h-2.5" />}
-                                {c.label}
-                              </p>
-                              <p className="text-sm font-bold text-white">{c.value}</p>
-                            </div>
-                          ))}
-                        </div>
-
-                        <div className="divide-y divide-[#18181b] border border-[#27272a] rounded-lg overflow-hidden">
-                          {preview.accounts.map((a) => (
-                            <div key={a.accountId} className="px-3 py-2 bg-[#09090b]">
-                              <div className="flex items-center justify-between gap-2">
-                                <span className="text-[11px] font-semibold text-white">@{a.tiktokUsername}</span>
-                                <span
-                                  className={`text-[10px] font-mono ${
-                                    a.exhausted ? "text-amber-400" : "text-green-400"
-                                  }`}
-                                >
-                                  {a.videoCount} videos · needs {a.filesNeeded} clips · {a.availableUnused} unused
-                                  {a.exhausted ? " — exhausted" : ""}
-                                </span>
-                              </div>
-                              {a.warnings.map((w, i) => (
-                                <p key={i} className="text-[10px] text-amber-400 mt-1 flex items-start gap-1.5">
-                                  <AlertCircle className="w-3 h-3 flex-shrink-0 mt-0.5" />
-                                  {w}
-                                </p>
-                              ))}
-                            </div>
-                          ))}
-                        </div>
-
-                        {preview.warnings.map((w, i) => (
-                          <p key={i} className="text-[10px] text-amber-400 flex items-start gap-1.5">
-                            <AlertCircle className="w-3 h-3 flex-shrink-0 mt-0.5" />
-                            {w}
-                          </p>
-                        ))}
-                      </>
-                    )}
+                <div className="bg-[#09090b] border border-[#27272a] rounded-xl p-4 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <h4 className="text-[11px] font-bold uppercase tracking-wider text-[#71717a]">Pre-flight summary</h4>
+                    <button
+                      type="button"
+                      onClick={runPreview}
+                      disabled={previewLoading}
+                      className="flex items-center gap-1 text-[10px] font-semibold text-[#a1a1aa] hover:text-white transition-colors cursor-pointer disabled:opacity-40"
+                    >
+                      <RefreshCw className={`w-3 h-3 ${previewLoading ? "animate-spin" : ""}`} />
+                      Refresh
+                    </button>
                   </div>
-                )}
+
+                  {previewLoading && !preview && (
+                    <div className="flex items-center justify-center py-6 text-[#71717a]">
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    </div>
+                  )}
+
+                  {previewError && (
+                    <div className="text-[11px] text-red-400 font-semibold bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2 flex items-center gap-2">
+                      <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
+                      {previewError}
+                    </div>
+                  )}
+
+                  {preview && (
+                    <>
+                      <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                        {[
+                          { label: "Videos", value: String(preview.totalVideos) },
+                          { label: "Clips needed", value: String(preview.filesNeeded) },
+                          {
+                            label: "Unused available",
+                            value: String(preview.availableUnused),
+                            tone: preview.exhausted ? "text-amber-400" : "text-green-400",
+                          },
+                          { label: "Estimated time", value: fmtMinutes(preview.estimatedSeconds), icon: true },
+                        ].map((c) => (
+                          <div key={c.label} className="bg-[#18181b] border border-[#27272a] rounded-lg px-3 py-2">
+                            <p className="text-[9px] uppercase font-bold text-[#71717a] flex items-center gap-1">
+                              {c.icon && <Clock className="w-2.5 h-2.5" />}
+                              {c.label}
+                            </p>
+                            <p className={`text-sm font-bold ${c.tone ?? "text-white"}`}>{c.value}</p>
+                          </div>
+                        ))}
+                      </div>
+                      <p className="text-[10px] font-mono text-[#71717a]">
+                        {preview.stylesCount} style{preview.stylesCount === 1 ? "" : "s"} in rotation
+                        {preview.exhausted ? " · source pool exhausted" : ""}
+                      </p>
+                      {preview.warnings.map((w, i) => (
+                        <p key={i} className="text-[10px] text-amber-400 flex items-start gap-1.5">
+                          <AlertCircle className="w-3 h-3 flex-shrink-0 mt-0.5" />
+                          {w}
+                        </p>
+                      ))}
+                    </>
+                  )}
+                </div>
               </div>
             )}
 
@@ -894,21 +989,14 @@ export default function ClientPage({ session }: { session?: { userId: string; ro
                 </button>
               )}
             </div>
-            {step === 4 && assignments.length > 0 && preview && !preview.canRender && !previewLoading && (
+            {step === 4 && preview && !preview.canRender && !previewLoading && (
               <p className="text-[10px] text-red-400 text-right mt-2">
-                Pre-flight is blocking the render — resolve the warnings above or adjust the selection.
+                Pre-flight is blocking the render — resolve the warnings above or allow reuse.
               </p>
             )}
           </div>
         </>
       )}
-
-      <FactoryAccountsPanel
-        open={accountsPanelOpen}
-        onClose={() => setAccountsPanelOpen(false)}
-        selected={assignments}
-        onChange={setAssignments}
-      />
     </div>
   );
 }
@@ -996,16 +1084,17 @@ function BatchStatusChip({ status }: { status: string }) {
   return <span className={`px-2 py-0.5 rounded-md border text-[9px] font-bold uppercase ${cls}`}>{status}</span>;
 }
 
-// ── Batch status view (per-item progress + retries) ─────────────────────────
+// ── Batch status view (pool progress, retries, distribute, smart download) ──
 
 interface StatusItem {
   id: string;
-  accountId: string | null;
   status: string;
   error: string | null;
   outputRef: string | null;
   quoteText: string | null;
-  account: { id: string; tiktokUsername: string; tiktokDisplayName: string; color: string } | null;
+  distributedAt: string | null;
+  distributedToAccountId: string | null;
+  distributedToAccount: { id: string; tiktokUsername: string } | null;
   track: { id: string; title: string; artist: string | null } | null;
   style: { id: string; name: string } | null;
 }
@@ -1015,6 +1104,7 @@ interface StatusBatch {
   name: string;
   mode: string;
   status: string;
+  sourceFolderId: string | null;
   campaign: { id: string; title: string } | null;
   items: StatusItem[];
 }
@@ -1024,6 +1114,17 @@ function BatchStatusView(props: { batchId: string; onNewBatch: () => void; onSho
   const [batch, setBatch] = useState<StatusBatch | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [retrying, setRetrying] = useState(false);
+
+  // Distribute state
+  const [panelOpen, setPanelOpen] = useState(false);
+  const [assignments, setAssignments] = useState<FactoryAccountSelection[]>([]);
+  const [allowRedistribute, setAllowRedistribute] = useState(false);
+  const [distributing, setDistributing] = useState(false);
+  const [distributeResult, setDistributeResult] = useState<DistributeResult | null>(null);
+
+  // Smart Download state
+  const [dlStatus, setDlStatus] = useState<DownloadStatus | null>(null);
+  const [dlStarting, setDlStarting] = useState(false);
 
   const fetchBatch = useCallback(async () => {
     try {
@@ -1042,6 +1143,20 @@ function BatchStatusView(props: { batchId: string; onNewBatch: () => void; onSho
     const t = setInterval(fetchBatch, 4000);
     return () => clearInterval(t);
   }, [fetchBatch]);
+
+  // Poll Smart Download status while preparing.
+  useEffect(() => {
+    if (!dlStatus || dlStatus.status !== "PREPARING") return;
+    const t = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/factory/batches/${batchId}/download`);
+        if (res.ok) setDlStatus(await res.json());
+      } catch {
+        // transient — next tick retries
+      }
+    }, 3000);
+    return () => clearInterval(t);
+  }, [batchId, dlStatus]);
 
   const handleRetryItem = async (itemId: string) => {
     try {
@@ -1072,6 +1187,51 @@ function BatchStatusView(props: { batchId: string; onNewBatch: () => void; onSho
     }
   };
 
+  const handleDistribute = async () => {
+    if (distributing || assignments.length === 0) return;
+    setDistributing(true);
+    setDistributeResult(null);
+    try {
+      const res = await fetch(`/api/factory/batches/${batchId}/distribute`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          assignments: assignments.map((a) => ({ accountId: a.accountId, videoCount: a.count })),
+          allowRedistribute,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Distribution failed");
+      const result = data.result as DistributeResult;
+      setDistributeResult(result);
+      const uploaded = result.results.reduce((s, r) => s + r.uploaded, 0);
+      const failed = result.results.reduce((s, r) => s + r.failed, 0);
+      toast.success(`Distributed ${uploaded} videos${failed > 0 ? ` — ${failed} failed` : ""}`);
+      setPanelOpen(false);
+      setAssignments([]);
+      fetchBatch();
+    } catch (err: any) {
+      toast.error(err.message || "Distribution failed");
+    } finally {
+      setDistributing(false);
+    }
+  };
+
+  const handleStartDownload = async () => {
+    if (dlStarting) return;
+    setDlStarting(true);
+    try {
+      const res = await fetch(`/api/factory/batches/${batchId}/download`, { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to prepare download");
+      setDlStatus(data as DownloadStatus);
+    } catch (err: any) {
+      toast.error(err.message || "Failed to prepare download");
+    } finally {
+      setDlStarting(false);
+    }
+  };
+
   if (loadError && !batch) {
     return (
       <div className="p-6 max-w-[1100px] mx-auto">
@@ -1096,15 +1256,9 @@ function BatchStatusView(props: { batchId: string; onNewBatch: () => void; onSho
     rendering: batch.items.filter((i) => i.status === "RENDERING").length,
     pending: batch.items.filter((i) => i.status === "PENDING").length,
   };
+  const distributedCount = batch.items.filter((i) => i.distributedAt).length;
+  const undistributedCompleted = counts.completed - distributedCount;
   const active = counts.pending + counts.rendering > 0 || batch.status === "QUEUED" || batch.status === "RENDERING";
-
-  const byAccount = new Map<string, StatusItem[]>();
-  for (const item of batch.items) {
-    const key = item.account?.tiktokUsername || "unknown";
-    const list = byAccount.get(key) ?? [];
-    list.push(item);
-    byAccount.set(key, list);
-  }
 
   return (
     <div className="p-4 md:p-6 max-w-[1100px] mx-auto space-y-4">
@@ -1117,12 +1271,13 @@ function BatchStatusView(props: { batchId: string; onNewBatch: () => void; onSho
           </div>
           <p className="text-[11px] text-[#71717a] mt-0.5">
             {batch.mode}
-            {batch.campaign ? ` · ${batch.campaign.title}` : ""} · {counts.completed}/{batch.items.length} videos done
+            {batch.campaign ? ` · ${batch.campaign.title}` : ""} · {counts.completed}/{batch.items.length} rendered
+            {distributedCount > 0 ? ` · ${distributedCount} distributed` : ""}
             {counts.failed > 0 ? ` · ${counts.failed} failed` : ""}
             {active ? " · rendering…" : ""}
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           {counts.failed > 0 && (
             <button
               type="button"
@@ -1134,6 +1289,31 @@ function BatchStatusView(props: { batchId: string; onNewBatch: () => void; onSho
               Retry failed ({counts.failed})
             </button>
           )}
+          {counts.completed > 0 && (
+            <>
+              <button
+                type="button"
+                onClick={() => setPanelOpen(true)}
+                className="flex items-center gap-1.5 px-3 py-2 bg-[#E11D48] hover:bg-[#be123c] text-white text-[11px] font-bold rounded-lg transition-colors cursor-pointer"
+              >
+                <Users className="w-3.5 h-3.5" />
+                Distribute{undistributedCompleted > 0 ? ` (${undistributedCompleted})` : ""}
+              </button>
+              <button
+                type="button"
+                onClick={handleStartDownload}
+                disabled={dlStarting || dlStatus?.status === "PREPARING"}
+                className="flex items-center gap-1.5 px-3 py-2 bg-[#27272a] hover:bg-[#3f3f46] disabled:opacity-40 text-white text-[11px] font-semibold rounded-lg transition-colors cursor-pointer"
+              >
+                {dlStarting || dlStatus?.status === "PREPARING" ? (
+                  <Loader2 className="w-3 h-3 animate-spin" />
+                ) : (
+                  <Download className="w-3 h-3" />
+                )}
+                Smart Download
+              </button>
+            </>
+          )}
           <button
             type="button"
             onClick={onShowHistory}
@@ -1144,7 +1324,7 @@ function BatchStatusView(props: { batchId: string; onNewBatch: () => void; onSho
           <button
             type="button"
             onClick={onNewBatch}
-            className="px-3 py-2 bg-[#E11D48] hover:bg-[#be123c] text-white text-[11px] font-bold rounded-lg transition-colors cursor-pointer"
+            className="px-3 py-2 bg-[#27272a] hover:bg-[#3f3f46] text-white text-[11px] font-semibold rounded-lg transition-colors cursor-pointer"
           >
             New batch
           </button>
@@ -1162,59 +1342,186 @@ function BatchStatusView(props: { batchId: string; onNewBatch: () => void; onSho
       {batch.status === "COMPLETED" && (
         <div className="text-[11px] text-green-400 bg-green-500/10 border border-green-500/20 rounded-lg px-3 py-2 flex items-center gap-2">
           <CheckCircle2 className="w-3.5 h-3.5 flex-shrink-0" />
-          Batch finished. Deliveries were recorded per account — track them in the Distribution tracker.
+          Batch rendered. Distribute the pool to accounts or grab it as one archive with Smart Download.
         </div>
       )}
 
-      {/* Per-account item groups */}
-      <div className="space-y-3">
-        {[...byAccount.entries()].map(([username, items]) => (
-          <div key={username} className="bg-[#18181b] border border-[#27272a] rounded-xl overflow-hidden">
-            <div className="px-4 py-2.5 border-b border-[#27272a] flex items-center justify-between">
-              <p className="text-[12px] font-bold text-white">@{username}</p>
-              <p className="text-[10px] font-mono text-[#71717a]">
-                {items.filter((i) => i.status === "COMPLETED").length}/{items.length} done
+      {/* Smart Download status */}
+      {dlStatus && (
+        <div className="bg-[#18181b] border border-[#27272a] rounded-xl px-4 py-3">
+          {dlStatus.status === "PREPARING" && (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between text-[11px]">
+                <span className="text-[#a1a1aa] flex items-center gap-2">
+                  <Loader2 className="w-3 h-3 animate-spin" />
+                  {dlStatus.message || "Preparing archive…"}
+                </span>
+                <span className="font-mono text-[#71717a]">{dlStatus.progress}%</span>
+              </div>
+              <div className="h-1 bg-[#27272a] rounded-full overflow-hidden">
+                <div className="h-full bg-[#E11D48] transition-all" style={{ width: `${dlStatus.progress}%` }} />
+              </div>
+            </div>
+          )}
+          {dlStatus.status === "COMPLETED" && dlStatus.downloadUrl && (
+            <div className="flex items-center justify-between gap-3 flex-wrap">
+              <p className="text-[11px] text-green-400 flex items-center gap-2">
+                <CheckCircle2 className="w-3.5 h-3.5 flex-shrink-0" />
+                Archive ready — {dlStatus.completedCount} videos · {fmtBytes(dlStatus.size)}
               </p>
+              <a
+                href={dlStatus.downloadUrl}
+                download
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-[#E11D48] hover:bg-[#be123c] text-white text-[11px] font-bold rounded-lg transition-colors"
+              >
+                <Download className="w-3 h-3" />
+                Download archive
+              </a>
             </div>
-            <div className="divide-y divide-[#27272a]">
-              {items.map((item) => (
-                <div key={item.id} className="px-4 py-2 flex items-center gap-3">
-                  <ItemStatusDot status={item.status} />
-                  <div className="min-w-0 flex-1">
-                    <p className="text-[11px] text-[#e4e4e7] truncate">
-                      {item.track ? `${item.track.title}${item.track.artist ? ` — ${item.track.artist}` : ""}` : item.quoteText || "—"}
-                    </p>
-                    <p className="text-[9px] font-mono text-[#71717a] truncate">
-                      {item.style?.name || "no style"}
-                      {item.outputRef ? ` · ${item.outputRef}` : ""}
-                    </p>
-                    {item.status === "FAILED" && item.error && (
-                      <p className="text-[9px] text-red-400 truncate mt-0.5" title={item.error}>
-                        {item.error}
-                      </p>
-                    )}
-                  </div>
-                  {item.status === "FAILED" && (
-                    <button
-                      type="button"
-                      onClick={() => handleRetryItem(item.id)}
-                      className="flex items-center gap-1 px-2 py-1 bg-[#27272a] hover:bg-[#3f3f46] text-white text-[10px] font-semibold rounded-md transition-colors cursor-pointer flex-shrink-0"
-                    >
-                      <RefreshCw className="w-2.5 h-2.5" />
-                      Retry
-                    </button>
-                  )}
+          )}
+          {dlStatus.status === "FAILED" && (
+            <div className="flex items-center justify-between gap-3 flex-wrap">
+              <p className="text-[11px] text-red-400 flex items-center gap-2">
+                <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
+                {dlStatus.message || "Archive preparation failed"}
+              </p>
+              <button
+                type="button"
+                onClick={handleStartDownload}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-[#27272a] hover:bg-[#3f3f46] text-white text-[11px] font-semibold rounded-lg transition-colors cursor-pointer"
+              >
+                <RefreshCw className="w-3 h-3" />
+                Try again
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Distribute result summary */}
+      {distributeResult && (
+        <div className="bg-[#18181b] border border-[#27272a] rounded-xl overflow-hidden">
+          <div className="px-4 py-2.5 border-b border-[#27272a] flex items-center justify-between">
+            <p className="text-[11px] font-bold uppercase tracking-wider text-[#71717a]">Last distribution</p>
+            <p className="text-[10px] font-mono text-[#a1a1aa]">
+              {distributeResult.results.reduce((s, r) => s + r.uploaded, 0)} uploaded of {distributeResult.poolSize} in pool
+            </p>
+          </div>
+          <div className="divide-y divide-[#27272a]">
+            {distributeResult.warnings.map((w, i) => (
+              <p key={i} className="px-4 py-2 text-[10px] text-amber-400 flex items-start gap-1.5">
+                <AlertCircle className="w-3 h-3 flex-shrink-0 mt-0.5" />
+                {w}
+              </p>
+            ))}
+            {distributeResult.results.map((r) => (
+              <div key={r.accountId} className="px-4 py-2">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[11px] font-semibold text-white">@{r.tiktokUsername}</span>
+                  <span className={`text-[10px] font-mono ${r.failed > 0 ? "text-amber-400" : "text-green-400"}`}>
+                    {r.uploaded}/{r.assigned} uploaded
+                    {r.failed > 0 ? ` · ${r.failed} failed` : ""}
+                    {r.deliveryId ? " · delivery recorded" : ""}
+                  </span>
                 </div>
-              ))}
+                {r.warnings.map((w, i) => (
+                  <p key={i} className="text-[10px] text-amber-400 mt-0.5 flex items-start gap-1.5">
+                    <AlertCircle className="w-3 h-3 flex-shrink-0 mt-0.5" />
+                    {w}
+                  </p>
+                ))}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Render pool */}
+      <div className="bg-[#18181b] border border-[#27272a] rounded-xl overflow-hidden">
+        <div className="px-4 py-2.5 border-b border-[#27272a] flex items-center justify-between">
+          <p className="text-[12px] font-bold text-white">Render pool</p>
+          <p className="text-[10px] font-mono text-[#71717a]">
+            {counts.completed}/{batch.items.length} rendered
+            {distributedCount > 0 ? ` · ${distributedCount} distributed` : ""}
+          </p>
+        </div>
+        <div className="divide-y divide-[#27272a] max-h-[480px] overflow-y-auto custom-scrollbar">
+          {batch.items.map((item) => (
+            <div key={item.id} className="px-4 py-2 flex items-center gap-3">
+              <ItemStatusDot status={item.status} />
+              <div className="min-w-0 flex-1">
+                <p className="text-[11px] text-[#e4e4e7] truncate">
+                  {item.track ? `${item.track.title}${item.track.artist ? ` — ${item.track.artist}` : ""}` : item.quoteText || "—"}
+                </p>
+                <p className="text-[9px] font-mono text-[#71717a] truncate">
+                  {item.style?.name || "no style"}
+                  {item.distributedToAccount ? ` · → @${item.distributedToAccount.tiktokUsername}` : ""}
+                </p>
+                {item.status === "FAILED" && item.error && (
+                  <p className="text-[9px] text-red-400 truncate mt-0.5" title={item.error}>
+                    {item.error}
+                  </p>
+                )}
+              </div>
+              {item.status === "FAILED" && (
+                <button
+                  type="button"
+                  onClick={() => handleRetryItem(item.id)}
+                  className="flex items-center gap-1 px-2 py-1 bg-[#27272a] hover:bg-[#3f3f46] text-white text-[10px] font-semibold rounded-md transition-colors cursor-pointer flex-shrink-0"
+                >
+                  <RefreshCw className="w-2.5 h-2.5" />
+                  Retry
+                </button>
+              )}
             </div>
-          </div>
-        ))}
-        {batch.items.length === 0 && (
-          <div className="bg-[#18181b] border border-[#27272a] rounded-xl p-10 text-center">
-            <p className="text-[11px] text-[#71717a]">No items yet — this batch is still a draft.</p>
-          </div>
-        )}
+          ))}
+          {batch.items.length === 0 && (
+            <p className="px-4 py-10 text-center text-[11px] text-[#71717a]">No items yet — this batch is still a draft.</p>
+          )}
+        </div>
       </div>
+
+      {/* Distribute slide-over */}
+      <FactoryAccountsPanel
+        open={panelOpen}
+        onClose={() => setPanelOpen(false)}
+        selected={assignments}
+        onChange={setAssignments}
+      />
+      {panelOpen && (
+        <div className="fixed inset-x-0 bottom-0 z-[60] flex justify-center pointer-events-none">
+          <div className="pointer-auto w-full max-w-[560px] bg-[#18181b] border border-[#27272a] border-b-0 rounded-t-xl px-4 py-3 space-y-2.5">
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-[11px] text-[#a1a1aa]">
+                <span className="font-bold text-white">{assignments.reduce((s, a) => s + a.count, 0)}</span> videos
+                requested · <span className="font-bold text-white">{undistributedCompleted}</span> undistributed in pool
+              </p>
+              <button
+                type="button"
+                onClick={handleDistribute}
+                disabled={distributing || assignments.length === 0}
+                className="flex items-center gap-1.5 px-4 py-2 bg-[#E11D48] hover:bg-[#be123c] disabled:opacity-40 disabled:cursor-not-allowed text-white text-[11px] font-bold rounded-lg transition-colors cursor-pointer flex-shrink-0"
+              >
+                {distributing ? <Loader2 className="w-3 h-3 animate-spin" /> : <Users className="w-3 h-3" />}
+                Distribute
+              </button>
+            </div>
+            {distributedCount > 0 && (
+              <label className="flex items-center gap-2 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={allowRedistribute}
+                  onChange={(e) => setAllowRedistribute(e.target.checked)}
+                  className="accent-[#E11D48] w-3.5 h-3.5"
+                />
+                <span className="text-[10px] text-[#a1a1aa]">
+                  Re-distribute — include the {distributedCount} already-distributed videos
+                </span>
+              </label>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

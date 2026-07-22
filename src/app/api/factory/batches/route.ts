@@ -28,7 +28,10 @@ export async function GET() {
 /**
  * POST /api/factory/batches — create a DRAFT batch.
  * Body: { name, mode: "lyric"|"quote", mixingEnabled, variationStrength (1-5),
- *         targetDuration, campaignId?, styleIds: string[] }
+ *         targetDuration, campaignId?, styleIds: string[],
+ *         sourceFolderId: string, trackIds?: string[], quotes?: string[] }
+ * The content pool (styles/tracks/quotes) lives on the batch — rendering later
+ * takes only a total video count.
  */
 export async function POST(req: Request) {
   const session = await getSession();
@@ -49,6 +52,9 @@ export async function POST(req: Request) {
       targetDuration: Number(body.targetDuration ?? 30),
       campaignId: body.campaignId ?? null,
       styleIds: Array.isArray(body.styleIds) ? body.styleIds : [],
+      sourceFolderId: body.sourceFolderId ?? "",
+      trackIds: Array.isArray(body.trackIds) ? body.trackIds : [],
+      quotes: Array.isArray(body.quotes) ? body.quotes : [],
       createdBy: session.userId,
     });
     return NextResponse.json({ batch }, { status: 201 });

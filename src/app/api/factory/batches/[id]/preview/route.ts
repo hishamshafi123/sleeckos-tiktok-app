@@ -6,9 +6,9 @@ import { previewBatch } from "@/lib/services/factory";
 
 /**
  * POST /api/factory/batches/[id]/preview — pre-flight check.
- * Body: { assignments: [{ accountId, videoCount }], trackIds?: string[],
- *         quotes?: string[], allowReuseWhenExhausted?: boolean }
- * Dry-run only: reads the Drive ledger without consuming anything.
+ * Body: { totalVideos: number, allowReuseWhenExhausted?: boolean }
+ * Reports availability for the batch's source Drive folder (dry-run — reads
+ * the ledger without consuming anything).
  */
 export async function POST(
   req: NextRequest,
@@ -25,11 +25,9 @@ export async function POST(
   const { id } = await params;
 
   try {
-    const body = await req.json();
+    const body = await req.json().catch(() => ({}));
     const preview = await previewBatch(id, {
-      assignments: Array.isArray(body.assignments) ? body.assignments : [],
-      trackIds: Array.isArray(body.trackIds) ? body.trackIds : undefined,
-      quotes: Array.isArray(body.quotes) ? body.quotes : undefined,
+      totalVideos: Number(body.totalVideos),
       allowReuseWhenExhausted: !!body.allowReuseWhenExhausted,
     });
     return NextResponse.json({ preview });

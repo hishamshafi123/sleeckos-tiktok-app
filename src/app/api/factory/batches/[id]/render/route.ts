@@ -5,10 +5,11 @@ import { can } from "@/lib/services/permissions";
 import { startBatchRender } from "@/lib/services/factory";
 
 /**
- * POST /api/factory/batches/[id]/render — plan items, reserve source clips,
- * queue the batch and trigger the background worker.
- * Body: { assignments: [{ accountId, videoCount }], trackIds?: string[],
- *         quotes?: string[], allowReuseWhenExhausted?: boolean }
+ * POST /api/factory/batches/[id]/render — plan account-less pool items, reserve
+ * source clips from the batch's source folder, queue the batch and trigger the
+ * background worker. Renders go to the local/R2 pool — distribution to
+ * accounts happens afterwards via /distribute.
+ * Body: { totalVideos: number, allowReuseWhenExhausted?: boolean }
  */
 export async function POST(
   req: NextRequest,
@@ -25,11 +26,9 @@ export async function POST(
   const { id } = await params;
 
   try {
-    const body = await req.json();
+    const body = await req.json().catch(() => ({}));
     const result = await startBatchRender(id, {
-      assignments: Array.isArray(body.assignments) ? body.assignments : [],
-      trackIds: Array.isArray(body.trackIds) ? body.trackIds : undefined,
-      quotes: Array.isArray(body.quotes) ? body.quotes : undefined,
+      totalVideos: Number(body.totalVideos),
       allowReuseWhenExhausted: !!body.allowReuseWhenExhausted,
     });
     return NextResponse.json({ result });
