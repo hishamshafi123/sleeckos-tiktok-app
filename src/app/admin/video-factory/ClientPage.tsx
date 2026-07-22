@@ -1985,19 +1985,21 @@ function BatchStatusChip({ status, live }: { status: string; live?: { position: 
   );
 }
 
-// ── Batch status view (pool progress, retries, distribute, smart download) ──
+// ── Batch status view (per-video workspace: preview, queue control, cleanup) ──
 
 interface StatusItem {
   id: string;
-  status: string;
+  status: string; // PENDING | RENDERING | COMPLETED | FAILED | CANCELED
   error: string | null;
   outputRef: string | null;
   quoteText: string | null;
   distributedAt: string | null;
   distributedToAccountId: string | null;
-  distributedToAccount: { id: string; tiktokUsername: string } | null;
+  distributedToAccount: { id: string; tiktokUsername: string; color: string | null } | null;
   track: { id: string; title: string; artist: string | null } | null;
-  style: { id: string; name: string } | null;
+  style: { id: string; name: string; thumbnail: string | null } | null;
+  createdAt: string;
+  updatedAt: string;
 }
 
 interface StatusBatch {
@@ -2005,16 +2007,56 @@ interface StatusBatch {
   name: string;
   mode: string;
   status: string;
+  errorMessage: string | null;
   sourceFolderId: string | null;
   campaign: { id: string; title: string } | null;
+  styles: { id: string; name: string; thumbnail: string | null }[];
   items: StatusItem[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+type ItemFilter = "all" | "COMPLETED" | "FAILED" | "PENDING" | "RENDERING" | "CANCELED";
+
+const ITEM_FILTERS: { key: ItemFilter; label: string }[] = [
+  { key: "all", label: "All" },
+  { key: "COMPLETED", label: "Completed" },
+  { key: "FAILED", label: "Failed" },
+  { key: "PENDING", label: "Queued" },
+  { key: "RENDERING", label: "Rendering" },
+  { key: "CANCELED", label: "Canceled" },
+];
+
+function isTerminalItemStatus(status: string) {
+  return status === "COMPLETED" || status === "FAILED" || status === "CANCELED";
 }
 
 function BatchStatusView(props: { batchId: string; onNewBatch: () => void; onShowHistory: () => void }) {
   const { batchId, onNewBatch, onShowHistory } = props;
   const [batch, setBatch] = useState<StatusBatch | null>(null);
+  const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [retrying, setRetrying] = useState(false);
+  const [canceling, setCanceling] = useState(false);
+  const [retryingItemId, setRetryingItemId] = useState<string | null>(null);
+
+  // Global render queue
+  const [queue, setQueue] = useState<QueueState | null>(null);
+  const [queueBusy, setQueueBusy] = useState(false);
+
+  // Item filter / selection / preview
+  const [filter, setFilter] = useState<ItemFilter>("all");
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [previewItem, setPreviewItem] = useState<StatusItem | null>(null);
+
+  // Confirm dialog (cancel batch / delete items)
+  const [confirm, setConfirm] = useState<{
+    title: string;
+    body: string;
+    confirmLabel: string;
+    action: () => Promise<void>;
+  } | null>(null);
+  const [confirmBusy, setConfirmBusy] = useState(false);
 
   // Distribute state
   const [panelOpen, setPanelOpen] = useState(false);
@@ -2027,7 +2069,10 @@ function BatchStatusView(props: { batchId: string; onNewBatch: () => void; onSho
   const [dlStatus, setDlStatus] = useState<DownloadStatus | null>(null);
   const [dlStarting, setDlStarting] = useState(false);
 
-  const fetchBatch = useCallback(async () => {
+  // ── Loading ──
+
+  const fetchBatch = useCallback(async (mode: "initial" | "poll" = "poll") => {
+    if (mode === "initial") setLoading(true);
     try {
       const res = await fetch(`/api/factory/batches/${batchId}`);
       const data = await res.json();
@@ -2036,14 +2081,38 @@ function BatchStatusView(props: { batchId: string; onNewBatch: () => void; onSho
       setLoadError(null);
     } catch (err: any) {
       setLoadError(err.message || "Failed to load batch");
+    } finally {
+      setLoading(false);
     }
   }, [batchId]);
 
+  const fetchQueue = useCallback(async () => {
+    try {
+      const res = await fetch("/api/factory/queue");
+      if (res.ok) setQueue(await res.json());
+    } catch {
+      // transient — next tick retries
+    }
+  }, []);
+
   useEffect(() => {
-    fetchBatch();
-    const t = setInterval(fetchBatch, 4000);
-    return () => clearInterval(t);
+    fetchBatch("initial");
   }, [fetchBatch]);
+
+  // Poll the batch detail only while items are still in flight.
+  const hasActiveItems = !!batch && batch.items.some((i) => i.status === "PENDING" || i.status === "RENDERING");
+  useEffect(() => {
+    if (!hasActiveItems) return;
+    const t = setInterval(() => fetchBatch(), 5000);
+    return () => clearInterval(t);
+  }, [hasActiveItems, fetchBatch]);
+
+  // Live queue state while the view is open.
+  useEffect(() => {
+    fetchQueue();
+    const t = setInterval(fetchQueue, 5000);
+    return () => clearInterval(t);
+  }, [fetchQueue]);
 
   // Poll Smart Download status while preparing.
   useEffect(() => {
@@ -2059,16 +2128,123 @@ function BatchStatusView(props: { batchId: string; onNewBatch: () => void; onSho
     return () => clearInterval(t);
   }, [batchId, dlStatus]);
 
+  // Prune selections for items that disappeared.
+  useEffect(() => {
+    if (!batch) return;
+    setSelectedIds((prev) => {
+      if (prev.size === 0) return prev;
+      const ids = new Set(batch.items.map((i) => i.id));
+      const next = new Set([...prev].filter((id) => ids.has(id)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [batch]);
+
+  // Close the preview if its item vanished or is no longer playable.
+  useEffect(() => {
+    if (previewItem && batch && !batch.items.some((i) => i.id === previewItem.id && i.status === "COMPLETED")) {
+      setPreviewItem(null);
+    }
+  }, [batch, previewItem]);
+
+  // ── Derived ──
+
+  const counts = useMemo(() => {
+    const c = { completed: 0, failed: 0, rendering: 0, pending: 0, canceled: 0 };
+    if (!batch) return c;
+    for (const i of batch.items) {
+      if (i.status === "COMPLETED") c.completed++;
+      else if (i.status === "FAILED") c.failed++;
+      else if (i.status === "RENDERING") c.rendering++;
+      else if (i.status === "PENDING") c.pending++;
+      else if (i.status === "CANCELED") c.canceled++;
+    }
+    return c;
+  }, [batch]);
+
+  const filterCounts = useMemo(() => {
+    const c: Record<ItemFilter, number> = {
+      all: batch?.items.length ?? 0,
+      COMPLETED: 0,
+      FAILED: 0,
+      PENDING: 0,
+      RENDERING: 0,
+      CANCELED: 0,
+    };
+    if (batch) {
+      for (const i of batch.items) {
+        if (i.status === "COMPLETED") c.COMPLETED++;
+        else if (i.status === "FAILED") c.FAILED++;
+        else if (i.status === "PENDING") c.PENDING++;
+        else if (i.status === "RENDERING") c.RENDERING++;
+        else if (i.status === "CANCELED") c.CANCELED++;
+      }
+    }
+    return c;
+  }, [batch]);
+
+  const filteredItems = useMemo(() => {
+    if (!batch) return [] as StatusItem[];
+    if (filter === "all") return batch.items;
+    return batch.items.filter((i) => i.status === filter);
+  }, [batch, filter]);
+
+  // ── Actions ──
+
+  const handleQueueControl = async (action: "pause" | "resume" | "recover") => {
+    if (queueBusy) return;
+    setQueueBusy(true);
+    try {
+      const res = await fetch("/api/factory/queue/control", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Queue control failed");
+      // The control endpoint returns a partial state — merge, the 5s poll refills the rest.
+      if (data.state) setQueue((prev) => (prev ? { ...prev, ...data.state } : data.state));
+      if (action === "recover") {
+        toast.success(data.recovered > 0 ? `Recovered ${data.recovered} stuck items` : "No stuck items to recover");
+        fetchBatch();
+        fetchQueue();
+      } else {
+        toast.success(action === "pause" ? "Queue paused" : "Queue resumed");
+      }
+    } catch (err: any) {
+      toast.error(err.message || "Queue control failed");
+    } finally {
+      setQueueBusy(false);
+    }
+  };
+
+  const doCancel = async () => {
+    setCanceling(true);
+    try {
+      const res = await fetch(`/api/factory/batches/${batchId}/cancel`, { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Cancel failed");
+      toast.success(data.canceled > 0 ? `Canceled — ${data.canceled} pending items stopped` : "Batch canceled");
+      fetchBatch();
+      fetchQueue();
+    } catch (err: any) {
+      toast.error(err.message || "Cancel failed");
+    } finally {
+      setCanceling(false);
+    }
+  };
+
   const handleRetryItem = async (itemId: string) => {
+    if (retryingItemId) return;
+    setRetryingItemId(itemId);
     try {
       const res = await fetch(`/api/factory/items/${itemId}/retry`, { method: "POST" });
-      if (!res.ok) {
-        const data = await res.json();
-        throw new Error(data.error || "Retry failed");
-      }
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Retry failed");
       fetchBatch();
     } catch (err: any) {
       toast.error(err.message || "Retry failed");
+    } finally {
+      setRetryingItemId(null);
     }
   };
 
@@ -2086,6 +2262,39 @@ function BatchStatusView(props: { batchId: string; onNewBatch: () => void; onSho
     } finally {
       setRetrying(false);
     }
+  };
+
+  const doDeleteItems = async (itemIds: string[]) => {
+    try {
+      const res = await fetch("/api/factory/items/bulk-delete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ itemIds }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Delete failed");
+      const deleted = data.deletedItems ?? itemIds.length;
+      const skipped = data.skipped ?? 0;
+      toast.success(
+        `Deleted ${deleted} ${deleted === 1 ? "video" : "videos"}${skipped > 0 ? ` — ${skipped} skipped (still active)` : ""}`
+      );
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        itemIds.forEach((id) => next.delete(id));
+        return next;
+      });
+      fetchBatch();
+    } catch (err: any) {
+      toast.error(err.message || "Delete failed");
+    }
+  };
+
+  const handleConfirm = async () => {
+    if (!confirm || confirmBusy) return;
+    setConfirmBusy(true);
+    await confirm.action();
+    setConfirmBusy(false);
+    setConfirm(null);
   };
 
   const handleDistribute = async () => {
@@ -2133,111 +2342,243 @@ function BatchStatusView(props: { batchId: string; onNewBatch: () => void; onSho
     }
   };
 
-  if (loadError && !batch) {
+  // ── States ──
+
+  if (loading && !batch) {
     return (
-      <div className="p-6 max-w-[1100px] mx-auto">
-        <div className="text-[11px] text-red-400 font-semibold bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">
-          {loadError}
+      <div className="p-4 md:p-6 max-w-[1100px] mx-auto space-y-4 animate-pulse">
+        <div className="flex items-start justify-between gap-3 flex-wrap">
+          <div className="space-y-2">
+            <div className="h-5 w-64 max-w-full bg-[#27272a] rounded" />
+            <div className="h-3 w-80 max-w-full bg-[#27272a] rounded" />
+          </div>
+          <div className="flex items-center gap-2">
+            {[0, 1, 2, 3].map((i) => (
+              <div key={i} className="h-8 w-24 bg-[#27272a] rounded-lg" />
+            ))}
+          </div>
+        </div>
+        <div className="h-1.5 w-full bg-[#27272a] rounded-full" />
+        <div className="bg-[#18181b] border border-[#27272a] rounded-xl overflow-hidden divide-y divide-[#27272a]">
+          {[0, 1, 2, 3, 4, 5].map((i) => (
+            <div key={i} className="px-4 py-3 flex items-center gap-3">
+              <div className="w-3.5 h-3.5 bg-[#27272a] rounded" />
+              <div className="h-4 w-[72px] bg-[#27272a] rounded-md" />
+              <div className="flex-1 h-3 bg-[#27272a] rounded" />
+              <div className="h-6 w-20 bg-[#27272a] rounded-lg" />
+            </div>
+          ))}
         </div>
       </div>
     );
   }
 
-  if (!batch) {
+  if (loadError && !batch) {
     return (
-      <div className="flex items-center justify-center py-24 text-[#71717a]">
-        <Loader2 className="w-5 h-5 animate-spin" />
+      <div className="p-4 md:p-6 max-w-[1100px] mx-auto">
+        <div className="bg-red-500/10 border border-red-500/20 rounded-xl px-4 py-3 flex items-center justify-between gap-3 flex-wrap">
+          <p className="text-[11px] text-red-400 font-semibold flex items-center gap-2">
+            <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
+            {loadError}
+          </p>
+          <button
+            type="button"
+            onClick={() => fetchBatch("initial")}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-[#27272a] hover:bg-[#3f3f46] text-white text-[11px] font-semibold rounded-lg transition-colors cursor-pointer"
+          >
+            <RefreshCw className="w-3 h-3" />
+            Try again
+          </button>
+        </div>
       </div>
     );
   }
 
-  const counts = {
-    completed: batch.items.filter((i) => i.status === "COMPLETED").length,
-    failed: batch.items.filter((i) => i.status === "FAILED").length,
-    rendering: batch.items.filter((i) => i.status === "RENDERING").length,
-    pending: batch.items.filter((i) => i.status === "PENDING").length,
-  };
+  if (!batch) return null;
+
+  const total = batch.items.length;
   const distributedCount = batch.items.filter((i) => i.distributedAt).length;
   const undistributedCompleted = counts.completed - distributedCount;
-  const active = counts.pending + counts.rendering > 0 || batch.status === "QUEUED" || batch.status === "RENDERING";
+  const inFlight = counts.pending + counts.rendering;
+  const donePct = total > 0 ? (counts.completed / total) * 100 : 0;
+  const failPct = total > 0 ? (counts.failed / total) * 100 : 0;
+  const live =
+    queue?.active && queue.active.batchId === batch.id
+      ? { position: queue.active.position, totalInBatch: queue.active.totalInBatch }
+      : null;
+  const allVisibleSelected = filteredItems.length > 0 && filteredItems.every((i) => selectedIds.has(i.id));
+
+  const toggleSelectAllVisible = () => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (allVisibleSelected) filteredItems.forEach((i) => next.delete(i.id));
+      else filteredItems.forEach((i) => next.add(i.id));
+      return next;
+    });
+  };
+
+  // ── Render ──
 
   return (
     <div className="p-4 md:p-6 max-w-[1100px] mx-auto space-y-4">
-      {/* Header */}
-      <div className="flex items-center justify-between flex-wrap gap-3">
-        <div>
-          <div className="flex items-center gap-2.5">
-            <h1 className="text-lg font-bold text-white tracking-tight">{batch.name}</h1>
-            <BatchStatusChip status={batch.status} />
+      {/* Header block + global actions */}
+      <div className="space-y-2.5">
+        <div className="flex items-start justify-between flex-wrap gap-3">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
+              <h1 className="text-lg font-bold text-white tracking-tight truncate max-w-[420px]" title={batch.name}>
+                {batch.name}
+              </h1>
+              <ModeChip mode={batch.mode} />
+              <BatchStatusChip status={batch.status} live={live} />
+              {queue?.paused && (
+                <span className="px-2 py-0.5 rounded-md border bg-amber-500/10 text-amber-400 border-amber-500/20 text-[9px] font-bold uppercase">
+                  Queue paused
+                </span>
+              )}
+            </div>
+            <p className="text-[10px] text-[#71717a] mt-1.5 flex items-center gap-1.5 flex-wrap">
+              {batch.campaign && (
+                <span className="inline-flex items-center px-1.5 py-0.5 rounded-md bg-[#27272a]/60 border border-[#3f3f46] text-[9px] font-semibold text-[#a1a1aa]">
+                  {batch.campaign.title}
+                </span>
+              )}
+              {batch.sourceFolderId && (
+                <span className="font-mono" title={`Source folder: ${batch.sourceFolderId}`}>
+                  src {batch.sourceFolderId.slice(0, 10)}…
+                </span>
+              )}
+              <span title={new Date(batch.createdAt).toLocaleString()}>created {fmtRelative(batch.createdAt)}</span>
+              <span title={new Date(batch.updatedAt).toLocaleString()}>· updated {fmtRelative(batch.updatedAt)}</span>
+            </p>
           </div>
-          <p className="text-[11px] text-[#71717a] mt-0.5">
-            {batch.mode}
-            {batch.campaign ? ` · ${batch.campaign.title}` : ""} · {counts.completed}/{batch.items.length} rendered
-            {distributedCount > 0 ? ` · ${distributedCount} distributed` : ""}
-            {counts.failed > 0 ? ` · ${counts.failed} failed` : ""}
-            {active ? " · rendering…" : ""}
-          </p>
-        </div>
-        <div className="flex items-center gap-2 flex-wrap">
-          {counts.failed > 0 && (
+
+          {/* Global actions */}
+          <div className="flex items-center gap-2 flex-wrap">
+            {queue && queue.staleRendering > 0 && (
+              <button
+                type="button"
+                onClick={() => handleQueueControl("recover")}
+                disabled={queueBusy}
+                title="Reset items stuck in RENDERING back to the queue"
+                className="flex items-center gap-1.5 px-3 py-2 bg-amber-500/10 border border-amber-500/30 hover:bg-amber-500/20 disabled:opacity-40 text-amber-400 text-[11px] font-bold rounded-lg transition-colors cursor-pointer"
+              >
+                {queueBusy ? <Loader2 className="w-3 h-3 animate-spin" /> : <AlertTriangle className="w-3 h-3" />}
+                Recover {queue.staleRendering} stuck
+              </button>
+            )}
             <button
               type="button"
-              onClick={handleRetryFailed}
-              disabled={retrying}
+              onClick={() => handleQueueControl(queue?.paused ? "resume" : "pause")}
+              disabled={queueBusy || !queue}
+              title={queue?.paused ? "Resume the render queue" : "Pause the render queue (running items finish)"}
               className="flex items-center gap-1.5 px-3 py-2 bg-[#27272a] hover:bg-[#3f3f46] disabled:opacity-40 text-white text-[11px] font-semibold rounded-lg transition-colors cursor-pointer"
             >
-              {retrying ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
-              Retry failed ({counts.failed})
+              {queueBusy ? (
+                <Loader2 className="w-3 h-3 animate-spin" />
+              ) : queue?.paused ? (
+                <Play className="w-3 h-3" />
+              ) : (
+                <Pause className="w-3 h-3" />
+              )}
+              {queue?.paused ? "Resume queue" : "Pause queue"}
             </button>
-          )}
-          {counts.completed > 0 && (
-            <>
+            {isActiveStatus(batch.status) && (
               <button
                 type="button"
-                onClick={() => setPanelOpen(true)}
-                className="flex items-center gap-1.5 px-3 py-2 bg-[#E11D48] hover:bg-[#be123c] text-white text-[11px] font-bold rounded-lg transition-colors cursor-pointer"
+                onClick={() =>
+                  setConfirm({
+                    title: `Cancel "${batch.name}"?`,
+                    body: "Pending items are stopped and the queue moves on. Videos already rendered are kept.",
+                    confirmLabel: "Cancel batch",
+                    action: doCancel,
+                  })
+                }
+                disabled={canceling}
+                title="Stop pending items — rendered videos are kept"
+                className="flex items-center gap-1.5 px-3 py-2 bg-red-500/10 border border-red-500/30 hover:bg-red-500/20 disabled:opacity-40 text-red-400 text-[11px] font-bold rounded-lg transition-colors cursor-pointer"
               >
-                <Users className="w-3.5 h-3.5" />
-                Distribute{undistributedCompleted > 0 ? ` (${undistributedCompleted})` : ""}
+                {canceling ? <Loader2 className="w-3 h-3 animate-spin" /> : <Ban className="w-3 h-3" />}
+                Cancel batch
               </button>
+            )}
+            {counts.failed > 0 && (
               <button
                 type="button"
-                onClick={handleStartDownload}
-                disabled={dlStarting || dlStatus?.status === "PREPARING"}
+                onClick={handleRetryFailed}
+                disabled={retrying}
                 className="flex items-center gap-1.5 px-3 py-2 bg-[#27272a] hover:bg-[#3f3f46] disabled:opacity-40 text-white text-[11px] font-semibold rounded-lg transition-colors cursor-pointer"
               >
-                {dlStarting || dlStatus?.status === "PREPARING" ? (
-                  <Loader2 className="w-3 h-3 animate-spin" />
-                ) : (
-                  <Download className="w-3 h-3" />
-                )}
-                Smart Download
+                {retrying ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
+                Retry failed ({counts.failed})
               </button>
-            </>
-          )}
-          <button
-            type="button"
-            onClick={onShowHistory}
-            className="px-3 py-2 bg-[#27272a] hover:bg-[#3f3f46] text-white text-[11px] font-semibold rounded-lg transition-colors cursor-pointer"
-          >
-            History
-          </button>
-          <button
-            type="button"
-            onClick={onNewBatch}
-            className="px-3 py-2 bg-[#27272a] hover:bg-[#3f3f46] text-white text-[11px] font-semibold rounded-lg transition-colors cursor-pointer"
-          >
-            New batch
-          </button>
+            )}
+            {counts.completed > 0 && (
+              <>
+                <button
+                  type="button"
+                  onClick={handleStartDownload}
+                  disabled={dlStarting || dlStatus?.status === "PREPARING"}
+                  title="Smart Download — one archive of the pool"
+                  className="flex items-center gap-1.5 px-3 py-2 bg-[#27272a] hover:bg-[#3f3f46] disabled:opacity-40 text-white text-[11px] font-semibold rounded-lg transition-colors cursor-pointer"
+                >
+                  {dlStarting || dlStatus?.status === "PREPARING" ? (
+                    <Loader2 className="w-3 h-3 animate-spin" />
+                  ) : (
+                    <Download className="w-3 h-3" />
+                  )}
+                  Smart Download
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPanelOpen(true)}
+                  title="Smart Export — distribute the pool to accounts"
+                  className="flex items-center gap-1.5 px-3 py-2 bg-[#E11D48] hover:bg-[#be123c] text-white text-[11px] font-bold rounded-lg transition-colors cursor-pointer"
+                >
+                  <Users className="w-3.5 h-3.5" />
+                  Smart Export{undistributedCompleted > 0 ? ` (${undistributedCompleted})` : ""}
+                </button>
+              </>
+            )}
+            <button
+              type="button"
+              onClick={onShowHistory}
+              className="flex items-center gap-1.5 px-3 py-2 bg-[#27272a] hover:bg-[#3f3f46] text-white text-[11px] font-semibold rounded-lg transition-colors cursor-pointer"
+            >
+              <History className="w-3 h-3" />
+              History
+            </button>
+            <button
+              type="button"
+              onClick={onNewBatch}
+              className="px-3 py-2 bg-[#27272a] hover:bg-[#3f3f46] text-white text-[11px] font-semibold rounded-lg transition-colors cursor-pointer"
+            >
+              New batch
+            </button>
+          </div>
         </div>
-      </div>
 
-      {/* Progress bar */}
-      <div className="h-1.5 bg-[#27272a] rounded-full overflow-hidden">
-        <div
-          className={`h-full transition-all ${counts.failed > 0 && counts.completed === 0 ? "bg-red-500" : "bg-[#E11D48]"}`}
-          style={{ width: `${batch.items.length > 0 ? Math.round(((counts.completed + counts.failed) / batch.items.length) * 100) : 0}%` }}
-        />
+        {/* Two-segment progress + counts */}
+        <div className="flex items-center gap-2.5">
+          <div className="flex-1 h-1.5 bg-[#27272a] rounded-full overflow-hidden flex">
+            <div className="h-full bg-emerald-500 transition-all" style={{ width: `${donePct}%` }} />
+            <div className="h-full bg-red-500 transition-all" style={{ width: `${failPct}%` }} />
+          </div>
+          <p className="text-[10px] font-mono text-[#a1a1aa] whitespace-nowrap flex-shrink-0">
+            <span className="text-emerald-400">{counts.completed}</span>/{total}
+            {counts.failed > 0 && <span className="text-red-400"> · {counts.failed} failed</span>}
+            {counts.canceled > 0 && <span className="text-[#71717a]"> · {counts.canceled} canceled</span>}
+            {inFlight > 0 && <span> · {inFlight} queued</span>}
+            {distributedCount > 0 && <span className="text-[#71717a]"> · {distributedCount} distributed</span>}
+          </p>
+        </div>
+
+        {batch.errorMessage && (
+          <p className="text-[10px] text-red-400 flex items-start gap-1.5">
+            <AlertCircle className="w-3 h-3 flex-shrink-0 mt-0.5" />
+            {batch.errorMessage}
+          </p>
+        )}
       </div>
 
       {batch.status === "COMPLETED" && (
@@ -2337,47 +2678,179 @@ function BatchStatusView(props: { batchId: string; onNewBatch: () => void; onSho
         </div>
       )}
 
-      {/* Render pool */}
+      {/* Item workspace */}
       <div className="bg-[#18181b] border border-[#27272a] rounded-xl overflow-hidden">
-        <div className="px-4 py-2.5 border-b border-[#27272a] flex items-center justify-between">
-          <p className="text-[12px] font-bold text-white">Render pool</p>
-          <p className="text-[10px] font-mono text-[#71717a]">
-            {counts.completed}/{batch.items.length} rendered
-            {distributedCount > 0 ? ` · ${distributedCount} distributed` : ""}
-          </p>
+        {/* Toolbar — status filters + select-all */}
+        <div className="px-4 py-2.5 border-b border-[#27272a] flex items-center justify-between gap-3 flex-wrap">
+          <div className="flex items-center gap-1.5 flex-wrap">
+            {ITEM_FILTERS.map((f) => (
+              <button
+                key={f.key}
+                type="button"
+                onClick={() => setFilter(f.key)}
+                className={`px-2.5 py-1 rounded-full text-[10px] font-semibold transition-colors cursor-pointer border ${
+                  filter === f.key
+                    ? "bg-[#E11D48] border-[#E11D48] text-white"
+                    : "bg-[#09090b] border-[#27272a] text-[#a1a1aa] hover:text-white hover:border-[#3f3f46]"
+                }`}
+              >
+                {f.label}
+                <span className={filter === f.key ? "text-white/70" : "text-[#71717a]"}> · {filterCounts[f.key]}</span>
+              </button>
+            ))}
+          </div>
+          <label className="flex items-center gap-2 cursor-pointer select-none flex-shrink-0" title="Select all visible items">
+            <span className="text-[10px] text-[#71717a]">All visible</span>
+            <input
+              type="checkbox"
+              checked={allVisibleSelected}
+              onChange={toggleSelectAllVisible}
+              disabled={filteredItems.length === 0}
+              aria-label="Select all visible items"
+              className="accent-[#E11D48] w-3.5 h-3.5 cursor-pointer disabled:opacity-40"
+            />
+          </label>
         </div>
-        <div className="divide-y divide-[#27272a] max-h-[480px] overflow-y-auto custom-scrollbar">
-          {batch.items.map((item) => (
-            <div key={item.id} className="px-4 py-2 flex items-center gap-3">
-              <ItemStatusDot status={item.status} />
-              <div className="min-w-0 flex-1">
-                <p className="text-[11px] text-[#e4e4e7] truncate">
-                  {item.track ? `${item.track.title}${item.track.artist ? ` — ${item.track.artist}` : ""}` : item.quoteText || "—"}
-                </p>
-                <p className="text-[9px] font-mono text-[#71717a] truncate">
-                  {item.style?.name || "no style"}
-                  {item.distributedToAccount ? ` · → @${item.distributedToAccount.tiktokUsername}` : ""}
-                </p>
-                {item.status === "FAILED" && item.error && (
-                  <p className="text-[9px] text-red-400 truncate mt-0.5" title={item.error}>
-                    {item.error}
+
+        {/* Bulk bar */}
+        {selectedIds.size > 0 && (
+          <div className="px-4 py-2 border-b border-[#27272a] bg-[#E11D48]/5 flex items-center gap-2.5 flex-wrap">
+            <span className="text-[11px] text-[#e4e4e7] font-semibold whitespace-nowrap">{selectedIds.size} selected</span>
+            <div className="w-px h-4 bg-[#27272a]" />
+            <button
+              type="button"
+              onClick={() =>
+                setConfirm({
+                  title: `Delete ${selectedIds.size} ${selectedIds.size === 1 ? "video" : "videos"}?`,
+                  body: "The selected items and their rendered files are removed. Items still rendering are skipped. This cannot be undone.",
+                  confirmLabel: "Delete selected",
+                  action: () => doDeleteItems([...selectedIds]),
+                })
+              }
+              className="flex items-center gap-1.5 px-2.5 py-1 bg-red-500/10 border border-red-500/30 hover:bg-red-500/20 text-red-400 text-[10px] font-bold rounded-lg transition-colors cursor-pointer"
+            >
+              <Trash2 className="w-3 h-3" />
+              Delete selected ({selectedIds.size})
+            </button>
+            <button
+              type="button"
+              onClick={() => setSelectedIds(new Set())}
+              className="flex items-center gap-1 px-2 py-1 text-[#a1a1aa] hover:text-white text-[10px] font-semibold rounded-lg transition-colors cursor-pointer"
+            >
+              <X className="w-3 h-3" />
+              Clear
+            </button>
+          </div>
+        )}
+
+        {/* Rows */}
+        <div className="divide-y divide-[#27272a] max-h-[560px] overflow-y-auto custom-scrollbar">
+          {filteredItems.map((item) => {
+            const selected = selectedIds.has(item.id);
+            return (
+              <div key={item.id} className={`px-4 py-2 flex items-center gap-3 transition-colors ${selected ? "bg-[#E11D48]/5" : ""}`}>
+                <input
+                  type="checkbox"
+                  checked={selected}
+                  onChange={() =>
+                    setSelectedIds((prev) => {
+                      const next = new Set(prev);
+                      if (next.has(item.id)) next.delete(item.id);
+                      else next.add(item.id);
+                      return next;
+                    })
+                  }
+                  aria-label={`Select item ${item.id}`}
+                  className="accent-[#E11D48] w-3.5 h-3.5 flex-shrink-0 cursor-pointer"
+                />
+                <ItemStatusChip status={item.status} />
+                <div className="min-w-0 flex-1">
+                  <p className="text-[11px] text-[#e4e4e7] truncate">
+                    <span className="text-[#a1a1aa]">{item.style?.name || "no style"}</span>
+                    <span className="text-[#3f3f46]">{" · "}</span>
+                    {item.track
+                      ? `${item.track.title}${item.track.artist ? ` — ${item.track.artist}` : ""}`
+                      : item.quoteText || "—"}
                   </p>
+                  {item.status === "FAILED" && item.error && (
+                    <p className="text-[9px] text-red-400 truncate mt-0.5" title={item.error}>
+                      {item.error}
+                    </p>
+                  )}
+                </div>
+                {item.distributedToAccount && (
+                  <span
+                    className="hidden sm:inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-[#27272a]/60 border border-[#3f3f46] text-[9px] font-semibold text-[#a1a1aa] whitespace-nowrap flex-shrink-0"
+                    title={item.distributedAt ? `Distributed ${new Date(item.distributedAt).toLocaleString()}` : "Distributed"}
+                  >
+                    {item.distributedToAccount.color && (
+                      <span
+                        className="w-1.5 h-1.5 rounded-full flex-shrink-0"
+                        style={{ backgroundColor: item.distributedToAccount.color }}
+                      />
+                    )}
+                    → @{item.distributedToAccount.tiktokUsername}
+                  </span>
                 )}
-              </div>
-              {item.status === "FAILED" && (
-                <button
-                  type="button"
-                  onClick={() => handleRetryItem(item.id)}
-                  className="flex items-center gap-1 px-2 py-1 bg-[#27272a] hover:bg-[#3f3f46] text-white text-[10px] font-semibold rounded-md transition-colors cursor-pointer flex-shrink-0"
+                <span
+                  className="text-[9px] font-mono text-[#71717a] whitespace-nowrap flex-shrink-0"
+                  title={new Date(item.updatedAt).toLocaleString()}
                 >
-                  <RefreshCw className="w-2.5 h-2.5" />
-                  Retry
-                </button>
-              )}
-            </div>
-          ))}
-          {batch.items.length === 0 && (
+                  {fmtRelative(item.updatedAt)}
+                </span>
+                <div className="flex items-center gap-1 flex-shrink-0">
+                  {item.status === "COMPLETED" && item.outputRef && (
+                    <IconAction title="Preview render" onClick={() => setPreviewItem(item)}>
+                      <Eye className="w-3.5 h-3.5" />
+                    </IconAction>
+                  )}
+                  {item.status === "FAILED" && (
+                    <IconAction
+                      title="Retry this item"
+                      onClick={() => handleRetryItem(item.id)}
+                      disabled={retryingItemId === item.id}
+                    >
+                      {retryingItemId === item.id ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <RefreshCw className="w-3.5 h-3.5" />
+                      )}
+                    </IconAction>
+                  )}
+                  {isTerminalItemStatus(item.status) && (
+                    <IconAction
+                      title="Delete this video"
+                      danger
+                      onClick={() =>
+                        setConfirm({
+                          title: "Delete this video?",
+                          body: "The item and its rendered file are removed. This cannot be undone.",
+                          confirmLabel: "Delete video",
+                          action: () => doDeleteItems([item.id]),
+                        })
+                      }
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </IconAction>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+          {total === 0 && (
             <p className="px-4 py-10 text-center text-[11px] text-[#71717a]">No items yet — this batch is still a draft.</p>
+          )}
+          {total > 0 && filteredItems.length === 0 && (
+            <div className="px-4 py-10 text-center">
+              <p className="text-[11px] text-[#71717a]">No items with this status.</p>
+              <button
+                type="button"
+                onClick={() => setFilter("all")}
+                className="mt-3 px-3 py-1.5 bg-[#27272a] hover:bg-[#3f3f46] text-white text-[11px] font-semibold rounded-lg transition-colors cursor-pointer"
+              >
+                Show all
+              </button>
+            </div>
           )}
         </div>
       </div>
@@ -2423,13 +2896,81 @@ function BatchStatusView(props: { batchId: string; onNewBatch: () => void; onSho
           </div>
         </div>
       )}
+
+      {/* Confirm dialog (cancel batch / delete items) */}
+      <ConfirmDialog
+        open={!!confirm}
+        title={confirm?.title ?? ""}
+        body={confirm?.body ?? ""}
+        confirmLabel={confirm?.confirmLabel ?? "Confirm"}
+        busy={confirmBusy}
+        onConfirm={handleConfirm}
+        onCancel={() => setConfirm(null)}
+      />
+
+      {/* Video preview modal */}
+      {previewItem && <ItemPreviewModal item={previewItem} onClose={() => setPreviewItem(null)} />}
     </div>
   );
 }
 
-function ItemStatusDot({ status }: { status: string }) {
-  if (status === "COMPLETED") return <CheckCircle2 className="w-3.5 h-3.5 text-green-400 flex-shrink-0" />;
-  if (status === "FAILED") return <AlertCircle className="w-3.5 h-3.5 text-red-400 flex-shrink-0" />;
-  if (status === "RENDERING") return <Loader2 className="w-3.5 h-3.5 text-blue-400 animate-spin flex-shrink-0" />;
-  return <Clock className="w-3.5 h-3.5 text-[#71717a] flex-shrink-0" />;
+function ItemStatusChip({ status }: { status: string }) {
+  const cls =
+    status === "COMPLETED"
+      ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20"
+      : status === "FAILED"
+        ? "bg-red-500/10 text-red-400 border-red-500/20"
+        : status === "RENDERING"
+          ? "bg-amber-500/10 text-amber-400 border-amber-500/20"
+          : "bg-[#27272a]/50 text-[#a1a1aa] border-[#3f3f46]";
+  return (
+    <span
+      className={`inline-flex items-center justify-center gap-1 w-[72px] px-1.5 py-0.5 rounded-md border text-[8px] font-bold uppercase flex-shrink-0 ${cls}`}
+    >
+      {status === "RENDERING" && <span className="w-1 h-1 rounded-full bg-amber-400 animate-pulse" />}
+      {status === "PENDING" ? "Queued" : status}
+    </span>
+  );
+}
+
+function ItemPreviewModal({ item, onClose }: { item: StatusItem; onClose: () => void }) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  return (
+    <div className="fixed inset-0 z-[80] flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/80" onClick={onClose} />
+      <div className="relative flex flex-col items-center gap-2 max-w-full">
+        <button
+          type="button"
+          onClick={onClose}
+          title="Close preview"
+          aria-label="Close preview"
+          className="absolute -top-2 -right-2 z-10 w-7 h-7 flex items-center justify-center bg-[#18181b] border border-[#27272a] hover:border-[#3f3f46] text-[#a1a1aa] hover:text-white rounded-full transition-colors cursor-pointer"
+        >
+          <X className="w-3.5 h-3.5" />
+        </button>
+        <video
+          src={`/api${item.outputRef}`}
+          controls
+          autoPlay
+          playsInline
+          className="h-[80vh] max-w-[92vw] aspect-[9/16] rounded-xl border border-[#27272a] bg-black"
+        />
+        <p className="text-[10px] text-[#a1a1aa] text-center truncate max-w-[80vw]">
+          {item.style?.name || "no style"}
+          {item.track
+            ? ` · ${item.track.title}${item.track.artist ? ` — ${item.track.artist}` : ""}`
+            : item.quoteText
+              ? ` · ${item.quoteText}`
+              : ""}
+        </p>
+      </div>
+    </div>
+  );
 }

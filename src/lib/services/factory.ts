@@ -674,6 +674,31 @@ export async function retryItem(itemId: string): Promise<void> {
   triggerFactoryWorker();
 }
 
+// Deletes factory items and their local render files (R2 offloads kept).
+// Only terminal items (COMPLETED/FAILED/CANCELED) can be deleted — active
+// ones must be canceled first, so a running render never loses its target row.
+export async function deleteFactoryItems(itemIds: string[]): Promise<{ deletedItems: number; skipped: number }> {
+  const items = await prisma.factoryBatchItem.findMany({ where: { id: { in: itemIds } } });
+
+  let deletedItems = 0;
+  let skipped = 0;
+  for (const item of items) {
+    if (item.status === "PENDING" || item.status === "RENDERING") {
+      skipped++;
+      continue;
+    }
+    const rel = item.outputRef || renderRefForItem(item.id).publicPath;
+    try {
+      const p = path.join(process.cwd(), "public", rel);
+      if (fs.existsSync(p)) fs.unlinkSync(p);
+    } catch {}
+    await prisma.factoryBatchItem.delete({ where: { id: item.id } });
+    deletedItems++;
+  }
+
+  return { deletedItems, skipped };
+}
+
 export async function retryFailedItems(batchId: string): Promise<number> {
   const res = await prisma.factoryBatchItem.updateMany({
     where: { batchId, status: "FAILED" },
