@@ -13,19 +13,18 @@ import {
   Film,
   UserCog,
   Palette,
-  Music,
   FolderOpen,
   Key,
   GraduationCap,
   Database,
-  Bot
+  Bot,
+  Send
 } from "lucide-react";
 import { toast } from "sonner";
 
 const PRODUCTION_NAV = [
-  { href: "/admin/clip-mixer", label: "Clip Mixer", icon: Film, toolKey: "clip_mixer" },
-  { href: "/admin/style-studio", label: "Style Studio", icon: Palette, toolKey: "style_studio" },
-  { href: "/admin/genres", label: "Bulk Genres", icon: Music, toolKey: "composer" },
+  { href: "/admin/style-lab", label: "Style Lab", icon: Palette, toolKey: "style_studio" },
+  { href: "/admin/video-factory", label: "Video Factory", icon: Film, toolKey: "composer" },
   { href: "/admin/multiplier", label: "Multiplier", icon: Layers, toolKey: "multiplier" },
 ];
 
@@ -36,6 +35,7 @@ const OPERATIONS_NAV = [
   { href: "/admin/accounts/queue", label: "Post Queue", icon: Clock, toolKey: "post_queue" },
   { href: "/admin/accounts/history", label: "History", icon: History, toolKey: "history" },
   { href: "/admin/campaigns", label: "Campaigns", icon: FolderOpen, toolKey: "campaigns" },
+  { href: "/admin/distribution", label: "Distribution", icon: Send, toolKey: "accounts" },
   { href: "/admin/projects", label: "Projects", icon: FolderOpen, toolKey: "projects" },
   { href: "/admin/vault", label: "Data Vault", icon: Database, toolKey: "data_vault" },
   { href: "/admin/vault/kpi", label: "Employee KPI", icon: BarChart3, toolKey: "data_vault" },

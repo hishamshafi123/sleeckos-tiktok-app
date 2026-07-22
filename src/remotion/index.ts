@@ -3,6 +3,16 @@ import { BratComposition } from "./compositions/Brat";
 import { SpotifyLyricsComposition } from "./compositions/SpotifyLyrics";
 import { QuoteComposition } from "./compositions/Quote";
 import { EditorialCaption } from "./compositions/EditorialCaption";
+import { LyricCaption, lyricCaptionCalculateMetadata } from "./compositions/style-lab/LyricCaption";
+import { QuoteCard, quoteCardCalculateMetadata } from "./compositions/style-lab/QuoteCard";
+import {
+  LYRIC_PARAM_SCHEMA,
+  QUOTE_PARAM_SCHEMA,
+  SAMPLE_LYRIC_LINES,
+  SAMPLE_QUOTE,
+  STYLE_LAB_FPS,
+  defaultParams,
+} from "../lib/style-lab/schema";
 import React from "react";
 
 // Register all bundled self-hosted fonts (public/fonts/<slug>/, see src/lib/fonts.ts).
@@ -96,6 +106,34 @@ const RemotionRoot: React.FC = () => {
         paddingX: 20,
         accentColor: "#E11D48",
         author: "",
+      },
+    }),
+    // ── Style Lab base templates (param-schema driven, see src/lib/style-lab/schema.ts) ──
+    React.createElement(Composition, {
+      id: "lyric-caption",
+      component: LyricCaption,
+      durationInFrames: 390, // overridden by calculateMetadata (from line timings)
+      fps: STYLE_LAB_FPS,
+      width: 720, // overridden by calculateMetadata (aspectRatio param)
+      height: 1280,
+      calculateMetadata: lyricCaptionCalculateMetadata,
+      defaultProps: {
+        ...defaultParams(LYRIC_PARAM_SCHEMA),
+        lines: SAMPLE_LYRIC_LINES,
+      },
+    }),
+    React.createElement(Composition, {
+      id: "quote-card",
+      component: QuoteCard,
+      durationInFrames: 180, // overridden by calculateMetadata
+      fps: STYLE_LAB_FPS,
+      width: 720,
+      height: 1280,
+      calculateMetadata: quoteCardCalculateMetadata,
+      defaultProps: {
+        ...defaultParams(QUOTE_PARAM_SCHEMA),
+        quoteText: SAMPLE_QUOTE.quoteText,
+        author: SAMPLE_QUOTE.author,
       },
     })
   );

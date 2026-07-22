@@ -1012,6 +1012,7 @@ model StyleTemplate {
   engine      String   // "remotion" | "ffmpeg"
   paramSchema String   @db.Text // JSON schema describing parameters
   thumbnail   String?  @db.Text
+  isBase      Boolean  @default(false) // Style Lab base template (drives the auto-generated control panel)
   createdBy   String?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
@@ -1023,6 +1024,7 @@ model SavedStyle {
   name                String
   params              String                 @db.Text // JSON parameters values
   thumbnail           String?                @db.Text
+  family              String                 @default("lyric") // "lyric" | "quote" (Style Lab)
   createdBy           String?
   tags                String[]               // Campaign or niche tags
   createdAt           DateTime               @default(now())
