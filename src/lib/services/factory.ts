@@ -347,6 +347,7 @@ export async function listBatches() {
         rendering: c.RENDERING ?? 0,
         completed: c.COMPLETED ?? 0,
         failed: c.FAILED ?? 0,
+        canceled: c.CANCELED ?? 0,
       },
     };
   });
@@ -688,6 +689,73 @@ export async function retryFailedItems(batchId: string): Promise<number> {
   return res.count;
 }
 
+// ── Operator controls (cancel / bulk delete) ─────────────────────────────────
+
+/**
+ * Cancels a QUEUED/RENDERING batch: its PENDING items become CANCELED and,
+ * once no items remain active, the batch fails with "Canceled by operator".
+ * An item already mid-render is left to finish — the worker re-checks the
+ * batch's status before each item, skips everything still queued, and the
+ * rollup applies the final canceled status. Returns the items canceled.
+ */
+export async function cancelFactoryBatch(batchId: string): Promise<number> {
+  const batch = await prisma.factoryBatch.findUnique({
+    where: { id: batchId },
+    select: { id: true, status: true },
+  });
+  if (!batch) throw new Error("Batch not found");
+  if (batch.status !== "QUEUED" && batch.status !== "RENDERING") {
+    throw new Error("Only QUEUED or RENDERING batches can be canceled");
+  }
+  const canceled = await prisma.factoryBatchItem.updateMany({
+    where: { batchId, status: "PENDING" },
+    data: { status: "CANCELED" },
+  });
+  const active = await prisma.factoryBatchItem.count({
+    where: { batchId, status: { in: ["PENDING", "RENDERING"] } },
+  });
+  if (active === 0) {
+    await prisma.factoryBatch.update({
+      where: { id: batchId },
+      data: { status: "FAILED", errorMessage: "Canceled by operator" },
+    });
+  }
+  return canceled.count;
+}
+
+/**
+ * Deletes batches and the local render files of their items (the
+ * public/uploads/factory-renders/render_<itemId>.mp4 pool copies). The DB
+ * delete cascades to items; R2 offloads are kept (durability layer). Works
+ * for DRAFT batches (no items, nothing to unlink). Returns the number of
+ * batches actually deleted.
+ */
+export async function deleteFactoryBatches(batchIds: string[]): Promise<number> {
+  if (!Array.isArray(batchIds) || batchIds.length === 0) {
+    throw new Error("batchIds must be a non-empty array");
+  }
+  let deletedBatches = 0;
+  for (const batchId of batchIds) {
+    const items = await prisma.factoryBatchItem.findMany({
+      where: { batchId },
+      select: { id: true, outputRef: true },
+    });
+    for (const item of items) {
+      const rel = item.outputRef ?? renderRefForItem(item.id).publicPath;
+      try {
+        fs.unlinkSync(path.join(process.cwd(), "public", rel));
+      } catch {}
+    }
+    try {
+      await prisma.factoryBatch.delete({ where: { id: batchId } });
+      deletedBatches++;
+    } catch (err: any) {
+      if (err?.code !== "P2025") throw err; // already gone — count real deletes only
+    }
+  }
+  return deletedBatches;
+}
+
 // ── Track management ─────────────────────────────────────────────────────────
 
 export interface UpsertTrackInput {
@@ -792,17 +860,67 @@ export async function listFactoryTracks() {
 // ── Worker (sequential, module lock, concurrency 1) ──────────────────────────
 
 let factoryWorkerRunning = false;
+// Operator pause: the worker finishes the current item, then stops taking new
+// ones (checked at the top of each loop iteration, multiplier-style).
+let isFactoryPaused = false;
+
+export function getFactoryQueueState() {
+  return { paused: isFactoryPaused, processing: factoryWorkerRunning };
+}
+
+// Items left in RENDERING by a crash/restart are never picked up again (the
+// loop only fetches PENDING) — reset them so the queue can move.
+export async function recoverStaleFactoryItems(staleMinutes = 2): Promise<number> {
+  const staleBefore = new Date(Date.now() - staleMinutes * 60 * 1000);
+  const reset = await prisma.factoryBatchItem.updateMany({
+    where: { status: "RENDERING", updatedAt: { lt: staleBefore } },
+    data: { status: "PENDING" },
+  });
+  if (reset.count > 0) {
+    console.log(`[Factory Worker] Recovered ${reset.count} item(s) stuck in RENDERING`);
+  }
+  return reset.count;
+}
+
+/** Queue state for the operator UI: pause/processing flags + stale-item count. */
+export async function getFactoryQueueOverview() {
+  const staleBefore = new Date(Date.now() - 2 * 60 * 1000);
+  const staleRendering = await prisma.factoryBatchItem.count({
+    where: { status: "RENDERING", updatedAt: { lt: staleBefore } },
+  });
+  return { ...getFactoryQueueState(), staleRendering };
+}
+
+export async function pauseFactoryQueue() {
+  isFactoryPaused = true;
+  return getFactoryQueueState();
+}
+
+export async function resumeFactoryQueue() {
+  isFactoryPaused = false;
+  await recoverStaleFactoryItems();
+  triggerFactoryWorker();
+  return getFactoryQueueState();
+}
 
 /**
  * Starts the background drain loop if not already running. Fire-and-forget:
  * processes QUEUED batches one at a time, items sequentially.
  */
 export function triggerFactoryWorker(): void {
-  if (factoryWorkerRunning) return;
+  if (factoryWorkerRunning || isFactoryPaused) return;
   factoryWorkerRunning = true;
   (async () => {
     try {
+      // A previous process may have died mid-render — recover before starting.
+      await recoverStaleFactoryItems().catch((err) => {
+        console.error("[Factory Worker] Stale-item recovery failed:", err);
+      });
       for (;;) {
+        if (isFactoryPaused) {
+          console.log("[Factory Worker] Paused by operator. Stopping loop.");
+          break;
+        }
         const next = await prisma.factoryBatch.findFirst({
           where: {
             status: { in: ["QUEUED", "RENDERING"] },
@@ -813,12 +931,42 @@ export function triggerFactoryWorker(): void {
         if (!next) break;
         await processFactoryBatch(next.id);
       }
+      await sweepTerminalFactoryBatches();
     } catch (err) {
       console.error("[Factory Worker] Drain loop error:", err);
     } finally {
       factoryWorkerRunning = false;
     }
   })();
+}
+
+/**
+ * End-of-run sweep (multiplier pattern): batches stuck in QUEUED/RENDERING
+ * whose items are all terminal (COMPLETED/FAILED/CANCELED — e.g. after a
+ * restart or a pause) get their correct final status.
+ */
+async function sweepTerminalFactoryBatches(): Promise<void> {
+  try {
+    const stuckBatches = await prisma.factoryBatch.findMany({
+      where: { status: { in: ["QUEUED", "RENDERING"] } },
+      include: { items: { select: { status: true } } },
+    });
+    for (const b of stuckBatches) {
+      const anyActive = b.items.some((i) => i.status === "PENDING" || i.status === "RENDERING");
+      if (anyActive) continue;
+      const hasFailed = b.items.some((i) => i.status === "FAILED");
+      const hasCanceled = b.items.some((i) => i.status === "CANCELED");
+      await prisma.factoryBatch.update({
+        where: { id: b.id },
+        data: {
+          status: hasFailed || hasCanceled ? "FAILED" : "COMPLETED",
+          ...(hasCanceled && !hasFailed ? { errorMessage: "Canceled by operator" } : {}),
+        },
+      });
+    }
+  } catch (err) {
+    console.error("[Factory Worker] Batch status sweep failed:", err);
+  }
 }
 
 async function processFactoryBatch(batchId: string): Promise<void> {
@@ -832,6 +980,9 @@ async function processFactoryBatch(batchId: string): Promise<void> {
     await prisma.factoryBatch.update({ where: { id: batchId }, data: { status: "RENDERING" } });
 
     for (;;) {
+      // Operator pause: finish the current item, then stop taking new ones.
+      if (isFactoryPaused) break;
+
       const item = await prisma.factoryBatchItem.findFirst({
         where: { batchId, status: "PENDING" },
         orderBy: { createdAt: "asc" },
@@ -840,6 +991,15 @@ async function processFactoryBatch(batchId: string): Promise<void> {
 
       const batchStillAlive = await prisma.factoryBatch.findUnique({ where: { id: batchId }, select: { status: true } });
       if (!batchStillAlive) return; // deleted mid-run
+      if (batchStillAlive.status !== "QUEUED" && batchStillAlive.status !== "RENDERING") {
+        // Batch was canceled mid-run: drop whatever is still queued for it and
+        // stop — cancelFactoryBatch already applied its final status.
+        await prisma.factoryBatchItem.updateMany({
+          where: { batchId, status: "PENDING" },
+          data: { status: "CANCELED" },
+        });
+        return;
+      }
 
       try {
         // Renders into the pool only — Drive upload + Delivery happen later,
@@ -862,16 +1022,32 @@ async function processFactoryBatch(batchId: string): Promise<void> {
 
     // Rollup.
     const items = await prisma.factoryBatchItem.findMany({ where: { batchId }, select: { status: true } });
+    const active = items.filter((i) => i.status === "PENDING" || i.status === "RENDERING").length;
+    if (active > 0) {
+      // Paused mid-batch: leave the batch in RENDERING so resume picks it up.
+      console.log(`[Factory Worker] Batch ${batchId} paused with ${active} item(s) still queued`);
+      return;
+    }
     const failed = items.filter((i) => i.status === "FAILED").length;
     const completed = items.filter((i) => i.status === "COMPLETED").length;
-    const finalStatus = failed > 0 && completed === 0 ? "FAILED" : "COMPLETED";
-    await prisma.factoryBatch.update({ where: { id: batchId }, data: { status: finalStatus } });
-    console.log(`[Factory Worker] Batch ${batchId} finished: ${finalStatus} (${completed} ok, ${failed} failed)`);
+    const canceled = items.filter((i) => i.status === "CANCELED").length;
+    const finalStatus = canceled > 0 || (failed > 0 && completed === 0) ? "FAILED" : "COMPLETED";
+    await prisma.factoryBatch.update({
+      where: { id: batchId },
+      data: {
+        status: finalStatus,
+        ...(canceled > 0 ? { errorMessage: "Canceled by operator" } : {}),
+      },
+    });
+    console.log(`[Factory Worker] Batch ${batchId} finished: ${finalStatus} (${completed} ok, ${failed} failed, ${canceled} canceled)`);
   } catch (err: any) {
     if (err?.code === "P2025") return;
     console.error(`[Factory Worker] Critical error in batch ${batchId}:`, err);
     try {
-      await prisma.factoryBatch.update({ where: { id: batchId }, data: { status: "FAILED" } });
+      await prisma.factoryBatch.update({
+        where: { id: batchId },
+        data: { status: "FAILED", errorMessage: String(err?.message ?? err).slice(0, 4000) },
+      });
     } catch (updateErr: any) {
       if (updateErr?.code !== "P2025") console.error("[Factory Worker] Failed to mark batch FAILED:", updateErr);
     }

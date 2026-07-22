@@ -1518,6 +1518,8 @@ model FactoryBatch {
   trackIds          String[] @default([])
   quotes            String[] @default([])
   status            String   @default("DRAFT") // DRAFT | QUEUED | RENDERING | COMPLETED | FAILED
+  // Operator-facing failure reason (e.g. "Canceled by operator").
+  errorMessage      String?  @db.Text
   createdBy         String?
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
@@ -1536,7 +1538,7 @@ model FactoryBatchItem {
   recipe             Json?
   recipeFingerprint  String?
   sourceDriveFileIds String[]
-  status             String       @default("PENDING") // PENDING | RENDERING | COMPLETED | FAILED
+  status             String       @default("PENDING") // PENDING | RENDERING | COMPLETED | FAILED | CANCELED
   outputRef          String?
   outputDriveFileId  String?
   // Render-first / distribute-later: null until a distribute run assigns this

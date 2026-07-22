@@ -4,12 +4,16 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { toast } from "sonner";
 import {
   AlertCircle,
+  AlertTriangle,
+  Archive,
+  Ban,
   Check,
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
   Clock,
   Download,
+  Eye,
   Factory,
   FileText,
   FolderOpen,
@@ -17,11 +21,15 @@ import {
   Layers,
   Loader2,
   Music,
+  Pause,
   Play,
   Quote,
   RefreshCw,
+  Search,
   Shuffle,
+  Trash2,
   Users,
+  X,
 } from "lucide-react";
 import FactoryAccountsPanel, { FactoryAccountSelection } from "./AccountsPanel";
 import TracksStep, { FactoryTrackRow } from "./TracksStep";
@@ -73,8 +81,13 @@ interface BatchListRow {
   name: string;
   mode: string;
   status: string;
+  errorMessage: string | null;
+  sourceFolderId: string | null;
   createdAt: string;
-  itemCounts: { total: number; pending: number; rendering: number; completed: number; failed: number };
+  updatedAt: string;
+  itemCounts: { PENDING: number; RENDERING: number; COMPLETED: number; FAILED: number; CANCELED?: number };
+  completedCount: number;
+  totalItems: number;
 }
 
 interface DistributeAccountResult {
@@ -1003,71 +1016,890 @@ export default function ClientPage({ session }: { session?: { userId: string; ro
 
 // ── Batch history ────────────────────────────────────────────────────────────
 
+type HistoryFilter = "all" | "active" | "completed" | "failed" | "draft";
+
+interface QueueState {
+  paused: boolean;
+  processing: boolean;
+  staleRendering: number;
+}
+
+const HISTORY_FILTERS: { key: HistoryFilter; label: string }[] = [
+  { key: "all", label: "All" },
+  { key: "active", label: "Active" },
+  { key: "completed", label: "Completed" },
+  { key: "failed", label: "Failed" },
+  { key: "draft", label: "Draft" },
+];
+
+/** Normalizes a list-API row into the final contract shape (tolerates the legacy lowercase itemCounts). */
+function normalizeBatchRow(raw: any): BatchListRow {
+  const ic = raw.itemCounts ?? {};
+  const pending = ic.PENDING ?? ic.pending ?? 0;
+  const rendering = ic.RENDERING ?? ic.rendering ?? 0;
+  const completed = ic.COMPLETED ?? ic.completed ?? 0;
+  const failed = ic.FAILED ?? ic.failed ?? 0;
+  const canceled = ic.CANCELED ?? ic.canceled ?? 0;
+  return {
+    id: raw.id,
+    name: raw.name ?? "Untitled batch",
+    mode: raw.mode ?? "lyric",
+    status: raw.status ?? "DRAFT",
+    errorMessage: raw.errorMessage ?? null,
+    sourceFolderId: raw.sourceFolderId ?? null,
+    createdAt: raw.createdAt,
+    updatedAt: raw.updatedAt ?? raw.createdAt,
+    itemCounts: { PENDING: pending, RENDERING: rendering, COMPLETED: completed, FAILED: failed, CANCELED: canceled },
+    completedCount: raw.completedCount ?? completed,
+    totalItems: raw.totalItems ?? ic.total ?? pending + rendering + completed + failed + canceled,
+  };
+}
+
+function fmtRelative(iso: string): string {
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return "";
+  const s = Math.max(0, Math.floor((Date.now() - then) / 1000));
+  if (s < 60) return "just now";
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  const d = Math.floor(h / 24);
+  if (d < 30) return `${d}d ago`;
+  return new Date(iso).toLocaleDateString();
+}
+
+function isActiveStatus(status: string) {
+  return status === "QUEUED" || status === "RENDERING";
+}
+
 function BatchHistoryList({ onOpenBatch }: { onOpenBatch: (id: string) => void }) {
   const [batches, setBatches] = useState<BatchListRow[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
 
-  useEffect(() => {
-    (async () => {
-      setLoading(true);
-      try {
-        const res = await fetch("/api/factory/batches");
-        if (res.ok) {
-          const data = await res.json();
-          setBatches(data.batches || []);
-        } else {
-          toast.error("Failed to load batches");
-        }
-      } catch {
-        toast.error("Failed to load batches");
-      } finally {
-        setLoading(false);
-      }
-    })();
+  // Global render queue
+  const [queue, setQueue] = useState<QueueState | null>(null);
+  const [queueBusy, setQueueBusy] = useState(false);
+
+  // Filters / search / selection
+  const [filter, setFilter] = useState<HistoryFilter>("all");
+  const [search, setSearch] = useState("");
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+
+  // Per-batch Smart Download state
+  const [dlMap, setDlMap] = useState<Record<string, DownloadStatus>>({});
+  const [dlStarting, setDlStarting] = useState<Record<string, boolean>>({});
+  const [retryingId, setRetryingId] = useState<string | null>(null);
+  const [cancelingId, setCancelingId] = useState<string | null>(null);
+
+  // Confirm dialog (cancel / delete / bulk-delete)
+  const [confirm, setConfirm] = useState<{
+    title: string;
+    body: string;
+    confirmLabel: string;
+    action: () => Promise<void>;
+  } | null>(null);
+  const [confirmBusy, setConfirmBusy] = useState(false);
+
+  // Smart Export (distribute slide-over)
+  const [distributeBatchId, setDistributeBatchId] = useState<string | null>(null);
+  const [assignments, setAssignments] = useState<FactoryAccountSelection[]>([]);
+  const [allowRedistribute, setAllowRedistribute] = useState(false);
+  const [distributing, setDistributing] = useState(false);
+
+  // ── Loading ──
+
+  const fetchBatches = useCallback(async (mode: "initial" | "poll" | "manual" = "initial") => {
+    if (mode === "initial") setLoading(true);
+    if (mode === "manual") setRefreshing(true);
+    try {
+      const res = await fetch("/api/factory/batches");
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to load batches");
+      setBatches(((data.batches || []) as any[]).map(normalizeBatchRow));
+      setLoadError(null);
+    } catch (err: any) {
+      setLoadError(err.message || "Failed to load batches");
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
   }, []);
 
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center py-16 text-[#71717a]">
-        <Loader2 className="w-5 h-5 animate-spin" />
-      </div>
-    );
-  }
+  const fetchQueue = useCallback(async () => {
+    try {
+      const res = await fetch("/api/factory/queue");
+      if (res.ok) setQueue(await res.json());
+    } catch {
+      // transient — next tick retries
+    }
+  }, []);
 
-  if (batches.length === 0) {
-    return (
-      <div className="bg-[#18181b] border border-[#27272a] rounded-xl p-12 text-center">
-        <History className="w-8 h-8 text-[#3f3f46] mx-auto mb-3" />
-        <p className="text-[12px] text-[#71717a]">No factory batches yet.</p>
-      </div>
-    );
-  }
+  useEffect(() => {
+    fetchBatches();
+    fetchQueue();
+  }, [fetchBatches, fetchQueue]);
+
+  // Live queue state + silent list refresh while the history is visible.
+  useEffect(() => {
+    const t = setInterval(() => {
+      fetchQueue();
+      fetchBatches("poll");
+    }, 5000);
+    return () => clearInterval(t);
+  }, [fetchQueue, fetchBatches]);
+
+  // Prune selections for batches that disappeared.
+  useEffect(() => {
+    setSelectedIds((prev) => {
+      if (prev.size === 0) return prev;
+      const ids = new Set(batches.map((b) => b.id));
+      const next = new Set([...prev].filter((id) => ids.has(id)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [batches]);
+
+  // Poll Smart Download status for every batch with a PREPARING archive.
+  useEffect(() => {
+    const preparing = Object.entries(dlMap)
+      .filter(([, s]) => s.status === "PREPARING")
+      .map(([id]) => id);
+    if (preparing.length === 0) return;
+    const t = setInterval(async () => {
+      for (const id of preparing) {
+        try {
+          const res = await fetch(`/api/factory/batches/${id}/download`);
+          if (res.ok) {
+            const s = (await res.json()) as DownloadStatus;
+            setDlMap((prev) => ({ ...prev, [id]: s }));
+          }
+        } catch {
+          // transient — next tick retries
+        }
+      }
+    }, 3000);
+    return () => clearInterval(t);
+  }, [dlMap]);
+
+  // ── Derived ──
+
+  const filterCounts = useMemo(() => {
+    const c: Record<HistoryFilter, number> = { all: batches.length, active: 0, completed: 0, failed: 0, draft: 0 };
+    for (const b of batches) {
+      if (isActiveStatus(b.status)) c.active++;
+      else if (b.status === "COMPLETED") c.completed++;
+      else if (b.status === "FAILED") c.failed++;
+      else if (b.status === "DRAFT") c.draft++;
+    }
+    return c;
+  }, [batches]);
+
+  const visible = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return batches.filter((b) => {
+      if (filter === "active" && !isActiveStatus(b.status)) return false;
+      if (filter === "completed" && b.status !== "COMPLETED") return false;
+      if (filter === "failed" && b.status !== "FAILED") return false;
+      if (filter === "draft" && b.status !== "DRAFT") return false;
+      if (q && !b.name.toLowerCase().includes(q)) return false;
+      return true;
+    });
+  }, [batches, filter, search]);
+
+  const selectedBatches = useMemo(() => batches.filter((b) => selectedIds.has(b.id)), [batches, selectedIds]);
+  const singleSelected = selectedBatches.length === 1 ? selectedBatches[0] : null;
+  const distributeBatch = distributeBatchId ? batches.find((b) => b.id === distributeBatchId) : null;
+
+  // ── Actions ──
+
+  const handleQueueControl = async (action: "pause" | "resume" | "recover") => {
+    if (queueBusy) return;
+    setQueueBusy(true);
+    try {
+      const res = await fetch("/api/factory/queue/control", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Queue control failed");
+      if (data.state) setQueue(data.state);
+      if (action === "recover") {
+        toast.success(data.recovered > 0 ? `Recovered ${data.recovered} stuck items` : "No stuck items to recover");
+        fetchBatches("poll");
+      } else {
+        toast.success(action === "pause" ? "Queue paused" : "Queue resumed");
+      }
+    } catch (err: any) {
+      toast.error(err.message || "Queue control failed");
+    } finally {
+      setQueueBusy(false);
+    }
+  };
+
+  const handleStartDownload = async (id: string) => {
+    if (dlStarting[id]) return;
+    setDlStarting((prev) => ({ ...prev, [id]: true }));
+    try {
+      const res = await fetch(`/api/factory/batches/${id}/download`, { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to prepare download");
+      setDlMap((prev) => ({ ...prev, [id]: data as DownloadStatus }));
+    } catch (err: any) {
+      toast.error(err.message || "Failed to prepare download");
+    } finally {
+      setDlStarting((prev) => ({ ...prev, [id]: false }));
+    }
+  };
+
+  const handleRetryFailed = async (id: string) => {
+    if (retryingId) return;
+    setRetryingId(id);
+    try {
+      const res = await fetch(`/api/factory/batches/${id}/retry-failed`, { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Retry failed");
+      toast.success(data.retried > 0 ? `Re-queued ${data.retried} items` : "No failed items to retry");
+      fetchBatches("poll");
+    } catch (err: any) {
+      toast.error(err.message || "Retry failed");
+    } finally {
+      setRetryingId(null);
+    }
+  };
+
+  const doCancel = async (b: BatchListRow) => {
+    setCancelingId(b.id);
+    try {
+      const res = await fetch(`/api/factory/batches/${b.id}/cancel`, { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Cancel failed");
+      toast.success(data.canceled > 0 ? `Canceled — ${data.canceled} pending items stopped` : "Batch canceled");
+      fetchBatches("poll");
+    } catch (err: any) {
+      toast.error(err.message || "Cancel failed");
+    } finally {
+      setCancelingId(null);
+    }
+  };
+
+  const doDelete = async (batchIds: string[]) => {
+    try {
+      const res = await fetch("/api/factory/batches/bulk-delete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ batchIds }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Delete failed");
+      toast.success(`Deleted ${data.deletedBatches ?? batchIds.length} ${batchIds.length === 1 ? "batch" : "batches"}`);
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        batchIds.forEach((id) => next.delete(id));
+        return next;
+      });
+      fetchBatches("poll");
+    } catch (err: any) {
+      toast.error(err.message || "Delete failed");
+    }
+  };
+
+  const openDistribute = (id: string) => {
+    setDistributeBatchId(id);
+    setAssignments([]);
+    setAllowRedistribute(false);
+  };
+
+  const handleDistribute = async () => {
+    if (!distributeBatchId || distributing || assignments.length === 0) return;
+    setDistributing(true);
+    try {
+      const res = await fetch(`/api/factory/batches/${distributeBatchId}/distribute`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          assignments: assignments.map((a) => ({ accountId: a.accountId, videoCount: a.count })),
+          allowRedistribute,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Distribution failed");
+      const result = data.result as DistributeResult;
+      const uploaded = result.results.reduce((s, r) => s + r.uploaded, 0);
+      const failed = result.results.reduce((s, r) => s + r.failed, 0);
+      toast.success(`Distributed ${uploaded} videos${failed > 0 ? ` — ${failed} failed` : ""}`);
+      setDistributeBatchId(null);
+      setAssignments([]);
+      fetchBatches("poll");
+    } catch (err: any) {
+      toast.error(err.message || "Distribution failed");
+    } finally {
+      setDistributing(false);
+    }
+  };
+
+  const handleConfirm = async () => {
+    if (!confirm || confirmBusy) return;
+    setConfirmBusy(true);
+    await confirm.action();
+    setConfirmBusy(false);
+    setConfirm(null);
+  };
+
+  // ── Render ──
 
   return (
-    <div className="bg-[#18181b] border border-[#27272a] rounded-xl divide-y divide-[#27272a] overflow-hidden">
-      {batches.map((b) => (
-        <button
-          key={b.id}
-          type="button"
-          onClick={() => onOpenBatch(b.id)}
-          className="w-full flex items-center gap-4 px-4 py-3 hover:bg-[#09090b] transition-colors cursor-pointer text-left"
-        >
-          <div className="min-w-0 flex-1">
-            <p className="text-[12px] font-semibold text-white truncate">{b.name}</p>
-            <p className="text-[10px] text-[#71717a]">
-              {b.mode} · {new Date(b.createdAt).toLocaleString()}
-            </p>
-          </div>
-          <div className="flex items-center gap-3 text-[10px] font-mono flex-shrink-0">
-            <span className="text-green-400">{b.itemCounts.completed} done</span>
-            {b.itemCounts.failed > 0 && <span className="text-red-400">{b.itemCounts.failed} failed</span>}
-            {b.itemCounts.pending + b.itemCounts.rendering > 0 && (
-              <span className="text-[#a1a1aa]">{b.itemCounts.pending + b.itemCounts.rendering} queued</span>
+    <div className="space-y-3">
+      {/* Toolbar — queue controls */}
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div className="flex items-center gap-2.5">
+          <h2 className="text-[14px] font-bold text-white tracking-tight">Batch History</h2>
+          {queue?.paused && (
+            <span className="px-2 py-0.5 rounded-md border bg-amber-500/10 text-amber-400 border-amber-500/20 text-[9px] font-bold uppercase">
+              Queue paused
+            </span>
+          )}
+        </div>
+        <div className="flex items-center gap-2 flex-wrap">
+          {queue && queue.staleRendering > 0 && (
+            <button
+              type="button"
+              onClick={() => handleQueueControl("recover")}
+              disabled={queueBusy}
+              title="Reset items stuck in RENDERING back to the queue"
+              className="flex items-center gap-1.5 px-2.5 py-1.5 bg-amber-500/10 border border-amber-500/30 hover:bg-amber-500/20 disabled:opacity-40 text-amber-400 text-[10px] font-bold rounded-lg transition-colors cursor-pointer"
+            >
+              {queueBusy ? <Loader2 className="w-3 h-3 animate-spin" /> : <AlertTriangle className="w-3 h-3" />}
+              Recover {queue.staleRendering} stuck
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => handleQueueControl(queue?.paused ? "resume" : "pause")}
+            disabled={queueBusy || !queue}
+            title={queue?.paused ? "Resume the render queue" : "Pause the render queue (running items finish)"}
+            className="flex items-center gap-1.5 px-2.5 py-1.5 bg-[#18181b] border border-[#27272a] hover:border-[#3f3f46] disabled:opacity-40 text-[#a1a1aa] hover:text-white text-[10px] font-semibold rounded-lg transition-colors cursor-pointer"
+          >
+            {queueBusy ? (
+              <Loader2 className="w-3 h-3 animate-spin" />
+            ) : queue?.paused ? (
+              <Play className="w-3 h-3" />
+            ) : (
+              <Pause className="w-3 h-3" />
             )}
+            {queue?.paused ? "Resume queue" : "Pause queue"}
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              fetchBatches("manual");
+              fetchQueue();
+            }}
+            title="Refresh"
+            aria-label="Refresh"
+            className="w-7 h-7 flex items-center justify-center bg-[#18181b] border border-[#27272a] hover:border-[#3f3f46] text-[#a1a1aa] hover:text-white rounded-lg transition-colors cursor-pointer"
+          >
+            <RefreshCw className={`w-3 h-3 ${refreshing ? "animate-spin" : ""}`} />
+          </button>
+        </div>
+      </div>
+
+      {/* Toolbar — filter chips + search */}
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div className="flex items-center gap-1.5 flex-wrap">
+          {HISTORY_FILTERS.map((f) => (
+            <button
+              key={f.key}
+              type="button"
+              onClick={() => setFilter(f.key)}
+              className={`px-2.5 py-1 rounded-full text-[10px] font-semibold transition-colors cursor-pointer border ${
+                filter === f.key
+                  ? "bg-[#E11D48] border-[#E11D48] text-white"
+                  : "bg-[#18181b] border-[#27272a] text-[#a1a1aa] hover:text-white hover:border-[#3f3f46]"
+              }`}
+            >
+              {f.label}
+              <span className={filter === f.key ? "text-white/70" : "text-[#71717a]"}> · {filterCounts[f.key]}</span>
+            </button>
+          ))}
+        </div>
+        <div className="relative">
+          <Search className="w-3 h-3 text-[#71717a] absolute left-2.5 top-1/2 -translate-y-1/2" />
+          <input
+            type="text"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search batches…"
+            className="bg-[#09090b] border border-[#27272a] rounded-lg pl-7 pr-7 py-1.5 text-white placeholder-[#71717a] text-[11px] w-48 focus:outline-none focus:border-[#E11D48]"
+          />
+          {search && (
+            <button
+              type="button"
+              onClick={() => setSearch("")}
+              title="Clear search"
+              aria-label="Clear search"
+              className="absolute right-1.5 top-1/2 -translate-y-1/2 w-4 h-4 flex items-center justify-center text-[#71717a] hover:text-white transition-colors cursor-pointer"
+            >
+              <X className="w-3 h-3" />
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Body */}
+      {loading ? (
+        <div className="space-y-2.5">
+          {[0, 1, 2, 3].map((i) => (
+            <div key={i} className="bg-[#18181b] border border-[#27272a] rounded-xl p-4 animate-pulse">
+              <div className="flex items-center gap-3">
+                <div className="w-3.5 h-3.5 bg-[#27272a] rounded" />
+                <div className="flex-1">
+                  <div className="h-3 w-56 bg-[#27272a] rounded" />
+                  <div className="h-2.5 w-80 max-w-full bg-[#27272a] rounded mt-2" />
+                </div>
+              </div>
+              <div className="h-1.5 w-full bg-[#27272a] rounded-full mt-3.5" />
+            </div>
+          ))}
+        </div>
+      ) : loadError && batches.length === 0 ? (
+        <div className="bg-red-500/10 border border-red-500/20 rounded-xl px-4 py-3 flex items-center justify-between gap-3 flex-wrap">
+          <p className="text-[11px] text-red-400 font-semibold flex items-center gap-2">
+            <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
+            {loadError}
+          </p>
+          <button
+            type="button"
+            onClick={() => fetchBatches()}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-[#27272a] hover:bg-[#3f3f46] text-white text-[11px] font-semibold rounded-lg transition-colors cursor-pointer"
+          >
+            <RefreshCw className="w-3 h-3" />
+            Try again
+          </button>
+        </div>
+      ) : batches.length === 0 ? (
+        <div className="bg-[#18181b] border border-[#27272a] rounded-xl p-12 text-center">
+          <History className="w-8 h-8 text-[#3f3f46] mx-auto mb-3" />
+          <p className="text-[12px] text-[#a1a1aa] font-semibold">No batches yet</p>
+          <p className="text-[11px] text-[#71717a] mt-1">Create one above — rendered batches show up here.</p>
+        </div>
+      ) : visible.length === 0 ? (
+        <div className="bg-[#18181b] border border-[#27272a] rounded-xl p-10 text-center">
+          <Search className="w-6 h-6 text-[#3f3f46] mx-auto mb-2" />
+          <p className="text-[11px] text-[#71717a]">No batches match this filter or search.</p>
+          <button
+            type="button"
+            onClick={() => {
+              setFilter("all");
+              setSearch("");
+            }}
+            className="mt-3 px-3 py-1.5 bg-[#27272a] hover:bg-[#3f3f46] text-white text-[11px] font-semibold rounded-lg transition-colors cursor-pointer"
+          >
+            Clear filters
+          </button>
+        </div>
+      ) : (
+        <div className="space-y-2.5">
+          {visible.map((b) => (
+            <BatchHistoryCard
+              key={b.id}
+              batch={b}
+              selected={selectedIds.has(b.id)}
+              onToggleSelect={() =>
+                setSelectedIds((prev) => {
+                  const next = new Set(prev);
+                  if (next.has(b.id)) next.delete(b.id);
+                  else next.add(b.id);
+                  return next;
+                })
+              }
+              onOpen={() => onOpenBatch(b.id)}
+              dl={dlMap[b.id]}
+              dlStarting={!!dlStarting[b.id]}
+              onStartDownload={() => handleStartDownload(b.id)}
+              onDistribute={() => openDistribute(b.id)}
+              onCancel={() =>
+                setConfirm({
+                  title: `Cancel "${b.name}"?`,
+                  body: "Pending items are stopped and the queue moves on. Videos already rendered are kept.",
+                  confirmLabel: "Cancel batch",
+                  action: () => doCancel(b),
+                })
+              }
+              canceling={cancelingId === b.id}
+              onRetryFailed={() => handleRetryFailed(b.id)}
+              retrying={retryingId === b.id}
+              onDelete={() =>
+                setConfirm({
+                  title: `Delete "${b.name}"?`,
+                  body: "This removes the batch and its rendered files. This cannot be undone.",
+                  confirmLabel: "Delete batch",
+                  action: () => doDelete([b.id]),
+                })
+              }
+            />
+          ))}
+          {selectedIds.size > 0 && <div className="h-16" />}
+        </div>
+      )}
+
+      {/* Bulk bar */}
+      {selectedIds.size > 0 && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 bg-[#18181b] border border-[#E11D48]/30 rounded-full px-5 py-2.5 shadow-2xl flex items-center gap-3 animate-in fade-in slide-in-from-bottom-4 duration-300">
+          <span className="text-[11px] text-[#e4e4e7] font-semibold whitespace-nowrap">
+            {selectedIds.size} selected
+          </span>
+          <div className="w-px h-4 bg-[#27272a]" />
+          {singleSelected && singleSelected.completedCount > 0 && (
+            <button
+              type="button"
+              onClick={() => handleStartDownload(singleSelected.id)}
+              disabled={!!dlStarting[singleSelected.id] || dlMap[singleSelected.id]?.status === "PREPARING"}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-[#27272a] hover:bg-[#3f3f46] disabled:opacity-40 text-white text-[11px] font-semibold rounded-full transition-colors cursor-pointer whitespace-nowrap"
+            >
+              {dlStarting[singleSelected.id] || dlMap[singleSelected.id]?.status === "PREPARING" ? (
+                <Loader2 className="w-3 h-3 animate-spin" />
+              ) : (
+                <Archive className="w-3 h-3" />
+              )}
+              Smart Download
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() =>
+              setConfirm({
+                title: `Delete ${selectedIds.size} ${selectedIds.size === 1 ? "batch" : "batches"}?`,
+                body: "This removes the selected batches and their rendered files. This cannot be undone.",
+                confirmLabel: "Delete selected",
+                action: () => doDelete([...selectedIds]),
+              })
+            }
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-red-500/10 border border-red-500/30 hover:bg-red-500/20 text-red-400 text-[11px] font-bold rounded-full transition-colors cursor-pointer whitespace-nowrap"
+          >
+            <Trash2 className="w-3 h-3" />
+            Delete selected
+          </button>
+          <button
+            type="button"
+            onClick={() => setSelectedIds(new Set())}
+            className="flex items-center gap-1 px-2.5 py-1.5 text-[#a1a1aa] hover:text-white text-[11px] font-semibold rounded-full transition-colors cursor-pointer whitespace-nowrap"
+          >
+            <X className="w-3 h-3" />
+            Clear
+          </button>
+        </div>
+      )}
+
+      {/* Confirm dialog */}
+      <ConfirmDialog
+        open={!!confirm}
+        title={confirm?.title ?? ""}
+        body={confirm?.body ?? ""}
+        confirmLabel={confirm?.confirmLabel ?? "Confirm"}
+        busy={confirmBusy}
+        onConfirm={handleConfirm}
+        onCancel={() => setConfirm(null)}
+      />
+
+      {/* Smart Export slide-over */}
+      <FactoryAccountsPanel
+        open={distributeBatchId !== null}
+        onClose={() => setDistributeBatchId(null)}
+        selected={assignments}
+        onChange={setAssignments}
+      />
+      {distributeBatchId && (
+        <div className="fixed inset-x-0 bottom-0 z-[60] flex justify-center pointer-events-none">
+          <div className="pointer-auto w-full max-w-[560px] bg-[#18181b] border border-[#27272a] border-b-0 rounded-t-xl px-4 py-3 space-y-2.5">
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-[11px] text-[#a1a1aa] min-w-0">
+                <span className="font-bold text-white">{assignments.reduce((s, a) => s + a.count, 0)}</span> videos
+                requested · <span className="font-bold text-white">{distributeBatch?.completedCount ?? 0}</span> in pool
+                {distributeBatch ? <span className="text-[#71717a]"> · {distributeBatch.name}</span> : ""}
+              </p>
+              <button
+                type="button"
+                onClick={handleDistribute}
+                disabled={distributing || assignments.length === 0}
+                className="flex items-center gap-1.5 px-4 py-2 bg-[#E11D48] hover:bg-[#be123c] disabled:opacity-40 disabled:cursor-not-allowed text-white text-[11px] font-bold rounded-lg transition-colors cursor-pointer flex-shrink-0"
+              >
+                {distributing ? <Loader2 className="w-3 h-3 animate-spin" /> : <Users className="w-3 h-3" />}
+                Distribute
+              </button>
+            </div>
+            <label className="flex items-center gap-2 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={allowRedistribute}
+                onChange={(e) => setAllowRedistribute(e.target.checked)}
+                className="accent-[#E11D48] w-3.5 h-3.5"
+              />
+              <span className="text-[10px] text-[#a1a1aa]">Re-distribute — include already-distributed videos</span>
+            </label>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Batch history card ───────────────────────────────────────────────────────
+
+function BatchHistoryCard(props: {
+  batch: BatchListRow;
+  selected: boolean;
+  onToggleSelect: () => void;
+  onOpen: () => void;
+  dl?: DownloadStatus;
+  dlStarting: boolean;
+  onStartDownload: () => void;
+  onDistribute: () => void;
+  onCancel: () => void;
+  canceling: boolean;
+  onRetryFailed: () => void;
+  retrying: boolean;
+  onDelete: () => void;
+}) {
+  const { batch: b, selected, dl } = props;
+  const failed = b.itemCounts.FAILED;
+  const canceled = b.itemCounts.CANCELED ?? 0;
+  const inFlight = b.itemCounts.PENDING + b.itemCounts.RENDERING;
+  const donePct = b.totalItems > 0 ? (b.completedCount / b.totalItems) * 100 : 0;
+  const failPct = b.totalItems > 0 ? (failed / b.totalItems) * 100 : 0;
+  const dlBusy = props.dlStarting || dl?.status === "PREPARING";
+
+  return (
+    <div
+      className={`bg-[#18181b] border rounded-xl px-4 py-3 transition-colors ${
+        selected ? "border-[#E11D48]/50" : "border-[#27272a]"
+      }`}
+    >
+      <div className="flex items-start gap-3">
+        <input
+          type="checkbox"
+          checked={selected}
+          onChange={props.onToggleSelect}
+          aria-label={`Select ${b.name}`}
+          className="accent-[#E11D48] w-3.5 h-3.5 mt-1 flex-shrink-0 cursor-pointer"
+        />
+        <div className="min-w-0 flex-1">
+          {/* Title line */}
+          <div className="flex items-center gap-2 flex-wrap">
+            <button
+              type="button"
+              onClick={props.onOpen}
+              className="text-[12px] font-semibold text-white hover:text-[#E11D48] transition-colors cursor-pointer truncate max-w-[320px] text-left"
+              title={`Open ${b.name}`}
+            >
+              {b.name}
+            </button>
+            <ModeChip mode={b.mode} />
             <BatchStatusChip status={b.status} />
           </div>
-        </button>
-      ))}
+          {/* Meta line */}
+          <p className="text-[10px] text-[#71717a] mt-1 flex items-center gap-1.5 flex-wrap">
+            {b.sourceFolderId && (
+              <span className="font-mono" title={`Source folder: ${b.sourceFolderId}`}>
+                src {b.sourceFolderId.slice(0, 10)}…
+              </span>
+            )}
+            <span title={new Date(b.createdAt).toLocaleString()}>{fmtRelative(b.createdAt)}</span>
+            {b.errorMessage && (
+              <span className="text-red-400 truncate max-w-[360px]" title={b.errorMessage}>
+                · {b.errorMessage}
+              </span>
+            )}
+          </p>
+          {/* Progress line */}
+          <div className="flex items-center gap-2.5 mt-2">
+            <div className="flex-1 h-1.5 bg-[#27272a] rounded-full overflow-hidden flex">
+              <div className="h-full bg-emerald-500 transition-all" style={{ width: `${donePct}%` }} />
+              <div className="h-full bg-red-500 transition-all" style={{ width: `${failPct}%` }} />
+            </div>
+            <p className="text-[10px] font-mono text-[#a1a1aa] whitespace-nowrap flex-shrink-0">
+              {b.status === "COMPLETED" ? (
+                <span className="text-emerald-400 font-bold text-[11px]">{b.completedCount} videos</span>
+              ) : (
+                <>
+                  <span className="text-emerald-400">{b.completedCount}</span>/{b.totalItems}
+                  {failed > 0 && <span className="text-red-400"> · {failed} failed</span>}
+                  {canceled > 0 && <span className="text-[#71717a]"> · {canceled} canceled</span>}
+                  {inFlight > 0 && <span> · {inFlight} queued</span>}
+                </>
+              )}
+              {b.status === "COMPLETED" && failed > 0 && <span className="text-red-400"> · {failed} failed</span>}
+            </p>
+          </div>
+        </div>
+        {/* Actions */}
+        <div className="flex items-center gap-1.5 flex-shrink-0 flex-wrap justify-end">
+          <IconAction title="View batch status" onClick={props.onOpen}>
+            <Eye className="w-3.5 h-3.5" />
+          </IconAction>
+          {b.completedCount > 0 && (
+            <>
+              <IconAction title="Smart Download — one archive of the pool" onClick={props.onStartDownload} disabled={dlBusy}>
+                {dlBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Archive className="w-3.5 h-3.5" />}
+              </IconAction>
+              <IconAction title="Smart Export — distribute the pool to accounts" onClick={props.onDistribute} accent>
+                <Users className="w-3.5 h-3.5" />
+              </IconAction>
+            </>
+          )}
+          {isActiveStatus(b.status) && (
+            <IconAction title="Cancel — stop pending items" onClick={props.onCancel} disabled={props.canceling}>
+              {props.canceling ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Ban className="w-3.5 h-3.5" />}
+            </IconAction>
+          )}
+          {failed > 0 && (
+            <IconAction title={`Retry ${failed} failed items`} onClick={props.onRetryFailed} disabled={props.retrying}>
+              {props.retrying ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+            </IconAction>
+          )}
+          <IconAction title="Delete batch and its rendered files" onClick={props.onDelete} danger>
+            <Trash2 className="w-3.5 h-3.5" />
+          </IconAction>
+        </div>
+      </div>
+
+      {/* Smart Download status strip */}
+      {dl && (
+        <div className="mt-2.5 pt-2.5 border-t border-[#27272a]">
+          {dl.status === "PREPARING" && (
+            <div className="flex items-center gap-2">
+              <Loader2 className="w-3 h-3 animate-spin text-[#a1a1aa] flex-shrink-0" />
+              <span className="text-[10px] text-[#a1a1aa] truncate">{dl.message || "Preparing archive…"}</span>
+              <div className="flex-1 h-1 bg-[#27272a] rounded-full overflow-hidden">
+                <div className="h-full bg-[#E11D48] transition-all" style={{ width: `${dl.progress}%` }} />
+              </div>
+              <span className="text-[9px] font-mono text-[#71717a] flex-shrink-0">{dl.progress}%</span>
+            </div>
+          )}
+          {dl.status === "COMPLETED" && dl.downloadUrl && (
+            <div className="flex items-center justify-between gap-3 flex-wrap">
+              <p className="text-[10px] text-emerald-400 flex items-center gap-1.5">
+                <CheckCircle2 className="w-3 h-3 flex-shrink-0" />
+                Archive ready — {dl.completedCount} videos · {fmtBytes(dl.size)}
+              </p>
+              <a
+                href={dl.downloadUrl}
+                download
+                className="flex items-center gap-1.5 px-2.5 py-1 bg-[#E11D48] hover:bg-[#be123c] text-white text-[10px] font-bold rounded-md transition-colors"
+              >
+                <Download className="w-3 h-3" />
+                Download archive
+              </a>
+            </div>
+          )}
+          {dl.status === "FAILED" && (
+            <div className="flex items-center justify-between gap-3 flex-wrap">
+              <p className="text-[10px] text-red-400 flex items-center gap-1.5">
+                <AlertCircle className="w-3 h-3 flex-shrink-0" />
+                {dl.message || "Archive preparation failed"}
+              </p>
+              <button
+                type="button"
+                onClick={props.onStartDownload}
+                className="flex items-center gap-1 px-2.5 py-1 bg-[#27272a] hover:bg-[#3f3f46] text-white text-[10px] font-semibold rounded-md transition-colors cursor-pointer"
+              >
+                <RefreshCw className="w-2.5 h-2.5" />
+                Try again
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function IconAction(props: {
+  title: string;
+  onClick: () => void;
+  disabled?: boolean;
+  danger?: boolean;
+  accent?: boolean;
+  children: React.ReactNode;
+}) {
+  const tone = props.danger
+    ? "border-red-500/30 text-red-400 hover:bg-red-500/10"
+    : props.accent
+      ? "border-[#E11D48]/40 text-[#E11D48] hover:bg-[#E11D48]/10"
+      : "border-[#27272a] text-[#a1a1aa] hover:text-white hover:bg-[#27272a]";
+  return (
+    <button
+      type="button"
+      title={props.title}
+      aria-label={props.title}
+      onClick={props.onClick}
+      disabled={props.disabled}
+      className={`w-7 h-7 rounded-lg border flex items-center justify-center transition-colors cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed ${tone}`}
+    >
+      {props.children}
+    </button>
+  );
+}
+
+function ModeChip({ mode }: { mode: string }) {
+  return (
+    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-[#27272a]/60 border border-[#3f3f46] text-[9px] font-bold uppercase text-[#a1a1aa]">
+      {mode === "lyric" ? <Music className="w-2.5 h-2.5" /> : <Quote className="w-2.5 h-2.5" />}
+      {mode}
+    </span>
+  );
+}
+
+function ConfirmDialog(props: {
+  open: boolean;
+  title: string;
+  body: string;
+  confirmLabel: string;
+  busy: boolean;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  if (!props.open) return null;
+  return (
+    <div className="fixed inset-0 z-[70] flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/60" onClick={props.busy ? undefined : props.onCancel} />
+      <div className="relative w-full max-w-[380px] bg-[#18181b] border border-[#27272a] rounded-xl p-4 space-y-3">
+        <div className="flex items-start justify-between gap-3">
+          <h3 className="text-[13px] font-bold text-white">{props.title}</h3>
+          <button
+            type="button"
+            onClick={props.onCancel}
+            disabled={props.busy}
+            title="Close"
+            aria-label="Close"
+            className="w-6 h-6 flex items-center justify-center text-[#71717a] hover:text-white transition-colors cursor-pointer disabled:opacity-40 flex-shrink-0"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+        <p className="text-[11px] text-[#a1a1aa] leading-relaxed">{props.body}</p>
+        <div className="flex items-center justify-end gap-2 pt-1">
+          <button
+            type="button"
+            onClick={props.onCancel}
+            disabled={props.busy}
+            className="px-3 py-1.5 bg-[#27272a] hover:bg-[#3f3f46] disabled:opacity-40 text-white text-[11px] font-semibold rounded-lg transition-colors cursor-pointer"
+          >
+            Keep
+          </button>
+          <button
+            type="button"
+            onClick={props.onConfirm}
+            disabled={props.busy}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-red-500/10 border border-red-500/30 hover:bg-red-500/20 disabled:opacity-40 text-red-400 text-[11px] font-bold rounded-lg transition-colors cursor-pointer"
+          >
+            {props.busy && <Loader2 className="w-3 h-3 animate-spin" />}
+            {props.confirmLabel}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -1075,11 +1907,11 @@ function BatchHistoryList({ onOpenBatch }: { onOpenBatch: (id: string) => void }
 function BatchStatusChip({ status }: { status: string }) {
   const cls =
     status === "COMPLETED"
-      ? "bg-green-500/10 text-green-400 border-green-500/20"
+      ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20"
       : status === "FAILED"
         ? "bg-red-500/10 text-red-400 border-red-500/20"
         : status === "RENDERING" || status === "QUEUED"
-          ? "bg-blue-500/10 text-blue-400 border-blue-500/20"
+          ? "bg-amber-500/10 text-amber-400 border-amber-500/20"
           : "bg-[#27272a]/50 text-[#a1a1aa] border-[#3f3f46]";
   return <span className={`px-2 py-0.5 rounded-md border text-[9px] font-bold uppercase ${cls}`}>{status}</span>;
 }
