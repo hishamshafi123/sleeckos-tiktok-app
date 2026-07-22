@@ -46,7 +46,19 @@ dev.db
 
 # local Python / environment files
 /venv
-/public/fonts
+# Flat font TTFs are runtime-downloaded cache (see Dockerfile / composer.ts),
+# but the bundled per-family statics below ARE committed (self-hosted font set).
+/public/fonts/*
+!/public/fonts/inter/
+!/public/fonts/ibmplexsans/
+!/public/fonts/archivo/
+!/public/fonts/barlow/
+!/public/fonts/barlowcondensed/
+!/public/fonts/oswald/
+!/public/fonts/anton/
+!/public/fonts/publicsans/
+!/public/fonts/librefranklin/
+!/public/fonts/sourcesans3/
 /scratch
 /public/uploads
 /scripts/__pycache__

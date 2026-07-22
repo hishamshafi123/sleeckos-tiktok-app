@@ -133,8 +133,10 @@ model Campaign {
   // Rich info content
   infoContent            String?     @db.Text
 
-  // Fixed text prepended to auto-post descriptions (resolved per post via PostJob.campaignId)
-  fixedText              String?
+  // Auto-post caption pools (resolved per post via PostJob.campaignId)
+  fixedTexts             String[]      @default([]) // Pool of fixed caption texts — one picked at random per auto-post
+  descTags               String?                    // Comma-separated hashtag pool — overrides the section pool when set
+  descTagCount           Int           @default(3)  // How many tags to randomly select per post
   
   // Resources
   resources              CampaignResource[]
@@ -185,7 +187,6 @@ model AccountSection {
   slug                 String         @unique
   color                String         @default("#8b5cf6")
   icon                 String?
-  defaultDescription   String?        // Legacy — kept for backward compat
   descTags             String?        // Comma-separated tag pool (e.g. "#music,#viral,#fyp")
   descTagCount         Int            @default(3)     // How many tags to randomly select per video
   isActive             Boolean        @default(true)  // Master toggle
@@ -222,12 +223,19 @@ model ManagedAccount {
   statsUpdatedAt        DateTime?
 
   // Google Drive link
+  // driveFolderId is the OUTPUT / posting folder: finished videos are delivered here
+  // and the auto-posting pipeline posts from it. (Music niche: do NOT add a separate
+  // outputDriveFolderId — this column is the output folder.)
   driveFolderId         String?
   driveFolderName       String?
   driveConnected        Boolean      @default(false)
   googleAccessToken     String?
   googleRefreshToken    String?
   googleTokenExpiresAt  DateTime?
+
+  // Music niche: INPUT folder — background source clips are read from here
+  inputDriveFolderId    String?
+  lastDriveSyncAt       DateTime?
 
   // PostPeer integration
   postpeerAccountId     String?
@@ -243,11 +251,7 @@ model ManagedAccount {
   postMode              String       @default("DIRECT")
   // Multiple time slots per day, stored as CSV "HH:MM" e.g. "09:00,14:30,20:00"
   postTimeSlots         String       @default("12:00")
-  defaultCaption        String?
   isActive              Boolean      @default(true)
-
-  // Caption source: FILENAME | TXT_FILE | DEFAULT
-  captionSource         String       @default("FILENAME")
 
   // Health and Token status tracking
   connectionState       String       @default("healthy") // healthy | needs_reauth | not_found | checking
@@ -269,6 +273,7 @@ model ManagedAccount {
   clipMixerItems        ClipMixerItem[]
   sheetCells            SheetCell[]
   warmupEnrollment      WarmupEnrollment?
+  driveFiles            DriveFile[]
 
   @@index([sectionId])
 }
@@ -493,7 +498,7 @@ enum GenreBatchItemStatus {
 model Track {
   id              String                 @id @default(uuid())
   title           String
-  artist          String
+  artist          String?
   fileUrl         String
   duration        Float
   defaultStart    Float                  @default(0.0)
@@ -511,6 +516,15 @@ model Track {
   lyricalTemplates    TrackLyricalTemplate[]
   clipMixerBatches    ClipMixerBatch[]
   lyricGenerations    LyricGeneration[]
+
+  // Music niche (Video Factory) fields
+  audioRef      String?             // local path or R2 key
+  lrcData       Json?               // synced lyric lines [{t, text}]
+  trimStart     Float               @default(0)
+  trimEnd       Float?
+  maxReuse      Int?                // null = unlimited
+  createdBy     String?
+  items         FactoryBatchItem[]
 }
 
 model TrackLyricalTemplate {
@@ -1456,3 +1470,118 @@ model WarmupEnrollment {
   @@index([assignedWarmerId])
 }
 
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Music Niche Foundation (Track A) — Drive usage ledger, Video Factory,
+// overlay cache, delivery/confirmation tracking, self-hosted font registry
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Usage ledger for files in an account's INPUT Drive folder.
+/// Names-only sync — files are never downloaded by the ledger.
+model DriveFile {
+  id          String         @id @default(uuid())
+  accountId   String
+  account     ManagedAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  folderId    String
+  driveFileId String
+  name        String
+  size        BigInt?
+  mimeType    String?
+  timesUsed   Int            @default(0)
+  lastUsedAt  DateTime?
+  status      String         @default("unused") // unused | used | missing
+  addedAt     DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  @@unique([folderId, driveFileId])
+  @@index([accountId, timesUsed])
+}
+
+model FactoryBatch {
+  id                String   @id @default(uuid())
+  name              String
+  mode              String   // lyric | quote
+  mixingEnabled     Boolean  @default(false)
+  variationStrength Int      @default(3) // 1-5
+  targetDuration    Float    @default(30)
+  campaignId        String?
+  styleIds          String[]
+  status            String   @default("DRAFT") // DRAFT | QUEUED | RENDERING | COMPLETED | FAILED
+  createdBy         String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  items             FactoryBatchItem[]
+}
+
+model FactoryBatchItem {
+  id                 String       @id @default(uuid())
+  batchId            String
+  batch              FactoryBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  accountId          String?
+  styleId            String?
+  trackId            String?
+  track              Track?       @relation(fields: [trackId], references: [id], onDelete: SetNull)
+  quoteText          String?      @db.Text
+  recipe             Json?
+  recipeFingerprint  String?
+  sourceDriveFileIds String[]
+  status             String       @default("PENDING") // PENDING | RENDERING | COMPLETED | FAILED
+  outputRef          String?
+  outputDriveFileId  String?
+  error              String?      @db.Text
+  createdAt          DateTime     @default(now())
+  updatedAt          DateTime     @updatedAt
+
+  @@index([batchId, status])
+}
+
+model OverlayCache {
+  id        String    @id @default(uuid())
+  hash      String    @unique // SHA-256 of style+params+lyrics/quote
+  styleId   String?
+  trackId   String?
+  filePath  String?   // local
+  r2Key     String?
+  readyAt   DateTime?
+  createdAt DateTime  @default(now())
+}
+
+model Delivery {
+  id             String   @id @default(uuid())
+  accountId      String
+  campaignId     String?
+  batchId        String?  // FactoryBatch id (plain string, no FK)
+  videoCount     Int
+  fileList       Json     @default("[]")
+  deliveredAt    DateTime @default(now())
+  outputFolderId String?
+  status         String   @default("delivered") // delivered | scheduled | posted
+  postingMode    String   @default("manual")    // manual | auto_schedule | auto_post
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  confirmation   DeliveryConfirmation?
+
+  @@index([campaignId, deliveredAt])
+  @@index([accountId, status])
+}
+
+model DeliveryConfirmation {
+  id          String   @id @default(uuid())
+  deliveryId  String   @unique
+  delivery    Delivery @relation(fields: [deliveryId], references: [id], onDelete: Cascade)
+  scheduledAt DateTime?
+  scheduledBy String?
+  postedCount Int?
+  postedAt    DateTime?
+  postedBy    String?
+  note        String?  @db.Text
+}
+
+model FontAsset {
+  id        String  @id @default(uuid())
+  family    String  @unique
+  weights   Int[]   // weights actually on disk
+  files     Json    // { "400": "fonts/inter/Inter-Regular.ttf", ... }
+  license   String
+  isDefault Boolean @default(false)
+}

@@ -5,37 +5,23 @@ import { QuoteComposition } from "./compositions/Quote";
 import { EditorialCaption } from "./compositions/EditorialCaption";
 import React from "react";
 
-// Load/register curated editorial fonts for Remotion rendering
-import { loadFont as loadInter } from "@remotion/google-fonts/Inter";
-import { loadFont as loadIbmPlexSans } from "@remotion/google-fonts/IBMPlexSans";
-import { loadFont as loadSourceSans3 } from "@remotion/google-fonts/SourceSans3";
-import { loadFont as loadLibreFranklin } from "@remotion/google-fonts/LibreFranklin";
-import { loadFont as loadArchivo } from "@remotion/google-fonts/Archivo";
-import { loadFont as loadBarlow } from "@remotion/google-fonts/Barlow";
-import { loadFont as loadBarlowCondensed } from "@remotion/google-fonts/BarlowCondensed";
+// Register all bundled self-hosted fonts (public/fonts/<slug>/, see src/lib/fonts.ts).
+// Covers: Inter, IBM Plex Sans, Archivo, Barlow, Barlow Condensed, Oswald,
+// Anton, Public Sans, Libre Franklin, Source Sans 3 — all weights on disk.
+import { registerBundledFonts } from "./fonts";
+
+// Non-bundled families still load via @remotion/google-fonts (CDN).
 import { loadFont as loadRoboto } from "@remotion/google-fonts/Roboto";
 import { loadFont as loadRobotoCondensed } from "@remotion/google-fonts/RobotoCondensed";
-import { loadFont as loadOswald } from "@remotion/google-fonts/Oswald";
-import { loadFont as loadAnton } from "@remotion/google-fonts/Anton";
-import { loadFont as loadPublicSans } from "@remotion/google-fonts/PublicSans";
 import { loadFont as loadLora } from "@remotion/google-fonts/Lora";
 
 try {
-  loadInter();
-  loadIbmPlexSans();
-  loadSourceSans3();
-  loadLibreFranklin();
-  loadArchivo();
-  loadBarlow();
-  loadBarlowCondensed();
+  registerBundledFonts();
   loadRoboto();
   loadRobotoCondensed();
-  loadOswald();
-  loadAnton();
-  loadPublicSans();
   loadLora();
 } catch (e) {
-  console.warn("Failed to register Remotion Google Fonts:", e);
+  console.warn("Failed to register Remotion fonts:", e);
 }
 
 const RemotionRoot: React.FC = () => {

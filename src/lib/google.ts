@@ -66,7 +66,8 @@ export async function getOAuth2ClientForAccount(account: any) {
 }
 
 // ── Build authenticated Drive client (OAuth or fallback to Service Account) ───
-async function getDriveClient(accountId?: string, useServiceAccount = false) {
+// Per-account OAuth first, then master OAuth, then (optionally) service account.
+export async function getDriveClient(accountId?: string, useServiceAccount = false) {
   // If accountId has its own OAuth, we should ALWAYS prefer it!
   if (accountId) {
     const account = await prisma.managedAccount.findUnique({

@@ -2,6 +2,7 @@ import { exec, execSync, spawn } from "child_process";
 import fs from "fs";
 import path from "path";
 import os from "os";
+import { getFontFile } from "./fonts";
 
 export interface ComposeOptions {
   bgVideoPath: string;         // local path
@@ -79,6 +80,41 @@ const FONT_URLS: Record<string, string> = {
 /** Minimum valid font file size — anything smaller is a corrupt cache artifact */
 const MIN_FONT_SIZE_BYTES = 5_000;
 
+/** Weight suffix names accepted when parsing legacy "Family-Weight" font strings */
+const WEIGHT_SUFFIXES: Record<string, number> = {
+  thin: 100,
+  extralight: 200,
+  light: 300,
+  regular: 400,
+  medium: 500,
+  semibold: 600,
+  bold: 700,
+  extrabold: 800,
+  black: 900,
+};
+
+/**
+ * Parses legacy fontFamily strings ("Inter-Bold", "PublicSans-BoldItalic",
+ * "Barlow Condensed", "Inter") into { family, weight, italic } for manifest lookup.
+ */
+function parseFontFamilyString(fontFamily: string): { family: string; weight: number; italic: boolean } {
+  let s = fontFamily.trim();
+  let italic = false;
+  if (/[-\s]?italic$/i.test(s)) {
+    italic = true;
+    s = s.replace(/[-\s]?italic$/i, "");
+  }
+  let weight = 400;
+  const m = s.match(/^(.*?)[-\s](thin|extralight|light|regular|medium|semibold|bold|extrabold|black|[1-9]00)$/i);
+  if (m) {
+    s = m[1];
+    weight = /^[1-9]00$/.test(m[2])
+      ? parseInt(m[2], 10)
+      : WEIGHT_SUFFIXES[m[2].toLowerCase()] ?? 400;
+  }
+  return { family: s, weight, italic };
+}
+
 /** Valid TrueType magic bytes: 0x00010000 (TrueType) or 0x4F54544F ('OTTO' = OpenType) */
 function isValidTTF(filePath: string): boolean {
   try {
@@ -100,6 +136,19 @@ export async function resolveFontPath(fontFamily: string): Promise<string> {
   const fontsDir = path.join(process.cwd(), "public", "fonts");
   if (!fs.existsSync(fontsDir)) {
     fs.mkdirSync(fontsDir, { recursive: true });
+  }
+
+  // 1) Bundled self-hosted manifest fonts (public/fonts/<slug>/ statics).
+  //    Handles legacy "Family-Weight" strings used by Multiplier styles —
+  //    e.g. "Inter-Bold" -> public/fonts/inter/Inter-Bold.ttf.
+  const parsed = parseFontFamilyString(fontFamily);
+  const manifestRel = getFontFile(parsed.family, parsed.weight, parsed.italic);
+  if (manifestRel) {
+    const manifestAbs = path.join(process.cwd(), "public", manifestRel);
+    if (fs.existsSync(manifestAbs) && fs.statSync(manifestAbs).size >= MIN_FONT_SIZE_BYTES && isValidTTF(manifestAbs)) {
+      return manifestAbs;
+    }
+    console.warn(`[Composer] Manifest font missing/invalid at ${manifestAbs}, falling through to legacy resolution`);
   }
 
   // Check if we have a direct url mapping for this font

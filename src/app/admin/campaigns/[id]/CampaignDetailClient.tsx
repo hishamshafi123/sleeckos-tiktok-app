@@ -29,8 +29,15 @@ import {
 import { toast } from "sonner";
 import { Campaign, CampaignResource, CampaignStatus } from "@prisma/client";
 
+// Auto-post caption fields (added to the Campaign model concurrently with this UI)
+type CampaignAutoPostFields = {
+  fixedTexts?: string[];
+  descTags?: string | null;
+  descTagCount?: number | null;
+};
+
 interface CampaignDetailClientProps {
-  campaign: Campaign & { resources: CampaignResource[] };
+  campaign: Campaign & { resources: CampaignResource[] } & CampaignAutoPostFields;
   exportAnalytics: {
     totalExported: number;
     dailyExports: { date: string; count: number }[];
@@ -111,6 +118,13 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
   const [avgViewsPerVideo, setAvgViewsPerVideo] = useState(campaign.avgViewsPerVideo || 10000);
   const [videosPerAccountPerDay, setVideosPerAccountPerDay] = useState(campaign.videosPerAccountPerDay || 2);
 
+  // Auto-post captions
+  const [fixedTexts, setFixedTexts] = useState<string[]>(
+    campaign.fixedTexts && campaign.fixedTexts.length > 0 ? campaign.fixedTexts : [""]
+  );
+  const [descTags, setDescTags] = useState(campaign.descTags || "");
+  const [descTagCount, setDescTagCount] = useState(campaign.descTagCount ?? 3);
+
   // Notion-style editor
   const [infoContent, setInfoContent] = useState(campaign.infoContent || "");
   const [editorMode, setEditorMode] = useState<"write" | "preview">("write");
@@ -123,6 +137,7 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
 
   // Save states
   const [isSavingMeta, setIsSavingMeta] = useState(false);
+  const [isSavingCaptions, setIsSavingCaptions] = useState(false);
   const [isSavingInfo, setIsSavingInfo] = useState(false);
   const [saveIndicator, setSaveIndicator] = useState<"idle" | "saving" | "saved">("idle");
   const [isDeleting, setIsDeleting] = useState(false);
@@ -327,6 +342,56 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
       toast.error(err.message);
     } finally {
       setIsSavingMeta(false);
+    }
+  };
+
+  // Fixed texts pool list helpers
+  const handleFixedTextChange = (index: number, value: string) => {
+    setFixedTexts((prev) => prev.map((t, i) => (i === index ? value : t)));
+  };
+
+  const handleAddFixedText = () => {
+    setFixedTexts((prev) => [...prev, ""]);
+  };
+
+  const handleRemoveFixedText = (index: number) => {
+    setFixedTexts((prev) => {
+      const next = prev.filter((_, i) => i !== index);
+      return next.length > 0 ? next : [""];
+    });
+  };
+
+  // Save Auto-post Captions (fixed texts pool + hashtag pool)
+  const handleSaveCaptions = async () => {
+    setIsSavingCaptions(true);
+    const cleanedTexts = fixedTexts.map((t) => t.trim()).filter((t) => t.length > 0);
+    const trimmedTags = descTags.trim();
+    const clampedCount = Math.min(20, Math.max(0, Number(descTagCount) || 0));
+    try {
+      const res = await fetch(`/api/campaigns/${campaign.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          fixedTexts: cleanedTexts,
+          descTags: trimmedTags.length > 0 ? trimmedTags : null,
+          descTagCount: clampedCount,
+        }),
+      });
+
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || "Failed to save auto-post captions");
+      }
+
+      const updated = await res.json();
+      setCampaign(updated);
+      setFixedTexts(cleanedTexts.length > 0 ? cleanedTexts : [""]);
+      setDescTagCount(clampedCount);
+      toast.success("Auto-post captions saved successfully");
+    } catch (err: any) {
+      toast.error(err.message);
+    } finally {
+      setIsSavingCaptions(false);
     }
   };
 
@@ -980,6 +1045,99 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
 
             {/* Projection Chart */}
             {renderProjectionChart()}
+          </div>
+
+          {/* Auto-post Captions Section */}
+          <div className="border border-[#27272a] rounded-md bg-[#09090b] p-5 space-y-4">
+            <div className="flex items-center justify-between border-b border-[#27272a] pb-3">
+              <h3 className="text-sm font-semibold text-zinc-200 flex items-center gap-2">
+                <FileEdit className="w-4 h-4 text-emerald-400" />
+                Auto-post Captions
+              </h3>
+              <button
+                onClick={handleSaveCaptions}
+                disabled={isSavingCaptions}
+                className="flex items-center gap-1.5 bg-zinc-100 hover:bg-zinc-200 text-zinc-950 text-[11px] font-semibold px-2.5 py-1 rounded transition disabled:opacity-50"
+              >
+                {isSavingCaptions ? (
+                  <>
+                    <Loader2 size={11} className="animate-spin" />
+                    Saving...
+                  </>
+                ) : (
+                  <>
+                    <Save size={11} />
+                    Save Captions
+                  </>
+                )}
+              </button>
+            </div>
+
+            {/* Fixed Texts Pool */}
+            <div className="space-y-2 text-xs">
+              <label className="text-zinc-400 font-medium">Fixed Texts Pool</label>
+              <p className="text-[11px] text-zinc-500 leading-normal">
+                One of these is chosen at random for every auto-post from this campaign and placed at the beginning of the description.
+              </p>
+              <div className="space-y-2">
+                {fixedTexts.map((text, idx) => (
+                  <div key={idx} className="flex items-start gap-2">
+                    <textarea
+                      value={text}
+                      onChange={(e) => handleFixedTextChange(idx, e.target.value)}
+                      rows={2}
+                      placeholder={`Fixed text #${idx + 1} (e.g. Follow for daily uploads!)`}
+                      className="flex-1 bg-[#09090b] border border-[#27272a] rounded px-3 py-1.5 text-zinc-100 focus:border-zinc-500 focus:outline-none resize-y placeholder-zinc-600"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => handleRemoveFixedText(idx)}
+                      className="text-zinc-500 hover:text-red-400 transition p-1.5"
+                      title="Remove this text"
+                    >
+                      <Trash2 size={13} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+              <button
+                type="button"
+                onClick={handleAddFixedText}
+                className="flex items-center gap-1 text-[11px] font-semibold text-zinc-300 hover:text-zinc-100 bg-zinc-900 border border-[#27272a] hover:border-zinc-600 rounded px-2.5 py-1 transition"
+              >
+                <Plus size={11} />
+                Add another text
+              </button>
+            </div>
+
+            {/* Hashtag Pool */}
+            <div className="grid grid-cols-1 sm:grid-cols-[1fr_140px] gap-4 pt-3 border-t border-[#27272a] text-xs">
+              <div className="space-y-1.5">
+                <label className="text-zinc-400 font-medium">Hashtag Pool</label>
+                <input
+                  type="text"
+                  value={descTags}
+                  onChange={(e) => setDescTags(e.target.value)}
+                  placeholder="#music,#viral,#fyp"
+                  className="w-full bg-[#09090b] border border-[#27272a] rounded px-3 py-1.5 text-zinc-100 font-mono focus:border-zinc-500 focus:outline-none placeholder-zinc-600"
+                />
+                <p className="text-[11px] text-zinc-500 leading-normal">
+                  Comma-separated. When set, this pool overrides the section hashtag pool; hashtags are appended at the bottom of the description. Leave empty to fall back to the section pool.
+                </p>
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-zinc-400 font-medium">Tags per Post</label>
+                <input
+                  type="number"
+                  min={0}
+                  max={20}
+                  value={descTagCount}
+                  onChange={(e) => setDescTagCount(Math.min(20, Math.max(0, Number(e.target.value))))}
+                  className="w-full bg-[#09090b] border border-[#27272a] rounded px-3 py-1.5 text-zinc-100 font-mono focus:border-zinc-500 focus:outline-none"
+                />
+                <p className="text-[11px] text-zinc-500 leading-normal">Randomly picked per post (0-20).</p>
+              </div>
+            </div>
           </div>
 
           {/* Campaign Activity (range-filtered stats) */}
