@@ -58,6 +58,7 @@ import path from "path";
 import { exec } from "child_process";
 import { promisify } from "util";
 import type { FactoryBatch, SavedStyle, Track } from "@prisma/client";
+import { coerceLayers } from "@/lib/style-lab/layers";
 import { selectUnusedFilesByFolders, markFilesUsed, getLedgerStats, getFolderLedgerStats } from "./drive-ledger";
 import { createDelivery } from "./distribution";
 import { downloadDriveFile, getDriveClient } from "../google";
@@ -1600,8 +1601,14 @@ async function getOrCreateFactoryOverlay(opts: {
   trackId: string | null;
 }): Promise<string> {
   const { savedStyle, inputProps, durationSeconds, trackId } = opts;
+  // Layered styles render through the layered-style comp with the full layer
+  // stack; the stack rides inside inputProps so the cache hash covers it.
+  const styleLayers = coerceLayers((savedStyle as any).layers);
+  const isLayered = styleLayers.length > 0;
+  const compId = isLayered ? "layered-style" : savedStyle.templateKey;
+  const finalProps = isLayered ? { ...inputProps, layers: styleLayers } : inputProps;
   const hash = createHash("sha256")
-    .update(JSON.stringify({ styleId: savedStyle.id, templateKey: savedStyle.templateKey, inputProps, durationSeconds: round1(durationSeconds) }))
+    .update(JSON.stringify({ styleId: savedStyle.id, compId, inputProps: finalProps, durationSeconds: round1(durationSeconds) }))
     .digest("hex");
 
   const relPath = `/uploads/factory-overlays/overlay_${hash}.webm`;
@@ -1627,8 +1634,8 @@ async function getOrCreateFactoryOverlay(opts: {
 
   const composition = await selectComposition({
     serveUrl: cachedFactoryBundle,
-    id: savedStyle.templateKey,
-    inputProps,
+    id: compId,
+    inputProps: finalProps,
   });
   // Factory durations are trim/target driven; override the registered default.
   composition.durationInFrames = Math.max(30, Math.ceil(durationSeconds * composition.fps));
@@ -1638,7 +1645,7 @@ async function getOrCreateFactoryOverlay(opts: {
     composition,
     serveUrl: cachedFactoryBundle,
     outputLocation: absPath,
-    inputProps,
+    inputProps: finalProps,
     codec: "vp9", // alpha transparency for compositing
     browserExecutable: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
   });
