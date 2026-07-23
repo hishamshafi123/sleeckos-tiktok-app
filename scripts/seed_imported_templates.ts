@@ -17,11 +17,15 @@
  */
 import prisma from "../src/lib/db";
 import { ALL_STYLE_LAB_TEMPLATES } from "../src/lib/style-lab/schema";
-import { renderTemplateAssets, seedStyleLabTemplates } from "../src/lib/services/style-lab";
+import { renderTemplateAssets, seedDefaultSavedStyles, seedStyleLabTemplates } from "../src/lib/services/style-lab";
 
 async function main() {
   await seedStyleLabTemplates();
   console.log(`Templates upserted: ${ALL_STYLE_LAB_TEMPLATES.length}`);
+
+  // Default saved styles for every published template (factory visibility).
+  await seedDefaultSavedStyles();
+  console.log("Default saved styles ensured for all published templates.");
 
   const only = process.argv[2];
   let failures = 0;

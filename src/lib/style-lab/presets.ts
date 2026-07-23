@@ -1,4 +1,5 @@
 import {
+  BRAT_TEMPLATE_KEY,
   LYRIC_TEMPLATE_KEY,
   QUOTE_TEMPLATE_KEY,
   type StyleParams,
@@ -16,25 +17,21 @@ export interface StyleLabPreset {
 // style-lab service so every environment self-seeds without a manual run.
 export const STYLE_LAB_PRESETS: StyleLabPreset[] = [
   // ── Lyric family ──────────────────────────────────────────────────────────
+  // ── Brat family (dedicated brat-lyrics comp: accumulating words, auto-fit
+  //    justified type, lo-fi pixelation) ─────────────────────────────────────
   {
-    templateKey: LYRIC_TEMPLATE_KEY,
+    templateKey: BRAT_TEMPLATE_KEY,
     family: "lyric",
     name: "Brat",
     tags: ["preset", "brat"],
     params: {
+      bgColor: "#8ACE00",
+      textColor: "#000000",
       fontFamily: "Inter",
       fontWeight: 500,
-      fontSize: 52,
       textTransform: "lowercase",
-      textColor: "#000000",
-      highlightColor: "#000000",
-      bgColor: "#8ACE00",
-      blur: 1.5,
-      shadow: false,
-      lineMode: "line-by-line",
-      linesVisible: 1,
-      entryType: "none",
-      exitType: "none",
+      lofiFactor: 5,
+      maxFontSize: 120,
     },
   },
   {
@@ -132,26 +129,18 @@ export const STYLE_LAB_PRESETS: StyleLabPreset[] = [
   },
   // ── Overlay variants (transparent bg, for compositing over footage) ────────
   {
-    templateKey: LYRIC_TEMPLATE_KEY,
+    templateKey: BRAT_TEMPLATE_KEY,
     family: "lyric",
     name: "Brat Overlay",
     tags: ["preset", "brat", "overlay"],
     params: {
+      bgColor: "transparent",
+      textColor: "#FFFFFF",
       fontFamily: "Inter",
       fontWeight: 500,
-      fontSize: 52,
       textTransform: "lowercase",
-      textColor: "#FFFFFF",
-      highlightColor: "#FFFFFF",
-      bgColor: "transparent",
-      blur: 1.5,
-      shadow: true,
-      shadowIntensity: 0.5,
-      lineMode: "line-by-line",
-      linesVisible: 1,
-      positionYPercent: 78,
-      entryType: "none",
-      exitType: "none",
+      lofiFactor: 5,
+      maxFontSize: 120,
     },
   },
   // ── Quote family ──────────────────────────────────────────────────────────

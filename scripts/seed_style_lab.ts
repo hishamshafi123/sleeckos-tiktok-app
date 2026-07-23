@@ -3,22 +3,19 @@
  * StyleTemplate rows (engine "remotion", isBase) plus the starter
  * saved-style presets for both families.
  *
- * Idempotent — templates upsert by key, presets upsert by (templateKey, name).
+ * Idempotent — templates upsert by key; presets migrate by name (so a preset
+ * that moves templates, e.g. Brat → brat-lyrics, updates instead of
+ * duplicating); default saved styles are ensured per published template.
  *
  * Run (tsx is NOT installed — use the repo esbuild+node pattern):
  *   node_modules/.bin/esbuild scripts/seed_style_lab.ts \
  *     --bundle --platform=node --format=esm --packages=external \
+ *     --tsconfig=tsconfig.json \
  *     --outfile=scratch/seed_style_lab.mjs && node scratch/seed_style_lab.mjs
  */
 import prisma from "../src/lib/db";
-import {
-  ALL_STYLE_LAB_TEMPLATES,
-  LYRIC_PARAM_SCHEMA,
-  LYRIC_TEMPLATE_KEY,
-  QUOTE_PARAM_SCHEMA,
-  QUOTE_TEMPLATE_KEY,
-  coerceParams,
-} from "../src/lib/style-lab/schema";
+import { ALL_STYLE_LAB_TEMPLATES } from "../src/lib/style-lab/schema";
+import { seedDefaultSavedStyles, seedStyleLabPresets } from "../src/lib/services/style-lab";
 
 import { STYLE_LAB_PRESETS as PRESETS } from "../src/lib/style-lab/presets";
 
@@ -52,44 +49,14 @@ async function main() {
     console.log(`Template upserted: ${row.key} (${row.name}, source=${row.source})`);
   }
 
-  // 2. Saved-style presets (validated/coerced against the schema)
-  const schemas = {
-    [LYRIC_TEMPLATE_KEY]: LYRIC_PARAM_SCHEMA,
-    [QUOTE_TEMPLATE_KEY]: QUOTE_PARAM_SCHEMA,
-  } as const;
+  // 2. Saved-style presets (validated/coerced by the service; migrates by
+  //    name when a preset moves templates, e.g. Brat → brat-lyrics)
+  await seedStyleLabPresets();
+  console.log(`Presets seeded: ${PRESETS.length}`);
 
-  for (const preset of PRESETS) {
-    const schema = schemas[preset.templateKey as keyof typeof schemas];
-    const full = coerceParams(schema, preset.params, { partial: true });
-    const defaults = coerceParams(schema, {});
-    const params = { ...defaults, ...full };
-
-    const existing = await prisma.savedStyle.findFirst({
-      where: { templateKey: preset.templateKey, name: preset.name },
-    });
-    if (existing) {
-      await prisma.savedStyle.update({
-        where: { id: existing.id },
-        data: {
-          params: JSON.stringify(params),
-          family: preset.family,
-          tags: preset.tags,
-        },
-      });
-      console.log(`Preset updated:  ${preset.name} (${preset.family})`);
-    } else {
-      await prisma.savedStyle.create({
-        data: {
-          templateKey: preset.templateKey,
-          name: preset.name,
-          params: JSON.stringify(params),
-          family: preset.family,
-          tags: preset.tags,
-        },
-      });
-      console.log(`Preset created:  ${preset.name} (${preset.family})`);
-    }
-  }
+  // 3. Default saved styles for every published template (factory visibility)
+  await seedDefaultSavedStyles();
+  console.log("Default saved styles ensured for all published templates.");
 
   console.log("Style Lab seed complete.");
 }

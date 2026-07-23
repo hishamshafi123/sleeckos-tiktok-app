@@ -205,30 +205,32 @@ export const QUOTE_PARAM_SCHEMA: ParamField[] = [
 ];
 
 /**
- * Brat template schema: the same lyric schema (same comp — no new
- * composition) with brat-specific DEFAULTS baked into the field defaults.
- * Per-template defaults live in each StyleTemplate row's paramSchema, so
- * one flexible comp serves many templates. bgColor stays a free color
- * param ("transparent" / "#8ACE00" / any custom hex are all valid).
+ * Brat template schema: a DEDICATED param set for the brat-lyrics
+ * composition (src/remotion/compositions/style-lab/BratLyrics.tsx), which
+ * ports the reference brat mechanic — words of the current line accumulate
+ * one at a time, the font auto-shrinks (binary search) so the accumulated
+ * block always fits, wrapped lines >85% full are justified, and the whole
+ * block gets a lo-fi pixelation pass. bgColor stays a free color param
+ * ("transparent" / "#8ACE00" / any custom hex are all valid) so the same
+ * comp serves both the solid-green classic and overlay variants.
  */
-export const BRAT_PARAM_SCHEMA: ParamField[] = LYRIC_PARAM_SCHEMA.map((f) => {
-  switch (f.key) {
-    case "fontFamily": return { ...f, defaultValue: "Inter" };
-    case "fontWeight": return { ...f, defaultValue: 500 };
-    case "fontSize": return { ...f, defaultValue: 52 };
-    case "textTransform": return { ...f, defaultValue: "lowercase" };
-    case "textColor": return { ...f, defaultValue: "#000000" };
-    case "highlightColor": return { ...f, defaultValue: "#000000" };
-    case "shadow": return { ...f, defaultValue: false };
-    case "bgColor": return { ...f, defaultValue: "#8ACE00" };
-    case "blur": return { ...f, defaultValue: 1.5 };
-    case "lineMode": return { ...f, defaultValue: "line-by-line" };
-    case "linesVisible": return { ...f, defaultValue: 1 };
-    case "entryType": return { ...f, defaultValue: "none" };
-    case "exitType": return { ...f, defaultValue: "none" };
-    default: return f;
-  }
-});
+export const BRAT_PARAM_SCHEMA: ParamField[] = [
+  { key: "bgColor", label: "Background Color", type: "color", group: "Background", defaultValue: "#8ACE00" },
+  { key: "textColor", label: "Text Color", type: "color", group: "Colors", defaultValue: "#000000" },
+  { key: "fontFamily", label: "Font Family", type: "font", group: "Typography", defaultValue: "Inter" },
+  { key: "fontWeight", label: "Font Weight", type: "weight", group: "Typography", defaultValue: 500, min: 100, max: 900, step: 100 },
+  { key: "maxFontSize", label: "Max Font Size (px)", type: "number", group: "Typography", defaultValue: 120, min: 24, max: 400, step: 2 },
+  {
+    key: "textTransform", label: "Text Case", type: "enum", group: "Typography", defaultValue: "lowercase",
+    options: [
+      { value: "none", label: "None" },
+      { value: "uppercase", label: "Uppercase" },
+      { value: "lowercase", label: "Lowercase" },
+    ],
+  },
+  { key: "lofiFactor", label: "Lo-Fi Pixelation", type: "number", group: "Effects", defaultValue: 5, min: 1, max: 20, step: 1 },
+  { key: "timingOffsetMs", label: "Timing Offset (ms)", type: "number", group: "Lyrics", defaultValue: 0, min: -2000, max: 2000, step: 50 },
+];
 
 export interface StyleLabTemplateMeta {
   key: string;

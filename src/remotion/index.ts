@@ -6,6 +6,7 @@ import { EditorialCaption } from "./compositions/EditorialCaption";
 import { LyricCaption, lyricCaptionCalculateMetadata } from "./compositions/style-lab/LyricCaption";
 import { QuoteCard, quoteCardCalculateMetadata } from "./compositions/style-lab/QuoteCard";
 import { LayeredStyle, layeredStyleCalculateMetadata } from "./compositions/style-lab/LayeredStyle";
+import { BratLyrics, bratLyricsCalculateMetadata } from "./compositions/style-lab/BratLyrics";
 import { IMPORTED_COMPONENTS } from "./compositions/style-lab/imported";
 import { importedCalculateMetadata, IMPORTED_CANVAS } from "./compositions/style-lab/imported/shared";
 import { IMPORTED_STYLE_TEMPLATES } from "../lib/style-lab/imported";
@@ -144,15 +145,16 @@ const RemotionRoot: React.FC = () => {
         author: SAMPLE_QUOTE.author,
       },
     }),
-    // ── Brat template: same LyricCaption comp, brat defaults (see BRAT_PARAM_SCHEMA) ──
+    // ── Brat template: dedicated comp — accumulating words, auto-fit font,
+    // justified wrap, lo-fi pixelation (see style-lab/BratLyrics.tsx) ──
     React.createElement(Composition, {
       id: BRAT_TEMPLATE_KEY,
-      component: LyricCaption,
+      component: BratLyrics,
       durationInFrames: 390, // overridden by calculateMetadata (from line timings)
       fps: STYLE_LAB_FPS,
       width: 720,
       height: 1280,
-      calculateMetadata: lyricCaptionCalculateMetadata,
+      calculateMetadata: bratLyricsCalculateMetadata,
       defaultProps: {
         ...defaultParams(BRAT_PARAM_SCHEMA),
         lines: SAMPLE_LYRIC_LINES,

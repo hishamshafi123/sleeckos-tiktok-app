@@ -200,13 +200,22 @@ export async function seedStyleLabPresets(createdBy?: string) {
       ...coerceParams(schema, {}),
       ...coerceParams(schema, preset.params, { partial: true }),
     };
+    // Match by NAME across lab templates (not just templateKey): presets can
+    // move between templates (e.g. Brat moved lyric-caption → brat-lyrics),
+    // and the old row must migrate instead of duplicating.
     const existing = await prisma.savedStyle.findFirst({
-      where: { templateKey: preset.templateKey, name: preset.name },
+      where: { name: preset.name, templateKey: { in: LAB_TEMPLATE_KEYS } },
+      orderBy: { createdAt: "asc" }, // migrate the oldest row deterministically
     });
     if (existing) {
       await prisma.savedStyle.update({
         where: { id: existing.id },
-        data: { params: JSON.stringify(params), family: preset.family, tags: preset.tags },
+        data: {
+          templateKey: preset.templateKey,
+          params: JSON.stringify(params),
+          family: preset.family,
+          tags: preset.tags,
+        },
       });
     } else {
       await prisma.savedStyle.create({
@@ -226,6 +235,36 @@ export async function seedStyleLabPresets(createdBy?: string) {
 let presetsSeeded = false;
 
 /**
+ * Idempotently ensures every published Style Lab template (base + brat +
+ * imported collection) has at least one SavedStyle named after the template
+ * ("<Template Name>", schema defaults, tags ["preset"]). The Video Factory's
+ * style step lists SavedStyle rows — without this, templates that only exist
+ * as StyleTemplate rows are invisible there. Skips any template that already
+ * has a saved style. AI draft templates are excluded on purpose: they render
+ * through the layered-style comp and enter the library at publish time, not
+ * as raw template keys.
+ */
+export async function seedDefaultSavedStyles(createdBy?: string) {
+  await seedStyleLabTemplates(createdBy);
+  for (const tpl of ALL_STYLE_LAB_TEMPLATES) {
+    const existing = await prisma.savedStyle.findFirst({
+      where: { templateKey: tpl.key },
+    });
+    if (existing) continue;
+    await prisma.savedStyle.create({
+      data: {
+        templateKey: tpl.key,
+        name: tpl.name,
+        params: JSON.stringify(defaultParams(tpl.schema)),
+        family: tpl.family,
+        tags: ["preset"],
+        createdBy: createdBy ?? null,
+      },
+    });
+  }
+}
+
+/**
  * Styles managed by the Style Lab — i.e. presets of the two base templates.
  * Legacy style-studio presets keep living in the old studio until cleanup.
  */
@@ -235,6 +274,9 @@ export async function listSavedStyles(family?: StyleFamily) {
     try {
       const count = await prisma.savedStyle.count({ where: { templateKey: { in: LAB_TEMPLATE_KEYS } } });
       if (count === 0) await seedStyleLabPresets();
+      // Default styles for every published template (imported + brat), so
+      // the factory sees the full library — runs even when presets exist.
+      await seedDefaultSavedStyles();
     } catch (err) {
       console.error("[Style Lab] Lazy preset seed failed:", err);
     }
