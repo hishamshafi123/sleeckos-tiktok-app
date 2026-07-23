@@ -79,6 +79,75 @@ function useBundledFonts(): boolean {
 
 // ─── Component ───────────────────────────────────────────────────────────────
 
+const CHECKER_BG =
+  "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12'%3E%3Crect width='6' height='6' fill='%233f3f46'/%3E%3Crect x='6' y='6' width='6' height='6' fill='%233f3f46'/%3E%3Crect x='6' width='6' height='6' fill='%2318181b'/%3E%3Crect y='6' width='6' height='6' fill='%2318181b'/%3E%3C/svg%3E\")";
+
+/**
+ * Transparent-aware color field. A native <input type="color"> cannot
+ * represent "transparent" (it renders black and would silently write #000000
+ * back on any touch), so transparency gets its own explicit state: checker
+ * swatch + toggle, with the hex picker only driving actual colors.
+ */
+function ColorControl({
+  value,
+  label,
+  onChange,
+}: {
+  value: string;
+  label: string;
+  onChange: (v: string) => void;
+}) {
+  const isTransparent = value === "transparent";
+  const lastHexRef = useRef<string>("#18181B");
+  const hex = /^#[0-9a-fA-F]{6}$/.test(value) ? value : null;
+  if (hex && lastHexRef.current !== hex) lastHexRef.current = hex;
+
+  return (
+    <div className="flex items-center gap-2">
+      <div
+        className="w-8 h-8 rounded border border-zinc-800 overflow-hidden flex-shrink-0"
+        style={isTransparent ? { backgroundImage: CHECKER_BG } : { backgroundColor: hex ?? "#000000" }}
+        title={isTransparent ? "Transparent" : hex ?? label}
+      />
+      <input
+        type="text"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        aria-label={`${label} value`}
+        className="flex-1 bg-zinc-950 border border-zinc-800 rounded px-2.5 py-1.5 text-zinc-100 focus:outline-none focus:border-zinc-600 font-mono text-[11px]"
+      />
+      {isTransparent ? (
+        <button
+          type="button"
+          onClick={() => onChange(lastHexRef.current)}
+          className="px-2 py-1.5 text-[10px] font-semibold rounded border border-zinc-800 text-zinc-400 hover:text-white hover:border-zinc-600 transition-colors cursor-pointer whitespace-nowrap"
+          title="Pick a solid color instead"
+        >
+          Solid…
+        </button>
+      ) : (
+        <>
+          <input
+            type="color"
+            aria-label={`${label} picker`}
+            value={hex ?? "#000000"}
+            onChange={(e) => onChange(e.target.value)}
+            className="w-8 h-8 rounded border border-zinc-800 cursor-pointer bg-transparent"
+          />
+          <button
+            type="button"
+            onClick={() => onChange("transparent")}
+            className="px-2 py-1.5 text-[10px] font-semibold rounded border border-zinc-800 text-zinc-400 hover:text-white hover:border-zinc-600 transition-colors cursor-pointer whitespace-nowrap"
+            title="Make it transparent"
+          >
+            Transparent
+          </button>
+        </>
+      )}
+    </div>
+  );
+}
+
 export default function StyleLabClient({ user }: StyleLabClientProps) {
   const fontsLoaded = useBundledFonts();
 
@@ -809,21 +878,12 @@ export default function StyleLabClient({ user }: StyleLabClientProps) {
 
       case "color":
         return (
-          <div className="flex items-center gap-2">
-            <input
-              type="color"
-              aria-label={`${field.label} picker`}
-              value={/^#[0-9a-fA-F]{6}$/.test(String(value)) ? value : "#000000"}
-              onChange={(e) => handleParamChange(field.key, e.target.value)}
-              className="w-8 h-8 rounded border border-zinc-800 cursor-pointer bg-transparent"
-            />
-            <input
-              type="text"
-              value={String(value)}
-              onChange={(e) => handleParamChange(field.key, e.target.value)}
-              className="flex-1 bg-zinc-950 border border-zinc-800 rounded px-2.5 py-1.5 text-zinc-100 focus:outline-none focus:border-zinc-600 font-mono text-[11px]"
-            />
-          </div>
+          <ColorControl
+            key={field.key}
+            value={String(value)}
+            label={field.label}
+            onChange={(v) => handleParamChange(field.key, v)}
+          />
         );
 
       case "boolean":
