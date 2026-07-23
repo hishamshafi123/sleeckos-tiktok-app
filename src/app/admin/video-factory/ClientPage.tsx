@@ -1481,6 +1481,11 @@ export default function ClientPage({ session }: { session?: { userId: string; ro
                     })}
                   </div>
                 )}
+                {styles.length > filteredStyles.length && (
+                  <p className="text-[10px] text-[#71717a] mt-2">
+                    {styles.length - filteredStyles.length} style{styles.length - filteredStyles.length === 1 ? "" : "s"} hidden — {mode === "lyric" ? "quote" : "lyric"}-family styles only work in {mode === "lyric" ? "quote" : "lyric"} mode.
+                  </p>
+                )}
               </div>
             )}
 

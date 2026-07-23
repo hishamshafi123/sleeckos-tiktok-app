@@ -338,7 +338,8 @@ export default function StyleLabClient({ user }: StyleLabClientProps) {
       setTagsInput(Array.isArray(tpl.tags) ? tpl.tags.filter((t: string) => !["style-lab", "base"].includes(t)).join(", ") : "");
     } else {
       setEditingDraft(null);
-      setStyleName("");
+      // Prefill a sensible name so saving a new style is literally one click.
+      setStyleName(`${tpl.name} — Custom`);
       setTagsInput("");
     }
     setRenderResult(null);
@@ -449,10 +450,15 @@ export default function StyleLabClient({ user }: StyleLabClientProps) {
       }
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to save style");
-      toast.success(selectedStyleId ? "Style updated" : "Style saved — thumbnail rendering in background");
+      toast.success(selectedStyleId ? "Style updated" : `Style saved as "${data.name ?? styleName.trim()}" — find it in Saved Styles`);
       if (!selectedStyleId) setSelectedStyleId(data.id);
       fetchSavedStyles();
       scheduleLibraryRefresh();
+      // Take the operator to their library so the save is visibly confirmed.
+      if (!selectedStyleId) {
+        setView("gallery");
+        setGalleryTab("saved");
+      }
     } catch (err: any) {
       toast.error(err.message || "Failed to save style");
     } finally {
