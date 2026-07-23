@@ -1704,7 +1704,9 @@ function buildComposeCommand(opts: {
     overlayIdx = 1;
   }
 
-  inputs.push(`-i "${overlayPath}"`);
+  // libvpx is required to decode the WebM alpha plane — ffmpeg's native vp9
+  // decoder silently drops it, turning transparent overlays into black boxes.
+  inputs.push(`-c:v libvpx-vp9 -i "${overlayPath}"`);
   const audioIdx = overlayIdx + 1;
   let mapAudio: string;
   if (music) {

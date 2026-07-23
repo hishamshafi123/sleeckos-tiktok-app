@@ -215,8 +215,8 @@ export const QUOTE_PARAM_SCHEMA: ParamField[] = [
  * comp serves both the solid-green classic and overlay variants.
  */
 export const BRAT_PARAM_SCHEMA: ParamField[] = [
-  { key: "bgColor", label: "Background Color", type: "color", group: "Background", defaultValue: "#8ACE00" },
-  { key: "textColor", label: "Text Color", type: "color", group: "Colors", defaultValue: "#000000" },
+  { key: "bgColor", label: "Background Color", type: "color", group: "Background", defaultValue: "transparent" },
+  { key: "textColor", label: "Text Color", type: "color", group: "Colors", defaultValue: "#FFFFFF" },
   { key: "fontFamily", label: "Font Family", type: "font", group: "Typography", defaultValue: "Inter" },
   { key: "fontWeight", label: "Font Weight", type: "weight", group: "Typography", defaultValue: 500, min: 100, max: 900, step: 100 },
   { key: "maxFontSize", label: "Max Font Size (px)", type: "number", group: "Typography", defaultValue: 120, min: 24, max: 400, step: 2 },
