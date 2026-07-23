@@ -3,10 +3,12 @@
  * then distributes them to TikTok accounts afterwards.
  *
  * Flow: RENDER FIRST, DISTRIBUTE AFTER.
- *   1. The batch's source of background clips is ONE pasted Drive folder
- *      (FactoryBatch.sourceFolderId, synced into the per-folder Drive ledger
- *      with accountId = null). Per-account input folders are only a wizard
- *      prefill hint — never the render source.
+ *   1. Clip sources (FactoryBatch.sourceMode): "folders" = one or more pasted
+ *      Drive folders (sourceFolderIds); "accounts" = the input folders of
+ *      sourceAccountIds. Either way createBatch resolves the UNION of folder
+ *      ids onto sourceFolderIds, and pooling runs against the per-folder Drive
+ *      ledger via selectUnusedFilesByFolders (unused-first, least-used tiers).
+ *      The legacy single sourceFolderId column mirrors sourceFolderIds[0].
  *   2. startBatchRender takes only a total video count: it plans account-less
  *      FactoryBatchItems (styles/tracks/quotes come from the batch's own
  *      content-pool columns), reserving ledger clips in `sourceDriveFileIds`
@@ -14,7 +16,12 @@
  *      files unused). Recipe planning + fingerprint dedup unchanged (see below).
  *   3. The worker renders each item into the pool: local mp4 in
  *      public/uploads/factory-renders/ + R2 offload (Multiplier-output style).
- *      NO Drive upload and NO Delivery at render time.
+ *      NO Drive upload and NO Delivery at render time. Lyric tracks without
+ *      lrcData (plain audio uploads) are transcribed at render time with the
+ *      existing stable-ts fallback (scripts/lyrical_composer.py, tiny/cpu) and
+ *      the result cached back onto Track.lrcData — each track transcribes
+ *      once. Quote batches with musicAudioRef get a looped music bed amix'd
+ *      with the clip audio (weights 1/0.35) instead of silence.
  *   4. distributeBatch() on a COMPLETED batch deals pool items to accounts
  *      (fair round-robin mixer from smart-export-assign, bucketed by styleId,
  *      leftovers dealt fewest-first), uploads each assigned video to the
@@ -51,7 +58,7 @@ import path from "path";
 import { exec } from "child_process";
 import { promisify } from "util";
 import type { FactoryBatch, SavedStyle, Track } from "@prisma/client";
-import { selectUnusedFilesByFolder, markFilesUsed, getLedgerStats } from "./drive-ledger";
+import { selectUnusedFilesByFolders, markFilesUsed, getLedgerStats, getFolderLedgerStats } from "./drive-ledger";
 import { createDelivery } from "./distribution";
 import { downloadDriveFile, getDriveClient } from "../google";
 import { uploadToR2, downloadFromR2 } from "./storage";
@@ -74,6 +81,7 @@ const RENDER_DIR_PUBLIC = "/uploads/factory-renders";
 const ARCHIVE_DIR_PUBLIC = "/uploads/factory/archives";
 
 export type FactoryMode = "lyric" | "quote";
+export type FactorySourceMode = "folders" | "accounts";
 
 export interface CreateBatchInput {
   name: string;
@@ -83,8 +91,18 @@ export interface CreateBatchInput {
   targetDuration: number; // seconds
   campaignId?: string | null;
   styleIds: string[];
-  /** Pasted Drive folder that supplies background clips for the whole batch. */
-  sourceFolderId: string;
+  /**
+   * Clip source. "folders": one or more pasted Drive folders (sourceFolderIds,
+   * or the legacy single sourceFolderId). "accounts": one or more account ids
+   * (sourceAccountIds) — each account's inputDriveFolderId is resolved and the
+   * union is stored on sourceFolderIds for pooling.
+   */
+  sourceMode?: FactorySourceMode;
+  sourceFolderId?: string | null; // legacy single-folder input
+  sourceFolderIds?: string[];
+  sourceAccountIds?: string[];
+  /** quote mode: optional background music bed (local public path or R2 key) */
+  musicAudioRef?: string | null;
   /** lyric mode: ordered track pool (round-robin, Track.maxReuse respected) */
   trackIds?: string[];
   /** quote mode: quote texts (round-robin) */
@@ -286,8 +304,41 @@ export async function createBatch(input: CreateBatchInput): Promise<FactoryBatch
   if (!Number.isFinite(targetDuration) || targetDuration < 5 || targetDuration > 600) {
     throw new Error("targetDuration must be between 5 and 600 seconds");
   }
-  if (!input.sourceFolderId?.trim()) {
-    throw new Error("A source Drive folder is required (paste and sync one in step 1)");
+
+  // ── Clip source resolution ──
+  // Either way, sourceFolderIds ends up holding the UNION of Drive folder ids
+  // used for pooling; sourceFolderId (legacy) mirrors the first one.
+  const sourceMode: FactorySourceMode = input.sourceMode === "accounts" ? "accounts" : "folders";
+  let sourceFolderIds: string[] = [];
+  let sourceAccountIds: string[] = [];
+  if (sourceMode === "accounts") {
+    sourceAccountIds = [...new Set((input.sourceAccountIds ?? []).filter((t) => typeof t === "string" && t.trim()))];
+    if (sourceAccountIds.length === 0) {
+      throw new Error("Select at least one source account");
+    }
+    const accounts = await prisma.managedAccount.findMany({
+      where: { id: { in: sourceAccountIds } },
+      select: { id: true, tiktokUsername: true, inputDriveFolderId: true },
+    });
+    if (accounts.length !== sourceAccountIds.length) throw new Error("One or more source accounts were not found");
+    const missing = accounts.filter((a) => !a.inputDriveFolderId);
+    if (missing.length > 0) {
+      throw new Error(
+        `These accounts have no input Drive folder connected: ${missing.map((a) => `@${a.tiktokUsername}`).join(", ")}`
+      );
+    }
+    sourceFolderIds = [...new Set(accounts.map((a) => a.inputDriveFolderId!))];
+  } else {
+    sourceFolderIds = [
+      ...new Set(
+        [...(input.sourceFolderIds ?? []), ...(input.sourceFolderId ? [input.sourceFolderId] : [])]
+          .filter((t) => typeof t === "string" && t.trim())
+          .map((t) => t.trim())
+      ),
+    ];
+    if (sourceFolderIds.length === 0) {
+      throw new Error("At least one source Drive folder is required (paste and sync in step 1)");
+    }
   }
 
   // Content pool lives on the batch — render takes only a total count.
@@ -312,7 +363,11 @@ export async function createBatch(input: CreateBatchInput): Promise<FactoryBatch
       targetDuration,
       campaignId: input.campaignId ?? null,
       styleIds: input.styleIds,
-      sourceFolderId: input.sourceFolderId.trim(),
+      sourceFolderId: sourceFolderIds[0] ?? null,
+      sourceMode,
+      sourceFolderIds,
+      sourceAccountIds,
+      musicAudioRef: input.musicAudioRef?.trim() || null,
       trackIds,
       quotes,
       status: "DRAFT",
@@ -402,7 +457,7 @@ export async function getBatch(batchId: string) {
 // ── Pre-flight preview ───────────────────────────────────────────────────────
 
 export interface PreviewResult {
-  sourceFolderId: string;
+  sourceFolderIds: string[];
   totalVideos: number;
   filesNeeded: number;
   availableUnused: number;
@@ -413,8 +468,14 @@ export interface PreviewResult {
   canRender: boolean;
 }
 
+/** Pool folder ids for a batch — the resolved union, with legacy fallback. */
+function batchPoolFolderIds(batch: FactoryBatch): string[] {
+  if (batch.sourceFolderIds.length > 0) return batch.sourceFolderIds;
+  return batch.sourceFolderId ? [batch.sourceFolderId] : [];
+}
+
 function validateRenderInput(batch: FactoryBatch, input: RenderInput) {
-  if (!batch.sourceFolderId) {
+  if (batchPoolFolderIds(batch).length === 0) {
     throw new Error("Batch has no source Drive folder — paste and sync one in step 1");
   }
   if (!Number.isInteger(input.totalVideos) || input.totalVideos < 1 || input.totalVideos > 2000) {
@@ -438,20 +499,28 @@ export async function previewBatch(batchId: string, input: RenderInput): Promise
   const filesNeeded = input.totalVideos * perItem;
   const warnings: string[] = [];
   let blocking = false;
+  const folderIds = batchPoolFolderIds(batch);
 
-  // Dry-run selection against the batch's source folder: reads the ledger
+  // Dry-run selection against the batch's source folders: reads the ledger
   // without consuming anything.
-  const sel = await selectUnusedFilesByFolder(batch.sourceFolderId!, filesNeeded);
+  const sel = await selectUnusedFilesByFolders(folderIds, filesNeeded);
   const exhausted = sel.exhausted;
   if (exhausted) {
     warnings.push(
-      `The source folder has only ${sel.availableUnused} unused background clips but the batch needs ${filesNeeded} ` +
+      `The source ${folderIds.length > 1 ? "folders have" : "folder has"} only ${sel.availableUnused} unused background clips but the batch needs ${filesNeeded} ` +
       `(${input.totalVideos} videos × ${perItem} clips). ` +
       (allowReuse
         ? `Reuse is allowed — least-recently-used clips will repeat.`
         : `Rendering will refuse until more clips are synced or "Allow reuse when exhausted" is enabled.`)
     );
     if (!allowReuse) blocking = true;
+  }
+  // Per-folder breakdown (multi-source batches only, and only when tight).
+  if (folderIds.length > 1 && (exhausted || sel.availableUnused < filesNeeded * 1.5)) {
+    for (const fid of folderIds) {
+      const stats = await getFolderLedgerStats(fid);
+      warnings.push(`Folder …${fid.slice(-8)}: ${stats.unused} unused of ${stats.total} clips.`);
+    }
   }
 
   // Content-pool capacity checks.
@@ -475,7 +544,7 @@ export async function previewBatch(batchId: string, input: RenderInput): Promise
   }
 
   return {
-    sourceFolderId: batch.sourceFolderId!,
+    sourceFolderIds: folderIds,
     totalVideos: input.totalVideos,
     filesNeeded,
     availableUnused: sel.availableUnused,
@@ -546,7 +615,7 @@ export async function startBatchRender(batchId: string, input: RenderInput): Pro
 
   // Pooled reservation: ONE ledger read against the batch's source folder,
   // partitioned per item — a file can never appear twice in this batch.
-  const pooled = await selectUnusedFilesByFolder(batch.sourceFolderId!, input.totalVideos * perItem);
+  const pooled = await selectUnusedFilesByFolders(batchPoolFolderIds(batch), input.totalVideos * perItem);
   if (pooled.files.length < input.totalVideos * perItem) {
     warnings.push(
       `Source folder: only ${pooled.files.length} clips available for ${input.totalVideos * perItem} slots; later items may reuse fewer clips.`
@@ -855,9 +924,84 @@ export async function upsertTrackFromLrclib(input: UpsertTrackInput): Promise<Tr
   return prisma.track.create({ data: { ...data, defaultStart: trimStart, defaultDuration: duration - trimStart } });
 }
 
+export interface UploadTrackInput {
+  title: string;
+  artist?: string | null;
+  /** Local public path of the uploaded audio ("/uploads/factory-audio/..."). */
+  audioRef: string;
+  /** Parsed .lrc lines when provided; when absent the worker transcribes at render time. */
+  lrcLines?: { t: number; text: string }[] | null;
+  trimStart?: number | null;
+  trimEnd?: number | null;
+  maxReuse?: number | null;
+  createdBy?: string | null;
+}
+
+/**
+ * Creates a factory lyric track from a direct audio upload
+ * (POST /api/factory/tracks/upload). With lrcLines it behaves exactly like the
+ * LRCLIB path; without them the track is stored lyric-less and the worker
+ * transcribes it once at render time (stable-ts) and caches lrcData back.
+ */
+export async function createFactoryTrackFromUpload(input: UploadTrackInput): Promise<Track> {
+  if (Array.isArray(input.lrcLines) && input.lrcLines.length > 0) {
+    return upsertTrackFromLrclib({
+      title: input.title,
+      artist: input.artist ?? null,
+      lrcLines: input.lrcLines,
+      trimStart: input.trimStart ?? 0,
+      trimEnd: input.trimEnd ?? null,
+      maxReuse: input.maxReuse ?? null,
+      audioRef: input.audioRef,
+      createdBy: input.createdBy ?? null,
+    });
+  }
+
+  if (!input.title?.trim()) throw new Error("Track title is required");
+  if (!input.audioRef?.trim()) throw new Error("audioRef is required");
+  const abs = input.audioRef.startsWith("/")
+    ? path.join(process.cwd(), "public", input.audioRef)
+    : input.audioRef;
+  const probed = fs.existsSync(abs) ? await probeDuration(abs) : 0;
+  const trimStart = Math.max(0, Number(input.trimStart) || 0);
+  const trimEnd = input.trimEnd !== null && input.trimEnd !== undefined ? Number(input.trimEnd) : null;
+  if (trimEnd !== null && (!Number.isFinite(trimEnd) || trimEnd <= trimStart)) {
+    throw new Error("trimEnd must be greater than trimStart");
+  }
+  const duration = trimEnd ?? (probed > 0 ? probed : 30.0);
+  const maxReuse =
+    input.maxReuse === null || input.maxReuse === undefined
+      ? null
+      : Math.max(1, Math.floor(Number(input.maxReuse)));
+
+  return prisma.track.create({
+    data: {
+      title: input.title.trim(),
+      artist: input.artist?.trim() || null,
+      fileUrl: input.audioRef.trim(),
+      audioRef: input.audioRef.trim(),
+      duration,
+      defaultStart: trimStart,
+      defaultDuration: Math.max(1.0, duration - trimStart),
+      trimStart,
+      trimEnd,
+      maxReuse,
+      isLyrical: true,
+      // lrcData intentionally null — the worker transcribes at render time.
+      createdBy: input.createdBy ?? null,
+    },
+  });
+}
+
 export async function listFactoryTracks() {
   const tracks = await prisma.track.findMany({
-    where: { lrcData: { not: Prisma.DbNull } },
+    where: {
+      OR: [
+        { lrcData: { not: Prisma.DbNull } },
+        // Factory audio uploads without lyrics yet (transcribed on first render).
+        { fileUrl: { startsWith: "/uploads/factory-audio/" } },
+      ],
+    },
     orderBy: { createdAt: "desc" },
     take: 200,
   });
@@ -1182,14 +1326,37 @@ async function renderFactoryItem(itemId: string): Promise<void> {
       ? round1(Math.min(recipe.durationSeconds, bgSeconds))
       : round1(recipe.durationSeconds);
 
-    // 3) Resolve audio (lyric mode: trimmed track; quote mode: silent — v1 has no bg music).
-    let audioInput: string;
+    // 3) Resolve audio.
+    //    Lyric: trimmed track audio; tracks WITHOUT lrcData (plain uploads) are
+    //    transcribed once at render time (stable-ts, cached back onto the track).
+    //    Quote: batch music bed when musicAudioRef is set, else silent.
+    let audioInput: string | null = null;
+    let music: { path: string; clipHasAudio: boolean } | null = null;
     if (item.batch.mode === "lyric") {
       if (!item.track) throw new Error("Lyric item has no track");
       const audioPath = await resolveTrackAudio(item.track, tempDir);
+      const hasLines = Array.isArray(item.track.lrcData) && (item.track.lrcData as any[]).length > 0;
+      if (!hasLines) {
+        console.log(`[Factory Worker] Track "${item.track.title}" has no lyrics — transcribing at render time...`);
+        const lines = await transcribeAudioToLrcLines(audioPath, tempDir);
+        const duration = await probeDuration(audioPath);
+        item.track = await prisma.track.update({
+          where: { id: item.track.id },
+          data: {
+            lrcData: lines as any,
+            duration,
+            defaultDuration: Math.max(1.0, (item.track.trimEnd ?? duration) - (item.track.trimStart ?? 0)),
+          },
+        });
+        console.log(`[Factory Worker] Transcribed "${item.track.title}" → ${lines.length} lines (cached on track)`);
+      }
       const trimStart = item.track.trimStart ?? 0;
       const ssOpt = trimStart > 0 ? `-ss ${trimStart.toFixed(3)} ` : "";
       audioInput = `${ssOpt}-t ${durationSeconds.toFixed(3)} -i "${audioPath}"`;
+    } else if (item.batch.musicAudioRef) {
+      const musicPath = await resolveAudioRef(item.batch.musicAudioRef, tempDir, `music_${itemId}`);
+      const clipHasAudio = materialized.length > 0 ? await probeHasAudio(materialized[0].clipPath) : false;
+      music = { path: musicPath, clipHasAudio };
     } else {
       audioInput = `-f lavfi -t ${durationSeconds.toFixed(3)} -i anullsrc=channel_layout=stereo:sample_rate=44100`;
     }
@@ -1213,6 +1380,7 @@ async function renderFactoryItem(itemId: string): Promise<void> {
       mixingEnabled: recipe.mixingEnabled,
       overlayPath,
       audioInput,
+      music,
       durationSeconds,
       localOutFile,
     });
@@ -1257,21 +1425,108 @@ async function probeDuration(filePath: string): Promise<number> {
   }
 }
 
+/** Resolves an audio ref ("local public path, absolute path, or R2 key") to an absolute local file. */
+async function resolveAudioRef(ref: string, tempDir: string, nameHint: string): Promise<string> {
+  const clean = (ref || "").trim();
+  if (!clean) throw new Error("Empty audio ref");
+  if (clean.startsWith("/")) {
+    const abs = path.join(process.cwd(), "public", clean);
+    if (fs.existsSync(abs)) return abs;
+    // Absolute filesystem path stored directly.
+    if (fs.existsSync(clean)) return clean;
+  }
+  // Treat as R2 key.
+  const localPath = path.join(tempDir, `${nameHint}.bin`);
+  await downloadFromR2(clean, localPath);
+  if (!fs.existsSync(localPath)) throw new Error(`Audio not found (ref: ${clean})`);
+  return localPath;
+}
+
 /** Resolves Track.audioRef ("local path or R2 key") to an absolute local file. */
 async function resolveTrackAudio(track: Track, tempDir: string): Promise<string> {
   const ref = (track.audioRef || track.fileUrl || "").trim();
   if (!ref) throw new Error(`Track "${track.title}" has no audioRef`);
-  if (ref.startsWith("/")) {
-    const abs = path.join(process.cwd(), "public", ref);
-    if (fs.existsSync(abs)) return abs;
-    // Absolute filesystem path stored directly.
-    if (fs.existsSync(ref)) return ref;
+  return resolveAudioRef(ref, tempDir, `audio_${track.id}`);
+}
+
+/** True when the file has at least one audio stream. */
+async function probeHasAudio(filePath: string): Promise<boolean> {
+  try {
+    const { stdout } = await execAsync(
+      `ffprobe -v error -select_streams a:0 -show_entries stream=codec_type -of csv=p=0 "${filePath}"`,
+      { timeout: 30000 }
+    );
+    return stdout.trim().length > 0;
+  } catch {
+    return false;
   }
-  // Treat as R2 key.
-  const localPath = path.join(tempDir, `audio_${track.id}.bin`);
-  await downloadFromR2(ref, localPath);
-  if (!fs.existsSync(localPath)) throw new Error(`Audio not found for track "${track.title}" (ref: ${ref})`);
-  return localPath;
+}
+
+/**
+ * Transcribes an audio file to synced lyric LINES using the existing stable-ts
+ * fallback from the genres lyrical flow: the same invocation of
+ * scripts/lyrical_composer.py (Whisper, model "tiny", cpu, --save-json word
+ * list) used by /api/managed/genres/tracks/lyrical. Words are then grouped
+ * into lines (gap > 1.2s or ≥10 words — ported from the genres lyric wizard's
+ * wordsToLines). Returns lrcData-shaped [{ t, text }] absolute to audio start.
+ */
+async function transcribeAudioToLrcLines(audioPath: string, tempDir: string): Promise<{ t: number; text: string }[]> {
+  const jsonPath = path.join(tempDir, `transcription_${Date.now()}.json`);
+  const previewPath = path.join(tempDir, `transcription_preview_${Date.now()}.png`);
+  const cmd = [
+    `./venv/bin/python3 "scripts/lyrical_composer.py"`,
+    `-i "${audioPath}"`,
+    `-o "/dev/null"`,
+    `--save-json "${jsonPath}"`,
+    `--preview-frame "${previewPath}"`,
+    `--model "tiny"`,
+    `--device "cpu"`,
+  ].join(" ");
+  try {
+    await execAsync(cmd, {
+      timeout: 300000,
+      maxBuffer: 50 * 1024 * 1024,
+      env: { ...process.env, HF_HOME: process.env.HF_HOME || "/home/nextjs/.cache/huggingface" },
+    });
+  } catch (err: any) {
+    throw new Error(`stable-ts transcription failed: ${String(err?.message ?? err).slice(0, 300)}`);
+  } finally {
+    try { fs.unlinkSync(previewPath); } catch {}
+  }
+  if (!fs.existsSync(jsonPath)) {
+    throw new Error("stable-ts transcription produced no JSON output");
+  }
+  let words: { word: string; start: number; end: number }[];
+  try {
+    words = JSON.parse(fs.readFileSync(jsonPath, "utf-8"));
+  } catch {
+    throw new Error("stable-ts transcription returned invalid JSON");
+  } finally {
+    try { fs.unlinkSync(jsonPath); } catch {}
+  }
+  if (!Array.isArray(words) || words.length === 0) {
+    throw new Error("stable-ts transcription found no speech in the audio");
+  }
+
+  // Group words into lines (ported from genres ClientPage wordsToLines).
+  const GAP_THRESHOLD = 1.2;
+  const MAX_WORDS_PER_LINE = 10;
+  const lines: { t: number; text: string }[] = [];
+  let current: typeof words = [];
+  for (const w of words) {
+    if (current.length === 0) {
+      current.push(w);
+    } else if (w.start - current[current.length - 1].end > GAP_THRESHOLD || current.length >= MAX_WORDS_PER_LINE) {
+      lines.push({ t: round1(current[0].start), text: current.map((cw) => cw.word).join(" ") });
+      current = [w];
+    } else {
+      current.push(w);
+    }
+  }
+  if (current.length > 0) {
+    lines.push({ t: round1(current[0].start), text: current.map((cw) => cw.word).join(" ") });
+  }
+  return lines;
 }
 
 /** lrcData lines [{t, text}] → overlay lines [{text, start, end}] shifted to 0 within the trim window. */
@@ -1410,11 +1665,14 @@ function buildComposeCommand(opts: {
   materialized: { clipPath: string; start: number; duration: number }[];
   mixingEnabled: boolean;
   overlayPath: string;
-  audioInput: string;
+  /** lyric track input / anullsrc — null when a music bed takes over (quote mode) */
+  audioInput: string | null;
+  /** quote mode background music: looped bed, amix'd with clip audio when present */
+  music?: { path: string; clipHasAudio: boolean } | null;
   durationSeconds: number;
   localOutFile: string;
 }): string {
-  const { materialized, mixingEnabled, overlayPath, audioInput, durationSeconds, localOutFile } = opts;
+  const { materialized, mixingEnabled, overlayPath, audioInput, music, durationSeconds, localOutFile } = opts;
   const width = 720;
   const height = 1280;
   const inputs: string[] = [];
@@ -1441,7 +1699,24 @@ function buildComposeCommand(opts: {
 
   inputs.push(`-i "${overlayPath}"`);
   const audioIdx = overlayIdx + 1;
-  inputs.push(audioInput);
+  let mapAudio: string;
+  if (music) {
+    // Looped music bed (capped by the output -t). When the source clip has an
+    // audio stream, keep it underneath at lowered volume: amix weights 1 0.35.
+    inputs.push(`-stream_loop -1 -i "${music.path}"`);
+    if (music.clipHasAudio) {
+      filter +=
+        `[${audioIdx}:a]aresample=44100,aformat=channel_layouts=stereo[mus];` +
+        `[0:a]aresample=44100,aformat=channel_layouts=stereo[clipa];` +
+        `[mus][clipa]amix=inputs=2:duration=longest:weights='1 0.35':normalize=0[aout];`;
+      mapAudio = `-map "[aout]"`;
+    } else {
+      mapAudio = `-map ${audioIdx}:a`;
+    }
+  } else {
+    inputs.push(audioInput!);
+    mapAudio = `-map ${audioIdx}:a`;
+  }
   filter += `[bg][${overlayIdx}:v]overlay=0:0[v]`;
 
   return [
@@ -1449,7 +1724,7 @@ function buildComposeCommand(opts: {
     ...inputs,
     `-filter_complex "${filter}"`,
     `-map "[v]"`,
-    `-map ${audioIdx}:a`,
+    mapAudio,
     `-c:v libx264`,
     `-preset veryfast`,
     `-crf 26`,

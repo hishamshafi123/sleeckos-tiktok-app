@@ -1510,9 +1510,17 @@ model FactoryBatch {
   targetDuration    Float    @default(30)
   campaignId        String?
   styleIds          String[]
-  // Source of background clips: a pasted Drive folder shared by the whole batch
-  // (per-account input folders are only a wizard prefill hint, not the source).
+  // Source of background clips. Legacy single-folder column kept for
+  // back-compat; the arrays below are authoritative.
   sourceFolderId    String?
+  // "folders" = one or more pasted Drive folders; "accounts" = the input
+  // folders of the listed accounts. Either way, sourceFolderIds holds the
+  // UNION of folder ids used for pooling (resolved at createBatch time).
+  sourceMode        String   @default("folders") // folders | accounts
+  sourceFolderIds   String[] @default([])
+  sourceAccountIds  String[] @default([])
+  // Quote mode: optional background music bed (local public path or R2 key).
+  musicAudioRef     String?
   // Content pool — lyric mode: Track ids (round-robin, Track.maxReuse respected);
   // quote mode: quote texts (round-robin).
   trackIds          String[] @default([])

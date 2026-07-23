@@ -29,7 +29,12 @@ export async function GET() {
  * POST /api/factory/batches — create a DRAFT batch.
  * Body: { name, mode: "lyric"|"quote", mixingEnabled, variationStrength (1-5),
  *         targetDuration, campaignId?, styleIds: string[],
- *         sourceFolderId: string, trackIds?: string[], quotes?: string[] }
+ *         sourceMode: "folders"|"accounts",
+ *         sourceFolderIds?: string[], sourceFolderId?: string (legacy),
+ *         sourceAccountIds?: string[], musicAudioRef?: string,
+ *         trackIds?: string[], quotes?: string[] }
+ * folders mode needs ≥1 folder; accounts mode needs ≥1 account (each account's
+ * inputDriveFolderId is resolved into the pooled sourceFolderIds union).
  * The content pool (styles/tracks/quotes) lives on the batch — rendering later
  * takes only a total video count.
  */
@@ -52,7 +57,11 @@ export async function POST(req: Request) {
       targetDuration: Number(body.targetDuration ?? 30),
       campaignId: body.campaignId ?? null,
       styleIds: Array.isArray(body.styleIds) ? body.styleIds : [],
-      sourceFolderId: body.sourceFolderId ?? "",
+      sourceMode: body.sourceMode === "accounts" ? "accounts" : "folders",
+      sourceFolderId: body.sourceFolderId ?? null,
+      sourceFolderIds: Array.isArray(body.sourceFolderIds) ? body.sourceFolderIds : [],
+      sourceAccountIds: Array.isArray(body.sourceAccountIds) ? body.sourceAccountIds : [],
+      musicAudioRef: body.musicAudioRef ?? null,
       trackIds: Array.isArray(body.trackIds) ? body.trackIds : [],
       quotes: Array.isArray(body.quotes) ? body.quotes : [],
       createdBy: session.userId,

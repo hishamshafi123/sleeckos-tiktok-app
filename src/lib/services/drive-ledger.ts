@@ -326,6 +326,41 @@ export async function selectUnusedFilesByFolder(folderId: string, count: number)
 }
 
 /**
+ * Multi-folder variant: UNION selection across several source folders
+ * (folders mode: multiple pasted folders; accounts mode: the resolved union
+ * of account input folders). Same semantics as selectUnusedFilesByFolder —
+ * timesUsed = 0 first, least-used tiers ascending, shuffled within tier,
+ * never the same ledger row twice. `availableUnused` sums across folders.
+ */
+export async function selectUnusedFilesByFolders(folderIds: string[], count: number): Promise<SelectResult> {
+  const uniqueFolderIds = [...new Set(folderIds.filter(Boolean))];
+  if (count <= 0 || uniqueFolderIds.length === 0) {
+    return { files: [], exhausted: uniqueFolderIds.length === 0, availableUnused: 0 };
+  }
+  const rows = await prisma.driveFile.findMany({
+    where: { folderId: { in: uniqueFolderIds }, status: { not: "missing" } },
+    orderBy: [{ timesUsed: "asc" }, { name: "asc" }],
+  });
+
+  // Group into usage tiers (ascending), shuffle within each tier.
+  const tiers = new Map<number, DriveFile[]>();
+  for (const row of rows) {
+    const tier = tiers.get(row.timesUsed) ?? [];
+    tier.push(row);
+    tiers.set(row.timesUsed, tier);
+  }
+
+  const files: DriveFile[] = [];
+  for (const tier of [...tiers.keys()].sort((a, b) => a - b)) {
+    if (files.length >= count) break;
+    files.push(...shuffled(tiers.get(tier)!).slice(0, count - files.length));
+  }
+
+  const availableUnused = rows.filter((r) => r.timesUsed === 0).length;
+  return { files, exhausted: count > availableUnused, availableUnused };
+}
+
+/**
  * Per-account selection — delegates to the folder-scoped primitive using the
  * account's current input folder. Accounts without an input folder select
  * nothing (and read as exhausted).

@@ -19,15 +19,18 @@ import {
   FolderOpen,
   History,
   Layers,
+  Link2,
   Loader2,
   Music,
   Pause,
   Play,
+  Plus,
   Quote,
   RefreshCw,
   Search,
   Shuffle,
   Trash2,
+  Upload,
   Users,
   X,
 } from "lucide-react";
@@ -53,15 +56,60 @@ interface SavedStyleRow {
   tags?: string[];
 }
 
-interface SourceSyncResult {
-  folderId: string;
-  folderName: string;
+interface SourceFolderEntry {
+  key: string; // local row id
+  input: string; // raw pasted URL / ID
+  status: "idle" | "syncing" | "synced" | "error";
+  folderId: string | null;
+  folderName: string | null;
   total: number;
-  added: number;
-  missing: number;
-  unchanged: number;
   unused: number;
   used: number;
+  added: number;
+  missing: number;
+  error: string | null;
+}
+
+interface AccountSearchResult {
+  driveFolderId: string;
+  driveFolderName: string;
+  color: string | null;
+  defaultPostCount: number;
+  account: { id: string; tiktokUsername: string } | null;
+}
+
+interface SourceAccountEntry {
+  accountId: string;
+  username: string;
+  color: string;
+  ledgerStatus: "loading" | "ready" | "error";
+  inputDriveFolderId: string | null;
+  // Only known right after an inline attach (the ledger endpoint returns no name).
+  inputFolderName: string | null;
+  unused: number;
+  total: number;
+  error: string | null;
+  // Inline attach control (accounts without an input folder)
+  attachInput: string;
+  attaching: boolean;
+  attachError: string | null;
+}
+
+const SOURCE_COLOR_MAP: Record<string, string> = {
+  red: "#ef4444",
+  orange: "#f97316",
+  yellow: "#f59e0b",
+  green: "#10b981",
+  blue: "#3b82f6",
+  purple: "#8b5cf6",
+  pink: "#ec4899",
+  zinc: "#71717a",
+  gray: "#71717a",
+};
+
+function resolveSourceColor(colorKey: string | null): string {
+  const key = (colorKey || "zinc").toLowerCase();
+  return SOURCE_COLOR_MAP[key] || (key.startsWith("#") ? key : null) || SOURCE_COLOR_MAP.zinc;
 }
 
 interface PreviewResult {
@@ -161,16 +209,22 @@ export default function ClientPage({ session }: { session?: { userId: string; ro
   const [variationStrength, setVariationStrength] = useState(3);
   const [targetDuration, setTargetDuration] = useState(30);
   const [allowReuse, setAllowReuse] = useState(false);
-  // Source Drive folder (pasted per batch — THE render source)
-  const [sourceInput, setSourceInput] = useState("");
-  const [sourceSyncing, setSourceSyncing] = useState(false);
-  const [source, setSource] = useState<SourceSyncResult | null>(null);
-  const [sourceError, setSourceError] = useState<string | null>(null);
+  // Clip source: exactly one mode — pasted Drive folders OR account input folders.
+  const [sourceMode, setSourceMode] = useState<"folders" | "accounts">("folders");
+  const [folderInput, setFolderInput] = useState("");
+  const [sourceFolders, setSourceFolders] = useState<SourceFolderEntry[]>([]);
+  const [accountQuery, setAccountQuery] = useState("");
+  const [accountResults, setAccountResults] = useState<AccountSearchResult[]>([]);
+  const [accountSearching, setAccountSearching] = useState(false);
+  const [sourceAccounts, setSourceAccounts] = useState<SourceAccountEntry[]>([]);
   const [mode, setMode] = useState<FactoryMode>("lyric");
   const [factoryTracks, setFactoryTracks] = useState<FactoryTrackRow[]>([]);
   const [tracksLoading, setTracksLoading] = useState(false);
   const [selectedTrackIds, setSelectedTrackIds] = useState<string[]>([]);
   const [quotesText, setQuotesText] = useState("");
+  // Quote mode: optional background music uploaded for the whole batch.
+  const [musicFile, setMusicFile] = useState<{ name: string; audioRef: string } | null>(null);
+  const [musicUploading, setMusicUploading] = useState(false);
   const [styles, setStyles] = useState<SavedStyleRow[]>([]);
   const [stylesLoading, setStylesLoading] = useState(false);
   const [selectedStyleIds, setSelectedStyleIds] = useState<string[]>([]);
@@ -188,6 +242,27 @@ export default function ClientPage({ session }: { session?: { userId: string; ro
     () => quotesText.split("\n").map((q) => q.trim()).filter(Boolean),
     [quotesText]
   );
+
+  // ── Derived source state ──
+
+  const syncedFolders = useMemo(
+    () => sourceFolders.filter((f) => f.status === "synced" && !!f.folderId),
+    [sourceFolders]
+  );
+  // Accounts with a confirmed input folder — the only ones sent in the payload.
+  const validAccounts = useMemo(
+    () => sourceAccounts.filter((a) => a.ledgerStatus === "ready" && !!a.inputDriveFolderId),
+    [sourceAccounts]
+  );
+  const sourceReady = sourceMode === "folders" ? syncedFolders.length > 0 : validAccounts.length > 0;
+  const poolSummary = useMemo(() => {
+    const rows: { unused: number; total: number }[] = sourceMode === "folders" ? syncedFolders : validAccounts;
+    return {
+      count: rows.length,
+      unused: rows.reduce((s, r) => s + r.unused, 0),
+      total: rows.reduce((s, r) => s + r.total, 0),
+    };
+  }, [sourceMode, syncedFolders, validAccounts]);
 
   const markDirty = () => setBatchDirty(true);
 
@@ -266,35 +341,242 @@ export default function ClientPage({ session }: { session?: { userId: string; ro
     }
   }, [mode, filteredStyles]);
 
-  // ── Source folder sync ──
+  // ── Source: pasted Drive folders ──
 
-  const handleSourceSync = async () => {
-    if (!sourceInput.trim() || sourceSyncing) return;
-    setSourceSyncing(true);
-    setSourceError(null);
+  const folderKeyRef = useRef(0);
+
+  const addSourceFolder = () => {
+    const input = folderInput.trim();
+    if (!input) return;
+    folderKeyRef.current += 1;
+    setSourceFolders((prev) => [
+      ...prev,
+      {
+        key: `folder-${folderKeyRef.current}`,
+        input,
+        status: "idle",
+        folderId: null,
+        folderName: null,
+        total: 0,
+        unused: 0,
+        used: 0,
+        added: 0,
+        missing: 0,
+        error: null,
+      },
+    ]);
+    setFolderInput("");
+  };
+
+  const syncSourceFolder = async (key: string) => {
+    const entry = sourceFolders.find((f) => f.key === key);
+    if (!entry || entry.status === "syncing") return;
+    setSourceFolders((prev) => prev.map((f) => (f.key === key ? { ...f, status: "syncing", error: null } : f)));
     try {
       const res = await fetch("/api/factory/source/sync", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ folderId: sourceInput.trim() }),
+        body: JSON.stringify({ folderIds: [entry.input] }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Failed to sync folder");
-      setSource(data as SourceSyncResult);
+      // Batch shape { folders: [...] } with per-folder errors; tolerate the legacy single result.
+      const row = Array.isArray(data.folders) ? data.folders[0] : data;
+      if (!res.ok && !row) throw new Error(data.error || "Failed to sync folder");
+      if (!res.ok || row?.error) throw new Error(row?.error || data.error || "Failed to sync folder");
+      setSourceFolders((prev) =>
+        prev.map((f) =>
+          f.key === key
+            ? {
+                ...f,
+                status: "synced",
+                folderId: row.folderId ?? null,
+                folderName: row.folderName ?? null,
+                total: row.total ?? 0,
+                unused: row.unused ?? 0,
+                used: row.used ?? 0,
+                added: row.added ?? 0,
+                missing: row.missing ?? 0,
+                error: null,
+              }
+            : f
+        )
+      );
       markDirty();
-      toast.success(`Synced "${data.folderName}" — ${data.unused} unused of ${data.total} clips`);
+      toast.success(`Synced "${row.folderName}" — ${row.unused} unused of ${row.total} clips`);
     } catch (err: any) {
-      setSource(null);
-      setSourceError(err.message || "Failed to sync folder");
-    } finally {
-      setSourceSyncing(false);
+      setSourceFolders((prev) =>
+        prev.map((f) => (f.key === key ? { ...f, status: "error", error: err.message || "Failed to sync folder" } : f))
+      );
     }
   };
 
-  const clearSource = () => {
-    setSource(null);
-    setSourceError(null);
+  const removeSourceFolder = (key: string) => {
+    setSourceFolders((prev) => {
+      const next = prev.filter((f) => f.key !== key);
+      if (next.length !== prev.length) markDirty();
+      return next;
+    });
+  };
+
+  // ── Source: account input folders ──
+
+  // Debounced account search (empty query matches all — runs when the mode opens).
+  useEffect(() => {
+    if (sourceMode !== "accounts" || step !== 1) return;
+    const t = setTimeout(async () => {
+      setAccountSearching(true);
+      try {
+        const res = await fetch(`/api/accounts/search?q=${encodeURIComponent(accountQuery.trim())}&mode=account`);
+        if (res.ok) {
+          const data = await res.json();
+          setAccountResults(Array.isArray(data.results) ? data.results : []);
+        }
+      } catch {
+        // transient — next keystroke retries
+      } finally {
+        setAccountSearching(false);
+      }
+    }, 250);
+    return () => clearTimeout(t);
+  }, [accountQuery, sourceMode, step]);
+
+  const toggleSourceAccount = (row: AccountSearchResult) => {
+    const acc = row.account;
+    if (!acc) return;
+    if (sourceAccounts.some((a) => a.accountId === acc.id)) {
+      setSourceAccounts((prev) => prev.filter((a) => a.accountId !== acc.id));
+      markDirty();
+      return;
+    }
+    setSourceAccounts((prev) => [
+      ...prev,
+      {
+        accountId: acc.id,
+        username: acc.tiktokUsername,
+        color: row.color || "zinc",
+        ledgerStatus: "loading",
+        inputDriveFolderId: null,
+        inputFolderName: null,
+        unused: 0,
+        total: 0,
+        error: null,
+        attachInput: "",
+        attaching: false,
+        attachError: null,
+      },
+    ]);
     markDirty();
+    // Pool info for the account's input folder (unused-first ledger).
+    (async () => {
+      try {
+        const res = await fetch(`/api/managed/accounts/${acc.id}/drive/ledger`);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || "Failed to load pool info");
+        setSourceAccounts((prev) =>
+          prev.map((a) =>
+            a.accountId === acc.id
+              ? {
+                  ...a,
+                  ledgerStatus: "ready",
+                  inputDriveFolderId: data.inputDriveFolderId ?? null,
+                  unused: data.stats?.unused ?? 0,
+                  total: data.stats?.total ?? 0,
+                }
+              : a
+          )
+        );
+      } catch (err: any) {
+        setSourceAccounts((prev) =>
+          prev.map((a) =>
+            a.accountId === acc.id ? { ...a, ledgerStatus: "error", error: err.message || "Failed to load pool info" } : a
+          )
+        );
+      }
+    })();
+  };
+
+  const removeSourceAccount = (accountId: string) => {
+    setSourceAccounts((prev) => {
+      const next = prev.filter((a) => a.accountId !== accountId);
+      if (next.length !== prev.length) markDirty();
+      return next;
+    });
+  };
+
+  /** Best-effort client-side parse — the server validates the final ID anyway. */
+  const parseFolderInput = (raw: string): string => {
+    const v = raw.trim();
+    const m = v.match(/\/folders\/([a-zA-Z0-9_-]+)/);
+    return m ? m[1] : v;
+  };
+
+  const setAccountAttach = (accountId: string, patch: Partial<SourceAccountEntry>) =>
+    setSourceAccounts((prev) => prev.map((a) => (a.accountId === accountId ? { ...a, ...patch } : a)));
+
+  // Inline attach: connect the pasted folder to the account, sync it, then read
+  // back the ledger counts — all without leaving the wizard.
+  const attachAccountInputFolder = async (accountId: string) => {
+    const entry = sourceAccounts.find((a) => a.accountId === accountId);
+    if (!entry || entry.attaching) return;
+    const raw = entry.attachInput.trim();
+    if (!raw) return;
+    setAccountAttach(accountId, { attaching: true, attachError: null });
+    try {
+      const connectRes = await fetch(`/api/managed/accounts/${accountId}/drive/connect`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ inputFolderId: parseFolderInput(raw) }),
+      });
+      const connectData = await connectRes.json();
+      if (!connectRes.ok) throw new Error(connectData.error || "Failed to connect folder");
+
+      const syncRes = await fetch(`/api/managed/accounts/${accountId}/drive/sync`, { method: "POST" });
+      const syncData = await syncRes.json();
+      if (!syncRes.ok) throw new Error(syncData.error || "Folder connected, but the sync failed");
+
+      const ledgerRes = await fetch(`/api/managed/accounts/${accountId}/drive/ledger`);
+      const ledgerData = await ledgerRes.json();
+      if (!ledgerRes.ok) throw new Error(ledgerData.error || "Failed to load pool info");
+
+      setAccountAttach(accountId, {
+        attaching: false,
+        attachInput: "",
+        attachError: null,
+        ledgerStatus: "ready",
+        inputDriveFolderId: ledgerData.inputDriveFolderId ?? connectData.inputFolderId ?? null,
+        inputFolderName: connectData.inputFolderName ?? null,
+        unused: ledgerData.stats?.unused ?? 0,
+        total: ledgerData.stats?.total ?? 0,
+        error: null,
+      });
+      markDirty();
+      toast.success(
+        `Input folder attached to @${entry.username} — ${ledgerData.stats?.unused ?? 0} unused of ${ledgerData.stats?.total ?? 0} clips`
+      );
+    } catch (err: any) {
+      setAccountAttach(accountId, { attaching: false, attachError: err.message || "Failed to attach folder" });
+    }
+  };
+
+  // ── Quote mode: background music upload ──
+
+  const handleMusicFile = async (file: File) => {
+    if (musicUploading) return;
+    setMusicUploading(true);
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      const res = await fetch("/api/factory/music-upload", { method: "POST", body: fd });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Music upload failed");
+      setMusicFile({ name: file.name, audioRef: data.audioRef });
+      markDirty();
+      toast.success(`Background music uploaded — ${file.name}`);
+    } catch (err: any) {
+      toast.error(err.message || "Music upload failed");
+    } finally {
+      setMusicUploading(false);
+    }
   };
 
   // ── Batch lifecycle ──
@@ -302,21 +584,25 @@ export default function ClientPage({ session }: { session?: { userId: string; ro
   /** Creates the DRAFT batch on first use; re-creates it when batch-level fields changed. */
   const ensureBatch = async (): Promise<string> => {
     if (batchId && !batchDirty) return batchId;
+    const body: Record<string, any> = {
+      name: name.trim(),
+      mode,
+      mixingEnabled,
+      variationStrength,
+      targetDuration,
+      campaignId: campaignId || null,
+      styleIds: selectedStyleIds,
+      sourceMode,
+      sourceFolderIds: sourceMode === "folders" ? syncedFolders.map((f) => f.folderId as string) : [],
+      sourceAccountIds: sourceMode === "accounts" ? validAccounts.map((a) => a.accountId) : [],
+      trackIds: mode === "lyric" ? selectedTrackIds : [],
+      quotes: mode === "quote" ? parsedQuotes : [],
+    };
+    if (mode === "quote" && musicFile) body.musicAudioRef = musicFile.audioRef;
     const res = await fetch("/api/factory/batches", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        name: name.trim(),
-        mode,
-        mixingEnabled,
-        variationStrength,
-        targetDuration,
-        campaignId: campaignId || null,
-        styleIds: selectedStyleIds,
-        sourceFolderId: source?.folderId ?? "",
-        trackIds: mode === "lyric" ? selectedTrackIds : [],
-        quotes: mode === "quote" ? parsedQuotes : [],
-      }),
+      body: JSON.stringify(body),
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || "Failed to create batch");
@@ -345,17 +631,17 @@ export default function ClientPage({ session }: { session?: { userId: string; ro
       setPreviewLoading(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [batchId, batchDirty, name, mode, mixingEnabled, variationStrength, targetDuration, campaignId, selectedStyleIds, selectedTrackIds, parsedQuotes, source, totalVideos, allowReuse]);
+  }, [batchId, batchDirty, name, mode, mixingEnabled, variationStrength, targetDuration, campaignId, selectedStyleIds, selectedTrackIds, parsedQuotes, sourceMode, syncedFolders, validAccounts, musicFile, totalVideos, allowReuse]);
 
   // Auto pre-flight on step 4 (debounced against input changes).
   useEffect(() => {
-    if (step !== 4 || !source || totalVideos < 1) return;
+    if (step !== 4 || !sourceReady || totalVideos < 1) return;
     if (mode === "lyric" && selectedTrackIds.length === 0) return;
     if (mode === "quote" && parsedQuotes.length === 0) return;
     if (selectedStyleIds.length === 0) return;
     const t = setTimeout(() => runPreview(), 400);
     return () => clearTimeout(t);
-  }, [step, source, totalVideos, selectedTrackIds, parsedQuotes, allowReuse, selectedStyleIds, mode, runPreview]);
+  }, [step, sourceReady, totalVideos, selectedTrackIds, parsedQuotes, allowReuse, selectedStyleIds, mode, runPreview]);
 
   const handleRender = async () => {
     if (!preview?.canRender || rendering) return;
@@ -398,11 +684,15 @@ export default function ClientPage({ session }: { session?: { userId: string; ro
     setVariationStrength(3);
     setTargetDuration(30);
     setAllowReuse(false);
-    setSourceInput("");
-    setSource(null);
-    setSourceError(null);
+    setSourceMode("folders");
+    setFolderInput("");
+    setSourceFolders([]);
+    setAccountQuery("");
+    setAccountResults([]);
+    setSourceAccounts([]);
     setSelectedTrackIds([]);
     setQuotesText("");
+    setMusicFile(null);
     setSelectedStyleIds([]);
     setTotalVideos(10);
     resetBatchLinkage();
@@ -412,7 +702,7 @@ export default function ClientPage({ session }: { session?: { userId: string; ro
 
   // ── Step validation ──
 
-  const step1Valid = name.trim().length > 0 && !!source && targetDuration >= 5 && targetDuration <= 600;
+  const step1Valid = name.trim().length > 0 && sourceReady && targetDuration >= 5 && targetDuration <= 600;
   const step2Valid = mode === "lyric" ? selectedTrackIds.length > 0 : parsedQuotes.length > 0;
   const step3Valid = selectedStyleIds.length > 0;
   const step4Ready = !!preview?.canRender && !previewLoading;
@@ -526,66 +816,321 @@ export default function ClientPage({ session }: { session?: { userId: string; ro
             {/* ── Step 1: Source ── */}
             {step === 1 && (
               <div className="space-y-5">
-                {/* Source Drive folder */}
+                {/* Clip source — exactly one of: pasted Drive folders | account input folders */}
                 <div>
                   <label className="block text-[10px] font-bold uppercase tracking-wider text-[#71717a] mb-1.5">
-                    Source Drive folder * — background clips for the whole batch
+                    Clip source * — background clips for the whole batch
                   </label>
-                  <div className="flex items-center gap-2">
-                    <div className="relative flex-1">
-                      <FolderOpen className="w-3.5 h-3.5 text-[#71717a] absolute left-2.5 top-1/2 -translate-y-1/2" />
-                      <input
-                        type="text"
-                        value={sourceInput}
-                        onChange={(e) => {
-                          setSourceInput(e.target.value);
-                          if (source) clearSource();
-                        }}
-                        placeholder="Paste a Drive folder URL or ID — e.g. an account's input clips folder…"
-                        className="w-full bg-[#09090b] border border-[#27272a] rounded-lg pl-8 pr-3 py-2 text-white placeholder-[#71717a] text-[12px] focus:outline-none focus:border-[#E11D48]"
-                      />
-                    </div>
-                    <button
-                      type="button"
-                      onClick={handleSourceSync}
-                      disabled={sourceSyncing || !sourceInput.trim()}
-                      className="px-3 py-2 bg-[#27272a] hover:bg-[#3f3f46] disabled:opacity-40 disabled:cursor-not-allowed text-white text-[11px] font-semibold rounded-lg transition-colors cursor-pointer flex items-center gap-1.5 flex-shrink-0"
-                    >
-                      {sourceSyncing ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
-                      Sync & check
-                    </button>
-                  </div>
-                  {sourceError && (
-                    <p className="text-[10px] text-red-400 mt-1.5 flex items-center gap-1.5">
-                      <AlertCircle className="w-3 h-3 flex-shrink-0" />
-                      {sourceError}
-                    </p>
-                  )}
-                  {source && (
-                    <div className="mt-2 bg-[#09090b] border border-green-500/20 rounded-lg px-3 py-2 flex items-center gap-2 flex-wrap">
-                      <CheckCircle2 className="w-3.5 h-3.5 text-green-400 flex-shrink-0" />
-                      <span className="text-[11px] font-semibold text-white truncate">{source.folderName}</span>
-                      <span className="text-[10px] font-mono text-[#a1a1aa]">
-                        {source.total} clips · <span className="text-green-400">{source.unused} unused</span>
-                        {source.used > 0 ? ` · ${source.used} used` : ""}
-                        {source.added > 0 ? ` · +${source.added} new` : ""}
-                      </span>
+                  <div className="flex items-center bg-[#09090b] border border-[#27272a] rounded-lg overflow-hidden w-fit mb-3">
+                    {(
+                      [
+                        { k: "folders", label: "Paste Drive folders", icon: FolderOpen },
+                        { k: "accounts", label: "Account input folders", icon: Users },
+                      ] as const
+                    ).map((o) => (
                       <button
+                        key={o.k}
                         type="button"
-                        onClick={handleSourceSync}
-                        className="ml-auto text-[10px] font-semibold text-[#71717a] hover:text-white transition-colors cursor-pointer flex items-center gap-1"
-                        title="Re-sync"
+                        onClick={() => {
+                          if (o.k !== sourceMode) {
+                            setSourceMode(o.k);
+                            markDirty();
+                          }
+                        }}
+                        className={`px-3 py-1.5 text-[11px] font-semibold transition-colors cursor-pointer flex items-center gap-1.5 ${
+                          sourceMode === o.k ? "bg-[#E11D48] text-white" : "text-[#a1a1aa] hover:text-white"
+                        }`}
                       >
-                        <RefreshCw className="w-2.5 h-2.5" />
-                        Re-sync
+                        <o.icon className="w-3 h-3" />
+                        {o.label}
                       </button>
+                    ))}
+                  </div>
+
+                  {sourceMode === "folders" ? (
+                    <div className="space-y-2">
+                      {/* Paste box + Add */}
+                      <div className="flex items-center gap-2">
+                        <div className="relative flex-1">
+                          <FolderOpen className="w-3.5 h-3.5 text-[#71717a] absolute left-2.5 top-1/2 -translate-y-1/2" />
+                          <input
+                            type="text"
+                            value={folderInput}
+                            onChange={(e) => setFolderInput(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") {
+                                e.preventDefault();
+                                addSourceFolder();
+                              }
+                            }}
+                            placeholder="Paste a Drive folder URL or ID…"
+                            className="w-full bg-[#09090b] border border-[#27272a] rounded-lg pl-8 pr-3 py-2 text-white placeholder-[#71717a] text-[12px] focus:outline-none focus:border-[#E11D48]"
+                          />
+                        </div>
+                        <button
+                          type="button"
+                          onClick={addSourceFolder}
+                          disabled={!folderInput.trim()}
+                          className="px-3 py-2 bg-[#27272a] hover:bg-[#3f3f46] disabled:opacity-40 disabled:cursor-not-allowed text-white text-[11px] font-semibold rounded-lg transition-colors cursor-pointer flex items-center gap-1.5 flex-shrink-0"
+                        >
+                          <Plus className="w-3 h-3" />
+                          Add folder
+                        </button>
+                      </div>
+
+                      {sourceFolders.length === 0 ? (
+                        <p className="text-[10px] text-[#71717a] leading-relaxed">
+                          Add one or more Drive folders — the batch reads clips from all synced folders as one pool.
+                          Clip usage is tracked per folder: unused clips are picked first, and nothing repeats until
+                          the pool runs dry.
+                        </p>
+                      ) : (
+                        <div className="space-y-1.5">
+                          {sourceFolders.map((f) => (
+                            <div
+                              key={f.key}
+                              className={`bg-[#09090b] border rounded-lg px-3 py-2 ${
+                                f.status === "error"
+                                  ? "border-red-500/30"
+                                  : f.status === "synced"
+                                    ? "border-green-500/20"
+                                    : "border-[#27272a]"
+                              }`}
+                            >
+                              <div className="flex items-center gap-2 flex-wrap">
+                                {f.status === "synced" ? (
+                                  <CheckCircle2 className="w-3.5 h-3.5 text-green-400 flex-shrink-0" />
+                                ) : f.status === "error" ? (
+                                  <AlertCircle className="w-3.5 h-3.5 text-red-400 flex-shrink-0" />
+                                ) : f.status === "syncing" ? (
+                                  <Loader2 className="w-3.5 h-3.5 animate-spin text-[#a1a1aa] flex-shrink-0" />
+                                ) : (
+                                  <FolderOpen className="w-3.5 h-3.5 text-[#71717a] flex-shrink-0" />
+                                )}
+                                <span className="text-[11px] font-semibold text-white truncate max-w-[280px]" title={f.input}>
+                                  {f.status === "synced" ? f.folderName : f.input}
+                                </span>
+                                {f.status === "synced" && (
+                                  <span className="text-[10px] font-mono text-[#a1a1aa]">
+                                    {f.total} clips · <span className="text-green-400">{f.unused} unused</span>
+                                    {f.used > 0 ? ` · ${f.used} used` : ""}
+                                    {f.added > 0 ? ` · +${f.added} new` : ""}
+                                  </span>
+                                )}
+                                <div className="ml-auto flex items-center gap-1.5 flex-shrink-0">
+                                  {f.status !== "syncing" && (
+                                    <button
+                                      type="button"
+                                      onClick={() => syncSourceFolder(f.key)}
+                                      className={`text-[10px] font-semibold transition-colors cursor-pointer flex items-center gap-1 ${
+                                        f.status === "synced"
+                                          ? "text-[#71717a] hover:text-white"
+                                          : "px-2 py-1 bg-[#27272a] hover:bg-[#3f3f46] text-white rounded-md"
+                                      }`}
+                                      title={f.status === "synced" ? "Re-sync" : "Sync this folder"}
+                                    >
+                                      <RefreshCw className="w-2.5 h-2.5" />
+                                      {f.status === "synced" ? "Re-sync" : f.status === "error" ? "Retry" : "Sync"}
+                                    </button>
+                                  )}
+                                  <button
+                                    type="button"
+                                    onClick={() => removeSourceFolder(f.key)}
+                                    title="Remove folder"
+                                    aria-label="Remove folder"
+                                    className="text-[#71717a] hover:text-white transition-colors cursor-pointer"
+                                  >
+                                    <X className="w-3 h-3" />
+                                  </button>
+                                </div>
+                              </div>
+                              {f.status === "error" && f.error && (
+                                <p className="text-[10px] text-red-400 mt-1 flex items-start gap-1.5">
+                                  <AlertCircle className="w-3 h-3 flex-shrink-0 mt-0.5" />
+                                  {f.error}
+                                </p>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      {sourceFolders.length > 0 && syncedFolders.length === 0 && (
+                        <p className="text-[10px] text-amber-400 flex items-center gap-1.5">
+                          <AlertTriangle className="w-3 h-3 flex-shrink-0" />
+                          Sync at least one folder before continuing.
+                        </p>
+                      )}
                     </div>
-                  )}
-                  {!source && !sourceError && (
-                    <p className="text-[10px] text-[#71717a] mt-1.5 leading-relaxed">
-                      The batch reads clips from this folder only — never from per-account input folders. Clip usage is
-                      tracked per folder: unused clips are picked first, and nothing repeats until the pool runs dry.
-                    </p>
+                  ) : (
+                    <div className="space-y-2">
+                      {/* Account search */}
+                      <div className="relative">
+                        <Search className="w-3.5 h-3.5 text-[#71717a] absolute left-2.5 top-1/2 -translate-y-1/2" />
+                        <input
+                          type="text"
+                          value={accountQuery}
+                          onChange={(e) => setAccountQuery(e.target.value)}
+                          placeholder="Search TikTok accounts…"
+                          className="w-full bg-[#09090b] border border-[#27272a] rounded-lg pl-8 pr-3 py-2 text-white placeholder-[#71717a] text-[12px] focus:outline-none focus:border-[#E11D48]"
+                        />
+                      </div>
+                      <div className="bg-[#09090b] border border-[#27272a] rounded-xl p-2 max-h-[180px] overflow-y-auto custom-scrollbar">
+                        {accountSearching && accountResults.length === 0 ? (
+                          <div className="flex items-center justify-center py-6 text-[#71717a]">
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                          </div>
+                        ) : accountResults.filter((r) => r.account).length === 0 ? (
+                          <p className="text-[10px] text-[#71717a] italic text-center py-6">
+                            {accountQuery.trim() ? `No accounts for “${accountQuery.trim()}”.` : "No accounts found."}
+                          </p>
+                        ) : (
+                          <div className="flex flex-wrap gap-1.5 content-start">
+                            {accountResults.map((r) => {
+                              if (!r.account) return null;
+                              const acc = r.account;
+                              const sel = sourceAccounts.some((a) => a.accountId === acc.id);
+                              const hex = resolveSourceColor(r.color);
+                              return (
+                                <button
+                                  key={acc.id}
+                                  type="button"
+                                  onClick={() => toggleSourceAccount(r)}
+                                  title={`@${acc.tiktokUsername}`}
+                                  className="flex items-center gap-1 px-2 py-1 rounded-md border text-[11px] font-medium text-[#e4e4e7] hover:text-white transition-colors cursor-pointer"
+                                  style={{
+                                    borderColor: sel ? "#E11D48" : `${hex}33`,
+                                    borderLeft: `3px solid ${hex}`,
+                                    backgroundColor: sel ? "rgba(225, 29, 72, 0.12)" : `${hex}14`,
+                                  }}
+                                >
+                                  {sel && <Check className="w-3 h-3 text-[#E11D48] flex-shrink-0" />}
+                                  <span className="truncate max-w-[150px]">@{acc.tiktokUsername}</span>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Selected accounts with input-folder pool info */}
+                      {sourceAccounts.length > 0 && (
+                        <div className="space-y-1.5">
+                          {sourceAccounts.map((a) => {
+                            const hex = resolveSourceColor(a.color);
+                            const noFolder = a.ledgerStatus === "ready" && !a.inputDriveFolderId;
+                            return (
+                              <div
+                                key={a.accountId}
+                                className={`bg-[#09090b] border rounded-lg px-3 py-2 ${
+                                  noFolder ? "border-amber-500/30" : ""
+                                }`}
+                                style={{ borderLeft: `3px solid ${hex}` }}
+                              >
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <span className="text-[11px] font-semibold text-white truncate">@{a.username}</span>
+                                  {a.ledgerStatus === "loading" && (
+                                    <span className="text-[10px] text-[#71717a] flex items-center gap-1.5">
+                                      <Loader2 className="w-3 h-3 animate-spin" />
+                                      Checking input folder…
+                                    </span>
+                                  )}
+                                  {a.ledgerStatus === "error" && (
+                                    <span className="text-[10px] text-red-400 flex items-center gap-1.5">
+                                      <AlertCircle className="w-3 h-3 flex-shrink-0" />
+                                      {a.error}
+                                    </span>
+                                  )}
+                                  {noFolder && (
+                                    <span className="text-[10px] text-amber-400 flex items-center gap-1.5">
+                                      <AlertTriangle className="w-3 h-3 flex-shrink-0" />
+                                      No input folder — excluded from this batch until attached
+                                    </span>
+                                  )}
+                                  {a.ledgerStatus === "ready" && a.inputDriveFolderId && (
+                                    <span
+                                      className="text-[10px] font-mono text-[#a1a1aa]"
+                                      title={`Input folder: ${a.inputFolderName || a.inputDriveFolderId}`}
+                                    >
+                                      {a.inputFolderName || `input ${a.inputDriveFolderId.slice(0, 10)}…`} ·{" "}
+                                      <span className="text-green-400">{a.unused} unused</span> of {a.total}
+                                    </span>
+                                  )}
+                                  <button
+                                    type="button"
+                                    onClick={() => removeSourceAccount(a.accountId)}
+                                    title="Remove account"
+                                    aria-label="Remove account"
+                                    className="ml-auto text-[#71717a] hover:text-white transition-colors cursor-pointer flex-shrink-0"
+                                  >
+                                    <X className="w-3 h-3" />
+                                  </button>
+                                </div>
+                                {/* Inline attach: paste a Drive folder link/ID without leaving the wizard */}
+                                {noFolder && (
+                                  <div className="mt-2 space-y-1.5">
+                                    <div className="flex items-center gap-2">
+                                      <div className="relative flex-1">
+                                        <FolderOpen className="w-3.5 h-3.5 text-[#71717a] absolute left-2.5 top-1/2 -translate-y-1/2" />
+                                        <input
+                                          type="text"
+                                          value={a.attachInput}
+                                          onChange={(e) =>
+                                            setAccountAttach(a.accountId, { attachInput: e.target.value, attachError: null })
+                                          }
+                                          onKeyDown={(e) => {
+                                            if (e.key === "Enter") {
+                                              e.preventDefault();
+                                              attachAccountInputFolder(a.accountId);
+                                            }
+                                          }}
+                                          placeholder="Paste the input Drive folder URL or ID…"
+                                          disabled={a.attaching}
+                                          className="w-full bg-[#18181b] border border-[#27272a] rounded-lg pl-8 pr-3 py-1.5 text-white placeholder-[#71717a] text-[11px] focus:outline-none focus:border-[#E11D48] disabled:opacity-50"
+                                        />
+                                      </div>
+                                      <button
+                                        type="button"
+                                        onClick={() => attachAccountInputFolder(a.accountId)}
+                                        disabled={a.attaching || !a.attachInput.trim()}
+                                        className="px-2.5 py-1.5 bg-[#27272a] hover:bg-[#3f3f46] disabled:opacity-40 disabled:cursor-not-allowed text-white text-[10px] font-semibold rounded-lg transition-colors cursor-pointer flex items-center gap-1.5 flex-shrink-0"
+                                      >
+                                        {a.attaching ? (
+                                          <Loader2 className="w-3 h-3 animate-spin" />
+                                        ) : (
+                                          <Link2 className="w-3 h-3" />
+                                        )}
+                                        {a.attaching ? "Attaching…" : "Attach & sync"}
+                                      </button>
+                                    </div>
+                                    {a.attachError && (
+                                      <p className="text-[10px] text-red-400 flex items-start gap-1.5">
+                                        <AlertCircle className="w-3 h-3 flex-shrink-0 mt-0.5" />
+                                        {a.attachError}
+                                      </p>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                      {sourceAccounts.length === 0 ? (
+                        <p className="text-[10px] text-[#71717a] leading-relaxed">
+                          Pick one or more accounts — the batch reads clips from their per-account input folders as one
+                          pool. Unused clips are picked first, and nothing repeats until the pool runs dry.
+                        </p>
+                      ) : (
+                        validAccounts.length === 0 &&
+                        sourceAccounts.every((a) => a.ledgerStatus !== "loading") && (
+                          <p className="text-[10px] text-amber-400 flex items-center gap-1.5">
+                            <AlertTriangle className="w-3 h-3 flex-shrink-0" />
+                            None of the selected accounts has an input folder — attach one inline above to include
+                            it in this batch.
+                          </p>
+                        )
+                      )}
+                    </div>
                   )}
                 </div>
 
@@ -714,7 +1259,7 @@ export default function ClientPage({ session }: { session?: { userId: string; ro
                 {/* Ledger behavior info */}
                 <div className="bg-[#09090b] border border-[#27272a] rounded-xl px-4 py-3 space-y-2">
                   <p className="text-[11px] text-[#a1a1aa] leading-relaxed">
-                    Background clips are picked from the source folder <b className="text-white">unused-first</b>, so
+                    Background clips are picked from the source pool <b className="text-white">unused-first</b>, so
                     nothing repeats until the pool runs dry. When it runs out, pre-flight stops with a warning — sync
                     more clips, or allow least-recently-used clips to repeat.
                   </p>
@@ -794,9 +1339,69 @@ export default function ClientPage({ session }: { session?: { userId: string; ro
                       rows={9}
                       className="w-full bg-[#09090b] border border-[#27272a] rounded-xl px-3 py-2.5 text-white placeholder-[#71717a] text-[12px] focus:outline-none focus:border-[#E11D48] resize-y"
                     />
+
+                    {/* Background music (optional) */}
+                    <div className="bg-[#09090b] border border-[#27272a] rounded-xl px-4 py-3">
+                      <div className="flex items-center justify-between gap-3 flex-wrap">
+                        <div className="flex items-center gap-2.5 min-w-0">
+                          <Music className="w-4 h-4 text-[#E11D48] flex-shrink-0" />
+                          <div className="min-w-0">
+                            <p className="text-[12px] font-semibold text-white">Background music (optional)</p>
+                            <p className="text-[10px] text-[#71717a]">
+                              One audio file mixed under every quote video in the batch.
+                            </p>
+                          </div>
+                        </div>
+                        {musicFile ? (
+                          <div className="flex items-center gap-2 bg-[#18181b] border border-green-500/20 rounded-lg px-2.5 py-1.5 max-w-full">
+                            <CheckCircle2 className="w-3.5 h-3.5 text-green-400 flex-shrink-0" />
+                            <span className="text-[11px] text-white font-semibold truncate max-w-[220px]" title={musicFile.name}>
+                              {musicFile.name}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setMusicFile(null);
+                                markDirty();
+                              }}
+                              title="Remove music"
+                              aria-label="Remove music"
+                              className="text-[#71717a] hover:text-white transition-colors cursor-pointer flex-shrink-0"
+                            >
+                              <X className="w-3 h-3" />
+                            </button>
+                          </div>
+                        ) : (
+                          <label
+                            className={`flex items-center gap-1.5 px-2.5 py-1.5 bg-[#27272a] hover:bg-[#3f3f46] text-white text-[11px] font-semibold rounded-lg transition-colors cursor-pointer flex-shrink-0 ${
+                              musicUploading ? "opacity-40 pointer-events-none" : ""
+                            }`}
+                          >
+                            {musicUploading ? (
+                              <Loader2 className="w-3 h-3 animate-spin" />
+                            ) : (
+                              <Upload className="w-3 h-3" />
+                            )}
+                            {musicUploading ? "Uploading…" : "Upload audio"}
+                            <input
+                              type="file"
+                              accept=".mp3,.wav,.m4a,.ogg,audio/mpeg,audio/wav,audio/x-m4a,audio/ogg"
+                              className="hidden"
+                              disabled={musicUploading}
+                              onChange={(e) => {
+                                const f = e.target.files?.[0];
+                                if (f) handleMusicFile(f);
+                                e.target.value = "";
+                              }}
+                            />
+                          </label>
+                        )}
+                      </div>
+                    </div>
+
                     <p className="text-[10px] text-[#71717a] leading-relaxed">
-                      Quotes distribute round-robin across videos. Quote mode renders without background music in v1 —
-                      the overlay carries the video. Fewer quotes than videos means quotes repeat.
+                      Quotes distribute round-robin across videos. Fewer quotes than videos means quotes repeat.
+                      Background music is optional — without it the overlay carries the video alone.
                     </p>
                   </div>
                 )}
@@ -891,9 +1496,17 @@ export default function ClientPage({ session }: { session?: { userId: string; ro
                   </div>
                   <div className="bg-[#09090b] border border-[#27272a] rounded-lg px-3 py-2">
                     <p className="text-[9px] uppercase font-bold text-[#71717a]">Source pool</p>
-                    <p className="text-[11px] text-white font-semibold truncate">{source?.folderName}</p>
+                    <p className="text-[11px] text-white font-semibold truncate">
+                      {sourceMode === "folders"
+                        ? syncedFolders.length === 1
+                          ? syncedFolders[0].folderName
+                          : `${syncedFolders.length} Drive folders`
+                        : validAccounts.length === 1
+                          ? `@${validAccounts[0].username} — input folder`
+                          : `${validAccounts.length} account input folders`}
+                    </p>
                     <p className="text-[10px] font-mono text-[#a1a1aa]">
-                      {source ? `${source.unused} unused of ${source.total} clips` : ""}
+                      {poolSummary.unused} unused of {poolSummary.total} clips
                     </p>
                   </div>
                 </div>

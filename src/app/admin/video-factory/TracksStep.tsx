@@ -13,6 +13,8 @@ import {
   Music,
   Plus,
   Search,
+  Upload,
+  X,
 } from "lucide-react";
 
 /**
@@ -119,6 +121,29 @@ export default function TracksStep(props: {
   const [manualLrc, setManualLrc] = useState("");
   const [manualOpen, setManualOpen] = useState(false);
   const [saving, setSaving] = useState(false);
+
+  // Upload-audio draft state (own file → factory track)
+  const [uploadOpen, setUploadOpen] = useState(false);
+  const [upFile, setUpFile] = useState<File | null>(null);
+  const [upTitle, setUpTitle] = useState("");
+  const [upArtist, setUpArtist] = useState("");
+  const [upTrimStart, setUpTrimStart] = useState("");
+  const [upTrimEnd, setUpTrimEnd] = useState("");
+  const [upMaxReuse, setUpMaxReuse] = useState("");
+  const [upLrc, setUpLrc] = useState("");
+  const [upLrcOpen, setUpLrcOpen] = useState(false);
+  const [uploading, setUploading] = useState(false);
+
+  const resetUploadDraft = () => {
+    setUpFile(null);
+    setUpTitle("");
+    setUpArtist("");
+    setUpTrimStart("");
+    setUpTrimEnd("");
+    setUpMaxReuse("");
+    setUpLrc("");
+    setUpLrcOpen(false);
+  };
 
   const resetDraft = () => {
     setQuery("");
@@ -257,6 +282,50 @@ export default function TracksStep(props: {
     }
   };
 
+  // ── Upload-audio flow (own file → POST /api/factory/tracks/upload) ──
+
+  const canUpload = !!upFile && !!upTitle.trim() && !uploading;
+
+  const handleUploadTrack = async () => {
+    if (!canUpload || !upFile) return;
+    setUploading(true);
+    try {
+      const fd = new FormData();
+      fd.append("file", upFile);
+      fd.append("title", upTitle.trim());
+      if (upArtist.trim()) fd.append("artist", upArtist.trim());
+      if (upLrc.trim()) fd.append("lrcText", upLrc.trim());
+      if (upTrimStart.trim()) fd.append("trimStart", upTrimStart.trim());
+      if (upTrimEnd.trim()) fd.append("trimEnd", upTrimEnd.trim());
+      if (upMaxReuse.trim()) fd.append("maxReuse", String(Math.max(1, parseInt(upMaxReuse, 10) || 1)));
+      const res = await fetch("/api/factory/tracks/upload", { method: "POST", body: fd });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Upload failed");
+      // Normalize to the list-row shape — the upload response carries lrcData instead of lineCount/timesUsed.
+      const raw = data.track || {};
+      const track: FactoryTrackRow = {
+        id: raw.id,
+        title: raw.title ?? upTitle.trim(),
+        artist: raw.artist ?? null,
+        duration: typeof raw.duration === "number" ? raw.duration : 0,
+        trimStart: typeof raw.trimStart === "number" ? raw.trimStart : 0,
+        trimEnd: raw.trimEnd ?? null,
+        maxReuse: raw.maxReuse ?? null,
+        audioRef: raw.audioRef ?? null,
+        lineCount: Array.isArray(raw.lrcData) ? raw.lrcData.length : (raw.lineCount ?? 0),
+        timesUsed: raw.timesUsed ?? 0,
+      };
+      toast.success(`Track "${track.title}" uploaded`);
+      onTrackSaved(track);
+      resetUploadDraft();
+      setUploadOpen(false);
+    } catch (err: any) {
+      toast.error(err.message || "Upload failed");
+    } finally {
+      setUploading(false);
+    }
+  };
+
   return (
     <div className="space-y-4">
       {/* Existing factory tracks */}
@@ -265,15 +334,26 @@ export default function TracksStep(props: {
           <h4 className="text-[11px] font-bold uppercase tracking-wider text-[#71717a]">
             Factory Tracks {tracks.length > 0 && <span className="text-[#a1a1aa]">({selectedIds.length} of {tracks.length} selected)</span>}
           </h4>
-          <button
-            type="button"
-            onClick={() => setAddOpen((v) => !v)}
-            className="flex items-center gap-1.5 px-2.5 py-1.5 bg-[#E11D48] hover:bg-[#be123c] text-white text-[11px] font-semibold rounded-lg transition-colors cursor-pointer"
-          >
-            <Plus className="w-3 h-3" />
-            Add Track
-            {addOpen ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
-          </button>
+          <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => setUploadOpen((v) => !v)}
+              className="flex items-center gap-1.5 px-2.5 py-1.5 bg-[#27272a] hover:bg-[#3f3f46] text-white text-[11px] font-semibold rounded-lg transition-colors cursor-pointer"
+            >
+              <Upload className="w-3 h-3" />
+              Upload audio
+              {uploadOpen ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+            </button>
+            <button
+              type="button"
+              onClick={() => setAddOpen((v) => !v)}
+              className="flex items-center gap-1.5 px-2.5 py-1.5 bg-[#E11D48] hover:bg-[#be123c] text-white text-[11px] font-semibold rounded-lg transition-colors cursor-pointer"
+            >
+              <Plus className="w-3 h-3" />
+              Add Track
+              {addOpen ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+            </button>
+          </div>
         </div>
 
         {tracksLoading ? (
@@ -326,6 +406,142 @@ export default function TracksStep(props: {
           </div>
         )}
       </div>
+
+      {/* Upload-audio panel (own file → factory track) */}
+      {uploadOpen && (
+        <div className="bg-[#09090b] border border-[#27272a] rounded-xl p-4 space-y-3">
+          <p className="text-[10px] font-bold uppercase tracking-wider text-[#71717a]">
+            Upload your own audio — mp3, wav, m4a or ogg
+          </p>
+
+          {/* File picker */}
+          <div className="flex items-center gap-2 flex-wrap">
+            <label
+              className={`flex items-center gap-1.5 px-2.5 py-1.5 bg-[#27272a] hover:bg-[#3f3f46] text-white text-[11px] font-semibold rounded-lg transition-colors cursor-pointer flex-shrink-0 ${
+                uploading ? "opacity-40 pointer-events-none" : ""
+              }`}
+            >
+              <Upload className="w-3 h-3" />
+              {upFile ? "Change file" : "Choose audio file"}
+              <input
+                type="file"
+                accept=".mp3,.wav,.m4a,.ogg,audio/mpeg,audio/wav,audio/x-m4a,audio/ogg"
+                className="hidden"
+                disabled={uploading}
+                onChange={(e) => {
+                  const f = e.target.files?.[0] ?? null;
+                  setUpFile(f);
+                  if (f && !upTitle.trim()) setUpTitle(f.name.replace(/\.[^.]+$/, ""));
+                  e.target.value = "";
+                }}
+              />
+            </label>
+            {upFile && (
+              <div className="flex items-center gap-2 bg-[#18181b] border border-green-500/20 rounded-lg px-2.5 py-1.5 min-w-0">
+                <Check className="w-3.5 h-3.5 text-green-400 flex-shrink-0" />
+                <span className="text-[11px] text-white font-semibold truncate max-w-[240px]" title={upFile.name}>
+                  {upFile.name}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setUpFile(null)}
+                  title="Remove file"
+                  aria-label="Remove file"
+                  className="text-[#71717a] hover:text-white transition-colors cursor-pointer flex-shrink-0"
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              </div>
+            )}
+          </div>
+
+          {/* Meta */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+            <input
+              type="text"
+              placeholder="Track title *"
+              value={upTitle}
+              onChange={(e) => setUpTitle(e.target.value)}
+              className="bg-[#18181b] border border-[#27272a] rounded-lg px-3 py-2 text-white placeholder-[#71717a] text-[11px] focus:outline-none focus:border-[#E11D48]"
+            />
+            <input
+              type="text"
+              placeholder="Artist"
+              value={upArtist}
+              onChange={(e) => setUpArtist(e.target.value)}
+              className="bg-[#18181b] border border-[#27272a] rounded-lg px-3 py-2 text-white placeholder-[#71717a] text-[11px] focus:outline-none focus:border-[#E11D48]"
+            />
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+            <input
+              type="number"
+              min={0}
+              step="any"
+              placeholder="Trim start (s, optional)"
+              value={upTrimStart}
+              onChange={(e) => setUpTrimStart(e.target.value)}
+              className="bg-[#18181b] border border-[#27272a] rounded-lg px-3 py-2 text-white placeholder-[#71717a] text-[11px] focus:outline-none focus:border-[#E11D48]"
+            />
+            <input
+              type="number"
+              min={0}
+              step="any"
+              placeholder="Trim end (s, optional)"
+              value={upTrimEnd}
+              onChange={(e) => setUpTrimEnd(e.target.value)}
+              className="bg-[#18181b] border border-[#27272a] rounded-lg px-3 py-2 text-white placeholder-[#71717a] text-[11px] focus:outline-none focus:border-[#E11D48]"
+            />
+            <input
+              type="number"
+              min={1}
+              placeholder="Max reuse (blank = unlimited)"
+              value={upMaxReuse}
+              onChange={(e) => setUpMaxReuse(e.target.value)}
+              className="bg-[#18181b] border border-[#27272a] rounded-lg px-3 py-2 text-white placeholder-[#71717a] text-[11px] focus:outline-none focus:border-[#E11D48] col-span-2 md:col-span-1"
+            />
+          </div>
+
+          {/* Optional .lrc paste */}
+          <div className="border border-[#27272a] rounded-lg">
+            <button
+              type="button"
+              onClick={() => setUpLrcOpen((v) => !v)}
+              className="w-full flex items-center justify-between px-3 py-2 text-[11px] font-semibold text-[#a1a1aa] hover:text-white transition-colors cursor-pointer"
+            >
+              <span>Optional .lrc paste (synced lyrics)</span>
+              {upLrcOpen ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+            </button>
+            {upLrcOpen && (
+              <div className="px-3 pb-3">
+                <textarea
+                  value={upLrc}
+                  onChange={(e) => setUpLrc(e.target.value)}
+                  placeholder={"[00:12.50] First lyric line\n[00:15.20] Second lyric line\n…"}
+                  rows={5}
+                  className="w-full bg-[#18181b] border border-[#27272a] rounded-lg px-3 py-2 text-white placeholder-[#71717a] text-[11px] font-mono focus:outline-none focus:border-[#E11D48] resize-y"
+                />
+              </div>
+            )}
+          </div>
+
+          <p className="text-[10px] text-[#71717a] flex items-center gap-1.5">
+            <AlertCircle className="w-3 h-3 flex-shrink-0" />
+            No .lrc? We transcribe automatically during render.
+          </p>
+
+          <div className="flex justify-end">
+            <button
+              type="button"
+              onClick={handleUploadTrack}
+              disabled={!canUpload}
+              className="px-4 py-2 bg-[#E11D48] hover:bg-[#be123c] disabled:opacity-40 disabled:cursor-not-allowed text-white text-[11px] font-bold rounded-lg transition-colors cursor-pointer flex items-center justify-center gap-1.5"
+            >
+              {uploading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Upload className="w-3 h-3" />}
+              {uploading ? "Uploading…" : "Upload track"}
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Add-track panel */}
       {addOpen && (
