@@ -1608,8 +1608,10 @@ async function getOrCreateFactoryOverlay(opts: {
   const isLayered = styleLayers.length > 0;
   const compId = isLayered ? "layered-style" : savedStyle.templateKey;
   const finalProps = isLayered ? { ...inputProps, layers: styleLayers } : inputProps;
+  // v2: bumped to invalidate overlays rendered before the alpha-plane fix
+  // (vp9 without imageFormat/pixelFormat produced opaque black overlays).
   const hash = createHash("sha256")
-    .update(JSON.stringify({ styleId: savedStyle.id, compId, inputProps: finalProps, durationSeconds: round1(durationSeconds) }))
+    .update(JSON.stringify({ v: 2, styleId: savedStyle.id, compId, inputProps: finalProps, durationSeconds: round1(durationSeconds) }))
     .digest("hex");
 
   const relPath = `/uploads/factory-overlays/overlay_${hash}.webm`;
@@ -1646,7 +1648,12 @@ async function getOrCreateFactoryOverlay(opts: {
     serveUrl: cachedFactoryBundle,
     outputLocation: absPath,
     inputProps: finalProps,
-    codec: "vp9", // alpha transparency for compositing
+    codec: "vp9",
+    // Both flags are required for a real alpha plane: PNG frames carry alpha,
+    // and yuva420p encodes it into the WebM (native default yuv420p drops it —
+    // which is what produced the black box over the video).
+    imageFormat: "png",
+    pixelFormat: "yuva420p",
     browserExecutable: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
   });
   // Sentinel goes last — a concurrent reader never sees a partial render.
