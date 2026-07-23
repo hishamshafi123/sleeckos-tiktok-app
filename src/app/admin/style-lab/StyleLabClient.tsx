@@ -15,6 +15,19 @@ import {
   type StyleFamily,
   type StyleParams,
 } from "@/lib/style-lab/schema";
+import {
+  LEGACY_MAIN_LAYER_ID,
+  coerceLayers,
+  defaultImageLayer,
+  defaultShapeLayer,
+  defaultTextLayer,
+  legacyParamsToLayers,
+  newLayerId,
+  type LayerType,
+  type StyleLayer,
+} from "@/lib/style-lab/layers";
+import { LayerEditor } from "./LayerEditor";
+import { LayerPanel } from "./LayerPanel";
 import { StylePreviewPanel } from "./StylePreviewPanel";
 import { TemplateGallery } from "./TemplateGallery";
 
@@ -77,6 +90,13 @@ export default function StyleLabClient({ user }: StyleLabClientProps) {
   const [selectedStyleId, setSelectedStyleId] = useState<string>("");
   const [styleName, setStyleName] = useState<string>("");
   const [tagsInput, setTagsInput] = useState<string>("");
+
+  // Layer stack. layeredMode=false → legacy single-layer style: the flat
+  // params ARE the main text layer (synthesized on the fly). Adding a layer
+  // materializes the stack and flips layeredMode on.
+  const [layers, setLayers] = useState<StyleLayer[]>([]);
+  const [layeredMode, setLayeredMode] = useState(false);
+  const [selectedLayerId, setSelectedLayerId] = useState<string>(LEGACY_MAIN_LAYER_ID);
 
   const [familyFilter, setFamilyFilter] = useState<"all" | StyleFamily>("all");
   const [search, setSearch] = useState<string>("");
@@ -178,6 +198,93 @@ export default function StyleLabClient({ user }: StyleLabClientProps) {
   );
   const family: StyleFamily = selectedTemplate?.family === "quote" ? "quote" : "lyric";
 
+  // ─── Layer stack ───────────────────────────────────────────────────────────
+
+  /** Stack shown in the layer panel / preview drag layer. */
+  const effectiveLayers = useMemo<StyleLayer[]>(
+    () => (layeredMode ? layers : legacyParamsToLayers(selectedTemplateKey, params)),
+    [layeredMode, layers, selectedTemplateKey, params],
+  );
+
+  const selectedLayer = useMemo(
+    () => effectiveLayers.find((l) => l.id === selectedLayerId) ?? null,
+    [effectiveLayers, selectedLayerId],
+  );
+
+  const resetLayers = () => {
+    setLayers([]);
+    setLayeredMode(false);
+    setSelectedLayerId(LEGACY_MAIN_LAYER_ID);
+  };
+
+  /** Adds a layer; materializes the stack (legacy → layered) when needed. */
+  const handleAddLayer = (type: LayerType) => {
+    const base = layeredMode ? layers : legacyParamsToLayers(selectedTemplateKey, params);
+    const layer =
+      type === "text"
+        ? defaultTextLayer("attribution")
+        : type === "image"
+          ? defaultImageLayer()
+          : defaultShapeLayer();
+    layer.zIndex = base.length;
+    setLayers([...base, layer]);
+    setLayeredMode(true);
+    setSelectedLayerId(layer.id);
+  };
+
+  const handleSelectLayer = (id: string) => {
+    if (!layeredMode) {
+      setSelectedLayerId(LEGACY_MAIN_LAYER_ID);
+      return;
+    }
+    setSelectedLayerId(id);
+  };
+
+  const handleLayerChange = (id: string, patch: Partial<StyleLayer>) => {
+    if (!layeredMode) return; // legacy main layer edits go through flat params
+    setLayers((prev) => prev.map((l) => (l.id === id ? { ...l, ...patch } : l)));
+  };
+
+  const handleRemoveLayer = (id: string) => {
+    if (!layeredMode || layers.length <= 1) return;
+    setLayers((prev) =>
+      prev.filter((l) => l.id !== id).map((l, i) => ({ ...l, zIndex: i })),
+    );
+    if (selectedLayerId === id) setSelectedLayerId(layers.find((l) => l.id !== id)?.id ?? "");
+  };
+
+  const handleDuplicateLayer = (id: string) => {
+    if (!layeredMode) return;
+    const source = layers.find((l) => l.id === id);
+    if (!source) return;
+    const copy: StyleLayer = {
+      ...source,
+      id: newLayerId(),
+      name: `${source.name} (copy)`.slice(0, 60),
+      yPercent: Math.min(100, source.yPercent + 4),
+      zIndex: layers.length,
+    };
+    setLayers([...layers, copy]);
+    setSelectedLayerId(copy.id);
+  };
+
+  const handleMoveLayer = (id: string, dir: -1 | 1) => {
+    if (!layeredMode) return;
+    setLayers((prev) => {
+      const idx = prev.findIndex((l) => l.id === id);
+      const next = idx + dir;
+      if (idx < 0 || next < 0 || next >= prev.length) return prev;
+      const arr = [...prev];
+      [arr[idx], arr[next]] = [arr[next], arr[idx]];
+      return arr.map((l, i) => ({ ...l, zIndex: i }));
+    });
+  };
+
+  const handleToggleLayerVisible = (id: string) => {
+    if (!layeredMode) return;
+    setLayers((prev) => prev.map((l) => (l.id === id ? { ...l, visible: !l.visible } : l)));
+  };
+
   function initFromTemplate(tpl: any) {
     setSelectedTemplateKey(tpl.key);
     // Per-template defaults: the gallery API ships defaultParams computed
@@ -199,6 +306,7 @@ export default function StyleLabClient({ user }: StyleLabClientProps) {
     setSelectedStyleId("");
     setStyleName("");
     setTagsInput("");
+    resetLayers();
     setRenderResult(null);
     setRenderError("");
     setView("editor");
@@ -246,6 +354,14 @@ export default function StyleLabClient({ user }: StyleLabClientProps) {
     setStyleName(style.name);
     setTagsInput(Array.isArray(style.tags) ? style.tags.join(", ") : "");
     setParams(typeof style.params === "object" ? style.params : {});
+    const styleLayers = coerceLayers(style.layers);
+    if (styleLayers.length > 0) {
+      setLayers(styleLayers);
+      setLayeredMode(true);
+      setSelectedLayerId(styleLayers.find((l) => l.bind)?.id ?? styleLayers[styleLayers.length - 1].id);
+    } else {
+      resetLayers();
+    }
     setRenderResult(null);
     setRenderError("");
     setView("editor");
@@ -257,6 +373,7 @@ export default function StyleLabClient({ user }: StyleLabClientProps) {
     setSelectedStyleId("");
     setStyleName("");
     setTagsInput("");
+    resetLayers();
   };
 
   // ─── Persistence ───────────────────────────────────────────────────────────
@@ -274,13 +391,24 @@ export default function StyleLabClient({ user }: StyleLabClientProps) {
         res = await fetch(`/api/style-lab/saved-styles/${selectedStyleId}`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ name: styleName.trim(), params, tags }),
+          body: JSON.stringify({
+            name: styleName.trim(),
+            params,
+            tags,
+            layers: layeredMode ? layers : null, // null reverts to legacy single-layer
+          }),
         });
       } else {
         res = await fetch("/api/style-lab/saved-styles", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ templateKey: selectedTemplateKey, name: styleName.trim(), params, tags }),
+          body: JSON.stringify({
+            templateKey: selectedTemplateKey,
+            name: styleName.trim(),
+            params,
+            tags,
+            ...(layeredMode ? { layers } : {}),
+          }),
         });
       }
       const data = await res.json();
@@ -362,7 +490,12 @@ export default function StyleLabClient({ user }: StyleLabClientProps) {
       const res = await fetch("/api/style-lab/render-test", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ templateKey: selectedTemplateKey, params, format }),
+        body: JSON.stringify({
+          templateKey: selectedTemplateKey,
+          params,
+          format,
+          ...(layeredMode ? { layers } : {}),
+        }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Test render failed");
@@ -414,6 +547,25 @@ export default function StyleLabClient({ user }: StyleLabClientProps) {
     }
     return out;
   }, [schema]);
+
+  /** Flat-param groups that still apply to layered styles (canvas + lyric engine). */
+  const canvasGroups = useMemo(() => {
+    const KEYS = new Set([
+      "bgColor",
+      "aspectRatio",
+      "lineMode",
+      "linesVisible",
+      "timingOffsetMs",
+      "pixelate",
+      "blur",
+      "vignette",
+      "grain",
+      "noise",
+    ]);
+    return groups
+      .map((g) => ({ name: g.name, fields: g.fields.filter((f) => KEYS.has(f.key)) }))
+      .filter((g) => g.fields.length > 0);
+  }, [groups]);
 
   const fontInfo = useMemo(() => {
     const list = fonts.length > 0 ? fonts : FONT_MANIFEST;
@@ -609,34 +761,97 @@ export default function StyleLabClient({ user }: StyleLabClientProps) {
 
       {view === "editor" ? (
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-          {/* Left: control panel */}
+          {/* Left: layers + control panel */}
           <div className="lg:col-span-4 space-y-5">
-            <div className="border border-zinc-800 rounded-md bg-[#09090b] p-4 space-y-5">
-              <h3 className="text-xs font-bold text-zinc-400 uppercase tracking-wider flex items-center gap-1.5">
-                <Sliders size={13} className="text-[#E11D48]" />
-                1. Parameters
-              </h3>
+            <LayerPanel
+              layers={effectiveLayers}
+              layeredMode={layeredMode}
+              selectedLayerId={selectedLayerId}
+              onSelect={handleSelectLayer}
+              onAdd={handleAddLayer}
+              onRemove={handleRemoveLayer}
+              onDuplicate={handleDuplicateLayer}
+              onMove={handleMoveLayer}
+              onToggleVisible={handleToggleLayerVisible}
+            />
 
-              {groups.length === 0 ? (
-                <p className="text-[11px] text-zinc-500 italic">No parameter schema on this template.</p>
-              ) : (
-                groups.map((group) => (
-                  <div key={group.name} className="space-y-3">
-                    <h4 className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest border-b border-zinc-900 pb-1">
-                      {group.name}
-                    </h4>
-                    <div className="space-y-3.5 text-xs">
-                      {group.fields.map((field) => (
-                        <div key={field.key} className="space-y-1.5">
-                          <label className="font-medium text-zinc-300 block">{field.label}</label>
-                          {renderField(field)}
+            {layeredMode ? (
+              <>
+                {/* Selected layer controls */}
+                <div className="border border-zinc-800 rounded-md bg-[#09090b] p-4 space-y-5">
+                  <h3 className="text-xs font-bold text-zinc-400 uppercase tracking-wider flex items-center gap-1.5">
+                    <Sliders size={13} className="text-[#E11D48]" />
+                    2. Layer Settings
+                    {selectedLayer && (
+                      <span className="ml-auto text-[10px] font-mono text-zinc-500 normal-case truncate">
+                        {selectedLayer.name}
+                      </span>
+                    )}
+                  </h3>
+                  {selectedLayer ? (
+                    <LayerEditor
+                      layer={selectedLayer}
+                      fonts={fonts}
+                      onChange={(patch) => handleLayerChange(selectedLayer.id, patch)}
+                    />
+                  ) : (
+                    <p className="text-[11px] text-zinc-500 italic">Select a layer above to edit it.</p>
+                  )}
+                </div>
+
+                {/* Canvas-wide + lyric-engine params (flat params still drive these) */}
+                {canvasGroups.length > 0 && (
+                  <div className="border border-zinc-800 rounded-md bg-[#09090b] p-4 space-y-5">
+                    <h3 className="text-xs font-bold text-zinc-400 uppercase tracking-wider flex items-center gap-1.5">
+                      <Sliders size={13} className="text-[#E11D48]" />
+                      Canvas &amp; Lyrics
+                    </h3>
+                    {canvasGroups.map((group) => (
+                      <div key={group.name} className="space-y-3">
+                        <h4 className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest border-b border-zinc-900 pb-1">
+                          {group.name}
+                        </h4>
+                        <div className="space-y-3.5 text-xs">
+                          {group.fields.map((field) => (
+                            <div key={field.key} className="space-y-1.5">
+                              <label className="font-medium text-zinc-300 block">{field.label}</label>
+                              {renderField(field)}
+                            </div>
+                          ))}
                         </div>
-                      ))}
-                    </div>
+                      </div>
+                    ))}
                   </div>
-                ))
-              )}
-            </div>
+                )}
+              </>
+            ) : (
+              <div className="border border-zinc-800 rounded-md bg-[#09090b] p-4 space-y-5">
+                <h3 className="text-xs font-bold text-zinc-400 uppercase tracking-wider flex items-center gap-1.5">
+                  <Sliders size={13} className="text-[#E11D48]" />
+                  2. Parameters
+                </h3>
+
+                {groups.length === 0 ? (
+                  <p className="text-[11px] text-zinc-500 italic">No parameter schema on this template.</p>
+                ) : (
+                  groups.map((group) => (
+                    <div key={group.name} className="space-y-3">
+                      <h4 className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest border-b border-zinc-900 pb-1">
+                        {group.name}
+                      </h4>
+                      <div className="space-y-3.5 text-xs">
+                        {group.fields.map((field) => (
+                          <div key={field.key} className="space-y-1.5">
+                            <label className="font-medium text-zinc-300 block">{field.label}</label>
+                            {renderField(field)}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            )}
           </div>
 
           {/* Middle: live preview (dockable / floating) */}
@@ -650,6 +865,10 @@ export default function StyleLabClient({ user }: StyleLabClientProps) {
               fontsLoaded={fontsLoaded}
               renderBusy={renderBusy}
               onRenderTest={handleRenderTest}
+              layers={layeredMode ? layers : null}
+              selectedLayerId={selectedLayerId}
+              onSelectLayer={handleSelectLayer}
+              onLayerChange={handleLayerChange}
             />
           </div>
 
@@ -658,7 +877,7 @@ export default function StyleLabClient({ user }: StyleLabClientProps) {
             <div className="border border-zinc-800 rounded-md bg-[#09090b] p-4 space-y-4">
               <h3 className="text-xs font-bold text-zinc-400 uppercase tracking-wider flex items-center gap-1.5">
                 <Save size={13} className="text-[#E11D48]" />
-                {selectedStyleId ? "3. Update Style" : "3. Save Style"}
+                {selectedStyleId ? "4. Update Style" : "4. Save Style"}
               </h3>
 
               <div className="space-y-3.5 text-xs">
@@ -713,7 +932,7 @@ export default function StyleLabClient({ user }: StyleLabClientProps) {
             <div className="border border-zinc-800 rounded-md bg-[#09090b] p-4 space-y-4">
               <h3 className="text-xs font-bold text-zinc-400 uppercase tracking-wider flex items-center gap-1.5">
                 <Sparkles size={13} className="text-[#E11D48]" />
-                4. Test Render
+                5. Test Render
               </h3>
 
               <div className="space-y-3.5 text-xs">

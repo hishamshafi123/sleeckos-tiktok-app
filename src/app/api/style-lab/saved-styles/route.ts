@@ -32,7 +32,8 @@ export async function GET(req: NextRequest) {
 }
 
 // POST /api/style-lab/saved-styles
-// Body: { templateKey, name, params, tags? }
+// Body: { templateKey, name, params, layers?, tags? } — layers (StyleLayer[])
+// persists the full layer stack; omit for a legacy single-layer style.
 export async function POST(req: NextRequest) {
   const session = await getSession();
   if (!session) {
@@ -44,7 +45,7 @@ export async function POST(req: NextRequest) {
 
   try {
     const body = await req.json();
-    const { templateKey, name, params, tags } = body;
+    const { templateKey, name, params, layers, tags } = body;
     if (!templateKey || !name || !params) {
       return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
     }
@@ -53,6 +54,7 @@ export async function POST(req: NextRequest) {
       templateKey,
       name,
       params,
+      ...(layers !== undefined ? { layers } : {}),
       tags: Array.isArray(tags) ? tags : [],
       createdBy: session.userId,
     });

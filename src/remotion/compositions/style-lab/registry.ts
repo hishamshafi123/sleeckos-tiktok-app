@@ -1,6 +1,7 @@
 import type React from "react";
 import { LyricCaption } from "./LyricCaption";
 import { QuoteCard } from "./QuoteCard";
+import { LayeredStyle } from "./LayeredStyle";
 import { IMPORTED_COMPONENTS } from "./imported";
 import type { StyleFamily, StyleParams } from "../../../lib/style-lab/schema";
 
@@ -15,3 +16,6 @@ export function styleComponentFor(templateKey: string, family: StyleFamily): Rea
   if (imported) return imported as React.FC<any>;
   return (family === "quote" ? QuoteCard : LyricCaption) as React.FC<StyleParams> as React.FC<any>;
 }
+
+/** Composition that renders any layer stack — used when a style has layers. */
+export const LayeredStyleComponent = LayeredStyle as React.FC<any>;

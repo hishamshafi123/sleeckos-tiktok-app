@@ -7,8 +7,10 @@ import { renderTestSample, type TestRenderFormat } from "@/lib/services/style-la
 export const maxDuration = 300;
 
 // POST /api/style-lab/render-test
-// Body: { templateKey, params, format? } — format "video" (default, ~3s clip)
-// or "still". Renders into public/uploads/style-lab/ and returns { url }.
+// Body: { templateKey, params, layers?, format? } — format "video" (default,
+// ~3s clip) or "still". When layers is a non-empty stack the render goes
+// through the layered-style composition. Renders into
+// public/uploads/style-lab/ and returns { url }.
 export async function POST(req: NextRequest) {
   const session = await getSession();
   if (!session) {
@@ -20,13 +22,18 @@ export async function POST(req: NextRequest) {
 
   try {
     const body = await req.json();
-    const { templateKey, params, format } = body;
+    const { templateKey, params, layers, format } = body;
     if (!templateKey || !params) {
       return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
     }
     const fmt: TestRenderFormat = format === "still" ? "still" : "video";
 
-    const result = await renderTestSample({ templateKey, params, format: fmt });
+    const result = await renderTestSample({
+      templateKey,
+      params,
+      ...(layers !== undefined ? { layers } : {}),
+      format: fmt,
+    });
     return NextResponse.json(result);
   } catch (err: any) {
     console.error("[Style Lab Render Test POST] Error:", err);

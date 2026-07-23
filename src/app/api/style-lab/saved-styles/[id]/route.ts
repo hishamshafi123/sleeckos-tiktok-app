@@ -9,7 +9,9 @@ import {
 } from "@/lib/services/style-lab";
 
 // PATCH /api/style-lab/saved-styles/[id]
-// Body: { name?, params?, tags? } — params re-render the thumbnail in the background.
+// Body: { name?, params?, layers?, tags? } — layers: StyleLayer[] to set the
+// stack, null to revert to a legacy single-layer style. params/layers
+// changes re-render the thumbnail in the background.
 export async function PATCH(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -26,15 +28,16 @@ export async function PATCH(
 
   try {
     const body = await req.json();
-    const { name, params: styleParams, tags } = body;
+    const { name, params: styleParams, layers, tags } = body;
 
     const updated = await updateSavedStyle(id, {
       ...(name !== undefined ? { name } : {}),
       ...(styleParams !== undefined ? { params: styleParams } : {}),
+      ...(layers !== undefined ? { layers } : {}),
       ...(tags !== undefined ? { tags } : {}),
     });
 
-    if (styleParams !== undefined) {
+    if (styleParams !== undefined || layers !== undefined) {
       void generateSavedStyleThumbnail(id).catch(() => undefined);
     }
 

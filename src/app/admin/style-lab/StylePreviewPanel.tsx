@@ -17,9 +17,10 @@ import {
   Upload,
 } from "lucide-react";
 
-import { styleComponentFor } from "@/remotion/compositions/style-lab/registry";
+import { styleComponentFor, LayeredStyleComponent } from "@/remotion/compositions/style-lab/registry";
 import { IMPORTED_CANVAS } from "@/remotion/compositions/style-lab/imported/shared";
 import { importedTemplateMeta } from "@/lib/style-lab/imported";
+import type { StyleLayer } from "@/lib/style-lab/layers";
 import {
   SAMPLE_LYRIC_LINES,
   SAMPLE_QUOTE,
@@ -65,6 +66,11 @@ export interface StylePreviewPanelProps {
   fontsLoaded: boolean;
   renderBusy: RenderFormat | null;
   onRenderTest: (format: RenderFormat) => void;
+  /** Layered styles: full stack → the layered-style comp + per-layer drag blocks. */
+  layers?: StyleLayer[] | null;
+  selectedLayerId?: string;
+  onSelectLayer?: (id: string) => void;
+  onLayerChange?: (id: string, patch: Partial<StyleLayer>) => void;
 }
 
 const iconBtn =
@@ -79,6 +85,10 @@ export function StylePreviewPanel({
   fontsLoaded,
   renderBusy,
   onRenderTest,
+  layers,
+  selectedLayerId,
+  onSelectLayer,
+  onLayerChange,
 }: StylePreviewPanelProps) {
   const [mode, setMode] = useState<"docked" | "floating">("docked");
   const [size, setSize] = useState<PanelSize>("m");
@@ -113,20 +123,27 @@ export function StylePreviewPanel({
   // ─── Derived player data (mirrors the previous inline preview) ────────────
 
   const importedMeta = importedTemplateMeta(templateKey);
+  const isLayered = !importedMeta && !!layers && layers.length > 0;
   const inputProps = {
     ...params,
     lines: SAMPLE_LYRIC_LINES,
     quoteText: SAMPLE_QUOTE.quoteText,
     author: SAMPLE_QUOTE.author,
+    ...(isLayered ? { layers } : {}),
   };
   // Imported comps render on a fixed 720×1280 canvas with a registry
   // duration; base/brat comps derive both from params + line timings.
   const canvas = importedMeta ? IMPORTED_CANVAS : resolveCanvas(params);
+  const hasLyricBinding =
+    isLayered && layers!.some((l) => l.visible && l.type === "text" && l.bind === "lyrics");
   const durationMs = importedMeta
     ? importedMeta.durationMs
-    : resolveDurationMs(family, { lines: SAMPLE_LYRIC_LINES });
+    : isLayered && !hasLyricBinding
+      ? 6000
+      : resolveDurationMs(family, { lines: SAMPLE_LYRIC_LINES });
   const durationInFrames = Math.max(1, Math.round((durationMs / 1000) * STYLE_LAB_FPS));
   const aspectClass = !importedMeta && params.aspectRatio === "1:1" ? "aspect-square" : "aspect-[9/16]";
+  const playerComponent = isLayered ? LayeredStyleComponent : styleComponentFor(templateKey, family);
 
   // ─── Stable portal host (keeps the Player mounted across dock/float) ──────
 
@@ -310,8 +327,8 @@ export function StylePreviewPanel({
         {/* Player */}
         <div className="absolute inset-0 z-10">
           <Player
-            key={`${templateKey}-${importedMeta ? "9:16" : (params.aspectRatio ?? "9:16")}`}
-            component={styleComponentFor(templateKey, family)}
+            key={`${isLayered ? "layered" : templateKey}-${importedMeta ? "9:16" : (params.aspectRatio ?? "9:16")}`}
+            component={playerComponent}
             inputProps={inputProps}
             durationInFrames={durationInFrames}
             fps={STYLE_LAB_FPS}
@@ -324,7 +341,7 @@ export function StylePreviewPanel({
           />
         </div>
 
-        {/* Canvas drag layer (position / margin / width) */}
+        {/* Canvas drag layer (position / margin / width; per-layer blocks when layered) */}
         {frameDims.w > 0 && frameDims.h > 0 && (
           <PreviewDragLayer
             frameWidth={frameDims.w}
@@ -334,6 +351,10 @@ export function StylePreviewPanel({
             params={params}
             family={family}
             onParamChange={onParamChange}
+            layers={isLayered ? layers! : undefined}
+            selectedLayerId={selectedLayerId}
+            onSelectLayer={onSelectLayer}
+            onLayerChange={onLayerChange}
           />
         )}
       </div>
@@ -422,7 +443,7 @@ export function StylePreviewPanel({
       <div className="border border-zinc-800 rounded-md bg-[#09090b] p-4 space-y-4">
         <h3 className="text-xs font-bold text-zinc-400 uppercase tracking-wider flex items-center gap-1.5">
           <Film size={13} className="text-[#E11D48]" />
-          2. Live Preview
+          3. Live Preview
           <span className="ml-auto flex items-center gap-2 normal-case font-normal">
             {!fontsLoaded && (
               <span className="flex items-center gap-1 text-[10px] text-zinc-500">
@@ -462,7 +483,7 @@ export function StylePreviewPanel({
 
         <p className="text-[10px] text-zinc-600 text-center leading-normal">
           Every control re-renders instantly — the preview uses the same bundled TTF files as the server renderer.
-          Drag the caption block in the preview to move it; drag its handles to resize.
+          Drag a block in the preview to move it; drag its handles to resize. Layered styles show one block per layer.
         </p>
       </div>
 

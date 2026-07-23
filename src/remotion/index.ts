@@ -5,13 +5,16 @@ import { QuoteComposition } from "./compositions/Quote";
 import { EditorialCaption } from "./compositions/EditorialCaption";
 import { LyricCaption, lyricCaptionCalculateMetadata } from "./compositions/style-lab/LyricCaption";
 import { QuoteCard, quoteCardCalculateMetadata } from "./compositions/style-lab/QuoteCard";
+import { LayeredStyle, layeredStyleCalculateMetadata } from "./compositions/style-lab/LayeredStyle";
 import { IMPORTED_COMPONENTS } from "./compositions/style-lab/imported";
 import { importedCalculateMetadata, IMPORTED_CANVAS } from "./compositions/style-lab/imported/shared";
 import { IMPORTED_STYLE_TEMPLATES } from "../lib/style-lab/imported";
+import { LAYERED_TEMPLATE_KEY, legacyParamsToLayers } from "../lib/style-lab/layers";
 import {
   BRAT_PARAM_SCHEMA,
   BRAT_TEMPLATE_KEY,
   LYRIC_PARAM_SCHEMA,
+  LYRIC_TEMPLATE_KEY,
   QUOTE_PARAM_SCHEMA,
   SAMPLE_LYRIC_LINES,
   SAMPLE_QUOTE,
@@ -153,6 +156,23 @@ const RemotionRoot: React.FC = () => {
       defaultProps: {
         ...defaultParams(BRAT_PARAM_SCHEMA),
         lines: SAMPLE_LYRIC_LINES,
+      },
+    }),
+    // ── Layered style: renders any Style Lab layer stack (see lib/style-lab/layers.ts) ──
+    React.createElement(Composition, {
+      id: LAYERED_TEMPLATE_KEY,
+      component: LayeredStyle,
+      durationInFrames: 390, // overridden by calculateMetadata (lyric-bound layers / 6s otherwise)
+      fps: STYLE_LAB_FPS,
+      width: 720, // overridden by calculateMetadata (aspectRatio param)
+      height: 1280,
+      calculateMetadata: layeredStyleCalculateMetadata,
+      defaultProps: {
+        ...defaultParams(LYRIC_PARAM_SCHEMA),
+        layers: legacyParamsToLayers(LYRIC_TEMPLATE_KEY, defaultParams(LYRIC_PARAM_SCHEMA)),
+        lines: SAMPLE_LYRIC_LINES,
+        quoteText: SAMPLE_QUOTE.quoteText,
+        author: SAMPLE_QUOTE.author,
       },
     }),
     // ── Imported collection (reactvideoeditor/remotion-templates, MIT) ──

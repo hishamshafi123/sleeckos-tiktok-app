@@ -109,13 +109,21 @@ const LineBlock: React.FC<{
   );
 };
 
-export const LyricCaption: React.FC<LyricCaptionProps> = (props) => {
+/**
+ * The timed lyric line stack (word-by-word / line-by-line / karaoke),
+ * without any absolute positioning — used by LyricCaption itself and by
+ * the layered-style composition for lyric-bound text layers. Line behavior
+ * (lineMode / linesVisible / timingOffsetMs) and typography come from
+ * `params`; per-line entry animations use the params' entry settings.
+ */
+export const LyricLines: React.FC<{ params: StyleParams; lines: LyricLine[] }> = ({
+  params,
+  lines: rawLines,
+}) => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
 
-  const params = props;
   const offset = Number(params.timingOffsetMs ?? 0);
-  const rawLines = props.lines && props.lines.length > 0 ? props.lines : SAMPLE_LYRIC_LINES;
   const lines = rawLines.map((l) => ({
     ...l,
     startMs: l.startMs + offset,
@@ -127,7 +135,6 @@ export const LyricCaption: React.FC<LyricCaptionProps> = (props) => {
   const linesVisible = Math.max(1, Math.min(3, Math.round(Number(params.linesVisible ?? 2))));
   const activeIdx = lines.findIndex((l) => t >= l.startMs && t < l.endMs);
 
-  const bg = params.bgColor ?? "transparent";
   const alignmentKey = params.alignment ?? "center";
   const fontSize = Number(params.fontSize ?? 44);
   const lineHeight = Number(params.lineHeight ?? 1.25);
@@ -167,6 +174,26 @@ export const LyricCaption: React.FC<LyricCaptionProps> = (props) => {
   }
 
   return (
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: `${Math.round(fontSize * lineHeight * 0.45)}px`,
+        alignItems: ALIGN_ITEMS[alignmentKey] ?? "center",
+      }}
+    >
+      {content}
+    </div>
+  );
+};
+
+export const LyricCaption: React.FC<LyricCaptionProps> = (props) => {
+  const params = props;
+  const rawLines = props.lines && props.lines.length > 0 ? props.lines : SAMPLE_LYRIC_LINES;
+
+  const bg = params.bgColor ?? "transparent";
+
+  return (
     <AbsoluteFill style={{ backgroundColor: bg === "transparent" ? "transparent" : bg }}>
       <PixelateFilterDefs />
       <div
@@ -176,14 +203,10 @@ export const LyricCaption: React.FC<LyricCaptionProps> = (props) => {
           left: Number(params.marginX ?? 48),
           right: Number(params.marginX ?? 48),
           transform: "translateY(-50%)",
-          display: "flex",
-          flexDirection: "column",
-          gap: `${Math.round(fontSize * lineHeight * 0.45)}px`,
-          alignItems: ALIGN_ITEMS[alignmentKey] ?? "center",
           filter: contentFilter(params),
         }}
       >
-        {content}
+        <LyricLines params={params} lines={rawLines} />
       </div>
       <EffectOverlays params={params} />
     </AbsoluteFill>

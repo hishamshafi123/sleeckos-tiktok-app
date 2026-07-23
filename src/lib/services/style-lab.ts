@@ -8,10 +8,12 @@
 
 import prisma from "@/lib/db";
 import { GoogleGenAI } from "@google/genai";
+import { Prisma } from "@prisma/client";
 import { bundle } from "@remotion/bundler";
 import { renderMedia, renderStill, selectComposition } from "@remotion/renderer";
 import { execFile } from "child_process";
 import { promisify } from "util";
+import { createHash } from "crypto";
 import path from "path";
 import fs from "fs";
 import { listFonts } from "../fonts";
@@ -28,6 +30,12 @@ import {
   type StyleFamily,
   type StyleParams,
 } from "../style-lab/schema";
+import {
+  LAYERED_TEMPLATE_KEY,
+  coerceLayers,
+  layersToJson,
+  type StyleLayer,
+} from "../style-lab/layers";
 import { STYLE_LAB_PRESETS } from "../style-lab/presets";
 
 const UPLOAD_DIR = path.join(process.cwd(), "public", "uploads", "style-lab");
@@ -120,8 +128,21 @@ export function parseStyleParams(raw: unknown): StyleParams {
   return v && typeof v === "object" ? v : {};
 }
 
-function withParsedParams<T extends { params: unknown }>(row: T): T & { params: StyleParams } {
-  return { ...row, params: parseStyleParams(row.params) };
+/**
+ * Parse SavedStyle.layers (Json?). null = legacy single-layer style (the
+ * flat params object is the main text layer). Non-empty array = layered
+ * style, rendered via the layered-style composition.
+ */
+export function parseStyleLayers(raw: unknown): StyleLayer[] | null {
+  if (raw === null || raw === undefined) return null;
+  const layers = coerceLayers(raw);
+  return layers.length > 0 ? layers : null;
+}
+
+function withParsedParams<T extends { params: unknown; layers?: unknown }>(
+  row: T,
+): T & { params: StyleParams; layers: StyleLayer[] | null } {
+  return { ...row, params: parseStyleParams(row.params), layers: parseStyleLayers(row.layers) };
 }
 
 const LAB_TEMPLATE_KEYS = ALL_STYLE_LAB_TEMPLATES.map((t) => t.key);
@@ -201,17 +222,20 @@ export async function createSavedStyle(data: {
   templateKey: string;
   name: string;
   params: StyleParams;
+  layers?: unknown; // layer stack (StyleLayer[]) — omitted/null = legacy single-layer
   tags?: string[];
   thumbnail?: string;
   createdBy?: string;
 }) {
   const schema = assertLabTemplate(data.templateKey);
   const coerced = coerceParams(schema, data.params); // full; rejects unknown keys
+  const layers = data.layers != null ? layersToJson(coerceLayers(data.layers)) : null;
   const row = await prisma.savedStyle.create({
     data: {
       templateKey: data.templateKey,
       name: data.name.trim(),
       params: JSON.stringify(coerced),
+      ...(layers && layers.length > 0 ? { layers: layers as unknown as Prisma.InputJsonValue } : {}),
       family: familyForTemplate(data.templateKey) ?? "lyric",
       tags: data.tags ?? [],
       thumbnail: data.thumbnail,
@@ -228,7 +252,13 @@ export async function getSavedStyle(id: string) {
 
 export async function updateSavedStyle(
   id: string,
-  data: { name?: string; params?: StyleParams; tags?: string[]; thumbnail?: string | null },
+  data: {
+    name?: string;
+    params?: StyleParams;
+    layers?: unknown; // StyleLayer[] to set, null to clear (back to legacy single-layer)
+    tags?: string[];
+    thumbnail?: string | null;
+  },
 ) {
   const existing = await prisma.savedStyle.findUnique({ where: { id } });
   if (!existing) throw new Error("Saved style not found");
@@ -240,6 +270,14 @@ export async function updateSavedStyle(
   if (data.params !== undefined) {
     const schema = assertLabTemplate(existing.templateKey);
     updateData.params = JSON.stringify(coerceParams(schema, data.params));
+  }
+  if (data.layers !== undefined) {
+    if (data.layers === null) {
+      updateData.layers = Prisma.JsonNull;
+    } else {
+      const layers = layersToJson(coerceLayers(data.layers));
+      updateData.layers = layers.length > 0 ? (layers as unknown as Prisma.InputJsonValue) : Prisma.JsonNull;
+    }
   }
 
   const row = await prisma.savedStyle.update({ where: { id }, data: updateData });
@@ -258,6 +296,7 @@ export async function duplicateSavedStyle(id: string, createdBy?: string) {
       templateKey: source.templateKey,
       name: `${source.name} (copy)`.slice(0, 120),
       params: source.params,
+      ...(source.layers != null ? { layers: source.layers as Prisma.InputJsonValue } : {}),
       thumbnail: source.thumbnail,
       family: source.family,
       tags: source.tags,
@@ -302,6 +341,21 @@ function enqueueRender<T>(job: () => Promise<T>): Promise<T> {
 }
 
 export type TestRenderFormat = "still" | "video";
+
+/**
+ * Content hash for a style render: templateKey + flat params + the FULL
+ * layer stack. Layered test-render/thumbnail filenames carry a slice of it
+ * so two stacks can never share a stale output.
+ */
+export function styleOverlayHash(
+  templateKey: string,
+  params: StyleParams,
+  layers: unknown,
+): string {
+  return createHash("sha256")
+    .update(JSON.stringify({ templateKey, params, layers: layers ?? null }))
+    .digest("hex");
+}
 
 // ─── Alpha (transparency) post-render assertions ─────────────────────────────
 
@@ -405,37 +459,48 @@ async function assertAlphaOutput(
 export async function renderTestSample(opts: {
   templateKey: string;
   params: StyleParams;
+  layers?: unknown; // non-empty stack → render via the layered-style comp
   format: TestRenderFormat;
 }): Promise<{ url: string }> {
   return enqueueRender(async () => {
     const schema = assertLabTemplate(opts.templateKey);
     const coerced = coerceParams(schema, opts.params);
 
+    const layers = opts.layers != null ? coerceLayers(opts.layers) : null;
+    const layered = layers !== null && layers.length > 0;
+    const compositionId = layered ? LAYERED_TEMPLATE_KEY : opts.templateKey;
+    const hash8 = layered
+      ? styleOverlayHash(opts.templateKey, coerced, layers).slice(0, 8)
+      : null;
+
     // Every comp gets the full sample-content bag; each reads only the
-    // props it understands (lines / quoteText+author / text via params).
+    // props it understands (lines / quoteText+author / text via params /
+    // the layer stack for layered-style).
     const inputProps: StyleParams = {
       ...coerced,
       lines: SAMPLE_LYRIC_LINES,
       quoteText: SAMPLE_QUOTE.quoteText,
       author: SAMPLE_QUOTE.author,
+      ...(layered ? { layers } : {}),
     };
 
     const bundleLocation = await getBundle();
     const composition = await selectComposition({
       serveUrl: bundleLocation,
-      id: opts.templateKey,
+      id: compositionId,
       inputProps,
     });
 
     if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
     const stamp = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const tag = hash8 ? `_${hash8}` : "";
 
     // Overlay styles (transparent bg) must keep alpha end-to-end.
     const isOverlay = coerced.bgColor === "transparent";
-    const styleLabel = `${opts.templateKey}`;
+    const styleLabel = `${compositionId}`;
 
     if (opts.format === "still") {
-      const fileName = `still_${stamp}.png`;
+      const fileName = `still_${stamp}${tag}.png`;
       const outFile = path.join(UPLOAD_DIR, fileName);
       // Render mid-composition so entry animations have completed.
       const frame = Math.max(0, Math.floor(composition.durationInFrames / 2));
@@ -456,7 +521,7 @@ export async function renderTestSample(opts: {
 
     if (isOverlay) {
       // WebM VP9 + PNG frames keeps the alpha channel (h264 mp4 destroys it).
-      const fileName = `test_${stamp}.webm`;
+      const fileName = `test_${stamp}${tag}.webm`;
       const outFile = path.join(UPLOAD_DIR, fileName);
       await renderMedia({
         composition,
@@ -473,7 +538,7 @@ export async function renderTestSample(opts: {
       return { url: `/uploads/style-lab/${fileName}` };
     }
 
-    const fileName = `test_${stamp}.mp4`;
+    const fileName = `test_${stamp}${tag}.mp4`;
     const outFile = path.join(UPLOAD_DIR, fileName);
     await renderMedia({
       composition,
@@ -499,6 +564,7 @@ export async function generateSavedStyleThumbnail(id: string): Promise<string | 
     const { url } = await renderTestSample({
       templateKey: row.templateKey,
       params: parseStyleParams(row.params),
+      layers: parseStyleLayers(row.layers) ?? undefined, // layered styles compose the full stack
       format: "still",
     });
     await prisma.savedStyle.update({ where: { id }, data: { thumbnail: url } });
