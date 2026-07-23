@@ -59,6 +59,7 @@ import { exec } from "child_process";
 import { promisify } from "util";
 import type { FactoryBatch, SavedStyle, Track } from "@prisma/client";
 import { coerceLayers } from "@/lib/style-lab/layers";
+import { getRemotionBundle } from "@/lib/remotion-bundle";
 import { selectUnusedFilesByFolders, markFilesUsed, getLedgerStats, getFolderLedgerStats } from "./drive-ledger";
 import { createDelivery } from "./distribution";
 import { downloadDriveFile, getDriveClient } from "../google";
@@ -1625,11 +1626,10 @@ async function getOrCreateFactoryOverlay(opts: {
   // Self-heal: stale DB row / missing file / missing sentinel → re-render.
   console.log(`[Factory Overlay] Cache miss for hash ${hash} (style ${savedStyle.name}). Rendering...`);
 
-  const { bundle } = await import("@remotion/bundler");
   const { renderMedia, selectComposition } = await import("@remotion/renderer");
-  const entryPoint = path.join(process.cwd(), "src", "remotion", "index.ts");
   if (!cachedFactoryBundle || !fs.existsSync(cachedFactoryBundle)) {
-    cachedFactoryBundle = await bundle(entryPoint);
+    console.log("[Factory Overlay] Getting shared Remotion bundle");
+    cachedFactoryBundle = await getRemotionBundle();
   }
 
   const composition = await selectComposition({

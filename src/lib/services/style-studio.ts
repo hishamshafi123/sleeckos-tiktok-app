@@ -1,5 +1,4 @@
 import prisma from "@/lib/db";
-import { bundle } from "@remotion/bundler";
 import { renderMedia, selectComposition } from "@remotion/renderer";
 import path from "path";
 import fs from "fs";
@@ -248,13 +247,10 @@ export async function queueRenderJob(savedStyleId: string, inputProps: any) {
 }
 
 // Global bundle location cache to speed up dynamic rendering
-let cachedBundleLocation: string | null = null;
+import { getRemotionBundle } from "../remotion-bundle";
 let isWorkerRunning = false;
 
 async function getBundle() {
-  if (cachedBundleLocation && fs.existsSync(cachedBundleLocation)) {
-    return cachedBundleLocation;
-  }
   const entryPoint = path.join(process.cwd(), "src", "remotion", "index.ts");
   if (!fs.existsSync(entryPoint)) {
     // If not found, create a placeholder directory/file to prevent bundler failure
@@ -262,9 +258,8 @@ async function getBundle() {
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(entryPoint, `import { registerRoot } from "remotion";\nregisterRoot(() => null);\n`);
   }
-  console.log(`[Remotion Worker] Bundling entry point: ${entryPoint}`);
-  cachedBundleLocation = await bundle(entryPoint);
-  return cachedBundleLocation;
+  console.log(`[Remotion Worker] Getting shared bundle`);
+  return getRemotionBundle();
 }
 
 /**

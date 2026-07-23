@@ -9,7 +9,6 @@
 import prisma from "@/lib/db";
 import { GoogleGenAI } from "@google/genai";
 import { Prisma } from "@prisma/client";
-import { bundle } from "@remotion/bundler";
 import { renderMedia, renderStill, selectComposition } from "@remotion/renderer";
 import { execFile } from "child_process";
 import { promisify } from "util";
@@ -462,16 +461,11 @@ export function getFontManifest() {
 
 // ─── Test renders (still + short clip), concurrency 1 ────────────────────────
 
-let cachedBundleLocation: string | null = null;
+import { getRemotionBundle } from "../remotion-bundle";
 
 async function getBundle(): Promise<string> {
-  if (cachedBundleLocation && fs.existsSync(cachedBundleLocation)) {
-    return cachedBundleLocation;
-  }
-  const entryPoint = path.join(process.cwd(), "src", "remotion", "index.ts");
-  console.log(`[Style Lab] Bundling Remotion entry point: ${entryPoint}`);
-  cachedBundleLocation = await bundle(entryPoint);
-  return cachedBundleLocation;
+  console.log("[Style Lab] Getting shared Remotion bundle");
+  return getRemotionBundle();
 }
 
 // In-process serial queue — one render at a time, like the style-studio worker.
