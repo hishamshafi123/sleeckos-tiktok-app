@@ -306,20 +306,27 @@ export default function ClientPage({ session }: { session?: { userId: string; ro
     (async () => {
       setStylesLoading(true);
       try {
-        const res = await fetch("/api/managed/style-studio/saved-styles");
-        if (res.ok) {
-          const data = await res.json();
-          setStyles(Array.isArray(data) ? data : []);
-        } else {
-          toast.error("Failed to load saved styles");
+        // Style Lab endpoint is family-aware AND self-seeds the preset library
+        // (Brat, Spotify Card, …) on first hit — the old style-studio list is
+        // merged for legacy saved styles.
+        const [labRes, legacyRes] = await Promise.all([
+          fetch(`/api/style-lab/saved-styles?family=${mode}`),
+          fetch("/api/managed/style-studio/saved-styles"),
+        ]);
+        const lab = labRes.ok ? await labRes.json() : [];
+        const legacy = legacyRes.ok ? await legacyRes.json() : [];
+        const merged = new Map<string, any>();
+        for (const s of [...(Array.isArray(legacy) ? legacy : []), ...(Array.isArray(lab) ? lab : [])]) {
+          if (s?.id) merged.set(s.id, s);
         }
+        setStyles(Array.from(merged.values()));
       } catch {
         toast.error("Failed to load saved styles");
       } finally {
         setStylesLoading(false);
       }
     })();
-  }, [step, styles.length, stylesLoading]);
+  }, [step, styles.length, stylesLoading, mode]);
 
   // Filter to the lyric/quote style families when the field exists, else show all.
   const filteredStyles = useMemo(

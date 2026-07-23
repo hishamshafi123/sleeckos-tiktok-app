@@ -15,7 +15,7 @@ export async function GET(req: NextRequest) {
   if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
-  if (!(await can(session.userId, "style_studio"))) {
+  if (!(await can(session.userId, "style_studio")) && !(await can(session.userId, "composer"))) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 

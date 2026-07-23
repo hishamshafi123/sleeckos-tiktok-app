@@ -26,6 +26,7 @@ import {
   type StyleFamily,
   type StyleParams,
 } from "../style-lab/schema";
+import { STYLE_LAB_PRESETS } from "../style-lab/presets";
 
 const UPLOAD_DIR = path.join(process.cwd(), "public", "uploads", "style-lab");
 
@@ -88,10 +89,58 @@ function withParsedParams<T extends { params: unknown }>(row: T): T & { params: 
 const LAB_TEMPLATE_KEYS = STYLE_LAB_TEMPLATES.map((t) => t.key);
 
 /**
+ * Idempotently seeds the starter saved-style presets (Brat, Spotify Card, …).
+ * Called lazily by listSavedStyles so every environment gets a working
+ * library without a manual seed run.
+ */
+export async function seedStyleLabPresets(createdBy?: string) {
+  await seedStyleLabTemplates(createdBy);
+  for (const preset of STYLE_LAB_PRESETS) {
+    const schema = schemaForTemplate(preset.templateKey);
+    if (!schema) continue;
+    const params = {
+      ...coerceParams(schema, {}),
+      ...coerceParams(schema, preset.params, { partial: true }),
+    };
+    const existing = await prisma.savedStyle.findFirst({
+      where: { templateKey: preset.templateKey, name: preset.name },
+    });
+    if (existing) {
+      await prisma.savedStyle.update({
+        where: { id: existing.id },
+        data: { params: JSON.stringify(params), family: preset.family, tags: preset.tags },
+      });
+    } else {
+      await prisma.savedStyle.create({
+        data: {
+          templateKey: preset.templateKey,
+          name: preset.name,
+          params: JSON.stringify(params),
+          family: preset.family,
+          tags: preset.tags,
+          createdBy: createdBy ?? null,
+        },
+      });
+    }
+  }
+}
+
+let presetsSeeded = false;
+
+/**
  * Styles managed by the Style Lab — i.e. presets of the two base templates.
  * Legacy style-studio presets keep living in the old studio until cleanup.
  */
 export async function listSavedStyles(family?: StyleFamily) {
+  if (!presetsSeeded) {
+    presetsSeeded = true; // guard before await — concurrent lists seed once
+    try {
+      const count = await prisma.savedStyle.count({ where: { templateKey: { in: LAB_TEMPLATE_KEYS } } });
+      if (count === 0) await seedStyleLabPresets();
+    } catch (err) {
+      console.error("[Style Lab] Lazy preset seed failed:", err);
+    }
+  }
   const rows = await prisma.savedStyle.findMany({
     where: {
       templateKey: { in: LAB_TEMPLATE_KEYS },
