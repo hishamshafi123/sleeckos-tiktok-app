@@ -2,7 +2,8 @@
 
 import React, { useMemo, useState } from "react";
 import {
-  Copy, Image as ImageIcon, LayoutGrid, Loader2, Play, Search,
+  Check, Copy, FlaskConical, Image as ImageIcon, LayoutGrid, Loader2, Play,
+  Search, Trash2, UploadCloud, X,
 } from "lucide-react";
 
 /**
@@ -12,7 +13,19 @@ import {
  * webm (rendered next to it at seed time) on hover/focus. Cards are
  * keyboard-operable: Tab focuses a card, Enter/Space opens it in the
  * editor; the action buttons stop propagation.
+ *
+ * The drafts shelf (Part 7) lists AI-generated draft templates with their
+ * validation badges; drafts are admin-managed (validate → publish) and
+ * never reach production pickers.
  */
+
+export interface DraftValidationState {
+  schema: boolean;
+  transparency: boolean;
+  render: boolean;
+  validatedAt: string | null;
+  errors: string[];
+}
 
 export interface GalleryTemplate {
   id: string;
@@ -25,14 +38,24 @@ export interface GalleryTemplate {
   thumbnail: string | null;
   previewUrl: string | null;
   defaultParams: Record<string, any>;
+  /** AI templates (layered): the draft's layer stack, else null. */
+  layers?: any[] | null;
+  /** AI drafts: latest validation verdict, else null. */
+  validation?: DraftValidationState | null;
   paramSchema: string;
 }
 
 interface TemplateGalleryProps {
   templates: GalleryTemplate[];
   loading: boolean;
+  isAdmin: boolean;
   onUse: (tpl: GalleryTemplate) => void;
   onDuplicate: (tpl: GalleryTemplate) => void;
+  onValidate: (tpl: GalleryTemplate) => void;
+  onPublish: (tpl: GalleryTemplate) => void;
+  onDeleteDraft: (tpl: GalleryTemplate) => void;
+  /** Draft key currently running a validate/publish job (disables its buttons). */
+  draftBusyKey?: string | null;
 }
 
 const TAG_ORDER = [
@@ -169,7 +192,125 @@ function TemplateCard({
   );
 }
 
-export function TemplateGallery({ templates, loading, onUse, onDuplicate }: TemplateGalleryProps) {
+/** Small validation badge for draft cards: ✓/✗ per gate. */
+function CheckBadge({ label, pass }: { label: string; pass: boolean }) {
+  return (
+    <span
+      className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[9px] font-mono ${
+        pass
+          ? "bg-emerald-950/40 border-emerald-900/50 text-emerald-300"
+          : "bg-zinc-900 border-zinc-800 text-zinc-500"
+      }`}
+    >
+      {pass ? <Check size={9} /> : <X size={9} />}
+      {label}
+    </span>
+  );
+}
+
+function DraftCard({
+  tpl,
+  isAdmin,
+  busy,
+  onOpen,
+  onValidate,
+  onPublish,
+  onDelete,
+}: {
+  tpl: GalleryTemplate;
+  isAdmin: boolean;
+  busy: boolean;
+  onOpen: () => void;
+  onValidate: () => void;
+  onPublish: () => void;
+  onDelete: () => void;
+}) {
+  const v = tpl.validation ?? null;
+  const validated = !!v && v.schema && v.transparency && v.render && !!v.validatedAt;
+
+  return (
+    <div className="bg-zinc-950 border border-amber-900/40 rounded-xl overflow-hidden flex flex-col transition hover:border-amber-700/50">
+      {/* Thumbnail */}
+      <div
+        className="relative aspect-[3/4] border-b border-zinc-900 overflow-hidden"
+        style={{ backgroundImage: CHECKERBOARD_BG, backgroundSize: "16px 16px", backgroundColor: "#040406" }}
+      >
+        {tpl.thumbnail ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img src={tpl.thumbnail} alt={tpl.name} className="absolute inset-0 w-full h-full object-cover" loading="lazy" />
+        ) : (
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-1.5 text-zinc-700">
+            <FlaskConical size={20} />
+            <span className="text-[9px] font-mono uppercase tracking-wider">Validate to render</span>
+          </div>
+        )}
+        <span className="absolute top-2 left-2 px-1.5 py-0.5 rounded bg-amber-500/15 border border-amber-500/40 text-[9px] font-mono uppercase tracking-wider text-amber-300">
+          Draft
+        </span>
+        <span className="absolute top-2 right-2 px-1.5 py-0.5 rounded bg-black/70 border border-zinc-800 text-[9px] font-mono uppercase tracking-wider text-zinc-300">
+          {tpl.family}
+        </span>
+      </div>
+
+      <div className="p-3.5 flex flex-col gap-2.5 flex-1">
+        <h4 className="text-xs font-bold text-zinc-200 leading-snug">{tpl.name}</h4>
+
+        {/* Validation gates */}
+        <div className="flex flex-wrap gap-1">
+          <CheckBadge label="schema" pass={!!v?.schema} />
+          <CheckBadge label="alpha" pass={!!v?.transparency} />
+          <CheckBadge label="render" pass={!!v?.render} />
+        </div>
+        {v && v.errors.length > 0 && (
+          <p className="text-[9px] font-mono text-red-400/90 leading-snug line-clamp-3" title={v.errors.join("\n")}>
+            {v.errors[0]}
+          </p>
+        )}
+
+        <div className="flex items-center gap-1.5 border-t border-zinc-900 pt-2.5 mt-auto">
+          <button
+            onClick={onOpen}
+            className="flex-1 bg-zinc-900 border border-zinc-800 hover:bg-zinc-800 text-zinc-200 font-semibold py-1.5 rounded transition text-[10px] focus:outline-none focus-visible:ring-1 focus-visible:ring-[#E11D48]"
+          >
+            Open in editor
+          </button>
+          {isAdmin && (
+            <>
+              <button
+                onClick={onValidate}
+                disabled={busy}
+                title="Run validation (schema, transparency, test render)"
+                className="px-2 py-1.5 bg-zinc-900 border border-zinc-800 hover:bg-zinc-800 text-zinc-300 rounded transition text-[10px] font-semibold disabled:opacity-50 focus:outline-none focus-visible:ring-1 focus-visible:ring-[#E11D48]"
+              >
+                {busy ? <Loader2 size={11} className="animate-spin" /> : "Validate"}
+              </button>
+              <button
+                onClick={onPublish}
+                disabled={busy || !validated}
+                title={validated ? "Publish to the template library" : "Validate successfully first"}
+                aria-label={`Publish ${tpl.name}`}
+                className="p-1.5 bg-[#E11D48] hover:bg-rose-700 text-white rounded transition disabled:opacity-40 disabled:cursor-not-allowed focus:outline-none focus-visible:ring-1 focus-visible:ring-[#E11D48]"
+              >
+                <UploadCloud size={12} />
+              </button>
+              <button
+                onClick={onDelete}
+                disabled={busy}
+                title="Delete draft"
+                aria-label={`Delete ${tpl.name}`}
+                className="p-1.5 bg-zinc-900 border border-zinc-800 hover:bg-zinc-800 text-zinc-500 hover:text-red-400 rounded transition disabled:opacity-50 focus:outline-none focus-visible:ring-1 focus-visible:ring-[#E11D48]"
+              >
+                <Trash2 size={12} />
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export function TemplateGallery({ templates, loading, isAdmin, onUse, onDuplicate, onValidate, onPublish, onDeleteDraft, draftBusyKey }: TemplateGalleryProps) {
   const [familyFilter, setFamilyFilter] = useState<"all" | "lyric" | "quote">("all");
   const [tagFilter, setTagFilter] = useState<string>("");
   const [search, setSearch] = useState("");
@@ -286,19 +427,30 @@ export function TemplateGallery({ templates, loading, onUse, onDuplicate }: Temp
         </div>
       )}
 
-      {/* Drafts shelf — only rendered once draft templates exist (Part 7). */}
+      {/* Drafts shelf — AI-generated templates pending validation/publish.
+          Drafts are layered styles, admin-managed, never in production lists. */}
       {drafts.length > 0 && (
         <div className="space-y-3">
-          <h3 className="text-xs font-bold text-zinc-500 uppercase tracking-wider border-t border-zinc-900 pt-4">
-            Drafts
-          </h3>
+          <div className="border-t border-zinc-900 pt-4 space-y-1">
+            <h3 className="text-xs font-bold text-amber-300/90 uppercase tracking-wider flex items-center gap-1.5">
+              <FlaskConical size={12} />
+              Drafts — AI generated
+            </h3>
+            <p className="text-[10px] text-zinc-600">
+              Not usable in production. Validate (schema, transparency, test render), tweak in the editor, then publish.
+            </p>
+          </div>
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
             {drafts.map((tpl) => (
-              <TemplateCard
+              <DraftCard
                 key={tpl.key}
                 tpl={tpl}
-                onUse={() => onUse(tpl)}
-                onDuplicate={() => onDuplicate(tpl)}
+                isAdmin={isAdmin}
+                busy={draftBusyKey === tpl.key}
+                onOpen={() => onUse(tpl)}
+                onValidate={() => onValidate(tpl)}
+                onPublish={() => onPublish(tpl)}
+                onDelete={() => onDeleteDraft(tpl)}
               />
             ))}
           </div>

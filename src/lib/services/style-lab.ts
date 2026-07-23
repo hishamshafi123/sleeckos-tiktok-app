@@ -19,14 +19,18 @@ import fs from "fs";
 import { listFonts } from "../fonts";
 import {
   ALL_STYLE_LAB_TEMPLATES,
+  LYRIC_PARAM_SCHEMA,
   LYRIC_TEMPLATE_KEY,
+  QUOTE_PARAM_SCHEMA,
   QUOTE_TEMPLATE_KEY,
   SAMPLE_LYRIC_LINES,
   SAMPLE_QUOTE,
   coerceParams,
   defaultParams,
   familyForTemplate,
+  isAiTemplateKey,
   schemaForTemplate,
+  type ParamField,
   type StyleFamily,
   type StyleParams,
 } from "../style-lab/schema";
@@ -92,9 +96,49 @@ function previewUrlIfRendered(templateKey: string): string | null {
 }
 
 /**
+ * Gallery row decorator: builtin/imported rows resolve family + defaults from
+ * the code registry; AI draft rows (source "ai_draft") carry everything in
+ * their paramSchema JSON payload ({ fields, layers, defaultParams, family,
+ * validation? }).
+ */
+function decorateTemplateRow(row: any) {
+  const meta = ALL_STYLE_LAB_TEMPLATES.find((t) => t.key === row.key);
+  if (meta) {
+    return {
+      ...row,
+      family: meta.family,
+      defaultParams: defaultParams(meta.schema),
+      layers: null,
+      validation: null,
+      previewUrl: previewUrlIfRendered(row.key),
+    };
+  }
+  const payload = parseDraftTemplatePayload(row.paramSchema);
+  if (payload) {
+    return {
+      ...row,
+      family: payload.family,
+      defaultParams: payload.defaultParams,
+      layers: payload.layers,
+      validation: payload.validation ?? null,
+      previewUrl: previewUrlIfRendered(row.key),
+    };
+  }
+  return {
+    ...row,
+    family: row.key === QUOTE_TEMPLATE_KEY ? "quote" : "lyric",
+    defaultParams: {},
+    layers: null,
+    validation: null,
+    previewUrl: previewUrlIfRendered(row.key),
+  };
+}
+
+/**
  * Gallery payload: all published template rows enriched with family,
  * defaultParams (from the code registry — the row's schema defaults) and
- * the hover-preview URL when the seed script has rendered one.
+ * the hover-preview URL when the seed script has rendered one. AI draft rows
+ * (status "draft") are included so the gallery can render the drafts shelf.
  */
 export async function getStyleLabTemplates() {
   await seedStyleLabTemplates();
@@ -102,15 +146,7 @@ export async function getStyleLabTemplates() {
     where: { isBase: true },
     orderBy: [{ source: "asc" }, { createdAt: "asc" }],
   });
-  return rows.map((row) => {
-    const meta = ALL_STYLE_LAB_TEMPLATES.find((t) => t.key === row.key);
-    return {
-      ...row,
-      family: meta?.family ?? (row.key === QUOTE_TEMPLATE_KEY ? "quote" : "lyric"),
-      defaultParams: meta ? defaultParams(meta.schema) : {},
-      previewUrl: previewUrlIfRendered(row.key),
-    };
-  });
+  return rows.map(decorateTemplateRow);
 }
 
 // ─── Saved styles ────────────────────────────────────────────────────────────
@@ -146,6 +182,9 @@ function withParsedParams<T extends { params: unknown; layers?: unknown }>(
 }
 
 const LAB_TEMPLATE_KEYS = ALL_STYLE_LAB_TEMPLATES.map((t) => t.key);
+/** Saved styles may also be layered stacks (templateKey "layered-style"),
+ * e.g. forks of published AI templates. */
+const SAVED_STYLE_TEMPLATE_KEYS = [...LAB_TEMPLATE_KEYS, LAYERED_TEMPLATE_KEY];
 
 /**
  * Idempotently seeds the starter saved-style presets (Brat, Spotify Card, …).
@@ -202,7 +241,7 @@ export async function listSavedStyles(family?: StyleFamily) {
   }
   const rows = await prisma.savedStyle.findMany({
     where: {
-      templateKey: { in: LAB_TEMPLATE_KEYS },
+      templateKey: { in: SAVED_STYLE_TEMPLATE_KEYS },
       ...(family ? { family } : {}),
     },
     orderBy: { createdAt: "desc" },
@@ -211,11 +250,71 @@ export async function listSavedStyles(family?: StyleFamily) {
 }
 
 function assertLabTemplate(templateKey: string) {
-  const schema = schemaForTemplate(templateKey);
+  const schema =
+    schemaForTemplate(templateKey) ??
+    (templateKey === LAYERED_TEMPLATE_KEY ? LYRIC_PARAM_SCHEMA : null);
   if (!schema) {
     throw new Error(`Unknown Style Lab template "${templateKey}"`);
   }
   return schema;
+}
+
+/**
+ * Schema resolution for render paths (async — AI template keys resolve their
+ * fields from the StyleTemplate row's paramSchema payload).
+ */
+async function resolveSchemaForRender(templateKey: string): Promise<ParamField[]> {
+  const sync =
+    schemaForTemplate(templateKey) ??
+    (templateKey === LAYERED_TEMPLATE_KEY ? LYRIC_PARAM_SCHEMA : null);
+  if (sync) return sync;
+  if (isAiTemplateKey(templateKey)) {
+    const row = await prisma.styleTemplate.findUnique({ where: { key: templateKey } });
+    const payload = row ? parseDraftTemplatePayload(row.paramSchema) : null;
+    if (payload) return payload.fields;
+  }
+  throw new Error(`Unknown Style Lab template "${templateKey}"`);
+}
+
+/**
+ * Save-path resolution. AI template keys (ai_*) are translated to their
+ * production-safe shape: the SavedStyle stores templateKey "layered-style"
+ * (a registered composition) plus the template's layer stack. Only
+ * PUBLISHED AI templates resolve — drafts cannot enter the library.
+ */
+async function resolveTemplateForSave(templateKey: string): Promise<{
+  schema: ParamField[];
+  storeKey: string;
+  family: StyleFamily;
+  defaultLayers: StyleLayer[] | null;
+}> {
+  const builtin = schemaForTemplate(templateKey);
+  if (builtin) {
+    return {
+      schema: builtin,
+      storeKey: templateKey,
+      family: familyForTemplate(templateKey) ?? "lyric",
+      defaultLayers: null,
+    };
+  }
+  if (templateKey === LAYERED_TEMPLATE_KEY) {
+    return { schema: LYRIC_PARAM_SCHEMA, storeKey: templateKey, family: "lyric", defaultLayers: null };
+  }
+  if (isAiTemplateKey(templateKey)) {
+    const row = await prisma.styleTemplate.findUnique({ where: { key: templateKey } });
+    const payload =
+      row && row.status === "published" ? parseDraftTemplatePayload(row.paramSchema) : null;
+    if (!payload) {
+      throw new Error(`Template "${templateKey}" is not a published Style Lab template`);
+    }
+    return {
+      schema: payload.fields,
+      storeKey: LAYERED_TEMPLATE_KEY,
+      family: payload.family,
+      defaultLayers: payload.layers,
+    };
+  }
+  throw new Error(`Unknown Style Lab template "${templateKey}"`);
 }
 
 export async function createSavedStyle(data: {
@@ -227,16 +326,18 @@ export async function createSavedStyle(data: {
   thumbnail?: string;
   createdBy?: string;
 }) {
-  const schema = assertLabTemplate(data.templateKey);
-  const coerced = coerceParams(schema, data.params); // full; rejects unknown keys
-  const layers = data.layers != null ? layersToJson(coerceLayers(data.layers)) : null;
+  const resolved = await resolveTemplateForSave(data.templateKey);
+  const coerced = coerceParams(resolved.schema, data.params); // full; rejects unknown keys
+  // Explicit layers win; forks of published AI templates inherit the stack.
+  const layerSource = data.layers != null ? data.layers : resolved.defaultLayers;
+  const layers = layerSource != null ? layersToJson(coerceLayers(layerSource)) : null;
   const row = await prisma.savedStyle.create({
     data: {
-      templateKey: data.templateKey,
+      templateKey: resolved.storeKey,
       name: data.name.trim(),
       params: JSON.stringify(coerced),
       ...(layers && layers.length > 0 ? { layers: layers as unknown as Prisma.InputJsonValue } : {}),
-      family: familyForTemplate(data.templateKey) ?? "lyric",
+      family: resolved.family,
       tags: data.tags ?? [],
       thumbnail: data.thumbnail,
       createdBy: data.createdBy,
@@ -463,7 +564,7 @@ export async function renderTestSample(opts: {
   format: TestRenderFormat;
 }): Promise<{ url: string }> {
   return enqueueRender(async () => {
-    const schema = assertLabTemplate(opts.templateKey);
+    const schema = await resolveSchemaForRender(opts.templateKey);
     const coerced = coerceParams(schema, opts.params);
 
     const layers = opts.layers != null ? coerceLayers(opts.layers) : null;
@@ -559,7 +660,7 @@ export async function renderTestSample(opts: {
  */
 export async function generateSavedStyleThumbnail(id: string): Promise<string | null> {
   const row = await prisma.savedStyle.findUnique({ where: { id } });
-  if (!row || !LAB_TEMPLATE_KEYS.includes(row.templateKey)) return null;
+  if (!row || !SAVED_STYLE_TEMPLATE_KEYS.includes(row.templateKey)) return null;
   try {
     const { url } = await renderTestSample({
       templateKey: row.templateKey,
@@ -738,4 +839,569 @@ Respond with a single raw JSON object mapping param keys to values. Include only
   // Remotion, which can exceed an HTTP timeout — don't block the response).
   void generateSavedStyleThumbnail(style.id).catch(() => undefined);
   return style;
+}
+
+// ─── AI draft templates (Part 7: describe → layered draft → validate → publish) ─
+//
+// Deliberately constrained generation: the model returns a LAYER STACK +
+// canvas params (never raw component code), so drafts compile by
+// construction — they render through the registered layered-style
+// composition. All model output is validated against the layer coercers and
+// param-schema validators before a StyleTemplate row (source "ai_draft",
+// status "draft") is created. Drafts become production-usable only after
+// validate (schema + transparency + render) and publish.
+
+export interface DraftValidation {
+  schema: boolean;
+  transparency: boolean;
+  render: boolean;
+  /** ISO timestamp of the last fully-successful validation, else null. */
+  validatedAt: string | null;
+  errors: string[];
+}
+
+export interface DraftTemplatePayload {
+  fields: ParamField[];
+  layers: StyleLayer[];
+  defaultParams: StyleParams;
+  family: StyleFamily;
+  validation?: DraftValidation | null;
+}
+
+const HEX_COLOR_RE = /^#(?:[0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/;
+
+/**
+ * Parses an AI-template row's paramSchema payload. Returns null for
+ * non-object schemas (builtin rows store a plain ParamField[] — those are
+ * handled by the code registry instead).
+ */
+export function parseDraftTemplatePayload(raw: unknown): DraftTemplatePayload | null {
+  let v: any = raw;
+  for (let i = 0; i < 2 && typeof v === "string"; i++) {
+    try {
+      v = JSON.parse(v);
+    } catch {
+      return null;
+    }
+  }
+  if (!v || typeof v !== "object" || Array.isArray(v)) return null;
+  if (!Array.isArray(v.fields) || !Array.isArray(v.layers)) return null;
+  return {
+    fields: v.fields as ParamField[],
+    layers: coerceLayers(v.layers),
+    defaultParams: v.defaultParams && typeof v.defaultParams === "object" ? v.defaultParams : {},
+    family: v.family === "quote" ? "quote" : "lyric",
+    validation: v.validation ?? null,
+  };
+}
+
+/** Drafts the model can pick values for (canvas / bg / lyric engine / effects). */
+const DRAFT_BASE_PARAM_KEYS = [
+  "bgColor",
+  "aspectRatio",
+  "lineMode",
+  "linesVisible",
+  "timingOffsetMs",
+  "pixelate",
+  "blur",
+  "vignette",
+  "grain",
+  "noise",
+];
+
+function draftBaseSchema(family: StyleFamily): ParamField[] {
+  const full = family === "quote" ? QUOTE_PARAM_SCHEMA : LYRIC_PARAM_SCHEMA;
+  return full.filter((f) => DRAFT_BASE_PARAM_KEYS.includes(f.key));
+}
+
+function draftFullSchema(family: StyleFamily): ParamField[] {
+  return family === "quote" ? QUOTE_PARAM_SCHEMA : LYRIC_PARAM_SCHEMA;
+}
+
+function slugifyDraftKey(name: string): string {
+  return (
+    name
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 40) || "style"
+  );
+}
+
+async function uniqueDraftKey(name: string): Promise<string> {
+  const slug = slugifyDraftKey(name);
+  for (let i = 0; i < 10; i++) {
+    const rand = Math.random().toString(36).slice(2, 8);
+    const key = `ai_${slug}_${rand}`;
+    const existing = await prisma.styleTemplate.findUnique({ where: { key } });
+    if (!existing) return key;
+  }
+  throw new Error("Could not allocate a unique draft template key");
+}
+
+// ─── AI output validation (strict — feeds one retry) ─────────────────────────
+
+const LAYER_TYPES = new Set(["text", "image", "shape"]);
+const LAYER_BINDS = new Set(["lyrics", "quote"]);
+const LAYER_ENTRY_TYPES = new Set(["fade", "slide-up", "pop", "none"]);
+const LAYER_TRANSFORMS = new Set(["none", "uppercase", "lowercase"]);
+const LAYER_ALIGNMENTS = new Set(["left", "center", "right"]);
+
+function assertModelColor(value: unknown, label: string) {
+  if (value === undefined) return;
+  const s = String(value).trim();
+  if (s !== "transparent" && !HEX_COLOR_RE.test(s)) {
+    throw new Error(`${label} must be "transparent" or a #RRGGBB hex color (got ${JSON.stringify(value)})`);
+  }
+}
+
+function validateAiDraftJson(parsed: any, family: StyleFamily): {
+  name: string;
+  tags: string[];
+  defaultParams: StyleParams;
+  layers: StyleLayer[];
+} {
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("response is not a JSON object");
+  }
+  const name = typeof parsed.name === "string" ? parsed.name.trim() : "";
+  if (!name) throw new Error('"name" must be a non-empty string');
+
+  const tags: string[] = Array.isArray(parsed.tags)
+    ? [...new Set<string>(
+        parsed.tags
+          .filter((t: any) => typeof t === "string")
+          .map((t: string) => t.trim().toLowerCase())
+          .filter((t: string) => t.length > 0),
+      )].slice(0, 6)
+    : [];
+  if (!tags.includes("ai")) tags.unshift("ai");
+
+  // baseParams: only the whitelisted canvas/effects keys (coerceParams throws
+  // on unknown keys), bgColor strictly valid when present.
+  const baseParams = parsed.baseParams ?? {};
+  if (typeof baseParams !== "object" || Array.isArray(baseParams)) {
+    throw new Error('"baseParams" must be an object');
+  }
+  const coercedBase = coerceParams(draftBaseSchema(family), baseParams, { partial: true });
+  assertModelColor(baseParams.bgColor, "baseParams.bgColor");
+
+  // layers: strict shape checks BEFORE the tolerant coercer so the model gets
+  // actionable feedback instead of silent defaulting.
+  const rawLayers = parsed.layers;
+  if (!Array.isArray(rawLayers) || rawLayers.length === 0) {
+    throw new Error('"layers" must be a non-empty array');
+  }
+  if (rawLayers.length > 6) throw new Error('"layers" supports at most 6 entries');
+  const fonts = listFonts();
+  rawLayers.forEach((raw: any, i: number) => {
+    const where = `layers[${i}]`;
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+      throw new Error(`${where} must be an object`);
+    }
+    if (raw.type !== undefined && !LAYER_TYPES.has(raw.type)) {
+      throw new Error(`${where}.type must be one of text/image/shape`);
+    }
+    const type = raw.type ?? "text";
+    if (raw.bind !== undefined && raw.bind !== null && !LAYER_BINDS.has(raw.bind)) {
+      throw new Error(`${where}.bind must be "lyrics", "quote" or null`);
+    }
+    if (raw.entryType !== undefined && !LAYER_ENTRY_TYPES.has(raw.entryType)) {
+      throw new Error(`${where}.entryType must be one of fade/slide-up/pop/none`);
+    }
+    if (raw.textTransform !== undefined && !LAYER_TRANSFORMS.has(raw.textTransform)) {
+      throw new Error(`${where}.textTransform must be one of none/uppercase/lowercase`);
+    }
+    if (raw.alignment !== undefined && !LAYER_ALIGNMENTS.has(raw.alignment)) {
+      throw new Error(`${where}.alignment must be one of left/center/right`);
+    }
+    if (type === "text" && raw.fontFamily !== undefined) {
+      const ok = fonts.some((f) => f.family.toLowerCase() === String(raw.fontFamily).toLowerCase());
+      if (!ok) throw new Error(`${where}.fontFamily "${raw.fontFamily}" is not an available font`);
+    }
+    assertModelColor(raw.textColor, `${where}.textColor`);
+    assertModelColor(raw.highlightColor, `${where}.highlightColor`);
+    assertModelColor(raw.shapeColor, `${where}.shapeColor`);
+  });
+  const layers = coerceLayers(rawLayers);
+  if (layers.length !== rawLayers.length) {
+    throw new Error("one or more layers could not be coerced");
+  }
+  if (!layers.some((l) => l.visible && l.type === "text")) {
+    throw new Error("at least one visible text layer is required");
+  }
+
+  const fields = draftFullSchema(family);
+  const mergedParams: StyleParams = {
+    ...defaultParams(fields),
+    ...coerceParams(fields, coercedBase, { partial: true }),
+  };
+  return { name: name.slice(0, 80), tags, defaultParams: mergedParams, layers };
+}
+
+function aiDraftPrompt(description: string, family: StyleFamily): string {
+  const baseFields = draftBaseSchema(family)
+    .map((f) => {
+      const bits = [`"${f.key}" (${f.type}`];
+      if (f.min !== undefined || f.max !== undefined) bits.push(`range ${f.min}–${f.max}`);
+      if (f.options) bits.push(`one of: ${f.options.map((o) => o.value).join(", ")}`);
+      bits.push(`default ${JSON.stringify(f.defaultValue)}`);
+      return `- ${bits.join("; ")}) — ${f.label}`;
+    })
+    .join("\n");
+  const fonts = listFonts()
+    .map((f) => `${f.family} (weights: ${f.weights.join("/")}${f.italics.length ? `, italics: ${f.italics.join("/")}` : ""})`)
+    .join("; ");
+  const bindGuidance =
+    family === "quote"
+      ? 'Bind the main text layer to "quote" (it renders the quote text). Attribution/secondary layers can be unbound static text.'
+      : 'Bind the main text layer to "lyrics" (it renders the song lyrics with karaoke/word/line modes). Secondary layers can be unbound static text.';
+
+  return `Design a ${family === "quote" ? "quote card" : "lyric caption"} video text-overlay style matching this creative direction:
+"${description}"
+
+You are designing a LAYERED style: a stack of positioned layers on a transparent or solid canvas. Respond with a single raw JSON object (no markdown fences, no commentary) of this exact shape:
+{
+  "name": string,              // short style name, <= 60 chars
+  "tags": string[],            // <= 6 lowercase discovery tags (e.g. "trend", "karaoke", "bold")
+  "baseParams": { ... },       // canvas-wide params, ONLY the keys listed below
+  "layers": [ ... ]            // 1–6 layers, bottom first
+}
+
+BASE PARAMS (use ONLY these keys):
+${baseFields}
+
+LAYER MODEL (each layer):
+- id: string (any unique slug, e.g. "main", "accent-bar")
+- type: "text" | "image" | "shape"
+- name: short label
+- visible: boolean
+- xPercent, yPercent: 0–100 — the layer block's CENTER as a % of the canvas
+- widthPercent: 2–100 — block width as a % of canvas width
+- zIndex: integer (0 = bottom; array order is render order)
+Text layers also have:
+- bind: "lyrics" | "quote" | null (null = render the layer's own static "text")
+- text: string (static content when unbound)
+- fontFamily, fontWeight (100–900), fontSize (8–400), italic,
+  textColor, highlightColor (karaoke/active-word color), textTransform
+  ("none"|"uppercase"|"lowercase"), letterSpacing (-4–20), lineHeight (1–2.5),
+  alignment ("left"|"center"|"right")
+Shape layers also have: shapeColor, shapeOpacity (0–1), heightPercent (1–100), borderRadius (0–200)
+Image layers also have: imageUrl (leave "" — admins upload later)
+All layers: entryType ("fade"|"slide-up"|"pop"|"none"), entryDurationMs (0–2000), delayMs (0–10000)
+
+Available fontFamily values: ${fonts}
+
+Rules:
+- ${bindGuidance}
+- Colors are #RRGGBB hex; "transparent" is valid only for bgColor/text colors, not shapes.
+- bgColor MUST be set explicitly in baseParams: "transparent" for an overlay style, or a solid hex.
+- fontWeight must be one of the chosen family's available weights; respect all ranges and enums exactly.
+- At least one visible text layer is required.`;
+}
+
+async function callGeminiForDraft(apiKey: string, prompt: string): Promise<string> {
+  const ai = new GoogleGenAI({ apiKey });
+  const response = await ai.models.generateContent({
+    model: "gemini-2.5-flash",
+    contents: prompt,
+    config: {
+      systemInstruction:
+        "You are a video caption style designer. You translate a short creative direction into a concrete JSON layer-stack design for a Remotion text-overlay template. You output ONLY valid JSON — no markdown, no commentary.",
+    },
+  });
+  return (response.text || "").trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
+}
+
+/**
+ * Admin "New template": Gemini designs a layered style from a creative
+ * description → validated (strict; one retry with the error fed back) →
+ * persisted as a StyleTemplate row (source "ai_draft", status "draft",
+ * templateKey ai_<slug>). Drafts render through the layered-style comp, so
+ * they compile by construction — no AI-written code is ever executed.
+ */
+export async function generateAiDraftTemplate(opts: {
+  description: string;
+  family: StyleFamily;
+  createdBy?: string;
+}) {
+  const description = opts.description.trim();
+  if (!description) throw new Error("Description is required");
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) throw new Error("GEMINI_API_KEY environment variable is missing");
+
+  const basePrompt = aiDraftPrompt(description, opts.family);
+  let lastError = "";
+  let draft: ReturnType<typeof validateAiDraftJson> | null = null;
+
+  for (let attempt = 0; attempt < 2 && !draft; attempt++) {
+    const prompt = lastError
+      ? `${basePrompt}\n\nYour previous answer was rejected: ${lastError}\nReturn a corrected JSON object only.`
+      : basePrompt;
+    const text = await callGeminiForDraft(apiKey, prompt);
+    let parsed: any;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      lastError = "response was not parseable JSON";
+      continue;
+    }
+    try {
+      draft = validateAiDraftJson(parsed, opts.family);
+    } catch (err: any) {
+      lastError = err?.message ?? "invalid draft";
+    }
+  }
+  if (!draft) {
+    throw new Error(`AI draft generation failed validation: ${lastError}`);
+  }
+
+  const key = await uniqueDraftKey(draft.name);
+  const payload: DraftTemplatePayload = {
+    fields: draftFullSchema(opts.family),
+    layers: layersToJson(draft.layers),
+    defaultParams: draft.defaultParams,
+    family: opts.family,
+    validation: null,
+  };
+  const row = await prisma.styleTemplate.create({
+    data: {
+      key,
+      name: draft.name,
+      engine: "remotion",
+      paramSchema: JSON.stringify(payload),
+      isBase: true, // gallery row (drafts shelf until published)
+      source: "ai_draft",
+      status: "draft",
+      tags: draft.tags,
+      createdBy: opts.createdBy,
+    },
+  });
+  return decorateTemplateRow(row);
+}
+
+export async function listAiDrafts() {
+  const rows = await prisma.styleTemplate.findMany({
+    where: { source: "ai_draft", status: "draft" },
+    orderBy: { createdAt: "desc" },
+  });
+  return rows.map(decorateTemplateRow);
+}
+
+export async function updateDraftTemplate(
+  id: string,
+  data: {
+    name?: string;
+    tags?: string[];
+    defaultParams?: StyleParams;
+    layers?: unknown;
+  },
+) {
+  const row = await prisma.styleTemplate.findUnique({ where: { id } });
+  if (!row || row.source !== "ai_draft") throw new Error("Draft template not found");
+  if (row.status !== "draft") throw new Error("Only draft templates can be edited this way");
+  const payload = parseDraftTemplatePayload(row.paramSchema);
+  if (!payload) throw new Error("Draft template payload is malformed");
+
+  if (data.defaultParams !== undefined) {
+    payload.defaultParams = coerceParams(payload.fields, data.defaultParams); // throws on unknown keys
+  }
+  if (data.layers !== undefined) {
+    const layers = coerceLayers(data.layers);
+    if (layers.length === 0) throw new Error("Layer stack cannot be empty");
+    payload.layers = layers;
+  }
+  // Any edit invalidates the previous validation — re-validate before publish.
+  payload.validation = null;
+
+  const updated = await prisma.styleTemplate.update({
+    where: { id },
+    data: {
+      ...(data.name !== undefined ? { name: data.name.trim().slice(0, 80) } : {}),
+      ...(data.tags !== undefined ? { tags: data.tags } : {}),
+      paramSchema: JSON.stringify({ ...payload, layers: layersToJson(payload.layers) }),
+    },
+  });
+  return decorateTemplateRow(updated);
+}
+
+const DRAFT_PREVIEW_SECONDS = 2;
+
+/**
+ * Renders a draft's gallery assets (still thumbnail + ~2s hover preview)
+ * through the layered-style composition. Throws on failure; runs the alpha
+ * assertion for transparent (overlay) styles.
+ */
+async function renderDraftAssets(
+  templateKey: string,
+  payload: DraftTemplatePayload,
+): Promise<{ thumbnail: string; preview: string }> {
+  return enqueueRender(async () => {
+    const params = coerceParams(payload.fields, payload.defaultParams);
+    const layers = payload.layers;
+    const inputProps: StyleParams = {
+      ...params,
+      layers,
+      lines: SAMPLE_LYRIC_LINES,
+      quoteText: SAMPLE_QUOTE.quoteText,
+      author: SAMPLE_QUOTE.author,
+    };
+
+    const bundleLocation = await getBundle();
+    const composition = await selectComposition({
+      serveUrl: bundleLocation,
+      id: LAYERED_TEMPLATE_KEY,
+      inputProps,
+    });
+
+    if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+    const urls = templateAssetUrls(templateKey);
+    const thumbFile = path.join(UPLOAD_DIR, `tpl_${templateKey}.png`);
+    const previewFile = path.join(UPLOAD_DIR, `tpl_${templateKey}_preview.webm`);
+    const isOverlay = params.bgColor === "transparent";
+    const browserExecutable = process.env.PUPPETEER_EXECUTABLE_PATH || undefined;
+
+    // Still: mid-clip so entry animations have completed.
+    const frame = Math.max(0, Math.floor(composition.durationInFrames / 2));
+    await renderStill({
+      composition,
+      serveUrl: bundleLocation,
+      output: thumbFile,
+      inputProps,
+      frame,
+      browserExecutable,
+    });
+    if (isOverlay) await assertAlphaOutput(thumbFile, "still", templateKey);
+
+    // Hover preview: ~2s webm (VP9; alpha pixel format for overlays).
+    const frames = Math.min(
+      composition.durationInFrames,
+      Math.max(1, Math.round(DRAFT_PREVIEW_SECONDS * composition.fps)),
+    );
+    await renderMedia({
+      composition,
+      serveUrl: bundleLocation,
+      outputLocation: previewFile,
+      inputProps,
+      codec: "vp9",
+      imageFormat: "png",
+      ...(isOverlay ? { pixelFormat: "yuva420p" as const } : {}),
+      frameRange: [0, frames - 1],
+      browserExecutable,
+    });
+    if (isOverlay) await assertAlphaOutput(previewFile, "video", templateKey);
+
+    return urls;
+  });
+}
+
+/**
+ * Draft gate: (a) schema — payload parses, params + layers coerce cleanly;
+ * (b) transparency — bgColor is explicitly "transparent" or a solid hex;
+ * (c) render — still + 2s webm succeed (alpha assertion when transparent).
+ * Persists the verdict into the row's paramSchema payload; sets the
+ * thumbnail on success. Publish requires a recent all-green validation.
+ */
+export async function validateDraftTemplate(id: string): Promise<{
+  ok: boolean;
+  checks: { schema: boolean; transparency: boolean; render: boolean };
+  thumbnailUrl?: string;
+  errors: string[];
+}> {
+  const row = await prisma.styleTemplate.findUnique({ where: { id } });
+  if (!row || row.source !== "ai_draft") throw new Error("Draft template not found");
+
+  const checks = { schema: false, transparency: false, render: false };
+  const errors: string[] = [];
+  const payload = parseDraftTemplatePayload(row.paramSchema);
+
+  // (a) schema / compile-equivalent: params coerce against the field schema
+  // and the layer stack coerces losslessly.
+  if (!payload || payload.fields.length === 0) {
+    errors.push("schema: paramSchema payload is missing or malformed");
+  } else {
+    try {
+      coerceParams(payload.fields, payload.defaultParams);
+      if (payload.layers.length === 0) throw new Error("layer stack is empty");
+      checks.schema = true;
+    } catch (err: any) {
+      errors.push(`schema: ${err?.message ?? "coercion failed"}`);
+    }
+  }
+
+  // (b) transparency invariant: bgColor must be EXPLICIT — "transparent" or
+  // a solid hex; an implicit/missing background is rejected.
+  if (payload) {
+    const bg = payload.defaultParams?.bgColor;
+    if (bg === "transparent" || (typeof bg === "string" && HEX_COLOR_RE.test(bg))) {
+      checks.transparency = true;
+    } else {
+      errors.push(
+        'transparency: defaultParams.bgColor must be explicitly "transparent" or a solid #RRGGBB value',
+      );
+    }
+  }
+
+  // (c) render: still + short webm through the real render path.
+  let thumbnailUrl: string | undefined;
+  if (checks.schema && checks.transparency && payload) {
+    try {
+      const assets = await renderDraftAssets(row.key, payload);
+      thumbnailUrl = assets.thumbnail;
+      checks.render = true;
+    } catch (err: any) {
+      errors.push(`render: ${err?.message ?? "render failed"}`);
+    }
+  }
+
+  const ok = checks.schema && checks.transparency && checks.render;
+  const validation: DraftValidation = {
+    ...checks,
+    validatedAt: ok ? new Date().toISOString() : null,
+    errors,
+  };
+  if (payload) {
+    await prisma.styleTemplate.update({
+      where: { id },
+      data: {
+        paramSchema: JSON.stringify({ ...payload, layers: layersToJson(payload.layers), validation }),
+        ...(thumbnailUrl ? { thumbnail: thumbnailUrl } : {}),
+      },
+    });
+  }
+  return { ok, checks, ...(thumbnailUrl ? { thumbnailUrl } : {}), errors };
+}
+
+/** Publish requires a fully-green validation from the last hour. */
+const PUBLISH_VALIDATION_MAX_AGE_MS = 60 * 60 * 1000;
+
+export async function publishDraftTemplate(id: string) {
+  const row = await prisma.styleTemplate.findUnique({ where: { id } });
+  if (!row || row.source !== "ai_draft") throw new Error("Draft template not found");
+  if (row.status === "published") return decorateTemplateRow(row); // idempotent
+
+  const payload = parseDraftTemplatePayload(row.paramSchema);
+  const v = payload?.validation;
+  const fresh =
+    !!v?.validatedAt && Date.now() - new Date(v.validatedAt).getTime() <= PUBLISH_VALIDATION_MAX_AGE_MS;
+  if (!v || !v.schema || !v.transparency || !v.render || !fresh) {
+    throw new Error(
+      "Draft must pass validation (schema, transparency, render) within the last hour before publishing",
+    );
+  }
+
+  const updated = await prisma.styleTemplate.update({
+    where: { id },
+    data: { status: "published" },
+  });
+  return decorateTemplateRow(updated);
+}
+
+export async function deleteDraftTemplate(id: string) {
+  const row = await prisma.styleTemplate.findUnique({ where: { id } });
+  if (!row || row.source !== "ai_draft") throw new Error("Draft template not found");
+  if (row.status !== "draft") {
+    throw new Error("Only draft templates can be deleted (published templates are part of the library)");
+  }
+  await prisma.styleTemplate.delete({ where: { id } });
 }

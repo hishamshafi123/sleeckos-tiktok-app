@@ -137,11 +137,13 @@ export async function seedDefaultStyleTemplates() {
 }
 
 /**
- * Get all available Style Templates (seeds defaults on first call)
+ * Get all available Style Templates (seeds defaults on first call).
+ * Draft rows (Style Lab AI drafts) are never production-usable — excluded.
  */
 export async function getStyleTemplates() {
   await seedDefaultStyleTemplates();
   return prisma.styleTemplate.findMany({
+    where: { status: "published" },
     orderBy: { createdAt: "asc" }
   });
 }

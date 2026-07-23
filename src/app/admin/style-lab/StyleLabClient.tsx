@@ -10,6 +10,7 @@ import { toast } from "sonner";
 
 import { FONT_MANIFEST, nearestAvailableWeight } from "@/lib/fonts";
 import {
+  LYRIC_PARAM_SCHEMA,
   defaultParams,
   type ParamField,
   type StyleFamily,
@@ -17,6 +18,7 @@ import {
 } from "@/lib/style-lab/schema";
 import {
   LEGACY_MAIN_LAYER_ID,
+  LAYERED_TEMPLATE_KEY,
   coerceLayers,
   defaultImageLayer,
   defaultShapeLayer,
@@ -28,8 +30,9 @@ import {
 } from "@/lib/style-lab/layers";
 import { LayerEditor } from "./LayerEditor";
 import { LayerPanel } from "./LayerPanel";
+import { NewTemplateDialog } from "./NewTemplateDialog";
 import { StylePreviewPanel } from "./StylePreviewPanel";
-import { TemplateGallery } from "./TemplateGallery";
+import { TemplateGallery, type GalleryTemplate } from "./TemplateGallery";
 
 interface StyleLabClientProps {
   user: { id: string; role: string };
@@ -113,6 +116,15 @@ export default function StyleLabClient({ user }: StyleLabClientProps) {
   const [aiFamily, setAiFamily] = useState<StyleFamily>("lyric");
   const [aiBusy, setAiBusy] = useState(false);
 
+  // AI draft pipeline (Part 7, admin): New-template dialog + drafts shelf.
+  const isAdmin = user.role === "admin";
+  const [showNewTemplate, setShowNewTemplate] = useState(false);
+  const [draftGenBusy, setDraftGenBusy] = useState(false);
+  const [draftBusyKey, setDraftBusyKey] = useState<string | null>(null);
+  /** Draft template currently open in the editor (null = not editing a draft). */
+  const [editingDraft, setEditingDraft] = useState<GalleryTemplate | null>(null);
+  const [draftSaving, setDraftSaving] = useState(false);
+
   const [renamingId, setRenamingId] = useState<string>("");
   const [renameValue, setRenameValue] = useState<string>("");
 
@@ -180,10 +192,17 @@ export default function StyleLabClient({ user }: StyleLabClientProps) {
 
   const schemaOf = useCallback(
     (templateKey: string): ParamField[] => {
+      // Layered saved styles (forks of published AI templates) have no
+      // gallery row — use the lyric superset schema for the canvas panel.
+      if (templateKey === LAYERED_TEMPLATE_KEY) return LYRIC_PARAM_SCHEMA;
       const tpl = templates.find((t) => t.key === templateKey);
       if (!tpl) return [];
       try {
-        return JSON.parse(tpl.paramSchema || "[]");
+        const parsed = JSON.parse(tpl.paramSchema || "[]");
+        // AI draft rows store { fields, layers, defaultParams, family }.
+        if (Array.isArray(parsed)) return parsed;
+        if (parsed && Array.isArray(parsed.fields)) return parsed.fields;
+        return [];
       } catch {
         return [];
       }
@@ -304,9 +323,24 @@ export default function StyleLabClient({ user }: StyleLabClientProps) {
   const handleUseTemplate = (tpl: any) => {
     initFromTemplate(tpl);
     setSelectedStyleId("");
-    setStyleName("");
-    setTagsInput("");
     resetLayers();
+    // AI templates (draft or published) are layered styles: load the stack.
+    const tplLayers = coerceLayers(tpl.layers);
+    if (tplLayers.length > 0) {
+      setLayers(tplLayers);
+      setLayeredMode(true);
+      setSelectedLayerId(tplLayers.find((l) => l.bind)?.id ?? tplLayers[tplLayers.length - 1].id);
+    }
+    if (tpl.status === "draft") {
+      // Drafts keep their name/tags so "Update Draft" can PATCH them.
+      setEditingDraft(tpl);
+      setStyleName(tpl.name);
+      setTagsInput(Array.isArray(tpl.tags) ? tpl.tags.filter((t: string) => !["style-lab", "base"].includes(t)).join(", ") : "");
+    } else {
+      setEditingDraft(null);
+      setStyleName("");
+      setTagsInput("");
+    }
     setRenderResult(null);
     setRenderError("");
     setView("editor");
@@ -349,6 +383,7 @@ export default function StyleLabClient({ user }: StyleLabClientProps) {
   };
 
   const handleLoadStyle = (style: any) => {
+    setEditingDraft(null);
     setSelectedStyleId(style.id);
     setSelectedTemplateKey(style.templateKey);
     setStyleName(style.name);
@@ -373,6 +408,7 @@ export default function StyleLabClient({ user }: StyleLabClientProps) {
     setSelectedStyleId("");
     setStyleName("");
     setTagsInput("");
+    setEditingDraft(null);
     resetLayers();
   };
 
@@ -533,6 +569,116 @@ export default function StyleLabClient({ user }: StyleLabClientProps) {
       toast.error(err.message || "AI variant failed");
     } finally {
       setAiBusy(false);
+    }
+  };
+
+  // ─── AI draft pipeline (Part 7, admin) ────────────────────────────────────
+
+  const handleCreateDraft = async (description: string, family: StyleFamily) => {
+    setDraftGenBusy(true);
+    try {
+      const res = await fetch("/api/style-lab/drafts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ description, family }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Draft generation failed");
+      toast.success(`Draft "${data.name}" created — find it on the Drafts shelf`);
+      setShowNewTemplate(false);
+      fetchTemplates();
+    } catch (err: any) {
+      toast.error(err.message || "Draft generation failed");
+    } finally {
+      setDraftGenBusy(false);
+    }
+  };
+
+  const handleValidateDraft = async (tpl: GalleryTemplate) => {
+    setDraftBusyKey(tpl.key);
+    try {
+      const res = await fetch(`/api/style-lab/drafts/${tpl.id}/validate`, { method: "POST" });
+      const data = await res.json();
+      // 422 = checks ran but failed; 4xx/5xx without checks = hard error.
+      if (!data.checks && !res.ok) throw new Error(data.error || "Validation failed");
+      if (data.ok) {
+        toast.success("Draft validated — schema, transparency and render all pass. Ready to publish.");
+      } else {
+        toast.error(`Validation failed: ${(data.errors ?? [])[0] ?? "unknown error"}`);
+      }
+      fetchTemplates();
+    } catch (err: any) {
+      toast.error(err.message || "Validation failed");
+    } finally {
+      setDraftBusyKey(null);
+    }
+  };
+
+  const handlePublishDraft = async (tpl: GalleryTemplate) => {
+    setDraftBusyKey(tpl.key);
+    try {
+      const res = await fetch(`/api/style-lab/drafts/${tpl.id}/publish`, { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Publish failed");
+      toast.success(`"${data.name}" published to the template library`);
+      if (editingDraft?.id === tpl.id) setEditingDraft(null);
+      fetchTemplates();
+    } catch (err: any) {
+      toast.error(err.message || "Publish failed");
+    } finally {
+      setDraftBusyKey(null);
+    }
+  };
+
+  const handleDeleteDraft = async (tpl: GalleryTemplate) => {
+    if (!window.confirm(`Delete draft "${tpl.name}"? This cannot be undone.`)) return;
+    setDraftBusyKey(tpl.key);
+    try {
+      const res = await fetch(`/api/style-lab/drafts/${tpl.id}`, { method: "DELETE" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Delete failed");
+      toast.success("Draft deleted");
+      if (editingDraft?.id === tpl.id) {
+        setEditingDraft(null);
+        setView("gallery");
+      }
+      fetchTemplates();
+    } catch (err: any) {
+      toast.error(err.message || "Delete failed");
+    } finally {
+      setDraftBusyKey(null);
+    }
+  };
+
+  /** Editor "Update Draft": persists the current params/layers/name to the draft row (resets validation). */
+  const handleUpdateDraft = async () => {
+    if (!editingDraft) return;
+    if (layeredMode && layers.length === 0) {
+      toast.error("A draft needs at least one layer");
+      return;
+    }
+    setDraftSaving(true);
+    const tags = tagsInput.split(",").map((t) => t.trim()).filter(Boolean);
+    try {
+      const res = await fetch(`/api/style-lab/drafts/${editingDraft.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...(styleName.trim() ? { name: styleName.trim() } : {}),
+          tags,
+          defaultParams: params,
+          layers: layeredMode ? layers : (editingDraft.layers ?? []),
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to update draft");
+      toast.success("Draft updated — validation reset; re-validate before publishing");
+      setEditingDraft(data);
+      fetchTemplates();
+    } catch (err: any) {
+      toast.error(err.message || "Failed to update draft");
+    } finally {
+      setDraftSaving(false);
     }
   };
 
@@ -721,6 +867,11 @@ export default function StyleLabClient({ user }: StyleLabClientProps) {
                 / {selectedTemplate?.name ?? selectedTemplateKey}
               </span>
             )}
+            {view === "editor" && editingDraft && (
+              <span className="px-1.5 py-0.5 rounded bg-amber-500/15 border border-amber-500/40 text-[9px] font-mono uppercase tracking-wider text-amber-300">
+                Draft
+              </span>
+            )}
           </div>
           <p className="text-xs text-zinc-500">
             {view === "editor"
@@ -729,7 +880,17 @@ export default function StyleLabClient({ user }: StyleLabClientProps) {
           </p>
         </div>
 
-        <div className="flex bg-zinc-950 border border-zinc-800 rounded p-0.5 text-[11px] font-semibold text-zinc-400 self-start">
+        <div className="flex items-center gap-2 self-start">
+          {view === "gallery" && galleryTab === "templates" && isAdmin && (
+            <button
+              onClick={() => setShowNewTemplate(true)}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-[#E11D48] hover:bg-rose-700 text-white font-bold rounded transition text-[11px]"
+            >
+              <Sparkles size={12} />
+              New Template
+            </button>
+          )}
+          <div className="flex bg-zinc-950 border border-zinc-800 rounded p-0.5 text-[11px] font-semibold text-zinc-400">
           {view === "editor" ? (
             <button
               onClick={() => setView("gallery")}
@@ -756,6 +917,7 @@ export default function StyleLabClient({ user }: StyleLabClientProps) {
               </button>
             </>
           )}
+          </div>
         </div>
       </div>
 
@@ -877,7 +1039,7 @@ export default function StyleLabClient({ user }: StyleLabClientProps) {
             <div className="border border-zinc-800 rounded-md bg-[#09090b] p-4 space-y-4">
               <h3 className="text-xs font-bold text-zinc-400 uppercase tracking-wider flex items-center gap-1.5">
                 <Save size={13} className="text-[#E11D48]" />
-                {selectedStyleId ? "4. Update Style" : "4. Save Style"}
+                {editingDraft ? "4. Edit Draft" : selectedStyleId ? "4. Update Style" : "4. Save Style"}
               </h3>
 
               <div className="space-y-3.5 text-xs">
@@ -903,25 +1065,44 @@ export default function StyleLabClient({ user }: StyleLabClientProps) {
                   />
                 </div>
 
-                <div className="flex gap-2">
-                  <button
-                    onClick={handleSave}
-                    disabled={isSaving}
-                    className="flex-1 flex items-center justify-center gap-1.5 bg-[#E11D48] hover:bg-rose-700 text-white font-bold py-2 rounded transition text-[11px] disabled:opacity-50"
-                  >
-                    {isSaving ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />}
-                    {selectedStyleId ? "Update Style" : "Save Style"}
-                  </button>
-                  <button
-                    onClick={handleResetToDefaults}
-                    className="px-3 flex items-center justify-center gap-1.5 bg-zinc-900 border border-zinc-800 hover:bg-zinc-800 text-zinc-300 py-2 rounded transition text-[11px] font-semibold"
-                    title="Reset to template defaults"
-                  >
-                    <RefreshCw size={12} />
-                    Reset
-                  </button>
-                </div>
-                {selectedStyleId && (
+                {editingDraft ? (
+                  <>
+                    {isAdmin && (
+                      <button
+                        onClick={handleUpdateDraft}
+                        disabled={draftSaving}
+                        className="w-full flex items-center justify-center gap-1.5 bg-[#E11D48] hover:bg-rose-700 text-white font-bold py-2 rounded transition text-[11px] disabled:opacity-50"
+                      >
+                        {draftSaving ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />}
+                        Update Draft
+                      </button>
+                    )}
+                    <p className="text-[10px] text-amber-300/80 leading-normal">
+                      Drafts cannot be saved into the library. Editing resets validation —
+                      re-validate on the Drafts shelf, then publish.
+                    </p>
+                  </>
+                ) : (
+                  <div className="flex gap-2">
+                    <button
+                      onClick={handleSave}
+                      disabled={isSaving}
+                      className="flex-1 flex items-center justify-center gap-1.5 bg-[#E11D48] hover:bg-rose-700 text-white font-bold py-2 rounded transition text-[11px] disabled:opacity-50"
+                    >
+                      {isSaving ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />}
+                      {selectedStyleId ? "Update Style" : "Save Style"}
+                    </button>
+                    <button
+                      onClick={handleResetToDefaults}
+                      className="px-3 flex items-center justify-center gap-1.5 bg-zinc-900 border border-zinc-800 hover:bg-zinc-800 text-zinc-300 py-2 rounded transition text-[11px] font-semibold"
+                      title="Reset to template defaults"
+                    >
+                      <RefreshCw size={12} />
+                      Reset
+                    </button>
+                  </div>
+                )}
+                {selectedStyleId && !editingDraft && (
                   <p className="text-[10px] text-zinc-600">
                     Editing saved style <span className="font-mono text-zinc-500">{selectedStyleId.substring(0, 8)}</span>. Reset to start a new one.
                   </p>
@@ -1016,8 +1197,13 @@ export default function StyleLabClient({ user }: StyleLabClientProps) {
         <TemplateGallery
           templates={templates}
           loading={loadingTemplates}
+          isAdmin={isAdmin}
           onUse={handleUseTemplate}
           onDuplicate={handleDuplicateTemplate}
+          onValidate={handleValidateDraft}
+          onPublish={handlePublishDraft}
+          onDeleteDraft={handleDeleteDraft}
+          draftBusyKey={draftBusyKey}
         />
       ) : (
         /* Saved styles tab */
@@ -1214,6 +1400,14 @@ export default function StyleLabClient({ user }: StyleLabClientProps) {
             </div>
           )}
         </div>
+      )}
+
+      {showNewTemplate && (
+        <NewTemplateDialog
+          busy={draftGenBusy}
+          onClose={() => setShowNewTemplate(false)}
+          onSubmit={handleCreateDraft}
+        />
       )}
     </div>
   );

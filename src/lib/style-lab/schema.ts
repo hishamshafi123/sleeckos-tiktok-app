@@ -18,6 +18,18 @@ export const LYRIC_TEMPLATE_KEY = "lyric-caption";
 export const QUOTE_TEMPLATE_KEY = "quote-card";
 export const BRAT_TEMPLATE_KEY = "brat-lyrics";
 
+/**
+ * AI-generated draft templates (Part 7) get keys with this prefix. They are
+ * layered styles: the registry maps any prefixed key to the layered-style
+ * composition, and the row's paramSchema JSON carries
+ * { fields, layers, defaultParams, family, validation? }.
+ */
+export const AI_TEMPLATE_KEY_PREFIX = "ai_";
+
+export function isAiTemplateKey(templateKey: string): boolean {
+  return templateKey.startsWith(AI_TEMPLATE_KEY_PREFIX);
+}
+
 export type ParamFieldType =
   | "text"
   | "color"
