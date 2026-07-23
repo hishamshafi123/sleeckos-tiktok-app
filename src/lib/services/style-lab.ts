@@ -10,6 +10,8 @@ import prisma from "@/lib/db";
 import { GoogleGenAI } from "@google/genai";
 import { bundle } from "@remotion/bundler";
 import { renderMedia, renderStill, selectComposition } from "@remotion/renderer";
+import { execFile } from "child_process";
+import { promisify } from "util";
 import path from "path";
 import fs from "fs";
 import { listFonts } from "../fonts";
@@ -46,6 +48,9 @@ export async function seedStyleLabTemplates(createdBy?: string) {
         engine: tpl.engine,
         paramSchema: JSON.stringify(tpl.schema),
         isBase: true,
+        source: "builtin",
+        status: "published",
+        tags: ["style-lab", "base", tpl.family],
       },
       create: {
         key: tpl.key,
@@ -53,6 +58,9 @@ export async function seedStyleLabTemplates(createdBy?: string) {
         engine: tpl.engine,
         paramSchema: JSON.stringify(tpl.schema),
         isBase: true,
+        source: "builtin",
+        status: "published",
+        tags: ["style-lab", "base", tpl.family],
         createdBy,
       },
     });
@@ -265,6 +273,105 @@ function enqueueRender<T>(job: () => Promise<T>): Promise<T> {
 
 export type TestRenderFormat = "still" | "video";
 
+// ─── Alpha (transparency) post-render assertions ─────────────────────────────
+
+const execFileAsync = promisify(execFile);
+
+/**
+ * WebM alpha is stored as VP8/VP9 BlockAdditional side data — ffprobe reports
+ * pix_fmt=yuv420p even for transparent videos, and ffmpeg's native decoders
+ * drop the alpha plane. The only honest check: decode a frame with the libvpx
+ * decoder, extract the alpha plane, and confirm it is not fully opaque.
+ * Returns the minimum alpha value (0..255), or null when no alpha plane
+ * could be decoded at all.
+ */
+async function probeVideoMinAlpha(
+  file: string,
+  codec: "vp8" | "vp9",
+): Promise<number | null> {
+  try {
+    const decoder = codec === "vp9" ? "libvpx-vp9" : "libvpx";
+    const { stdout } = await execFileAsync(
+      "ffmpeg",
+      [
+        "-v", "error",
+        "-c:v", decoder,
+        "-i", file,
+        "-vf", "alphaextract",
+        "-frames:v", "1",
+        "-f", "rawvideo",
+        "-pix_fmt", "gray",
+        "-",
+      ],
+      { encoding: "buffer", maxBuffer: 128 * 1024 * 1024 } as any,
+    );
+    const buf = stdout as unknown as Buffer;
+    if (!buf || buf.length === 0) return null;
+    let min = 255;
+    for (let i = 0; i < buf.length; i++) {
+      if (buf[i] < min) {
+        min = buf[i];
+        if (min === 0) break;
+      }
+    }
+    return min;
+  } catch {
+    return null; // alphaextract fails when the stream has no alpha plane
+  }
+}
+
+/** Reads the PNG IHDR color type: 4 (gray+alpha) / 6 (RGBA) = has alpha. */
+function pngHasAlphaChannel(file: string): boolean | null {
+  let fd: number | null = null;
+  try {
+    fd = fs.openSync(file, "r");
+    const header = Buffer.alloc(26);
+    fs.readSync(fd, header, 0, 26, 0);
+    if (header.readUInt32BE(0) !== 0x89504e47) return null; // not a PNG
+    const colorType = header[25];
+    return colorType === 4 || colorType === 6;
+  } catch {
+    return null;
+  } finally {
+    if (fd !== null) fs.closeSync(fd);
+  }
+}
+
+/**
+ * Transparency invariant: a style whose bg is transparent must produce an
+ * output with a real alpha channel. Throws (fails the render loudly) when
+ * the encoder silently dropped alpha.
+ */
+async function assertAlphaOutput(
+  file: string,
+  kind: TestRenderFormat,
+  styleName: string,
+): Promise<void> {
+  if (kind === "video") {
+    const minAlpha = await probeVideoMinAlpha(file, "vp9");
+    if (minAlpha === null) {
+      throw new Error(
+        `[Style Lab] Transparency assertion failed: overlay style "${styleName}" ` +
+        `rendered a video with no decodable alpha plane: ${file}`,
+      );
+    }
+    if (minAlpha >= 250) {
+      throw new Error(
+        `[Style Lab] Transparency assertion failed: overlay style "${styleName}" ` +
+        `rendered a fully opaque video (min alpha=${minAlpha}): ${file}`,
+      );
+    }
+    return;
+  }
+  const hasAlpha = pngHasAlphaChannel(file);
+  if (hasAlpha !== true) {
+    throw new Error(
+      `[Style Lab] Transparency assertion failed: overlay style "${styleName}" ` +
+      `rendered a still without an alpha channel: ${file}`,
+    );
+  }
+}
+
 export async function renderTestSample(opts: {
   templateKey: string;
   params: StyleParams;
@@ -290,6 +397,10 @@ export async function renderTestSample(opts: {
     if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
     const stamp = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
+    // Overlay styles (transparent bg) must keep alpha end-to-end.
+    const isOverlay = coerced.bgColor === "transparent";
+    const styleLabel = `${opts.templateKey}`;
+
     if (opts.format === "still") {
       const fileName = `still_${stamp}.png`;
       const outFile = path.join(UPLOAD_DIR, fileName);
@@ -303,13 +414,34 @@ export async function renderTestSample(opts: {
         frame,
         browserExecutable: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
       });
+      if (isOverlay) await assertAlphaOutput(outFile, "still", styleLabel);
       return { url: `/uploads/style-lab/${fileName}` };
     }
 
     // ~3s clip (or the full comp when shorter).
+    const frames = Math.min(composition.durationInFrames, 90);
+
+    if (isOverlay) {
+      // WebM VP9 + PNG frames keeps the alpha channel (h264 mp4 destroys it).
+      const fileName = `test_${stamp}.webm`;
+      const outFile = path.join(UPLOAD_DIR, fileName);
+      await renderMedia({
+        composition,
+        serveUrl: bundleLocation,
+        outputLocation: outFile,
+        inputProps,
+        codec: "vp9",
+        imageFormat: "png",
+        pixelFormat: "yuva420p",
+        frameRange: [0, frames - 1],
+        browserExecutable: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
+      });
+      await assertAlphaOutput(outFile, "video", styleLabel);
+      return { url: `/uploads/style-lab/${fileName}` };
+    }
+
     const fileName = `test_${stamp}.mp4`;
     const outFile = path.join(UPLOAD_DIR, fileName);
-    const frames = Math.min(composition.durationInFrames, 90);
     await renderMedia({
       composition,
       serveUrl: bundleLocation,

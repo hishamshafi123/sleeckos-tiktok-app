@@ -57,6 +57,7 @@ const LineBlock: React.FC<{
   const alignment = (params.alignment ?? "center") as React.CSSProperties["textAlign"];
   const pad = Number(params.padding ?? 16);
   const stripOpacity = Number(params.stripOpacity ?? 0);
+  const stripVisible = stripOpacity > 0 && (params.stripColor ?? "#000000") !== "transparent";
 
   let body: React.ReactNode = line.text;
   if (karaoke && isActive) {
@@ -87,7 +88,7 @@ const LineBlock: React.FC<{
         transform: entry.transform,
       }}
     >
-      {stripOpacity > 0 && (
+      {stripVisible && (
         <div
           style={{
             position: "absolute",
@@ -126,7 +127,7 @@ export const LyricCaption: React.FC<LyricCaptionProps> = (props) => {
   const linesVisible = Math.max(1, Math.min(3, Math.round(Number(params.linesVisible ?? 2))));
   const activeIdx = lines.findIndex((l) => t >= l.startMs && t < l.endMs);
 
-  const bg = params.bgColor ?? "#18181B";
+  const bg = params.bgColor ?? "transparent";
   const alignmentKey = params.alignment ?? "center";
   const fontSize = Number(params.fontSize ?? 44);
   const lineHeight = Number(params.lineHeight ?? 1.25);

@@ -1012,6 +1012,9 @@ model StyleTemplate {
   engine      String   // "remotion" | "ffmpeg"
   paramSchema String   @db.Text // JSON schema describing parameters
   thumbnail   String?  @db.Text
+  tags        String[] @default([]) // discovery/filtering labels
+  source      String   @default("builtin") // "builtin" | "imported" | "ai_draft"
+  status      String   @default("published") // "draft" | "published"
   isBase      Boolean  @default(false) // Style Lab base template (drives the auto-generated control panel)
   createdBy   String?
   createdAt   DateTime @default(now())
@@ -1023,6 +1026,7 @@ model SavedStyle {
   templateKey         String
   name                String
   params              String                 @db.Text // JSON parameters values
+  layers              Json?                  // null = single-layer legacy style; multi-layer recipes (later phases)
   thumbnail           String?                @db.Text
   family              String                 @default("lyric") // "lyric" | "quote" (Style Lab)
   createdBy           String?

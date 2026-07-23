@@ -44,11 +44,12 @@ export const QuoteCard: React.FC<QuoteCardProps> = (props) => {
   const entry = useEntry(params, 0);
   const exit = exitOpacity(params, frame, fps, durationInFrames);
 
-  const bg = params.bgColor ?? "#09090B";
+  const bg = params.bgColor ?? "transparent";
   const alignmentKey = params.alignment ?? "center";
   const alignment = alignmentKey as React.CSSProperties["textAlign"];
   const pad = Number(params.padding ?? 24);
   const stripOpacity = Number(params.stripOpacity ?? 0);
+  const stripVisible = stripOpacity > 0 && (params.stripColor ?? "#000000") !== "transparent";
   const fontSize = Number(params.fontSize ?? 48);
   const highlight = params.highlightColor ?? "#E11D48";
   const textStyle = buildTextStyle(params);
@@ -77,7 +78,7 @@ export const QuoteCard: React.FC<QuoteCardProps> = (props) => {
             transform: entry.transform,
           }}
         >
-          {stripOpacity > 0 && (
+          {stripVisible && (
             <div
               style={{
                 position: "absolute",

@@ -33,6 +33,9 @@ async function main() {
         engine: tpl.engine,
         paramSchema: JSON.stringify(tpl.schema),
         isBase: true,
+        source: "builtin",
+        status: "published",
+        tags: ["style-lab", "base", tpl.family],
       },
       create: {
         key: tpl.key,
@@ -40,6 +43,9 @@ async function main() {
         engine: tpl.engine,
         paramSchema: JSON.stringify(tpl.schema),
         isBase: true,
+        source: "builtin",
+        status: "published",
+        tags: ["style-lab", "base", tpl.family],
       },
     });
     console.log(`Template upserted: ${row.key} (${row.name}, isBase=${row.isBase})`);

@@ -78,7 +78,9 @@ const COLOR_FIELDS: ParamField[] = [
 ];
 
 const BACKGROUND_FIELDS: ParamField[] = [
-  { key: "bgColor", label: "Background Color", type: "color", group: "Background", defaultValue: "#18181B" },
+  // "transparent" is a first-class color value (validator below) and the
+  // default: styles are overlays unless a preset opts into a solid canvas.
+  { key: "bgColor", label: "Background Color", type: "color", group: "Background", defaultValue: "transparent" },
   { key: "stripColor", label: "Strip Color", type: "color", group: "Background", defaultValue: "#000000" },
   { key: "stripOpacity", label: "Strip Opacity", type: "number", group: "Background", defaultValue: 0, min: 0, max: 1, step: 0.05 },
 ];
@@ -172,9 +174,7 @@ export const QUOTE_PARAM_SCHEMA: ParamField[] = [
     f.key === "fontSize" ? { ...f, defaultValue: 48 } : f,
   ),
   ...COLOR_FIELDS,
-  ...BACKGROUND_FIELDS.map((f) =>
-    f.key === "bgColor" ? { ...f, defaultValue: "#09090B" } : f,
-  ),
+  ...BACKGROUND_FIELDS,
   ...LAYOUT_FIELDS.map((f) =>
     f.key === "marginX" ? { ...f, defaultValue: 56 } : f,
   ),

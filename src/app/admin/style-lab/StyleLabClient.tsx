@@ -6,22 +6,15 @@ import {
   Pencil, RefreshCw, Save, Search, Sliders, Sparkles, Trash2, ExternalLink,
 } from "lucide-react";
 import { toast } from "sonner";
-import { Player } from "@remotion/player";
 
-import { LyricCaption } from "@/remotion/compositions/style-lab/LyricCaption";
-import { QuoteCard } from "@/remotion/compositions/style-lab/QuoteCard";
 import { FONT_MANIFEST, nearestAvailableWeight } from "@/lib/fonts";
 import {
-  SAMPLE_LYRIC_LINES,
-  SAMPLE_QUOTE,
-  STYLE_LAB_FPS,
   defaultParams,
-  resolveCanvas,
-  resolveDurationMs,
   type ParamField,
   type StyleFamily,
   type StyleParams,
 } from "@/lib/style-lab/schema";
+import { StylePreviewPanel } from "./StylePreviewPanel";
 
 interface StyleLabClientProps {
   user: { id: string; role: string };
@@ -404,16 +397,6 @@ export default function StyleLabClient({ user }: StyleLabClientProps) {
     });
   }, [savedStyles, familyFilter, search]);
 
-  const inputProps = useMemo(() => {
-    return family === "quote"
-      ? { ...params, quoteText: SAMPLE_QUOTE.quoteText, author: SAMPLE_QUOTE.author }
-      : { ...params, lines: SAMPLE_LYRIC_LINES };
-  }, [params, family]);
-
-  const canvas = resolveCanvas(params);
-  const durationMs = resolveDurationMs(family, { lines: SAMPLE_LYRIC_LINES });
-  const durationInFrames = Math.max(1, Math.round((durationMs / 1000) * STYLE_LAB_FPS));
-
   // ─── Control renderers ─────────────────────────────────────────────────────
 
   const renderField = (field: ParamField) => {
@@ -624,39 +607,18 @@ export default function StyleLabClient({ user }: StyleLabClientProps) {
             </div>
           </div>
 
-          {/* Middle: live player */}
+          {/* Middle: live preview (dockable / floating) */}
           <div className="lg:col-span-4 space-y-5">
-            <div className="border border-zinc-800 rounded-md bg-[#09090b] p-4 space-y-4">
-              <h3 className="text-xs font-bold text-zinc-400 uppercase tracking-wider flex items-center gap-1.5">
-                <Film size={13} className="text-[#E11D48]" />
-                3. Live Preview
-                {!fontsLoaded && (
-                  <span className="ml-auto flex items-center gap-1 text-[10px] text-zinc-500 normal-case font-normal">
-                    <Loader2 size={10} className="animate-spin" />
-                    Loading fonts…
-                  </span>
-                )}
-              </h3>
-
-              <div className={`${params.aspectRatio === "1:1" ? "aspect-square" : "aspect-[9/16]"} max-h-[560px] w-full max-w-[320px] mx-auto bg-[#040406] rounded-xl overflow-hidden border border-zinc-800 shadow-2xl relative`}>
-                <Player
-                  key={`${selectedTemplateKey}-${params.aspectRatio ?? "9:16"}`}
-                  component={(family === "quote" ? QuoteCard : LyricCaption) as any}
-                  inputProps={inputProps}
-                  durationInFrames={durationInFrames}
-                  fps={STYLE_LAB_FPS}
-                  compositionWidth={canvas.width}
-                  compositionHeight={canvas.height}
-                  style={{ width: "100%", height: "100%" }}
-                  controls
-                  loop
-                  autoPlay
-                />
-              </div>
-              <p className="text-[10px] text-zinc-600 text-center leading-normal">
-                Every control re-renders instantly — the preview uses the same bundled TTF files as the server renderer.
-              </p>
-            </div>
+            <StylePreviewPanel
+              templateKey={selectedTemplateKey}
+              family={family}
+              schema={schema}
+              params={params}
+              onParamChange={handleParamChange}
+              fontsLoaded={fontsLoaded}
+              renderBusy={renderBusy}
+              onRenderTest={handleRenderTest}
+            />
           </div>
 
           {/* Right: save + test render */}

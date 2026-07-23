@@ -127,6 +127,9 @@ export async function seedDefaultStyleTemplates() {
           name: t.name,
           engine: t.engine,
           paramSchema: t.paramSchema,
+          source: "builtin",
+          status: "published",
+          tags: ["style-studio", "legacy"],
         }
       });
     }
