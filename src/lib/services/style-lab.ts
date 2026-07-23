@@ -16,11 +16,11 @@ import path from "path";
 import fs from "fs";
 import { listFonts } from "../fonts";
 import {
+  ALL_STYLE_LAB_TEMPLATES,
   LYRIC_TEMPLATE_KEY,
   QUOTE_TEMPLATE_KEY,
   SAMPLE_LYRIC_LINES,
   SAMPLE_QUOTE,
-  STYLE_LAB_TEMPLATES,
   coerceParams,
   defaultParams,
   familyForTemplate,
@@ -35,12 +35,15 @@ const UPLOAD_DIR = path.join(process.cwd(), "public", "uploads", "style-lab");
 // ─── Templates ───────────────────────────────────────────────────────────────
 
 /**
- * Idempotently registers the two Style Lab base templates as StyleTemplate
- * rows (engine "remotion", isBase). Called by the seed script and lazily by
- * GET /api/style-lab/templates so the page works before the seed runs.
+ * Idempotently registers every Style Lab template (base + brat + imported
+ * collection) as StyleTemplate rows (engine "remotion", isBase). Called by
+ * the seed script and lazily by GET /api/style-lab/templates so the page
+ * works before the seed runs.
  */
 export async function seedStyleLabTemplates(createdBy?: string) {
-  for (const tpl of STYLE_LAB_TEMPLATES) {
+  for (const tpl of ALL_STYLE_LAB_TEMPLATES) {
+    const source = tpl.source ?? "builtin";
+    const tags = tpl.tags ?? ["style-lab", "base", tpl.family];
     await prisma.styleTemplate.upsert({
       where: { key: tpl.key },
       update: {
@@ -48,9 +51,9 @@ export async function seedStyleLabTemplates(createdBy?: string) {
         engine: tpl.engine,
         paramSchema: JSON.stringify(tpl.schema),
         isBase: true,
-        source: "builtin",
+        source,
         status: "published",
-        tags: ["style-lab", "base", tpl.family],
+        tags,
       },
       create: {
         key: tpl.key,
@@ -58,20 +61,47 @@ export async function seedStyleLabTemplates(createdBy?: string) {
         engine: tpl.engine,
         paramSchema: JSON.stringify(tpl.schema),
         isBase: true,
-        source: "builtin",
+        source,
         status: "published",
-        tags: ["style-lab", "base", tpl.family],
+        tags,
         createdBy,
       },
     });
   }
 }
 
+/** Deterministic asset paths for a template's gallery thumbnail/preview. */
+export function templateAssetUrls(templateKey: string) {
+  return {
+    thumbnail: `/uploads/style-lab/tpl_${templateKey}.png`,
+    preview: `/uploads/style-lab/tpl_${templateKey}_preview.webm`,
+  };
+}
+
+function previewUrlIfRendered(templateKey: string): string | null {
+  const file = path.join(UPLOAD_DIR, `tpl_${templateKey}_preview.webm`);
+  return fs.existsSync(file) ? templateAssetUrls(templateKey).preview : null;
+}
+
+/**
+ * Gallery payload: all published template rows enriched with family,
+ * defaultParams (from the code registry — the row's schema defaults) and
+ * the hover-preview URL when the seed script has rendered one.
+ */
 export async function getStyleLabTemplates() {
   await seedStyleLabTemplates();
-  return prisma.styleTemplate.findMany({
+  const rows = await prisma.styleTemplate.findMany({
     where: { isBase: true },
-    orderBy: { createdAt: "asc" },
+    orderBy: [{ source: "asc" }, { createdAt: "asc" }],
+  });
+  return rows.map((row) => {
+    const meta = ALL_STYLE_LAB_TEMPLATES.find((t) => t.key === row.key);
+    return {
+      ...row,
+      family: meta?.family ?? (row.key === QUOTE_TEMPLATE_KEY ? "quote" : "lyric"),
+      defaultParams: meta ? defaultParams(meta.schema) : {},
+      previewUrl: previewUrlIfRendered(row.key),
+    };
   });
 }
 
@@ -94,7 +124,7 @@ function withParsedParams<T extends { params: unknown }>(row: T): T & { params: 
   return { ...row, params: parseStyleParams(row.params) };
 }
 
-const LAB_TEMPLATE_KEYS = STYLE_LAB_TEMPLATES.map((t) => t.key);
+const LAB_TEMPLATE_KEYS = ALL_STYLE_LAB_TEMPLATES.map((t) => t.key);
 
 /**
  * Idempotently seeds the starter saved-style presets (Brat, Spotify Card, …).
@@ -379,13 +409,16 @@ export async function renderTestSample(opts: {
 }): Promise<{ url: string }> {
   return enqueueRender(async () => {
     const schema = assertLabTemplate(opts.templateKey);
-    const family = familyForTemplate(opts.templateKey) ?? "lyric";
     const coerced = coerceParams(schema, opts.params);
 
-    const inputProps: StyleParams =
-      family === "quote"
-        ? { ...coerced, quoteText: SAMPLE_QUOTE.quoteText, author: SAMPLE_QUOTE.author }
-        : { ...coerced, lines: SAMPLE_LYRIC_LINES };
+    // Every comp gets the full sample-content bag; each reads only the
+    // props it understands (lines / quoteText+author / text via params).
+    const inputProps: StyleParams = {
+      ...coerced,
+      lines: SAMPLE_LYRIC_LINES,
+      quoteText: SAMPLE_QUOTE.quoteText,
+      author: SAMPLE_QUOTE.author,
+    };
 
     const bundleLocation = await getBundle();
     const composition = await selectComposition({
@@ -474,6 +507,82 @@ export async function generateSavedStyleThumbnail(id: string): Promise<string | 
     console.warn(`[Style Lab] Thumbnail render failed for style ${id}:`, err);
     return null;
   }
+}
+
+// ─── Template gallery assets (deterministic names, seed-time rendering) ─────
+
+const TEMPLATE_PREVIEW_SECONDS = 2.5;
+
+/**
+ * Renders a template's gallery assets with its schema defaults:
+ *   - tpl_<key>.png          still (mid-clip frame) → StyleTemplate.thumbnail
+ *   - tpl_<key>_preview.webm ~2.5s loop for the gallery hover preview
+ * Deterministic filenames: re-running the seed overwrites in place.
+ * Throws on failure (the seed script decides whether to continue).
+ */
+export async function renderTemplateAssets(
+  templateKey: string,
+): Promise<{ thumbnail: string; preview: string }> {
+  return enqueueRender(async () => {
+    const schema = assertLabTemplate(templateKey);
+    const params = defaultParams(schema); // per-template defaults baked into the schema
+    const inputProps: StyleParams = {
+      ...params,
+      lines: SAMPLE_LYRIC_LINES,
+      quoteText: SAMPLE_QUOTE.quoteText,
+      author: SAMPLE_QUOTE.author,
+    };
+
+    const bundleLocation = await getBundle();
+    const composition = await selectComposition({
+      serveUrl: bundleLocation,
+      id: templateKey,
+      inputProps,
+    });
+
+    if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+    const urls = templateAssetUrls(templateKey);
+    const thumbFile = path.join(UPLOAD_DIR, `tpl_${templateKey}.png`);
+    const previewFile = path.join(UPLOAD_DIR, `tpl_${templateKey}_preview.webm`);
+    const isOverlay = params.bgColor === "transparent";
+    const browserExecutable = process.env.PUPPETEER_EXECUTABLE_PATH || undefined;
+
+    // Still: mid-clip so entry animations have completed.
+    const frame = Math.max(0, Math.floor(composition.durationInFrames / 2));
+    await renderStill({
+      composition,
+      serveUrl: bundleLocation,
+      output: thumbFile,
+      inputProps,
+      frame,
+      browserExecutable,
+    });
+    if (isOverlay) await assertAlphaOutput(thumbFile, "still", templateKey);
+
+    // Hover preview: ~2.5s webm (VP9; alpha pixel format for overlays).
+    const frames = Math.min(
+      composition.durationInFrames,
+      Math.max(1, Math.round(TEMPLATE_PREVIEW_SECONDS * composition.fps)),
+    );
+    await renderMedia({
+      composition,
+      serveUrl: bundleLocation,
+      outputLocation: previewFile,
+      inputProps,
+      codec: "vp9",
+      imageFormat: "png",
+      ...(isOverlay ? { pixelFormat: "yuva420p" as const } : {}),
+      frameRange: [0, frames - 1],
+      browserExecutable,
+    });
+    if (isOverlay) await assertAlphaOutput(previewFile, "video", templateKey);
+
+    await prisma.styleTemplate.update({
+      where: { key: templateKey },
+      data: { thumbnail: urls.thumbnail },
+    });
+    return { thumbnail: urls.thumbnail, preview: urls.preview };
+  });
 }
 
 // ─── AI variant authoring (v1: param-set variants of a base template) ────────

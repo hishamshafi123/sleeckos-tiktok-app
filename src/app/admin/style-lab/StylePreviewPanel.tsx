@@ -17,8 +17,9 @@ import {
   Upload,
 } from "lucide-react";
 
-import { LyricCaption } from "@/remotion/compositions/style-lab/LyricCaption";
-import { QuoteCard } from "@/remotion/compositions/style-lab/QuoteCard";
+import { styleComponentFor } from "@/remotion/compositions/style-lab/registry";
+import { IMPORTED_CANVAS } from "@/remotion/compositions/style-lab/imported/shared";
+import { importedTemplateMeta } from "@/lib/style-lab/imported";
 import {
   SAMPLE_LYRIC_LINES,
   SAMPLE_QUOTE,
@@ -111,14 +112,21 @@ export function StylePreviewPanel({
 
   // ─── Derived player data (mirrors the previous inline preview) ────────────
 
-  const inputProps =
-    family === "quote"
-      ? { ...params, quoteText: SAMPLE_QUOTE.quoteText, author: SAMPLE_QUOTE.author }
-      : { ...params, lines: SAMPLE_LYRIC_LINES };
-  const canvas = resolveCanvas(params);
-  const durationMs = resolveDurationMs(family, { lines: SAMPLE_LYRIC_LINES });
+  const importedMeta = importedTemplateMeta(templateKey);
+  const inputProps = {
+    ...params,
+    lines: SAMPLE_LYRIC_LINES,
+    quoteText: SAMPLE_QUOTE.quoteText,
+    author: SAMPLE_QUOTE.author,
+  };
+  // Imported comps render on a fixed 720×1280 canvas with a registry
+  // duration; base/brat comps derive both from params + line timings.
+  const canvas = importedMeta ? IMPORTED_CANVAS : resolveCanvas(params);
+  const durationMs = importedMeta
+    ? importedMeta.durationMs
+    : resolveDurationMs(family, { lines: SAMPLE_LYRIC_LINES });
   const durationInFrames = Math.max(1, Math.round((durationMs / 1000) * STYLE_LAB_FPS));
-  const aspectClass = params.aspectRatio === "1:1" ? "aspect-square" : "aspect-[9/16]";
+  const aspectClass = !importedMeta && params.aspectRatio === "1:1" ? "aspect-square" : "aspect-[9/16]";
 
   // ─── Stable portal host (keeps the Player mounted across dock/float) ──────
 
@@ -302,8 +310,8 @@ export function StylePreviewPanel({
         {/* Player */}
         <div className="absolute inset-0 z-10">
           <Player
-            key={`${templateKey}-${params.aspectRatio ?? "9:16"}`}
-            component={(family === "quote" ? QuoteCard : LyricCaption) as unknown as React.FC}
+            key={`${templateKey}-${importedMeta ? "9:16" : (params.aspectRatio ?? "9:16")}`}
+            component={styleComponentFor(templateKey, family)}
             inputProps={inputProps}
             durationInFrames={durationInFrames}
             fps={STYLE_LAB_FPS}
@@ -414,7 +422,7 @@ export function StylePreviewPanel({
       <div className="border border-zinc-800 rounded-md bg-[#09090b] p-4 space-y-4">
         <h3 className="text-xs font-bold text-zinc-400 uppercase tracking-wider flex items-center gap-1.5">
           <Film size={13} className="text-[#E11D48]" />
-          3. Live Preview
+          2. Live Preview
           <span className="ml-auto flex items-center gap-2 normal-case font-normal">
             {!fontsLoaded && (
               <span className="flex items-center gap-1 text-[10px] text-zinc-500">

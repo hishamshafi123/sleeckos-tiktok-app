@@ -2,8 +2,9 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  Copy, Film, FlaskConical, Image as ImageIcon, Layers, Library, Loader2,
-  Pencil, RefreshCw, Save, Search, Sliders, Sparkles, Trash2, ExternalLink,
+  ArrowLeft, Copy, Film, FlaskConical, Image as ImageIcon, Layers, LayoutGrid,
+  Library, Loader2, Pencil, RefreshCw, Save, Search, Sliders, Sparkles,
+  Trash2, ExternalLink,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -15,6 +16,7 @@ import {
   type StyleParams,
 } from "@/lib/style-lab/schema";
 import { StylePreviewPanel } from "./StylePreviewPanel";
+import { TemplateGallery } from "./TemplateGallery";
 
 interface StyleLabClientProps {
   user: { id: string; role: string };
@@ -64,7 +66,8 @@ function useBundledFonts(): boolean {
 export default function StyleLabClient({ user }: StyleLabClientProps) {
   const fontsLoaded = useBundledFonts();
 
-  const [view, setView] = useState<"editor" | "library">("editor");
+  const [view, setView] = useState<"gallery" | "editor">("gallery");
+  const [galleryTab, setGalleryTab] = useState<"templates" | "saved">("templates");
   const [templates, setTemplates] = useState<any[]>([]);
   const [fonts, setFonts] = useState<FontInfo[]>([]);
   const [savedStyles, setSavedStyles] = useState<any[]>([]);
@@ -104,10 +107,6 @@ export default function StyleLabClient({ user }: StyleLabClientProps) {
       if (!res.ok) throw new Error("Failed to load templates");
       const data = await res.json();
       setTemplates(data);
-      if (data.length > 0) {
-        const tpl = data.find((t: any) => t.key === "lyric-caption") ?? data[0];
-        initFromTemplate(tpl);
-      }
     } catch (err) {
       console.error(err);
       toast.error("Failed to load templates");
@@ -173,10 +172,20 @@ export default function StyleLabClient({ user }: StyleLabClientProps) {
   );
 
   const schema = useMemo(() => schemaOf(selectedTemplateKey), [schemaOf, selectedTemplateKey]);
-  const family: StyleFamily = selectedTemplateKey === "quote-card" ? "quote" : "lyric";
+  const selectedTemplate = useMemo(
+    () => templates.find((t) => t.key === selectedTemplateKey) ?? null,
+    [templates, selectedTemplateKey]
+  );
+  const family: StyleFamily = selectedTemplate?.family === "quote" ? "quote" : "lyric";
 
   function initFromTemplate(tpl: any) {
     setSelectedTemplateKey(tpl.key);
+    // Per-template defaults: the gallery API ships defaultParams computed
+    // from the row's schema (brat/imported rows carry their own defaults).
+    if (tpl.defaultParams && Object.keys(tpl.defaultParams).length > 0) {
+      setParams(tpl.defaultParams);
+      return;
+    }
     try {
       const fields: ParamField[] = JSON.parse(tpl.paramSchema || "[]");
       setParams(defaultParams(fields));
@@ -185,13 +194,39 @@ export default function StyleLabClient({ user }: StyleLabClientProps) {
     }
   }
 
-  const handleSelectTemplate = (tpl: any) => {
+  const handleUseTemplate = (tpl: any) => {
     initFromTemplate(tpl);
     setSelectedStyleId("");
     setStyleName("");
     setTagsInput("");
     setRenderResult(null);
     setRenderError("");
+    setView("editor");
+  };
+
+  /** Fork a gallery template into the saved-styles library. */
+  const handleDuplicateTemplate = async (tpl: any) => {
+    try {
+      const res = await fetch("/api/style-lab/saved-styles", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          templateKey: tpl.key,
+          name: `${tpl.name} (copy)`.slice(0, 120),
+          params: tpl.defaultParams ?? {},
+          tags: Array.isArray(tpl.tags)
+            ? tpl.tags.filter((t: string) => !["style-lab", "base"].includes(t))
+            : [],
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to duplicate");
+      toast.success(`Forked as saved style "${data.name}" — thumbnail rendering in background`);
+      fetchSavedStyles();
+      scheduleLibraryRefresh();
+    } catch (err: any) {
+      toast.error(err.message || "Failed to duplicate template");
+    }
   };
 
   const handleParamChange = (key: string, value: any) => {
@@ -403,6 +438,16 @@ export default function StyleLabClient({ user }: StyleLabClientProps) {
     const value = params[field.key] !== undefined ? params[field.key] : field.defaultValue;
 
     switch (field.type) {
+      case "text":
+        return (
+          <textarea
+            rows={2}
+            value={String(value ?? "")}
+            onChange={(e) => handleParamChange(field.key, e.target.value)}
+            className="w-full bg-zinc-950 border border-zinc-800 rounded px-2.5 py-1.5 text-zinc-100 focus:outline-none focus:border-zinc-600 text-[11px] resize-y"
+          />
+        );
+
       case "font":
         return (
           <select
@@ -519,70 +564,57 @@ export default function StyleLabClient({ user }: StyleLabClientProps) {
           <div className="flex items-center gap-2.5">
             <FlaskConical size={18} className="text-[#E11D48]" />
             <h1 className="text-lg font-bold tracking-tight">Style Lab</h1>
+            {view === "editor" && (
+              <span className="text-xs text-zinc-500 font-mono">
+                / {selectedTemplate?.name ?? selectedTemplateKey}
+              </span>
+            )}
           </div>
           <p className="text-xs text-zinc-500">
-            Param-driven caption styles on the bundled font system. Tune live in the player, save presets, or let AI draft a variant.
+            {view === "editor"
+              ? "Tune params live in the player, save presets, or test-render a clip."
+              : "Pick a template to start — hover a card for an animated preview."}
           </p>
         </div>
 
         <div className="flex bg-zinc-950 border border-zinc-800 rounded p-0.5 text-[11px] font-semibold text-zinc-400 self-start">
-          <button
-            onClick={() => setView("editor")}
-            className={`px-3 py-1 rounded transition flex items-center gap-1.5 ${view === "editor" ? "bg-zinc-800 text-zinc-100" : "hover:text-zinc-200"}`}
-          >
-            <Sliders size={12} />
-            Editor
-          </button>
-          <button
-            onClick={() => setView("library")}
-            className={`px-3 py-1 rounded transition flex items-center gap-1.5 ${view === "library" ? "bg-zinc-800 text-zinc-100" : "hover:text-zinc-200"}`}
-          >
-            <Library size={12} />
-            Library ({savedStyles.length})
-          </button>
+          {view === "editor" ? (
+            <button
+              onClick={() => setView("gallery")}
+              className="px-3 py-1 rounded transition flex items-center gap-1.5 hover:text-zinc-200"
+            >
+              <ArrowLeft size={12} />
+              Back to Gallery
+            </button>
+          ) : (
+            <>
+              <button
+                onClick={() => setGalleryTab("templates")}
+                className={`px-3 py-1 rounded transition flex items-center gap-1.5 ${galleryTab === "templates" ? "bg-zinc-800 text-zinc-100" : "hover:text-zinc-200"}`}
+              >
+                <LayoutGrid size={12} />
+                Templates
+              </button>
+              <button
+                onClick={() => setGalleryTab("saved")}
+                className={`px-3 py-1 rounded transition flex items-center gap-1.5 ${galleryTab === "saved" ? "bg-zinc-800 text-zinc-100" : "hover:text-zinc-200"}`}
+              >
+                <Library size={12} />
+                Saved Styles ({savedStyles.length})
+              </button>
+            </>
+          )}
         </div>
       </div>
 
       {view === "editor" ? (
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-          {/* Left: template picker + control panel */}
+          {/* Left: control panel */}
           <div className="lg:col-span-4 space-y-5">
-            <div className="border border-zinc-800 rounded-md bg-[#09090b] p-4 space-y-3.5">
-              <h3 className="text-xs font-bold text-zinc-400 uppercase tracking-wider">1. Base Template</h3>
-              {loadingTemplates ? (
-                <div className="flex items-center justify-center py-6 text-xs text-zinc-600 gap-1.5">
-                  <Loader2 size={12} className="animate-spin text-zinc-500" />
-                  Loading templates...
-                </div>
-              ) : (
-                <div className="grid grid-cols-2 gap-2">
-                  {templates.map((tpl) => {
-                    const isSelected = selectedTemplateKey === tpl.key;
-                    return (
-                      <button
-                        key={tpl.key}
-                        onClick={() => handleSelectTemplate(tpl)}
-                        className={`text-left p-3 rounded-lg border text-xs transition flex flex-col gap-1 ${
-                          isSelected
-                            ? "bg-[#E11D48]/10 border-[#E11D48]/40 text-zinc-100"
-                            : "bg-[#0c0c0f]/40 border-zinc-800/80 text-zinc-400 hover:border-zinc-700 hover:text-zinc-200"
-                        }`}
-                      >
-                        <span className="font-semibold text-zinc-200">{tpl.name}</span>
-                        <span className="text-[10px] text-zinc-600 font-mono uppercase">
-                          {tpl.key === "quote-card" ? "Quote family" : "Lyric family"}
-                        </span>
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-
             <div className="border border-zinc-800 rounded-md bg-[#09090b] p-4 space-y-5">
               <h3 className="text-xs font-bold text-zinc-400 uppercase tracking-wider flex items-center gap-1.5">
                 <Sliders size={13} className="text-[#E11D48]" />
-                2. Parameters
+                1. Parameters
               </h3>
 
               {groups.length === 0 ? (
@@ -626,7 +658,7 @@ export default function StyleLabClient({ user }: StyleLabClientProps) {
             <div className="border border-zinc-800 rounded-md bg-[#09090b] p-4 space-y-4">
               <h3 className="text-xs font-bold text-zinc-400 uppercase tracking-wider flex items-center gap-1.5">
                 <Save size={13} className="text-[#E11D48]" />
-                {selectedStyleId ? "4. Update Style" : "4. Save Style"}
+                {selectedStyleId ? "3. Update Style" : "3. Save Style"}
               </h3>
 
               <div className="space-y-3.5 text-xs">
@@ -681,7 +713,7 @@ export default function StyleLabClient({ user }: StyleLabClientProps) {
             <div className="border border-zinc-800 rounded-md bg-[#09090b] p-4 space-y-4">
               <h3 className="text-xs font-bold text-zinc-400 uppercase tracking-wider flex items-center gap-1.5">
                 <Sparkles size={13} className="text-[#E11D48]" />
-                5. Test Render
+                4. Test Render
               </h3>
 
               <div className="space-y-3.5 text-xs">
@@ -760,10 +792,18 @@ export default function StyleLabClient({ user }: StyleLabClientProps) {
             </div>
           </div>
         </div>
+      ) : galleryTab === "templates" ? (
+        /* Gallery home: template cards with hover previews */
+        <TemplateGallery
+          templates={templates}
+          loading={loadingTemplates}
+          onUse={handleUseTemplate}
+          onDuplicate={handleDuplicateTemplate}
+        />
       ) : (
-        /* Library view */
+        /* Saved styles tab */
         <div className="space-y-5">
-          {/* Library header: filters + AI variant */}
+          {/* Saved styles header: filters + AI variant */}
           <div className="border border-zinc-800 rounded-md bg-[#09090b] p-4 space-y-4">
             <div className="flex flex-col md:flex-row md:items-center gap-3">
               <div className="flex bg-zinc-950 border border-zinc-800 rounded p-0.5 text-[11px] font-semibold text-zinc-400 self-start">

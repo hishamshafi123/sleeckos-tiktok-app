@@ -12,20 +12,21 @@
  */
 import prisma from "../src/lib/db";
 import {
+  ALL_STYLE_LAB_TEMPLATES,
   LYRIC_PARAM_SCHEMA,
   LYRIC_TEMPLATE_KEY,
   QUOTE_PARAM_SCHEMA,
   QUOTE_TEMPLATE_KEY,
-  STYLE_LAB_TEMPLATES,
   coerceParams,
-  type StyleParams,
 } from "../src/lib/style-lab/schema";
 
-import { STYLE_LAB_PRESETS as PRESETS, type StyleLabPreset as PresetSpec } from "../src/lib/style-lab/presets";
+import { STYLE_LAB_PRESETS as PRESETS } from "../src/lib/style-lab/presets";
 
 async function main() {
-  // 1. Base templates
-  for (const tpl of STYLE_LAB_TEMPLATES) {
+  // 1. Templates (base + brat + imported collection)
+  for (const tpl of ALL_STYLE_LAB_TEMPLATES) {
+    const source = tpl.source ?? "builtin";
+    const tags = tpl.tags ?? ["style-lab", "base", tpl.family];
     const row = await prisma.styleTemplate.upsert({
       where: { key: tpl.key },
       update: {
@@ -33,9 +34,9 @@ async function main() {
         engine: tpl.engine,
         paramSchema: JSON.stringify(tpl.schema),
         isBase: true,
-        source: "builtin",
+        source,
         status: "published",
-        tags: ["style-lab", "base", tpl.family],
+        tags,
       },
       create: {
         key: tpl.key,
@@ -43,12 +44,12 @@ async function main() {
         engine: tpl.engine,
         paramSchema: JSON.stringify(tpl.schema),
         isBase: true,
-        source: "builtin",
+        source,
         status: "published",
-        tags: ["style-lab", "base", tpl.family],
+        tags,
       },
     });
-    console.log(`Template upserted: ${row.key} (${row.name}, isBase=${row.isBase})`);
+    console.log(`Template upserted: ${row.key} (${row.name}, source=${row.source})`);
   }
 
   // 2. Saved-style presets (validated/coerced against the schema)

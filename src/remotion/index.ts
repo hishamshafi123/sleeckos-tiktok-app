@@ -5,7 +5,12 @@ import { QuoteComposition } from "./compositions/Quote";
 import { EditorialCaption } from "./compositions/EditorialCaption";
 import { LyricCaption, lyricCaptionCalculateMetadata } from "./compositions/style-lab/LyricCaption";
 import { QuoteCard, quoteCardCalculateMetadata } from "./compositions/style-lab/QuoteCard";
+import { IMPORTED_COMPONENTS } from "./compositions/style-lab/imported";
+import { importedCalculateMetadata, IMPORTED_CANVAS } from "./compositions/style-lab/imported/shared";
+import { IMPORTED_STYLE_TEMPLATES } from "../lib/style-lab/imported";
 import {
+  BRAT_PARAM_SCHEMA,
+  BRAT_TEMPLATE_KEY,
   LYRIC_PARAM_SCHEMA,
   QUOTE_PARAM_SCHEMA,
   SAMPLE_LYRIC_LINES,
@@ -135,7 +140,35 @@ const RemotionRoot: React.FC = () => {
         quoteText: SAMPLE_QUOTE.quoteText,
         author: SAMPLE_QUOTE.author,
       },
-    })
+    }),
+    // ── Brat template: same LyricCaption comp, brat defaults (see BRAT_PARAM_SCHEMA) ──
+    React.createElement(Composition, {
+      id: BRAT_TEMPLATE_KEY,
+      component: LyricCaption,
+      durationInFrames: 390, // overridden by calculateMetadata (from line timings)
+      fps: STYLE_LAB_FPS,
+      width: 720,
+      height: 1280,
+      calculateMetadata: lyricCaptionCalculateMetadata,
+      defaultProps: {
+        ...defaultParams(BRAT_PARAM_SCHEMA),
+        lines: SAMPLE_LYRIC_LINES,
+      },
+    }),
+    // ── Imported collection (reactvideoeditor/remotion-templates, MIT) ──
+    ...IMPORTED_STYLE_TEMPLATES.map((tpl) =>
+      React.createElement(Composition, {
+        key: tpl.key,
+        id: tpl.key,
+        component: IMPORTED_COMPONENTS[tpl.key],
+        durationInFrames: Math.max(1, Math.round((tpl.durationMs / 1000) * STYLE_LAB_FPS)),
+        fps: STYLE_LAB_FPS,
+        width: IMPORTED_CANVAS.width,
+        height: IMPORTED_CANVAS.height,
+        calculateMetadata: importedCalculateMetadata(tpl.durationMs),
+        defaultProps: defaultParams(tpl.schema),
+      })
+    )
   );
 };
 

@@ -4,7 +4,9 @@ import { getSession } from "@/lib/session";
 import { can } from "@/lib/services/permissions";
 import { getStyleLabTemplates } from "@/lib/services/style-lab";
 
-// GET /api/style-lab/templates — base templates with their param schemas.
+// GET /api/style-lab/templates — gallery payload: all Style Lab templates
+// (base + brat + imported) with family, defaultParams, thumbnail and
+// hover-preview URLs. Rows are self-seeded on first call.
 export async function GET(_req: NextRequest) {
   const session = await getSession();
   if (!session) {

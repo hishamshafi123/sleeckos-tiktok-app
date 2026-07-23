@@ -1,6 +1,8 @@
 /**
- * Style Lab param schemas — single source of truth for the two base
- * templates (lyric-caption, quote-card).
+ * Style Lab param schemas — single source of truth for the base
+ * templates (lyric-caption, quote-card, brat-lyrics) plus the combined
+ * registry that also covers the imported template collection
+ * (src/lib/style-lab/imported.ts).
  *
  * Client-safe on purpose (like src/lib/fonts.ts): imported by the admin
  * control panel, the Remotion compositions, the server service, and the
@@ -8,11 +10,13 @@
  */
 
 import { FONT_MANIFEST, DEFAULT_FONT_FAMILY } from "../fonts";
+import { IMPORTED_STYLE_TEMPLATES } from "./imported";
 
 export type StyleFamily = "lyric" | "quote";
 
 export const LYRIC_TEMPLATE_KEY = "lyric-caption";
 export const QUOTE_TEMPLATE_KEY = "quote-card";
+export const BRAT_TEMPLATE_KEY = "brat-lyrics";
 
 export type ParamFieldType =
   | "text"
@@ -188,12 +192,42 @@ export const QUOTE_PARAM_SCHEMA: ParamField[] = [
   ...EFFECTS_FIELDS,
 ];
 
+/**
+ * Brat template schema: the same lyric schema (same comp — no new
+ * composition) with brat-specific DEFAULTS baked into the field defaults.
+ * Per-template defaults live in each StyleTemplate row's paramSchema, so
+ * one flexible comp serves many templates. bgColor stays a free color
+ * param ("transparent" / "#8ACE00" / any custom hex are all valid).
+ */
+export const BRAT_PARAM_SCHEMA: ParamField[] = LYRIC_PARAM_SCHEMA.map((f) => {
+  switch (f.key) {
+    case "fontFamily": return { ...f, defaultValue: "Inter" };
+    case "fontWeight": return { ...f, defaultValue: 500 };
+    case "fontSize": return { ...f, defaultValue: 52 };
+    case "textTransform": return { ...f, defaultValue: "lowercase" };
+    case "textColor": return { ...f, defaultValue: "#000000" };
+    case "highlightColor": return { ...f, defaultValue: "#000000" };
+    case "shadow": return { ...f, defaultValue: false };
+    case "bgColor": return { ...f, defaultValue: "#8ACE00" };
+    case "blur": return { ...f, defaultValue: 1.5 };
+    case "lineMode": return { ...f, defaultValue: "line-by-line" };
+    case "linesVisible": return { ...f, defaultValue: 1 };
+    case "entryType": return { ...f, defaultValue: "none" };
+    case "exitType": return { ...f, defaultValue: "none" };
+    default: return f;
+  }
+});
+
 export interface StyleLabTemplateMeta {
   key: string;
   name: string;
   family: StyleFamily;
   engine: "remotion";
   schema: ParamField[];
+  /** Defaults to ["style-lab", "base", family] when omitted. */
+  tags?: string[];
+  /** Defaults to "builtin". */
+  source?: "builtin" | "imported";
 }
 
 export const STYLE_LAB_TEMPLATES: StyleLabTemplateMeta[] = [
@@ -211,15 +245,29 @@ export const STYLE_LAB_TEMPLATES: StyleLabTemplateMeta[] = [
     engine: "remotion",
     schema: QUOTE_PARAM_SCHEMA,
   },
+  {
+    key: BRAT_TEMPLATE_KEY,
+    name: "Brat Lyrics",
+    family: "lyric",
+    engine: "remotion",
+    schema: BRAT_PARAM_SCHEMA,
+    tags: ["brat", "trend", "lyric"],
+  },
+];
+
+/** Base + brat + imported collection — the full template registry. */
+export const ALL_STYLE_LAB_TEMPLATES: StyleLabTemplateMeta[] = [
+  ...STYLE_LAB_TEMPLATES,
+  ...IMPORTED_STYLE_TEMPLATES,
 ];
 
 export function schemaForTemplate(templateKey: string): ParamField[] | null {
-  const tpl = STYLE_LAB_TEMPLATES.find((t) => t.key === templateKey);
+  const tpl = ALL_STYLE_LAB_TEMPLATES.find((t) => t.key === templateKey);
   return tpl ? tpl.schema : null;
 }
 
 export function familyForTemplate(templateKey: string): StyleFamily | null {
-  const tpl = STYLE_LAB_TEMPLATES.find((t) => t.key === templateKey);
+  const tpl = ALL_STYLE_LAB_TEMPLATES.find((t) => t.key === templateKey);
   return tpl ? tpl.family : null;
 }
 
