@@ -18,7 +18,8 @@ import {
   GraduationCap,
   Database,
   Bot,
-  Send
+  Send,
+  Activity
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -45,6 +46,7 @@ const OPERATIONS_NAV = [
 
 const PEOPLE_NAV = [
   { href: "/admin/users-access", label: "Users & Access", icon: Key, toolKey: "users_access" },
+  { href: "/admin/activity", label: "Activity", icon: Activity, toolKey: "users_access" },
   { href: "/admin/lms", label: "LMS", icon: GraduationCap, toolKey: "lms" },
   { href: "/admin/team", label: "Team", icon: UserCog, toolKey: "users_access" },
 ];
