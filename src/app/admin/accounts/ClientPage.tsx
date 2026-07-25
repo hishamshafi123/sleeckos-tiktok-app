@@ -464,10 +464,18 @@ export default function AccountsPage() {
                 const baseColor = COLOR_MAP[colKey] || (colKey.startsWith("#") ? colKey : null) || COLOR_MAP.zinc;
                 const isSpecialColor = colKey !== "zinc" && colKey !== "gray";
                 return (
-                  <button
+                  <div
                     key={acc.id}
+                    role="button"
+                    tabIndex={0}
                     onClick={() => setEditingAccountId(acc.id)}
-                    className="flex items-center text-left w-full gap-3 p-3 rounded-xl transition-all group border"
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        setEditingAccountId(acc.id);
+                      }
+                    }}
+                    className="flex items-center text-left w-full gap-3 p-3 rounded-xl transition-all group border cursor-pointer"
                     style={{
                       borderLeft: `4px solid ${baseColor}`,
                       borderColor: isSpecialColor ? `${baseColor}60` : "rgba(255,255,255,0.05)",
@@ -486,11 +494,21 @@ export default function AccountsPage() {
                       <h3 className="text-sm font-bold text-white truncate group-hover:text-purple-400 transition-colors">
                         @{acc.tiktokUsername}
                       </h3>
-                      <p className="text-xs text-gray-400 truncate">
-                        {searchMode === "drive" && acc.driveFolderName
-                          ? `📁 ${acc.driveFolderName}`
-                          : acc.tiktokDisplayName}
-                      </p>
+                      {acc.driveFolderId && acc.driveFolderName ? (
+                        <a
+                          href={`https://drive.google.com/drive/folders/${acc.driveFolderId}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          onClick={(e) => e.stopPropagation()}
+                          onKeyDown={(e) => e.stopPropagation()}
+                          className="text-xs text-blue-400 hover:text-blue-300 hover:underline underline-offset-2 truncate block transition-colors"
+                          title={`Open Drive folder: ${acc.driveFolderName}`}
+                        >
+                          {acc.driveFolderName}
+                        </a>
+                      ) : (
+                        <p className="text-xs text-gray-600 italic truncate">No Drive folder linked</p>
+                      )}
                       <div className="flex items-center gap-1.5 mt-1">
                         <span className="text-[9px] font-semibold text-gray-500 truncate">
                           {acc.section.name}
@@ -498,7 +516,7 @@ export default function AccountsPage() {
                       </div>
                     </div>
                     <ChevronRight className="w-4 h-4 text-gray-600 group-hover:text-purple-400 group-hover:translate-x-0.5 transition-all flex-shrink-0" />
-                  </button>
+                  </div>
                 );
               })}
             </div>

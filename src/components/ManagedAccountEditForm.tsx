@@ -9,6 +9,7 @@ import {
   AlertCircle,
   Search,
   X,
+  Play,
 } from "lucide-react";
 
 type Account = {
@@ -107,6 +108,34 @@ export default function ManagedAccountEditForm({
   const [connectingInput, setConnectingInput] = useState(false);
   const [syncingLedger, setSyncingLedger] = useState(false);
   const [ledger, setLedger] = useState<{ total: number; unused: number; used: number; missing: number } | null>(null);
+
+  const [postingNow, setPostingNow] = useState(false);
+
+  // Post Now requires: Drive linked + PostPeer account set. Deeper failures
+  // (token expired, empty folder) surface as the real server error in a toast.
+  const isPostable = !!account?.driveConnected && !!account?.driveFolderId && !!account?.postpeerAccountId;
+  const postableReason = !account?.driveConnected
+    ? "Google Drive is not connected for this account"
+    : !account?.driveFolderId
+    ? "No Google Drive folder linked"
+    : !account?.postpeerAccountId
+    ? "No PostPeer Account ID set"
+    : "";
+
+  const handlePostNow = async () => {
+    if (postingNow || !isPostable || !account) return;
+    setPostingNow(true);
+    try {
+      const res = await fetch(`/api/managed/accounts/${account.id}/post-now`, { method: "POST" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `Post failed (${res.status})`);
+      toast.success(data.message || `Posting "${data.fileName}" via PostPeer…`);
+    } catch (err: any) {
+      toast.error(err.message || "Failed to trigger post");
+    } finally {
+      setPostingNow(false);
+    }
+  };
 
   const fetchLedger = useCallback(async () => {
     try {
@@ -733,18 +762,33 @@ export default function ManagedAccountEditForm({
           {isReadOnly ? "Close" : "Cancel"}
         </button>
         {!isReadOnly && (
-          <button
-            onClick={saveEdit}
-            disabled={saving}
-            className="flex items-center gap-1.5 bg-purple-600 hover:bg-purple-500 disabled:opacity-40 text-white text-xs font-semibold px-4 py-2 rounded-lg transition-all"
-          >
-            {saving ? (
-              <Loader2 className="w-3.5 h-3.5 animate-spin" />
-            ) : (
-              <Save className="w-3.5 h-3.5" />
-            )}
-            Save Schedule
-          </button>
+          <>
+            <button
+              onClick={handlePostNow}
+              disabled={postingNow || !isPostable}
+              title={
+                !isPostable
+                  ? postableReason
+                  : "Immediately post the next video from this account's Drive folder via PostPeer"
+              }
+              className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 disabled:cursor-not-allowed text-white text-xs font-semibold px-4 py-2 rounded-lg transition-all"
+            >
+              {postingNow ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5" />}
+              {postingNow ? "Posting…" : "Post Now"}
+            </button>
+            <button
+              onClick={saveEdit}
+              disabled={saving}
+              className="flex items-center gap-1.5 bg-purple-600 hover:bg-purple-500 disabled:opacity-40 text-white text-xs font-semibold px-4 py-2 rounded-lg transition-all"
+            >
+              {saving ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <Save className="w-3.5 h-3.5" />
+              )}
+              Save Schedule
+            </button>
+          </>
         )}
       </div>
     </div>
