@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/db";
 import { getSession } from "@/lib/session";
 import { can, createUser, setRole, grantTool, revokeTool } from "@/lib/services/permissions";
+import { destroyAllSessionsForUser } from "@/lib/services/sessions";
 import bcrypt from "bcryptjs";
 
 // GET /api/admin/team — List all team members and their access config
@@ -108,6 +109,9 @@ export async function POST(req: NextRequest) {
           where: { id: userId },
           data: { status },
         });
+        if (status === "DISABLED") {
+          await destroyAllSessionsForUser(userId);
+        }
       }
 
       // 3. Update entitlements if provided

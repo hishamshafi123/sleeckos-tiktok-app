@@ -35,7 +35,10 @@ model User {
   status       UserStatus        @default(TRIAL)
   createdAt    DateTime          @default(now())
   updatedAt    DateTime          @updatedAt
+  lastLoginAt  DateTime?
+  lastSeenAt   DateTime?
   entitlements UserEntitlement[]
+  sessions     Session[]
 
   // Telegram integration
   telegramChatId     String?   @unique
@@ -63,6 +66,37 @@ model User {
   kpiGoals            KpiGoal[]
   activityEvents      ActivityEvent[]          @relation("UserActivityEvent")
   warmupEnrollments   WarmupEnrollment[]       @relation("WarmerEnrollment")
+}
+
+model Session {
+  id             String    @id @default(uuid())
+  userId         String
+  user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash      String    @unique // SHA-256 of the opaque cookie token — never store the raw token
+  createdAt      DateTime  @default(now())
+  expiresAt      DateTime
+  lastSeenAt     DateTime  @default(now())
+  lastExtendedAt DateTime  @default(now()) // last rolling-expiry extension (throttle marker)
+  ipAddress      String?
+  userAgent      String?
+  revokedAt      DateTime?
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@index([lastSeenAt])
+}
+
+model LoginEvent {
+  id                String   @id @default(uuid())
+  userId            String?
+  attemptedUsername String?
+  success           Boolean
+  createdAt         DateTime @default(now())
+  ipAddress         String?
+  userAgent         String?
+
+  @@index([userId, createdAt])
+  @@index([createdAt])
 }
 
 model Role {
