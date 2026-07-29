@@ -198,6 +198,8 @@ export class ApifyProvider implements AnalyticsProvider {
     });
 
     // Index returned items by video id (item.id, else parsed from its URL).
+    // Error items carry `url`/`input` instead of `webVideoUrl` — handle both,
+    // or deleted/private videos get misclassified as transient failures.
     const byId = new Map<string, any>();
     for (const item of items) {
       const id =
@@ -205,7 +207,11 @@ export class ApifyProvider implements AnalyticsProvider {
           ? String(item.id)
           : item?.webVideoUrl
             ? extractVideoIdFromUrl(String(item.webVideoUrl))
-            : null;
+            : item?.url
+              ? extractVideoIdFromUrl(String(item.url))
+              : item?.input
+                ? extractVideoIdFromUrl(String(item.input))
+                : null;
       if (id) byId.set(id, item);
     }
 
