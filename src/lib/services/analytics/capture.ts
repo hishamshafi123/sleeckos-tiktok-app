@@ -192,6 +192,20 @@ export async function captureVideoLink(
         },
       });
 
+      // Write the REAL video URL back to the ScheduledPost so the History
+      // page links to the video, not the profile (PostPeer often returns
+      // only a profile URL in platformPostUrl).
+      await prisma.scheduledPost.updateMany({
+        where: {
+          accountId: job.accountId,
+          OR: [
+            { tiktokPublishId: job.tiktokPublishId ?? undefined },
+            { driveFileId: job.driveFileId },
+          ],
+        },
+        data: { tiktokPostUrl: match.url },
+      });
+
       console.log(
         `[Capture] Job ${job.id} → video ${match.videoId} (confidence ${confidence}, ${candidates.length} candidate(s))`
       );
