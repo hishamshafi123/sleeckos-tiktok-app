@@ -80,7 +80,15 @@ export type PublicTrackedVideo = {
 
 export type PublicTrackingPayload = {
   campaign: { title: string };
-  totals: { posted: number; captured: number; views: number; likes: number; avgViews: number };
+  totals: {
+    posted: number;
+    captured: number;
+    published: number;
+    scheduled: number;
+    views: number;
+    likes: number;
+    avgViews: number;
+  };
   trend: { date: string; views: number; likes: number }[];
   videos: PublicTrackedVideo[];
 };
@@ -94,23 +102,32 @@ export async function getPublicTrackingPayload(campaignId: string): Promise<Publ
   });
   if (!campaign) return null;
 
-  const videos = await prisma.trackedVideo.findMany({
-    where: { campaignId },
-    select: {
-      id: true,
-      tiktokVideoId: true,
-      url: true,
-      publishedAt: true,
-      views: true,
-      likes: true,
-      comments: true,
-      shares: true,
-      status: true,
-    },
-    orderBy: { views: "desc" },
-  });
+  const [videos, scheduledAgg] = await Promise.all([
+    prisma.trackedVideo.findMany({
+      where: { campaignId },
+      select: {
+        id: true,
+        tiktokVideoId: true,
+        url: true,
+        publishedAt: true,
+        views: true,
+        likes: true,
+        comments: true,
+        shares: true,
+        status: true,
+      },
+      orderBy: { views: "desc" },
+    }),
+    // Videos sent to accounts but not yet posted (Distribution tracker)
+    prisma.delivery.aggregate({
+      where: { campaignId, status: { in: ["delivered", "scheduled"] } },
+      _sum: { videoCount: true },
+    }),
+  ]);
 
   const captured = videos.filter((v) => v.status !== "unresolved");
+  // Confirmed live posts with links (vs. "unavailable" captures)
+  const published = videos.filter((v) => v.status === "captured").length;
   const totalViews = captured.reduce((sum, v) => sum + Number(v.views), 0);
   const totalLikes = captured.reduce((sum, v) => sum + Number(v.likes), 0);
 
@@ -169,6 +186,8 @@ export async function getPublicTrackingPayload(campaignId: string): Promise<Publ
     totals: {
       posted: campaign.postedCount,
       captured: captured.length,
+      published,
+      scheduled: scheduledAgg._sum.videoCount ?? 0,
       views: totalViews,
       likes: totalLikes,
       avgViews: captured.length > 0 ? Math.round(totalViews / captured.length) : 0,

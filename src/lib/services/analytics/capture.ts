@@ -12,10 +12,12 @@ import prisma from "@/lib/db";
 import { AnalyticsProvider, ProviderVideo } from "./provider";
 import { apifyProvider } from "./apify";
 
-// A candidate is accepted only if its createTime falls within
-// [publishedAt - 2min, publishedAt + 15min].
-const WINDOW_BEFORE_MS = 2 * 60 * 1000;
-const WINDOW_AFTER_MS = 15 * 60 * 1000;
+// PostPeer's publish CONFIRMATION lags the actual TikTok upload by several
+// minutes (async publish + our poll interval), so a video's real createTime
+// is almost always BEFORE our publishedAt — accept up to 20 min before and
+// 5 min after confirmation.
+const WINDOW_BEFORE_MS = 20 * 60 * 1000;
+const WINDOW_AFTER_MS = 5 * 60 * 1000;
 
 // Retry backoff per attempt count: after attempt 1 wait 1h, after 2 wait 6h,
 // then 24h for every subsequent attempt.
@@ -102,12 +104,14 @@ export async function captureVideoLink(
       candidates.push(v);
     }
 
-    // Closest to publishedAt wins.
-    candidates.sort(
-      (a, b) =>
-        Math.abs(a.createTime.getTime() - publishedAt.getTime()) -
-        Math.abs(b.createTime.getTime() - publishedAt.getTime())
-    );
+    // Prefer the candidate whose createTime is closest BEFORE publishedAt
+    // (videos are always created before our confirmation); fall back to
+    // closest overall only when nothing precedes it.
+    const before = candidates.filter((v) => v.createTime <= publishedAt);
+    const after = candidates.filter((v) => v.createTime > publishedAt);
+    before.sort((a, b) => b.createTime.getTime() - a.createTime.getTime());
+    after.sort((a, b) => a.createTime.getTime() - b.createTime.getTime());
+    const ranked = [...before, ...after];
 
     const placeholderId = unresolvedPlaceholderId(job.id);
 
@@ -136,7 +140,7 @@ export async function captureVideoLink(
       return { status: "unresolved", trackedVideoId: row.id, reason: "no candidate in window" };
     }
 
-    const match = candidates[0];
+    const match = ranked[0];
     const confidence = candidates.length === 1 ? "high" : "medium";
     const now = new Date();
 
