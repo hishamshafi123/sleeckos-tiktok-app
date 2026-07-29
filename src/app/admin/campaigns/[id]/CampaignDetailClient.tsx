@@ -5,6 +5,8 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   ArrowLeft,
+  ArrowUp,
+  ArrowDown,
   Save,
   Trash2,
   Plus,
@@ -24,7 +26,15 @@ import {
   BarChart3,
   Upload,
   CheckCircle2,
-  AlertCircle
+  AlertCircle,
+  RefreshCw,
+  Download,
+  ExternalLink,
+  Search,
+  Copy,
+  Share2,
+  Eye,
+  Check
 } from "lucide-react";
 import { toast } from "sonner";
 import { Campaign, CampaignResource, CampaignStatus } from "@prisma/client";
@@ -92,6 +102,49 @@ const RANGE_OPTIONS: { value: StatsRange; label: string }[] = [
   { value: "all", label: "All" },
 ];
 
+// Campaign analytics tracking (GET /api/campaigns/[id]/tracking)
+interface TrackedVideoRow {
+  id: string;
+  tiktokVideoId: string;
+  url: string;
+  accountUsername: string;
+  publishedAt: string | null;
+  views: number;
+  likes: number;
+  comments: number;
+  shares: number;
+  lastRefreshedAt: string | null;
+  status: string; // "captured" | "unresolved" | "unavailable"
+}
+
+interface CampaignTracking {
+  totals: {
+    exported: number;
+    posted: number;
+    captured: number;
+    unresolved: number;
+    views: number;
+    likes: number;
+    avgViews: number;
+  };
+  videos: TrackedVideoRow[];
+  trend: { date: string; views: number; likes: number }[];
+  unresolvedCount: number;
+}
+
+interface ShareCode {
+  id: string;
+  code: string;
+  label: string | null;
+  createdAt: string;
+  expiresAt: string | null;
+  revokedAt: string | null;
+}
+
+type TrackSortKey = "views" | "likes" | "date";
+
+const TRACK_PAGE_SIZE = 50;
+
 const timeAgo = (dateStr: string) => {
   const mins = Math.floor((Date.now() - new Date(dateStr).getTime()) / 60000);
   if (mins < 1) return "just now";
@@ -102,6 +155,29 @@ const timeAgo = (dateStr: string) => {
 };
 
 const formatRate = (rate: number) => (rate % 1 === 0 ? `${rate}` : rate.toFixed(1));
+
+const formatCompact = (n: number) =>
+  n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1_000 ? `${(n / 1_000).toFixed(1)}k` : `${n}`;
+
+// Absolute timestamp in the org timezone (shown on hover next to relative times)
+const formatAbsoluteIST = (dateStr: string) =>
+  `${new Date(dateStr).toLocaleString("en-IN", {
+    timeZone: "Asia/Kolkata",
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  })} IST`;
+
+const formatDateIST = (dateStr: string) =>
+  new Date(dateStr).toLocaleDateString("en-IN", {
+    timeZone: "Asia/Kolkata",
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  });
 
 export default function CampaignDetailClient({ campaign: initialCampaign, exportAnalytics }: CampaignDetailClientProps) {
   const router = useRouter();
@@ -185,6 +261,183 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
     fetchStats();
     return () => controller.abort();
   }, [campaign.id, statsRange]);
+
+  // ── Campaign analytics tracking ──────────────────────────────────────────
+  const [tracking, setTracking] = useState<CampaignTracking | null>(null);
+  const [trackingLoading, setTrackingLoading] = useState(true);
+  const [trackingError, setTrackingError] = useState<string | null>(null);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [trackSort, setTrackSort] = useState<{ key: TrackSortKey; dir: "asc" | "desc" }>({
+    key: "views",
+    dir: "desc",
+  });
+  const [trackSearch, setTrackSearch] = useState("");
+  const [trackVisible, setTrackVisible] = useState(TRACK_PAGE_SIZE);
+  const refreshPollRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Share codes ("Client access")
+  const [shareCodes, setShareCodes] = useState<ShareCode[]>([]);
+  const [shareCodesLoading, setShareCodesLoading] = useState(true);
+  const [shareLabel, setShareLabel] = useState("");
+  const [isCreatingShare, setIsCreatingShare] = useState(false);
+  const [copiedShareId, setCopiedShareId] = useState<string | null>(null);
+  const [revokingShareId, setRevokingShareId] = useState<string | null>(null);
+
+  const fetchTracking = async (silent = false) => {
+    if (!silent) {
+      setTrackingLoading(true);
+      setTrackingError(null);
+    }
+    try {
+      const res = await fetch(`/api/campaigns/${campaign.id}/tracking`);
+      if (!res.ok) throw new Error(`Request failed with status ${res.status}`);
+      const data: CampaignTracking = await res.json();
+      setTracking(data);
+      setTrackingError(null);
+    } catch (err) {
+      if (!silent) {
+        setTracking(null);
+        setTrackingError(err instanceof Error ? err.message : "Failed to load tracking data");
+      }
+    } finally {
+      if (!silent) setTrackingLoading(false);
+    }
+  };
+
+  const fetchShareCodes = async () => {
+    setShareCodesLoading(true);
+    try {
+      const res = await fetch(`/api/campaigns/${campaign.id}/share-codes`);
+      if (res.ok) {
+        const data = await res.json();
+        setShareCodes(data.shares || []);
+      }
+    } catch (err) {
+      console.error("Failed to fetch share codes:", err);
+    } finally {
+      setShareCodesLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchTracking();
+    fetchShareCodes();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [campaign.id]);
+
+  // Stop polling on unmount
+  useEffect(() => {
+    return () => {
+      if (refreshPollRef.current) clearInterval(refreshPollRef.current);
+    };
+  }, []);
+
+  // Refresh now → kick off a manual refresh run, then poll the tracking
+  // endpoint every 15s for ~2 min so the numbers update live.
+  const handleRefreshNow = async () => {
+    try {
+      const res = await fetch(`/api/campaigns/${campaign.id}/tracking/refresh`, { method: "POST" });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || `Request failed with status ${res.status}`);
+      }
+      toast.success("Refresh started");
+      setIsRefreshing(true);
+
+      if (refreshPollRef.current) clearInterval(refreshPollRef.current);
+      let polls = 0;
+      refreshPollRef.current = setInterval(() => {
+        polls += 1;
+        fetchTracking(true);
+        if (polls >= 8) {
+          if (refreshPollRef.current) clearInterval(refreshPollRef.current);
+          refreshPollRef.current = null;
+          setIsRefreshing(false);
+        }
+      }, 15000);
+    } catch (err: any) {
+      toast.error(err.message || "Failed to start refresh");
+    }
+  };
+
+  const handleCreateShareCode = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsCreatingShare(true);
+    try {
+      const res = await fetch(`/api/campaigns/${campaign.id}/share-codes`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ label: shareLabel.trim() || undefined }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || "Failed to create share code");
+      }
+      const data = await res.json();
+      setShareCodes((prev) => [data.share, ...prev]);
+      setShareLabel("");
+      toast.success("Share code created");
+    } catch (err: any) {
+      toast.error(err.message || "Failed to create share code");
+    } finally {
+      setIsCreatingShare(false);
+    }
+  };
+
+  const handleCopyShareLink = async (share: ShareCode) => {
+    const url = `${window.location.origin}/track#${share.code}`;
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopiedShareId(share.id);
+      toast.success("Tracking link copied");
+      setTimeout(() => setCopiedShareId(null), 2000);
+    } catch {
+      toast.error("Failed to copy to clipboard");
+    }
+  };
+
+  const handleRevokeShareCode = async (share: ShareCode) => {
+    if (!confirm(`Revoke tracking link ${share.code}? Anyone with this link will lose access immediately.`)) {
+      return;
+    }
+    setRevokingShareId(share.id);
+    try {
+      const res = await fetch(`/api/campaigns/${campaign.id}/share-codes/${share.id}/revoke`, { method: "POST" });
+      if (!res.ok) throw new Error("Failed to revoke share code");
+      const data = await res.json();
+      setShareCodes((prev) =>
+        prev.map((s) => (s.id === share.id ? { ...s, revokedAt: data.share.revokedAt } : s))
+      );
+      toast.success("Share code revoked");
+    } catch (err: any) {
+      toast.error(err.message || "Failed to revoke share code");
+    } finally {
+      setRevokingShareId(null);
+    }
+  };
+
+  const toggleTrackSort = (key: TrackSortKey) => {
+    setTrackSort((prev) =>
+      prev.key === key ? { key, dir: prev.dir === "desc" ? "asc" : "desc" } : { key, dir: "desc" }
+    );
+  };
+
+  // Filtered + sorted view of the tracked videos table
+  const trackedVideosView = (() => {
+    if (!tracking) return [];
+    const query = trackSearch.trim().toLowerCase();
+    const filtered = query
+      ? tracking.videos.filter((v) => (v.accountUsername || "").toLowerCase().includes(query))
+      : tracking.videos;
+    const dir = trackSort.dir === "desc" ? -1 : 1;
+    return [...filtered].sort((a, b) => {
+      if (trackSort.key === "views") return (a.views - b.views) * dir;
+      if (trackSort.key === "likes") return (a.likes - b.likes) * dir;
+      const at = a.publishedAt ? new Date(a.publishedAt).getTime() : 0;
+      const bt = b.publishedAt ? new Date(b.publishedAt).getTime() : 0;
+      return (at - bt) * dir;
+    });
+  })();
 
   useEffect(() => {
     // Fetch sections
@@ -798,6 +1051,109 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
     );
   };
 
+  // CSS bar chart: total views per day (org tz) from the tracking trend
+  const renderTrackingTrendChart = () => {
+    if (!tracking) return null;
+    const trend = tracking.trend;
+    const hasData = trend.some((d) => d.views > 0 || d.likes > 0);
+
+    if (trend.length === 0 || !hasData) {
+      return (
+        <div className="bg-zinc-950/40 border border-[#27272a] rounded p-8 text-center select-none">
+          <BarChart3 className="w-5 h-5 text-zinc-600 mx-auto mb-2" />
+          <p className="text-[11px] text-zinc-500 italic">No view data recorded yet.</p>
+        </div>
+      );
+    }
+
+    const maxViews = Math.max(5, ...trend.map((d) => d.views));
+    const labelEvery = Math.max(1, Math.ceil(trend.length / 8));
+    const formatDay = (dateStr: string) =>
+      new Date(`${dateStr}T00:00:00`).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+    const barHeight = (v: number) => ({
+      height: `${(v / maxViews) * 100}%`,
+      minHeight: v > 0 ? 2 : 0,
+    });
+
+    return (
+      <div className="bg-zinc-950/40 border border-[#27272a] rounded p-3.5 space-y-2 select-none">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3 text-[10px] text-zinc-400">
+            <span className="flex items-center gap-1">
+              <span className="w-2 h-2 rounded-sm bg-[#E11D48] inline-block" /> Total views
+            </span>
+          </div>
+          <span className="text-[9px] text-zinc-600 font-mono">per day · last 30 days · IST</span>
+        </div>
+
+        <div className="relative h-36">
+          {[1, 0.75, 0.5, 0.25, 0].map((ratio) => (
+            <div
+              key={ratio}
+              className="absolute left-0 right-0 border-t border-dashed border-[#27272a] pointer-events-none"
+              style={{ top: `${(1 - ratio) * 100}%` }}
+            >
+              <span className="absolute -top-2 left-0 text-[8px] text-zinc-600 font-mono bg-[#09090b] pr-1">
+                {formatCompact(Math.round(maxViews * ratio))}
+              </span>
+            </div>
+          ))}
+
+          <div className="absolute inset-0 pl-8 flex items-end gap-[3px] overflow-x-auto">
+            {trend.map((d) => (
+              <div
+                key={d.date}
+                className="flex-1 min-w-[10px] h-full flex items-end justify-center"
+                title={`${formatDay(d.date)} — ${d.views.toLocaleString()} views, ${d.likes.toLocaleString()} likes`}
+              >
+                <div
+                  className="w-full max-w-[14px] rounded-sm bg-[#E11D48]/80 hover:bg-[#E11D48] transition-colors"
+                  style={barHeight(d.views)}
+                />
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="pl-8 flex gap-[3px] overflow-x-auto">
+          {trend.map((d, i) => (
+            <div key={d.date} className="flex-1 min-w-[10px] text-center text-[8px] text-zinc-600 font-mono truncate">
+              {i % labelEvery === 0 ? formatDay(d.date) : ""}
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  };
+
+  const trackStatusChip = (status: string) => {
+    const cls =
+      status === "captured"
+        ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20"
+        : status === "unresolved"
+        ? "bg-amber-500/10 text-amber-400 border-amber-500/20"
+        : "bg-zinc-800 text-zinc-400 border-transparent";
+    return (
+      <span className={`text-[9px] font-semibold uppercase px-1.5 py-0.5 rounded border ${cls}`}>{status}</span>
+    );
+  };
+
+  const trackSortHeader = (label: string, sortKey: TrackSortKey, alignRight = false) => (
+    <th
+      onClick={() => toggleTrackSort(sortKey)}
+      className={`px-3 py-2 font-semibold cursor-pointer select-none hover:text-zinc-300 transition ${
+        alignRight ? "text-right" : ""
+      }`}
+      title={`Sort by ${label.toLowerCase()}`}
+    >
+      <span className={`inline-flex items-center gap-1 ${alignRight ? "flex-row-reverse" : ""}`}>
+        {label}
+        {trackSort.key === sortKey &&
+          (trackSort.dir === "desc" ? <ArrowDown size={10} /> : <ArrowUp size={10} />)}
+      </span>
+    </th>
+  );
+
   // Recent activity feed event presentation
   const renderEventRow = (e: CampaignStats["recentEvents"][number]) => {
     let icon = <Upload size={13} className="text-zinc-400 flex-shrink-0" />;
@@ -1224,6 +1580,308 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
                       <p className="text-[11px] text-zinc-500 italic text-center py-3">
                         No recent activity in this range.
                       </p>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Campaign Tracking (link capture + views analytics) */}
+          <div className="border border-[#27272a] rounded-md bg-[#09090b] p-5 space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-[#27272a] pb-3">
+              <h3 className="text-sm font-semibold text-zinc-200 flex items-center gap-2">
+                <Eye className="w-4 h-4 text-[#E11D48]" />
+                Campaign Tracking
+              </h3>
+
+              <div className="flex items-center gap-2 self-start sm:self-auto">
+                {/* CSV export */}
+                <a
+                  href={`/api/campaigns/${campaign.id}/tracking/csv`}
+                  className="flex items-center gap-1.5 bg-zinc-900 hover:bg-zinc-800 border border-[#27272a] text-zinc-300 text-[11px] font-semibold px-2.5 py-1 rounded transition"
+                  title="Download tracked videos as CSV"
+                >
+                  <Download size={11} />
+                  Export CSV
+                </a>
+
+                {/* Manual refresh */}
+                <button
+                  onClick={handleRefreshNow}
+                  disabled={isRefreshing}
+                  className="flex items-center gap-1.5 bg-zinc-100 hover:bg-zinc-200 text-zinc-950 text-[11px] font-semibold px-2.5 py-1 rounded transition disabled:opacity-50"
+                  title={isRefreshing ? "Refresh in progress — stats update automatically" : "Refresh stats from TikTok now"}
+                >
+                  <RefreshCw size={11} className={isRefreshing ? "animate-spin" : ""} />
+                  {isRefreshing ? "Refreshing..." : "Refresh now"}
+                </button>
+              </div>
+            </div>
+
+            {/* Error state */}
+            {trackingError && (
+              <div className="flex items-start gap-2.5 bg-red-950/20 border border-red-900/30 text-red-400 rounded p-3 text-xs">
+                <AlertTriangle size={15} className="mt-0.5 flex-shrink-0" />
+                <div>
+                  <span className="font-semibold">Failed to load tracking data:</span> {trackingError}
+                </div>
+              </div>
+            )}
+
+            {/* Loading skeleton (initial load) */}
+            {trackingLoading && !tracking && !trackingError && (
+              <div className="space-y-3">
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                  {[0, 1, 2, 3].map((i) => (
+                    <div key={i} className="h-16 bg-zinc-900/60 border border-[#27272a] rounded animate-pulse" />
+                  ))}
+                </div>
+                <div className="h-40 bg-zinc-900/60 border border-[#27272a] rounded animate-pulse" />
+              </div>
+            )}
+
+            {tracking && (
+              <div className={`space-y-4 transition ${isRefreshing ? "opacity-80" : ""}`}>
+                {/* Tracking stat cards */}
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                  {(
+                    [
+                      { label: "Videos Exported", value: tracking.totals.exported.toLocaleString(), cls: "text-zinc-100" },
+                      { label: "Videos Posted", value: tracking.totals.posted.toLocaleString(), cls: "text-emerald-400" },
+                      { label: "Links Captured", value: tracking.totals.captured.toLocaleString(), cls: "text-zinc-100" },
+                      { label: "Total Views", value: formatCompact(tracking.totals.views), cls: "text-zinc-100", title: tracking.totals.views.toLocaleString() },
+                      { label: "Total Likes", value: formatCompact(tracking.totals.likes), cls: "text-zinc-100", title: tracking.totals.likes.toLocaleString() },
+                      { label: "Avg Views / Video", value: formatCompact(tracking.totals.avgViews), cls: "text-zinc-100", title: tracking.totals.avgViews.toLocaleString() },
+                      {
+                        label: "Unresolved",
+                        value: tracking.totals.unresolved.toLocaleString(),
+                        cls: tracking.totals.unresolved > 0 ? "text-amber-400" : "text-zinc-500",
+                      },
+                    ] as { label: string; value: string; cls: string; title?: string }[]
+                  ).map((c) => (
+                    <div key={c.label} className="bg-[#18181b]/10 border border-[#27272a] rounded p-3 space-y-1 text-center">
+                      <span className="text-[10px] text-zinc-500 font-medium uppercase tracking-wider block">{c.label}</span>
+                      <span className={`text-base font-bold font-mono ${c.cls}`} title={c.title}>
+                        {c.value}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Views-over-time trend */}
+                {renderTrackingTrendChart()}
+
+                {/* Per-video table */}
+                <div className="space-y-2 pt-1">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                    <h4 className="text-[11px] font-semibold text-zinc-400 uppercase tracking-wider">Tracked Videos</h4>
+                    <div className="relative">
+                      <Search size={11} className="absolute left-2 top-1/2 -translate-y-1/2 text-zinc-600" />
+                      <input
+                        type="text"
+                        value={trackSearch}
+                        onChange={(e) => {
+                          setTrackSearch(e.target.value);
+                          setTrackVisible(TRACK_PAGE_SIZE);
+                        }}
+                        placeholder="Search by account..."
+                        className="bg-[#09090b] border border-[#27272a] rounded pl-7 pr-2.5 py-1 text-[11px] text-zinc-100 focus:outline-none focus:border-zinc-500 placeholder-zinc-600 w-full sm:w-48"
+                      />
+                    </div>
+                  </div>
+
+                  {tracking.videos.length === 0 ? (
+                    <div className="bg-zinc-950/40 border border-[#27272a] rounded p-8 text-center select-none">
+                      <Eye className="w-5 h-5 text-zinc-600 mx-auto mb-2" />
+                      <p className="text-[11px] text-zinc-500 italic">
+                        No tracked videos yet — links are captured automatically after posts publish.
+                      </p>
+                    </div>
+                  ) : trackedVideosView.length === 0 ? (
+                    <p className="text-[11px] text-zinc-500 italic text-center py-4">
+                      No videos match &quot;{trackSearch}&quot;.
+                    </p>
+                  ) : (
+                    <>
+                      <div className="border border-[#27272a] rounded overflow-x-auto">
+                        <table className="w-full text-xs text-left">
+                          <thead>
+                            <tr className="bg-zinc-950/40 border-b border-[#27272a] text-zinc-500 text-[10px] uppercase font-bold">
+                              <th className="px-3 py-2 font-semibold">Video</th>
+                              <th className="px-3 py-2 font-semibold">Account</th>
+                              {trackSortHeader("Posted", "date")}
+                              {trackSortHeader("Views", "views", true)}
+                              {trackSortHeader("Likes", "likes", true)}
+                              <th className="px-3 py-2 font-semibold text-right">Comments</th>
+                              <th className="px-3 py-2 font-semibold text-right">Shares</th>
+                              <th className="px-3 py-2 font-semibold">Refreshed</th>
+                              <th className="px-3 py-2 font-semibold text-center">Status</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-[#27272a] text-zinc-300">
+                            {trackedVideosView.slice(0, trackVisible).map((v) => (
+                              <tr key={v.id} className="hover:bg-zinc-950/20">
+                                <td className="px-3 py-2.5">
+                                  {v.url ? (
+                                    <a
+                                      href={v.url}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      className="inline-flex items-center gap-1 text-blue-400 hover:text-blue-300 font-semibold hover:underline"
+                                      title={v.url}
+                                    >
+                                      <ExternalLink size={11} />
+                                      Open
+                                    </a>
+                                  ) : (
+                                    <span className="text-zinc-600">—</span>
+                                  )}
+                                </td>
+                                <td className="px-3 py-2.5 font-medium whitespace-nowrap">
+                                  {v.accountUsername ? `@${v.accountUsername}` : <span className="text-zinc-600">—</span>}
+                                </td>
+                                <td
+                                  className="px-3 py-2.5 font-mono text-[11px] text-zinc-400 whitespace-nowrap"
+                                  title={v.publishedAt ? formatAbsoluteIST(v.publishedAt) : undefined}
+                                >
+                                  {v.publishedAt ? formatDateIST(v.publishedAt) : "—"}
+                                </td>
+                                <td className="px-3 py-2.5 text-right font-mono font-semibold text-zinc-100">
+                                  {v.views.toLocaleString()}
+                                </td>
+                                <td className="px-3 py-2.5 text-right font-mono">{v.likes.toLocaleString()}</td>
+                                <td className="px-3 py-2.5 text-right font-mono text-zinc-400">
+                                  {v.comments.toLocaleString()}
+                                </td>
+                                <td className="px-3 py-2.5 text-right font-mono text-zinc-400">
+                                  {v.shares.toLocaleString()}
+                                </td>
+                                <td
+                                  className="px-3 py-2.5 text-[10px] text-zinc-500 font-mono whitespace-nowrap"
+                                  title={v.lastRefreshedAt ? formatAbsoluteIST(v.lastRefreshedAt) : "Not refreshed yet"}
+                                >
+                                  {v.lastRefreshedAt ? timeAgo(v.lastRefreshedAt) : "—"}
+                                </td>
+                                <td className="px-3 py-2.5 text-center">{trackStatusChip(v.status)}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+
+                      {trackedVideosView.length > trackVisible && (
+                        <div className="flex justify-center pt-1">
+                          <button
+                            onClick={() => setTrackVisible((prev) => prev + TRACK_PAGE_SIZE)}
+                            className="text-[11px] font-semibold text-zinc-300 hover:text-zinc-100 bg-zinc-900 border border-[#27272a] hover:border-zinc-600 rounded px-3 py-1 transition"
+                          >
+                            Load more ({(trackedVideosView.length - trackVisible).toLocaleString()} remaining)
+                          </button>
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
+
+                {/* Client access (share codes) */}
+                <div className="space-y-3 pt-3 border-t border-[#27272a]">
+                  <div className="flex items-center justify-between">
+                    <h4 className="text-[11px] font-semibold text-zinc-400 uppercase tracking-wider flex items-center gap-1.5">
+                      <Share2 size={11} className="text-zinc-500" />
+                      Client Access
+                    </h4>
+                    <span className="text-[9px] text-zinc-600">
+                      Public read-only link: <span className="font-mono">/track#CODE</span>
+                    </span>
+                  </div>
+
+                  {/* Create form */}
+                  <form onSubmit={handleCreateShareCode} className="flex gap-2">
+                    <input
+                      type="text"
+                      value={shareLabel}
+                      onChange={(e) => setShareLabel(e.target.value)}
+                      placeholder="Label (optional, e.g. Client name)"
+                      className="flex-1 bg-[#09090b] border border-[#27272a] rounded px-2.5 py-1 text-[11px] text-zinc-100 focus:outline-none focus:border-zinc-500 placeholder-zinc-600"
+                    />
+                    <button
+                      type="submit"
+                      disabled={isCreatingShare}
+                      className="flex items-center gap-1 bg-zinc-100 hover:bg-zinc-200 text-zinc-950 text-[11px] font-semibold px-3 py-1 rounded transition disabled:opacity-50"
+                    >
+                      {isCreatingShare ? <Loader2 size={11} className="animate-spin" /> : <Plus size={11} />}
+                      Create link
+                    </button>
+                  </form>
+
+                  {/* Codes list */}
+                  <div className="space-y-1.5">
+                    {shareCodesLoading ? (
+                      <div className="flex items-center justify-center py-3 text-xs text-zinc-500 gap-1.5">
+                        <Loader2 size={12} className="animate-spin text-zinc-400" />
+                        Loading share codes...
+                      </div>
+                    ) : shareCodes.length === 0 ? (
+                      <p className="text-[11px] text-zinc-500 italic text-center py-3">
+                        No share links yet — create one to give a client read-only access to these stats.
+                      </p>
+                    ) : (
+                      shareCodes.map((s) => {
+                        const revoked = !!s.revokedAt;
+                        const expired = !revoked && s.expiresAt && new Date(s.expiresAt).getTime() < Date.now();
+                        return (
+                          <div
+                            key={s.id}
+                            className="flex flex-col sm:flex-row sm:items-center justify-between bg-zinc-950/40 border border-[#27272a] rounded px-2.5 py-1.5 gap-2"
+                          >
+                            <div className="flex items-center gap-2 min-w-0">
+                              <span className={`text-[11px] font-mono font-semibold tracking-wider ${revoked || expired ? "text-zinc-600 line-through" : "text-zinc-200"}`}>
+                                {s.code}
+                              </span>
+                              {s.label && <span className="text-[10px] text-zinc-500 truncate">{s.label}</span>}
+                              {revoked && (
+                                <span className="text-[9px] font-semibold uppercase px-1.5 py-0.5 rounded bg-red-500/10 text-red-400 border border-red-500/20">
+                                  Revoked
+                                </span>
+                              )}
+                              {expired && (
+                                <span className="text-[9px] font-semibold uppercase px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-400">
+                                  Expired
+                                </span>
+                              )}
+                            </div>
+                            <div className="flex items-center gap-2 flex-shrink-0">
+                              <span
+                                className="text-[9px] text-zinc-600 font-mono"
+                                title={formatAbsoluteIST(s.createdAt)}
+                              >
+                                {timeAgo(s.createdAt)}
+                              </span>
+                              <button
+                                onClick={() => handleCopyShareLink(s)}
+                                disabled={revoked}
+                                className="flex items-center gap-1 text-[10px] font-semibold text-zinc-300 hover:text-zinc-100 bg-zinc-900 border border-[#27272a] hover:border-zinc-600 rounded px-2 py-0.5 transition disabled:opacity-40"
+                                title={revoked ? "Link revoked" : "Copy /track#CODE link"}
+                              >
+                                {copiedShareId === s.id ? <Check size={10} className="text-emerald-400" /> : <Copy size={10} />}
+                                {copiedShareId === s.id ? "Copied" : "Copy link"}
+                              </button>
+                              {!revoked && (
+                                <button
+                                  onClick={() => handleRevokeShareCode(s)}
+                                  disabled={revokingShareId === s.id}
+                                  className="flex items-center gap-1 text-[10px] font-semibold text-red-400 hover:text-red-300 bg-red-950/20 border border-red-900/30 rounded px-2 py-0.5 transition disabled:opacity-40"
+                                  title="Revoke this link"
+                                >
+                                  {revokingShareId === s.id ? <Loader2 size={10} className="animate-spin" /> : <Trash2 size={10} />}
+                                  Revoke
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })
                     )}
                   </div>
                 </div>

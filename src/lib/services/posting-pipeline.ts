@@ -7,6 +7,7 @@ import {
 } from "@/lib/google";
 import { getMultiplierDriveClient } from "@/app/api/managed/multiplier/google/drive-helper";
 import { postViaPostPeer, driveDirectUrl } from "@/lib/postpeer";
+import { captureVideoLink } from "@/lib/services/analytics/capture";
 import fs from "fs";
 import path from "path";
 
@@ -552,6 +553,15 @@ export async function confirmPublished(jobId: string, tiktokVideoId?: string, pl
       },
     });
   }
+
+  // Fire-and-forget campaign link capture (Apify). TikTok takes ~1-2 min to
+  // surface a new video on the profile, so delay 90s. Capture is fully
+  // self-contained — it catches its own errors and never affects posting.
+  setTimeout(() => {
+    captureVideoLink(jobId).catch((err) =>
+      console.error(`[Posting Pipeline] Link capture failed for job ${jobId}:`, err)
+    );
+  }, 90_000);
 }
 
 /**

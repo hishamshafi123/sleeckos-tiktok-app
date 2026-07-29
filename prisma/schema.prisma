@@ -1648,3 +1648,81 @@ model FontAsset {
   license   String
   isDefault Boolean @default(false)
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Campaign Link Capture + 24h Analytics Refresh (Apify)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// A TikTok video linked back to a published PostJob via Apify profile scrape.
+/// Unresolved rows use a placeholder tiktokVideoId ("unresolved_<postJobId>")
+/// so a later successful capture can UPDATE the row instead of duplicating it.
+model TrackedVideo {
+  id             String   @id @default(uuid())
+  tiktokVideoId  String   @unique
+  url            String
+  accountId      String
+  campaignId     String?
+  postJobId      String?
+  publishedAt    DateTime
+  capturedAt     DateTime @default(now())
+  captureMethod  String   // "recent_match" (apify only)
+  confidence     String   @default("high") // high | medium | low
+  status         String   @default("captured") // captured | unresolved | unavailable
+  captureAttempts Int     @default(0) // capture retry count — drives 1h/6h/24h backoff
+  views          BigInt   @default(0)
+  likes          BigInt   @default(0)
+  comments       BigInt   @default(0)
+  shares         BigInt   @default(0)
+  lastRefreshedAt DateTime?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  snapshots      VideoStatSnapshot[]
+  @@index([campaignId])
+  @@index([accountId])
+  @@index([status, lastRefreshedAt])
+}
+
+model VideoStatSnapshot {
+  id             String   @id @default(uuid())
+  trackedVideoId String
+  trackedVideo   TrackedVideo @relation(fields: [trackedVideoId], references: [id], onDelete: Cascade)
+  views          BigInt
+  likes          BigInt
+  comments       BigInt
+  shares         BigInt
+  recordedAt     DateTime @default(now())
+  @@index([trackedVideoId, recordedAt])
+}
+
+model AnalyticsRun {
+  id         String   @id @default(uuid())
+  type       String   // "daily" | "manual" | "capture"
+  status     String   @default("running") // running | done | failed
+  attempted  Int      @default(0)
+  succeeded  Int      @default(0)
+  failed     Int      @default(0)
+  skipped    Int      @default(0)
+  cursor     String?  // resumable progress marker
+  error      String?  @db.Text
+  startedAt  DateTime @default(now())
+  finishedAt DateTime?
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Client-facing campaign tracking share links
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// A share code grants read-only public access to a campaign's tracking stats
+/// via /track#<code>. The code itself is the secret — stored in plain text so
+/// it can be displayed/copied in the internal UI. Revoke instead of delete.
+model CampaignShare {
+  id         String    @id @default(uuid())
+  campaignId String
+  code       String    @unique
+  label      String?
+  createdBy  String?
+  createdAt  DateTime  @default(now())
+  expiresAt  DateTime?
+  revokedAt  DateTime?
+  @@index([campaignId])
+}
