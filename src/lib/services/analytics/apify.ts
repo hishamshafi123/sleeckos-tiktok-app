@@ -179,10 +179,22 @@ export class ApifyProvider implements AnalyticsProvider {
     const result = new Map<string, ProviderVideoStats>();
     if (urls.length === 0) return result;
 
+    // Malformed URLs (e.g. usernames with spaces from legacy reconstruction)
+    // can never resolve — retire them as unavailable instead of burning an
+    // actor call and misclassifying the failure as transient.
+    const VALID_URL = /^https?:\/\/(www\.)?tiktok\.com\/@[A-Za-z0-9_.-]+\/video\/\d+/;
+    const validUrls = urls.filter((u) => {
+      if (VALID_URL.test(u)) return true;
+      const id = extractVideoIdFromUrl(u);
+      if (id) result.set(id, { unavailable: true });
+      return false;
+    });
+    if (validUrls.length === 0) return result;
+
     const urlsField = process.env.APIFY_POST_URLS_FIELD || "postURLs";
     const items = await runActor({
-      [urlsField]: urls,
-      resultsPerPage: urls.length,
+      [urlsField]: validUrls,
+      resultsPerPage: validUrls.length,
     });
 
     // Index returned items by video id (item.id, else parsed from its URL).
@@ -197,7 +209,7 @@ export class ApifyProvider implements AnalyticsProvider {
       if (id) byId.set(id, item);
     }
 
-    for (const url of urls) {
+    for (const url of validUrls) {
       const videoId = extractVideoIdFromUrl(url);
       if (!videoId) continue;
       const item = byId.get(videoId);
