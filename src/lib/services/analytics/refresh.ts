@@ -120,7 +120,9 @@ export async function runAnalyticsRefresh(opts: RefreshOptions = {}): Promise<{ 
   const all = await prisma.trackedVideo.findMany({
     where: {
       status: "captured",
-      ...(campaignId ? { campaignId } : {}),
+      // Non-campaign videos are never refreshed (operator decision: refresh
+      // budget goes to campaign-attributed videos only).
+      campaignId: campaignId ? campaignId : { not: null },
     },
     select: { id: true, tiktokVideoId: true, url: true, publishedAt: true, lastRefreshedAt: true },
   });

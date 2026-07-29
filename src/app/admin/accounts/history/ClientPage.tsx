@@ -16,12 +16,14 @@ import {
   X,
   AlertCircle,
   Hash,
+  Clock,
+  Upload,
 } from "lucide-react";
 
 // ── API contract types ──────────────────────────────────────────────────────
 type HistoryPost = {
   id: string;
-  status: "PUBLISHED" | "SKIPPED" | "FAILED";
+  status: "PUBLISHED" | "QUEUED" | "UPLOADING" | "RETRYING" | "SKIPPED" | "FAILED";
   rawStatus: string;
   caption: string;
   driveFileName: string | null;
@@ -34,6 +36,13 @@ type HistoryPost = {
   likeCount: string;
   commentCount: string;
   shareCount: string;
+  liveStats: {
+    views: string;
+    likes: string;
+    comments: string;
+    shares: string;
+    lastRefreshedAt: string | null;
+  } | null;
   account: {
     id: string;
     tiktokUsername: string;
@@ -46,6 +55,8 @@ type HistoryPost = {
 
 type HistorySummary = {
   published: number;
+  queued: number;
+  uploading: number;
   failed: number;
   skipped: number;
   withLinks: number;
@@ -96,6 +107,9 @@ function formatAbsolute(dateStr: string): string {
 
 const STATUS_STYLES: Record<HistoryPost["status"], string> = {
   PUBLISHED: "text-emerald-400 bg-emerald-400/10 border-emerald-500/20",
+  QUEUED: "text-zinc-400 bg-zinc-400/10 border-zinc-500/20",
+  UPLOADING: "text-amber-400 bg-amber-400/10 border-amber-500/20 animate-pulse",
+  RETRYING: "text-amber-400 bg-amber-400/10 border-amber-500/20",
   SKIPPED: "text-amber-400 bg-amber-400/10 border-amber-500/20",
   FAILED: "text-red-400 bg-red-400/10 border-red-500/20",
 };
@@ -291,7 +305,7 @@ export default function HistoryPage() {
         <div className="space-y-1">
           <h1 className="text-xl font-bold tracking-tight">Post History</h1>
           <p className="text-xs text-zinc-400">
-            Every published, skipped, and failed post across all managed accounts.
+            The full posting pipeline — queued, uploading, published, skipped, and failed posts across all managed accounts.
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -329,7 +343,7 @@ export default function HistoryPage() {
       </div>
 
       {/* Stat cards — server-aggregated over every active filter */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3">
         <div className="bg-[#09090b] border border-[#27272a] rounded-md px-4 py-3 flex items-center gap-3">
           <CheckCircle2 size={18} className="text-emerald-400 shrink-0" />
           <div className="min-w-0">
@@ -337,6 +351,24 @@ export default function HistoryPage() {
               {summary ? summary.published.toLocaleString() : "—"}
             </p>
             <p className="text-[10px] uppercase tracking-wider text-zinc-500">Published</p>
+          </div>
+        </div>
+        <div className="bg-[#09090b] border border-[#27272a] rounded-md px-4 py-3 flex items-center gap-3">
+          <Clock size={18} className="text-zinc-400 shrink-0" />
+          <div className="min-w-0">
+            <p className="text-lg font-bold text-zinc-300 leading-tight">
+              {summary ? summary.queued.toLocaleString() : "—"}
+            </p>
+            <p className="text-[10px] uppercase tracking-wider text-zinc-500">Queued</p>
+          </div>
+        </div>
+        <div className="bg-[#09090b] border border-[#27272a] rounded-md px-4 py-3 flex items-center gap-3">
+          <Upload size={18} className="text-amber-400 shrink-0" />
+          <div className="min-w-0">
+            <p className="text-lg font-bold text-amber-400 leading-tight">
+              {summary ? summary.uploading.toLocaleString() : "—"}
+            </p>
+            <p className="text-[10px] uppercase tracking-wider text-zinc-500">Uploading</p>
           </div>
         </div>
         <div className="bg-[#09090b] border border-[#27272a] rounded-md px-4 py-3 flex items-center gap-3">
@@ -426,6 +458,9 @@ export default function HistoryPage() {
           >
             <option value="all">All Statuses</option>
             <option value="PUBLISHED">Published</option>
+            <option value="QUEUED">Queued</option>
+            <option value="UPLOADING">Uploading</option>
+            <option value="RETRYING">Retrying</option>
             <option value="SKIPPED">Skipped</option>
             <option value="FAILED">Failed</option>
           </select>
@@ -561,9 +596,9 @@ export default function HistoryPage() {
                         className={`text-[10px] font-semibold px-2 py-0.5 rounded border ${STATUS_STYLES[post.status] ?? STATUS_STYLES.SKIPPED}`}
                         title={
                           post.errorMessage
-                            ? `${post.status === "FAILED" ? "Failure reason" : "Reason"}: ${post.errorMessage}`
+                            ? `${post.status === "FAILED" ? "Failure reason" : post.status === "RETRYING" ? "Last attempt" : "Reason"}: ${post.errorMessage}`
                             : post.rawStatus !== post.status
-                            ? `Lifecycle state: ${post.rawStatus}`
+                            ? `Pipeline state: ${post.rawStatus}`
                             : undefined
                         }
                       >
@@ -627,6 +662,11 @@ export default function HistoryPage() {
                           {post.errorMessage}
                         </p>
                       )}
+                      {post.status === "RETRYING" && post.errorMessage && (
+                        <p className="text-[10px] text-amber-400/70 truncate mt-0.5" title={post.errorMessage}>
+                          {post.errorMessage}
+                        </p>
+                      )}
                       {post.status === "SKIPPED" && post.errorMessage && (
                         <p className="text-[10px] text-amber-400/70 truncate mt-0.5" title={post.errorMessage}>
                           {post.errorMessage}
@@ -634,12 +674,27 @@ export default function HistoryPage() {
                       )}
                     </td>
                     <td className="py-2.5 px-4 text-right whitespace-nowrap">
-                      <span
-                        className="font-mono text-zinc-400 tabular-nums"
-                        title={`${Number(post.viewCount).toLocaleString()} views · ${Number(post.likeCount).toLocaleString()} likes · ${Number(post.commentCount).toLocaleString()} comments`}
-                      >
-                        {formatCompact(post.viewCount)} · {formatCompact(post.likeCount)} · {formatCompact(post.commentCount)}
-                      </span>
+                      {post.liveStats ? (
+                        <span
+                          className="font-mono text-zinc-300 tabular-nums"
+                          title={`${Number(post.liveStats.views).toLocaleString()} views · ${Number(post.liveStats.likes).toLocaleString()} likes · ${Number(post.liveStats.comments).toLocaleString()} comments (live)${
+                            post.liveStats.lastRefreshedAt
+                              ? ` — updated ${timeAgo(post.liveStats.lastRefreshedAt)}, ${formatAbsolute(post.liveStats.lastRefreshedAt)}`
+                              : ""
+                          }`}
+                        >
+                          {formatCompact(post.liveStats.views)} · {formatCompact(post.liveStats.likes)} · {formatCompact(post.liveStats.comments)}
+                        </span>
+                      ) : post.viewCount === "0" && post.likeCount === "0" && post.commentCount === "0" ? (
+                        <span className="text-zinc-700">—</span>
+                      ) : (
+                        <span
+                          className="font-mono text-zinc-400 tabular-nums"
+                          title={`${Number(post.viewCount).toLocaleString()} views · ${Number(post.likeCount).toLocaleString()} likes · ${Number(post.commentCount).toLocaleString()} comments`}
+                        >
+                          {formatCompact(post.viewCount)} · {formatCompact(post.likeCount)} · {formatCompact(post.commentCount)}
+                        </span>
+                      )}
                     </td>
                     <td className="py-2.5 px-4 whitespace-nowrap">
                       {post.publishedAt ? (

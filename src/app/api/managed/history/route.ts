@@ -7,18 +7,22 @@ import { can } from "@/lib/services/permissions";
 /**
  * GET /api/managed/history
  *
- * Returns published/skipped/failed posts plus aggregate summary:
+ * Returns the full posting pipeline (queued → uploading → published/skipped/failed)
+ * plus aggregate summary:
  *   ?section=sectionId   — filter by section
  *   ?accountId=accountId — filter by managed account
- *   ?status=PUBLISHED    — filter by status (PUBLISHED | SKIPPED | FAILED | all)
+ *   ?status=PUBLISHED    — filter by display status
+ *                          (PUBLISHED | QUEUED | UPLOADING | RETRYING | SKIPPED | FAILED | all)
  *   ?hashtag=#fyp        — filter captions containing this hashtag
  *   ?from=YYYY-MM-DD     — start date
  *   ?to=YYYY-MM-DD       — end date
  *   ?limit=200           — max results
  *   ?sort=latest         — latest | oldest | views (latest = publish time desc, newest on top)
  *
- * Response: { posts: [...], summary: { published, failed, skipped, withLinks, successRate, views, likes, comments, shares } }
+ * Response: { posts: [...], summary: { published, queued, uploading, failed, skipped, withLinks, successRate, views, likes, comments, shares } }
  * "published" counts PUBLISHED + PENDING_DELETION + DELETED (post-publish lifecycle states).
+ * Posts carry a normalized display `status` (raw in `rawStatus`) and, when the TikTok
+ * video is tracked by analytics, `liveStats` with the latest view/like/comment/share counts.
  * Summary respects every active filter.
  */
 export async function GET(req: NextRequest) {
@@ -42,6 +46,19 @@ export async function GET(req: NextRequest) {
   const sort = url.searchParams.get("sort") || "latest";
 
   const PUBLISHED_STATES = ["PUBLISHED", "PENDING_DELETION", "DELETED"];
+  const QUEUED_STATES = ["QUEUED", "CLAIMED", "DOWNLOADING"];
+  const UPLOADING_STATES = ["UPLOADING", "PROCESSING"];
+
+  // Normalized display status: lifecycle states collapse into PUBLISHED,
+  // in-flight states into QUEUED/UPLOADING (QUEUED + a failed attempt = RETRYING).
+  const normalizeStatus = (raw: string, errorMessage: string | null): string => {
+    if (PUBLISHED_STATES.includes(raw)) return "PUBLISHED";
+    if (UPLOADING_STATES.includes(raw)) return "UPLOADING";
+    if (QUEUED_STATES.includes(raw)) {
+      return errorMessage?.startsWith("Attempt") ? "RETRYING" : "QUEUED";
+    }
+    return raw; // FAILED | SKIPPED
+  };
 
   const orderBy: any[] =
     sort === "oldest"
@@ -53,15 +70,23 @@ export async function GET(req: NextRequest) {
   // Build where clause
   const where: Record<string, unknown> = {};
 
-  // Status filter
+  // Status filter (display statuses map to one or more raw pipeline states)
   if (statusFilter === "PUBLISHED") {
     where.status = { in: PUBLISHED_STATES };
   } else if (statusFilter === "SKIPPED") {
     where.status = "SKIPPED";
   } else if (statusFilter === "FAILED") {
     where.status = "FAILED";
+  } else if (statusFilter === "QUEUED") {
+    where.status = { in: QUEUED_STATES };
+    where.OR = [{ errorMessage: null }, { errorMessage: { not: { startsWith: "Attempt" } } }];
+  } else if (statusFilter === "RETRYING") {
+    where.status = { in: QUEUED_STATES };
+    where.errorMessage = { startsWith: "Attempt" };
+  } else if (statusFilter === "UPLOADING") {
+    where.status = { in: UPLOADING_STATES };
   } else {
-    where.status = { in: [...PUBLISHED_STATES, "SKIPPED", "FAILED"] };
+    where.status = { in: [...PUBLISHED_STATES, ...QUEUED_STATES, ...UPLOADING_STATES, "SKIPPED", "FAILED"] };
   }
 
   // Section / account filters
@@ -116,19 +141,49 @@ export async function GET(req: NextRequest) {
     prisma.scheduledPost.count({ where: { ...where, tiktokPostUrl: { not: null } } }),
   ]);
 
+  // Live stats: match posts to TrackedVideo rows via the video id in tiktokPostUrl
+  const videoIds = [
+    ...new Set(
+      posts
+        .map((p) => p.tiktokPostUrl?.match(/\/video\/(\d+)/)?.[1])
+        .filter((id): id is string => Boolean(id))
+    ),
+  ];
+  const trackedVideos = videoIds.length
+    ? await prisma.trackedVideo.findMany({
+        where: { tiktokVideoId: { in: videoIds } },
+        select: {
+          tiktokVideoId: true,
+          views: true,
+          likes: true,
+          comments: true,
+          shares: true,
+          lastRefreshedAt: true,
+        },
+      })
+    : [];
+  const trackedByVideoId = new Map(trackedVideos.map((t) => [t.tiktokVideoId, t]));
+
   // Normalize lifecycle states: PUBLISHED/PENDING_DELETION/DELETED all mean published
   let published = 0;
   let failed = 0;
   let skipped = 0;
+  let queued = 0;
+  let uploading = 0;
   for (const g of statusGroups) {
     if (PUBLISHED_STATES.includes(g.status)) published += g._count._all;
     else if (g.status === "FAILED") failed += g._count._all;
     else if (g.status === "SKIPPED") skipped += g._count._all;
+    // RETRYING (queued with a failed attempt) counts into queued
+    else if (QUEUED_STATES.includes(g.status)) queued += g._count._all;
+    else if (UPLOADING_STATES.includes(g.status)) uploading += g._count._all;
   }
   const attempts = published + failed;
 
   const summary = {
     published,
+    queued,
+    uploading,
     failed,
     skipped,
     withLinks: linksCount,
@@ -146,11 +201,13 @@ export async function GET(req: NextRequest) {
         ? `https://www.tiktok.com/@${p.account.tiktokUsername}/video/${p.tiktokVideoId}`
         : null);
     const campaignMatch = p.driveFileName?.match(/^\(([^)]+)\)/);
+    const videoId = p.tiktokPostUrl?.match(/\/video\/(\d+)/)?.[1];
+    const tracked = videoId ? trackedByVideoId.get(videoId) : undefined;
 
     return {
       id: p.id,
-      // Normalized status for display: lifecycle states collapse into PUBLISHED
-      status: PUBLISHED_STATES.includes(p.status) ? "PUBLISHED" : p.status,
+      // Normalized status for display: lifecycle + in-flight states collapse
+      status: normalizeStatus(p.status, p.errorMessage),
       rawStatus: p.status,
       caption: p.caption,
       driveFileName: p.driveFileName,
@@ -164,6 +221,15 @@ export async function GET(req: NextRequest) {
       likeCount: p.likeCount?.toString() ?? "0",
       commentCount: p.commentCount?.toString() ?? "0",
       shareCount: p.shareCount?.toString() ?? "0",
+      liveStats: tracked
+        ? {
+            views: tracked.views.toString(),
+            likes: tracked.likes.toString(),
+            comments: tracked.comments.toString(),
+            shares: tracked.shares.toString(),
+            lastRefreshedAt: tracked.lastRefreshedAt,
+          }
+        : null,
       account: p.account,
     };
   });
