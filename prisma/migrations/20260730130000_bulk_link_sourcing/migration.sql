@@ -4,17 +4,31 @@
 -- constraints/indexes) instead of dropping it — preserves all existing rows.
 -- (_MigrationBackup_* tables are intentionally left untouched.)
 
--- RenameTable
-ALTER TABLE "SourcedVideo" RENAME TO "YouTubeSourcedVideo";
+-- RenameTable (conditional — a previous partial run may have done it already)
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'SourcedVideo')
+     AND NOT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'YouTubeSourcedVideo') THEN
+    ALTER TABLE "SourcedVideo" RENAME TO "YouTubeSourcedVideo";
+  END IF;
+END $$;
 
--- Rename constraints / indexes to match the new model name
-ALTER INDEX "SourcedVideo_pkey" RENAME TO "YouTubeSourcedVideo_pkey";
-ALTER INDEX "SourcedVideo_sourceId_youtubeVideoId_key" RENAME TO "YouTubeSourcedVideo_sourceId_youtubeVideoId_key";
-ALTER TABLE "YouTubeSourcedVideo" RENAME CONSTRAINT "SourcedVideo_sourceId_fkey" TO "YouTubeSourcedVideo_sourceId_fkey";
-ALTER TABLE "YouTubeSourcedVideo" RENAME CONSTRAINT "SourcedVideo_nicheId_fkey" TO "YouTubeSourcedVideo_nicheId_fkey";
+-- Rename indexes to match the new model name (conditional)
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'SourcedVideo_pkey') THEN
+    ALTER INDEX "SourcedVideo_pkey" RENAME TO "YouTubeSourcedVideo_pkey";
+  END IF;
+  IF EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'SourcedVideo_sourceId_youtubeVideoId_key') THEN
+    ALTER INDEX "SourcedVideo_sourceId_youtubeVideoId_key" RENAME TO "YouTubeSourcedVideo_sourceId_youtubeVideoId_key";
+  END IF;
+END $$;
+
+-- FK constraint names are cosmetic (Prisma doesn't reference them) and differ
+-- across environments ("SV_source_fkey"/"SV_niche_fkey" on prod) — skip.
 
 -- CreateTable
-CREATE TABLE "SourcingRun" (
+CREATE TABLE IF NOT EXISTS "SourcingRun" (
     "id" TEXT NOT NULL,
     "createdBy" TEXT,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -26,7 +40,7 @@ CREATE TABLE "SourcingRun" (
 );
 
 -- CreateTable
-CREATE TABLE "SourcedVideo" (
+CREATE TABLE IF NOT EXISTS "SourcedVideo" (
     "id" TEXT NOT NULL,
     "runId" TEXT NOT NULL,
     "sourceUrl" TEXT NOT NULL,
@@ -44,7 +58,7 @@ CREATE TABLE "SourcedVideo" (
 );
 
 -- CreateTable
-CREATE TABLE "SourcedVideoAssignment" (
+CREATE TABLE IF NOT EXISTS "SourcedVideoAssignment" (
     "id" TEXT NOT NULL,
     "sourcedVideoId" TEXT NOT NULL,
     "accountId" TEXT NOT NULL,
@@ -60,16 +74,16 @@ CREATE TABLE "SourcedVideoAssignment" (
 );
 
 -- CreateIndex
-CREATE INDEX "SourcedVideo_normalizedUrl_idx" ON "SourcedVideo"("normalizedUrl");
+CREATE INDEX IF NOT EXISTS "SourcedVideo_normalizedUrl_idx" ON "SourcedVideo"("normalizedUrl");
 
 -- CreateIndex
-CREATE INDEX "SourcedVideo_runId_status_idx" ON "SourcedVideo"("runId", "status");
+CREATE INDEX IF NOT EXISTS "SourcedVideo_runId_status_idx" ON "SourcedVideo"("runId", "status");
 
 -- CreateIndex
-CREATE INDEX "SourcedVideoAssignment_sourcedVideoId_idx" ON "SourcedVideoAssignment"("sourcedVideoId");
+CREATE INDEX IF NOT EXISTS "SourcedVideoAssignment_sourcedVideoId_idx" ON "SourcedVideoAssignment"("sourcedVideoId");
 
 -- CreateIndex
-CREATE INDEX "SourcedVideoAssignment_accountId_idx" ON "SourcedVideoAssignment"("accountId");
+CREATE INDEX IF NOT EXISTS "SourcedVideoAssignment_accountId_idx" ON "SourcedVideoAssignment"("accountId");
 
 -- AddForeignKey
 ALTER TABLE "SourcedVideo" ADD CONSTRAINT "SourcedVideo_runId_fkey" FOREIGN KEY ("runId") REFERENCES "SourcingRun"("id") ON DELETE CASCADE ON UPDATE CASCADE;
