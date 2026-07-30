@@ -1,29 +1,25 @@
-// Bulk Link Sourcing service: paste TikTok links → background yt-dlp download
-// → distribute to account Drive folders → delete local temp files.
+// Bulk Link Sourcing service: paste TikTok links → background download (via
+// Apify — yt-dlp is IP-blocked by TikTok) → distribute to account Drive
+// folders → delete local temp files.
 //
 // Downloads and uploads run in in-process background workers (never in the
 // request path), mirroring the multiplier/factory pattern: a module-level lock
 // plus atomic status-flip claiming so two workers never grab the same item.
 
-import { execFile } from "child_process";
-import { promisify } from "util";
 import fs from "fs";
 import path from "path";
 import prisma from "@/lib/db";
 import { getDriveClient, uploadFileToFolder } from "@/lib/google";
+import { downloadTikTokVideo, TikTokDownloadError } from "@/lib/services/tiktok-download";
 import {
   parseLinksPure,
   buildDistributionPlan,
-  classifyYtDlpError,
   type ParseLinksResult,
   type PlanAccount,
   type DistributionPlanResult,
 } from "@/lib/services/sourcing-pure";
 
-const execFileAsync = promisify(execFile);
-
 const TEMP_DIR = path.join(process.cwd(), "public", "uploads", "sourcing", "temp");
-const YTDLP_TIMEOUT_MS = 180_000; // 180s hard cap per video
 
 // Concurrency is configurable via env; defaults match the multiplier worker (2).
 const DOWNLOAD_CONCURRENCY = Math.max(
@@ -105,16 +101,6 @@ export function triggerDownloadWorker() {
     });
 }
 
-function resolveVenvPython(): string {
-  for (const candidate of [
-    path.join(process.cwd(), "venv", "bin", "python3"),
-    path.join(process.cwd(), "venv", "bin", "python"),
-  ]) {
-    if (fs.existsSync(candidate)) return candidate;
-  }
-  return "python3";
-}
-
 async function processDownloadQueue() {
   console.log(`[Sourcing Download Worker] Starting (concurrency ${DOWNLOAD_CONCURRENCY})...`);
 
@@ -180,72 +166,31 @@ async function downloadOneVideo(videoId: string) {
   if (!video) return;
 
   await fs.promises.mkdir(TEMP_DIR, { recursive: true });
-  const outTemplate = path.join(TEMP_DIR, `${video.id}.%(ext)s`);
-  const python = resolveVenvPython();
 
   try {
-    const { stdout, stderr } = await execFileAsync(
-      python,
-      [
-        "-m",
-        "yt_dlp",
-        "--no-playlist",
-        "-f",
-        "bv*[height<=1280]+ba/b[height<=1280]/b",
-        "--print-json",
-        "-o",
-        outTemplate,
-        video.sourceUrl,
-      ],
-      { timeout: YTDLP_TIMEOUT_MS, maxBuffer: 64 * 1024 * 1024 }
-    );
-
-    // --print-json emits the full info dict as one JSON line on stdout.
-    const jsonLine = stdout
-      .split("\n")
-      .map((l) => l.trim())
-      .filter((l) => l.startsWith("{"))[0];
-    const info = jsonLine ? JSON.parse(jsonLine) : {};
-
-    // Locate the downloaded file (extension decided by yt-dlp).
-    const file = (await fs.promises.readdir(TEMP_DIR)).find((f) =>
-      f.startsWith(`${video.id}.`)
-    );
-    if (!file) {
-      throw new Error(`yt-dlp exited cleanly but produced no file (stderr: ${stderr?.slice(0, 200) || "none"})`);
-    }
-    const localPath = path.join(TEMP_DIR, file);
-    const stat = await fs.promises.stat(localPath);
-
-    const resolution =
-      info.width && info.height
-        ? `${info.width}x${info.height}`
-        : typeof info.resolution === "string"
-          ? info.resolution
-          : null;
+    // TikTok hard-blocks yt-dlp from our datacenter IP, so downloads run
+    // through Apify's infrastructure (scrape + mp4 from its key-value store).
+    const result = await downloadTikTokVideo(video.sourceUrl, TEMP_DIR, video.id);
 
     const priorMeta = (video.meta as Record<string, unknown>) || {};
     await prisma.sourcedVideo.update({
       where: { id: video.id },
       data: {
         status: "downloaded",
-        localPath,
-        durationSec: typeof info.duration === "number" ? info.duration : null,
-        sizeBytes: BigInt(stat.size),
+        localPath: result.localPath,
+        durationSec: result.durationSec,
+        sizeBytes: BigInt(result.sizeBytes),
         error: null,
         meta: {
           ...priorMeta,
-          author: info.uploader || info.channel || info.uploader_id || "",
-          title: info.title || "",
-          resolution,
+          ...result.meta,
         },
       },
     });
-    console.log(`[Sourcing Download Worker] Downloaded ${video.normalizedUrl} → ${file}`);
+    console.log(`[Sourcing Download Worker] Downloaded ${video.normalizedUrl} → ${result.localPath}`);
   } catch (err: any) {
-    const timedOut = err?.killed === true || err?.signal === "SIGTERM";
-    const stderr = typeof err?.stderr === "string" ? err.stderr : err?.message || "";
-    const { message } = classifyYtDlpError(stderr, timedOut);
+    const kind: string = err instanceof TikTokDownloadError ? err.kind : "transient";
+    const message = `${kind}: ${err?.message || String(err)}`.slice(0, 400);
     await prisma.sourcedVideo.update({
       where: { id: video.id },
       data: { status: "failed", error: message },
