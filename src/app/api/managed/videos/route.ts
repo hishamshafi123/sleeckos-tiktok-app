@@ -67,7 +67,7 @@ export async function GET(req: NextRequest) {
   const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
 
   // Clean up older videos (status NEW or SKIPPED) that are older than 24 hours
-  await prisma.sourcedVideo.deleteMany({
+  await prisma.youTubeSourcedVideo.deleteMany({
     where: {
       status: { in: ["NEW", "SKIPPED"] },
       OR: [
@@ -98,7 +98,7 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    const videos = await prisma.sourcedVideo.findMany({
+    const videos = await prisma.youTubeSourcedVideo.findMany({
       where,
       include: {
         source: { select: { title: true, type: true } },
@@ -164,14 +164,14 @@ export async function GET(req: NextRequest) {
   }
 
   const [videos, total] = await Promise.all([
-    prisma.sourcedVideo.findMany({
+    prisma.youTubeSourcedVideo.findMany({
       where, orderBy, take: limit, skip: offset,
       include: {
         source: { select: { title: true, type: true } },
         niche: { select: { name: true, color: true } },
       },
     }),
-    prisma.sourcedVideo.count({ where }),
+    prisma.youTubeSourcedVideo.count({ where }),
   ]);
 
   const serializedVideos = videos.map((v) => ({
@@ -200,7 +200,7 @@ export async function DELETE(req: NextRequest) {
   }
 
   // Delete all videos with status NEW or SKIPPED for the specified nicheId
-  const result = await prisma.sourcedVideo.deleteMany({
+  const result = await prisma.youTubeSourcedVideo.deleteMany({
     where: {
       nicheId,
       status: { in: ["NEW", "SKIPPED"] },

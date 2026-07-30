@@ -450,7 +450,7 @@ model SourcingNiche {
 
   accounts    SourcingNicheAccount[]
   sources     YouTubeSource[]
-  videos      SourcedVideo[]
+  videos      YouTubeSourcedVideo[]
 }
 
 /// Join table: which ManagedAccounts belong to which SourcingNiche.
@@ -480,12 +480,12 @@ model YouTubeSource {
   createdAt        DateTime          @default(now())
   updatedAt        DateTime          @updatedAt
 
-  videos           SourcedVideo[]
+  videos           YouTubeSourcedVideo[]
 
   @@unique([nicheId, youtubeId])
 }
 
-model SourcedVideo {
+model YouTubeSourcedVideo {
   id             String             @id @default(uuid())
   sourceId       String
   source         YouTubeSource      @relation(fields: [sourceId], references: [id], onDelete: Cascade)
@@ -1725,4 +1725,53 @@ model CampaignShare {
   expiresAt  DateTime?
   revokedAt  DateTime?
   @@index([campaignId])
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Bulk Link Sourcing — paste TikTok links → yt-dlp download → Drive distribution
+// ═══════════════════════════════════════════════════════════════════════════════
+
+model SourcingRun {
+  id         String   @id @default(uuid())
+  createdBy  String?
+  createdAt  DateTime @default(now())
+  linkCount  Int      @default(0)
+  status     String   @default("DOWNLOADING") // DOWNLOADING | READY | DISTRIBUTING | DONE | FAILED
+  summary    Json     @default("{}")
+  videos     SourcedVideo[]
+}
+
+model SourcedVideo {
+  id          String   @id @default(uuid())
+  runId       String
+  run         SourcingRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  sourceUrl   String
+  normalizedUrl String
+  status      String   @default("queued") // queued | downloading | downloaded | failed | assigned | uploaded
+  localPath   String?
+  durationSec Float?
+  sizeBytes   BigInt?
+  meta        Json     @default("{}") // { author, title, resolution }
+  error       String?  @db.Text
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  assignments SourcedVideoAssignment[]
+  @@index([normalizedUrl])
+  @@index([runId, status])
+}
+
+model SourcedVideoAssignment {
+  id             String   @id @default(uuid())
+  sourcedVideoId String
+  sourcedVideo   SourcedVideo @relation(fields: [sourcedVideoId], references: [id], onDelete: Cascade)
+  accountId      String
+  driveFolderId  String
+  driveFolderName String?
+  driveFileId    String?
+  status         String   @default("queued") // queued | uploading | uploaded | failed
+  uploadedAt     DateTime?
+  error          String?  @db.Text
+  createdAt      DateTime @default(now())
+  @@index([sourcedVideoId])
+  @@index([accountId])
 }

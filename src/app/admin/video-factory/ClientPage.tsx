@@ -34,7 +34,7 @@ import {
   Users,
   X,
 } from "lucide-react";
-import FactoryAccountsPanel, { FactoryAccountSelection } from "./AccountsPanel";
+import AccountSelectorPanel, { AccountSelectorSelection as FactoryAccountSelection } from "@/components/AccountSelectorPanel";
 import TracksStep, { FactoryTrackRow } from "./TracksStep";
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -2290,7 +2290,7 @@ function BatchHistoryList({ onOpenBatch }: { onOpenBatch: (id: string) => void }
       />
 
       {/* Smart Export slide-over */}
-      <FactoryAccountsPanel
+      <AccountSelectorPanel
         open={distributeBatchId !== null}
         onClose={() => setDistributeBatchId(null)}
         selected={assignments}
@@ -3481,7 +3481,7 @@ function BatchStatusView(props: { batchId: string; onNewBatch: () => void; onSho
       </div>
 
       {/* Distribute slide-over */}
-      <FactoryAccountsPanel
+      <AccountSelectorPanel
         open={panelOpen}
         onClose={() => setPanelOpen(false)}
         selected={assignments}

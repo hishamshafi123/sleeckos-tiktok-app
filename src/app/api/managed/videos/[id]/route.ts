@@ -24,7 +24,7 @@ export async function PATCH(
   if (body.status) updates.status = body.status;
   if (body.downloadUrl) updates.downloadUrl = body.downloadUrl;
 
-  const video = await prisma.sourcedVideo.update({
+  const video = await prisma.youTubeSourcedVideo.update({
     where: { id },
     data: updates,
   });
@@ -46,6 +46,6 @@ export async function DELETE(
   }
 
   const { id } = await params;
-  await prisma.sourcedVideo.delete({ where: { id } });
+  await prisma.youTubeSourcedVideo.delete({ where: { id } });
   return NextResponse.json({ ok: true });
 }

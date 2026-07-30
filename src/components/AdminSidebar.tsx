@@ -20,7 +20,8 @@ import {
   Bot,
   Send,
   Activity,
-  Table
+  Table,
+  Link2
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -42,7 +43,8 @@ const OPERATIONS_NAV = [
   { href: "/admin/projects", label: "Projects", icon: FolderOpen, toolKey: "projects" },
   { href: "/admin/vault", label: "Data Vault", icon: Database, toolKey: "data_vault" },
   { href: "/admin/vault/kpi", label: "Employee KPI", icon: BarChart3, toolKey: "data_vault" },
-  { href: "/admin/sourcing", label: "Sourcing Feed", icon: Sparkles, toolKey: "sourcing" },
+  { href: "/admin/sourcing", label: "Sourcing Feed", icon: Sparkles, exact: true, toolKey: "sourcing" },
+  { href: "/admin/sourcing/links", label: "Link Sourcing", icon: Link2, toolKey: "sourcing" },
   { href: "/admin/agent", label: "AI Agent", icon: Bot, toolKey: "agent" },
 ];
 

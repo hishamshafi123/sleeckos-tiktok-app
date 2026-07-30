@@ -1,6 +1,7 @@
 export const dynamic = "force-dynamic";
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/db";
+import { cleanupOrphanTempFiles } from "@/lib/services/sourcing";
 import fs from "fs";
 import path from "path";
 
@@ -96,6 +97,15 @@ export async function GET(req: NextRequest) {
     }
   } catch (err) {
     console.error("[Prune Cron] Failed to read archives dir:", err);
+  }
+
+  // ── Bulk Link Sourcing: temp downloads older than 24h whose video is ──────
+  // terminal (uploaded/failed) — successful uploads already delete immediately.
+  try {
+    results["public/uploads/sourcing/temp"] = await cleanupOrphanTempFiles();
+  } catch (err) {
+    console.error("[Prune Cron] Sourcing temp cleanup failed:", err);
+    results["public/uploads/sourcing/temp"] = { deleted: 0, failed: 0, skipped: 0 };
   }
 
   return NextResponse.json({

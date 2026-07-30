@@ -53,7 +53,7 @@ export async function POST(
     const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
 
     // Clean up older videos (status NEW or SKIPPED) that are older than 24 hours
-    await prisma.sourcedVideo.deleteMany({
+    await prisma.youTubeSourcedVideo.deleteMany({
       where: {
         status: { in: ["NEW", "SKIPPED"] },
         OR: [
@@ -84,7 +84,7 @@ export async function POST(
     for (const video of freshVideos) {
       const stats = detailsMap.get(video.videoId);
       const summaryText = await generateVideoSummary(video.title, video.description || "");
-      await prisma.sourcedVideo.upsert({
+      await prisma.youTubeSourcedVideo.upsert({
         where: { sourceId_youtubeVideoId: { sourceId: source.id, youtubeVideoId: video.videoId } },
         create: {
           sourceId: source.id, nicheId: source.nicheId,

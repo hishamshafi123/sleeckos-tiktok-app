@@ -23,7 +23,7 @@ export default async function AdminDashboard() {
   ] = await Promise.all([
     prisma.managedAccount.count(),
     prisma.scheduledPost.count({ where: { status: "QUEUED" } }),
-    prisma.sourcedVideo.count({ where: { status: "NEW" } }),
+    prisma.youTubeSourcedVideo.count({ where: { status: "NEW" } }),
     prisma.campaign.count(),
     prisma.scheduledPost.findMany({
       orderBy: { scheduledFor: "desc" },

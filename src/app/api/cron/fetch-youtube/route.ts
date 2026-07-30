@@ -44,7 +44,7 @@ export async function GET(req: NextRequest) {
         const stats = detailsMap.get(video.videoId);
         try {
           const summaryText = await generateVideoSummary(video.title, video.description || "");
-          await prisma.sourcedVideo.upsert({
+          await prisma.youTubeSourcedVideo.upsert({
             where: { sourceId_youtubeVideoId: { sourceId: source.id, youtubeVideoId: video.videoId } },
             create: {
               sourceId: source.id, nicheId: source.nicheId,
