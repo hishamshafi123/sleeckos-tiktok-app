@@ -1111,9 +1111,17 @@ export async function resumeFactoryQueue() {
 }
 
 /**
- * Starts the background drain loop if not already running. Fire-and-forget:
- * processes QUEUED batches one at a time, items sequentially.
+ * Starts the background drain loops if not already running. Fire-and-forget.
+ * Two concurrent drains (FACTORY_CONCURRENCY) — batches are claimed via an
+ * in-memory set so the two loops never process the same batch (the worker is
+ * single-process, so a Set is atomic enough).
  */
+const FACTORY_CONCURRENCY = Math.max(
+  1,
+  parseInt(process.env.FACTORY_RENDER_CONCURRENCY || "2", 10) || 2
+);
+const claimedBatchIds = new Set<string>();
+
 export function triggerFactoryWorker(): void {
   if (factoryWorkerRunning || isFactoryPaused) return;
   factoryWorkerRunning = true;
@@ -1123,21 +1131,34 @@ export function triggerFactoryWorker(): void {
       await recoverStaleFactoryItems().catch((err) => {
         console.error("[Factory Worker] Stale-item recovery failed:", err);
       });
-      for (;;) {
-        if (isFactoryPaused) {
-          console.log("[Factory Worker] Paused by operator. Stopping loop.");
-          break;
+
+      const drain = async (workerId: number) => {
+        for (;;) {
+          if (isFactoryPaused) {
+            console.log(`[Factory Worker ${workerId}] Paused by operator. Stopping loop.`);
+            break;
+          }
+          const candidates = await prisma.factoryBatch.findMany({
+            where: {
+              status: { in: ["QUEUED", "RENDERING"] },
+              items: { some: { status: { in: ["PENDING", "RENDERING"] } } },
+            },
+            orderBy: { updatedAt: "asc" },
+            select: { id: true },
+            take: 5,
+          });
+          const next = candidates.find((c) => !claimedBatchIds.has(c.id));
+          if (!next) break;
+          claimedBatchIds.add(next.id);
+          try {
+            await processFactoryBatch(next.id);
+          } finally {
+            claimedBatchIds.delete(next.id);
+          }
         }
-        const next = await prisma.factoryBatch.findFirst({
-          where: {
-            status: { in: ["QUEUED", "RENDERING"] },
-            items: { some: { status: { in: ["PENDING", "RENDERING"] } } },
-          },
-          orderBy: { updatedAt: "asc" },
-        });
-        if (!next) break;
-        await processFactoryBatch(next.id);
-      }
+      };
+
+      await Promise.all(Array.from({ length: FACTORY_CONCURRENCY }, (_, i) => drain(i + 1)));
       await sweepTerminalFactoryBatches();
     } catch (err) {
       console.error("[Factory Worker] Drain loop error:", err);
@@ -1743,6 +1764,7 @@ function buildComposeCommand(opts: {
     mapAudio,
     `-c:v libx264`,
     `-preset veryfast`,
+    `-threads 2`,
     `-crf 26`,
     `-maxrate 8M`,
     `-bufsize 16M`,
