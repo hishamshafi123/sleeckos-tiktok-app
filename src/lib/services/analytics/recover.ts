@@ -9,7 +9,10 @@
  * the recovery signal.
  *
  * Safety rails:
- *  - Requires a distinctive caption (normalized length ≥ 15 chars).
+ *  - Strong captions (normalized length ≥ 15 chars) match on prefix alone.
+ *  - Weak captions (3–14 chars) must ALSO match a tight time window around
+ *    the job's confirmed publish time AND be the only candidate — a one-word
+ *    caption on its own is never enough evidence.
  *  - Refuses to run when another campaign shares a normalized caption
  *    (ambiguity guard) — attribution would be a coin flip.
  *  - A videoId already attributed to ANY TrackedVideo row is never stolen,
@@ -27,7 +30,9 @@ import { apifyProvider } from "./apify";
 import { unresolvedPlaceholderId } from "./capture";
 
 const TERMINAL_PUBLISHED_STATES = ["PUBLISHED", "PENDING_DELETION", "DELETED"];
-const MIN_CAPTION_LENGTH = 15;
+const MIN_STRONG_CAPTION_LENGTH = 15;
+const MIN_CAPTION_LENGTH = 3;
+const WEAK_MATCH_WINDOW_MS = 30 * 60 * 1000; // ±30 min around confirmed publish
 const RECOVERY_FETCH_MAX = 50;
 
 /** Normalize a caption for comparison: lowercase, collapse whitespace, trim. */
@@ -120,21 +125,24 @@ export async function runRecoveryPass(
     });
   };
 
-  // ── 1. Campaign + distinctive caption pool ──────────────────────────────
+  // ── 1. Campaign + caption pool (strong ≥15 chars match on prefix alone;
+  //        weak 3–14 chars need the time window + sole-candidate rule) ─────
   const campaign = await prisma.campaign.findUnique({
     where: { id: campaignId },
     select: { id: true, title: true, fixedTexts: true },
   });
-  const captions = [
+  const allCaptions = [
     ...new Set(
       (campaign?.fixedTexts ?? [])
         .map(normalizeCaption)
         .filter((c) => c.length >= MIN_CAPTION_LENGTH)
     ),
   ];
-  if (!campaign || captions.length === 0) {
-    console.warn(`[Recover] Campaign ${campaignId}: no distinctive fixed caption — recovery skipped`);
-    await saveProgress("failed", "Campaign has no distinctive fixed caption (need ≥15 chars)");
+  const strongCaptions = allCaptions.filter((c) => c.length >= MIN_STRONG_CAPTION_LENGTH);
+  const weakCaptions = allCaptions.filter((c) => c.length < MIN_STRONG_CAPTION_LENGTH);
+  if (!campaign || allCaptions.length === 0) {
+    console.warn(`[Recover] Campaign ${campaignId}: no fixed captions set — recovery skipped`);
+    await saveProgress("failed", "Campaign has no fixed captions set — add at least one fixed text first");
     return;
   }
 
@@ -143,7 +151,7 @@ export async function runRecoveryPass(
     where: { id: { not: campaignId } },
     select: { title: true, fixedTexts: true },
   });
-  const mine = new Set(captions);
+  const mine = new Set(allCaptions);
   for (const other of others) {
     const shared = other.fixedTexts.map(normalizeCaption).find((c) => mine.has(c));
     if (shared) {
@@ -230,17 +238,39 @@ export async function runRecoveryPass(
 
       // Oldest matching video first; a video used by an earlier job in this
       // run is no longer a candidate.
-      const matches = available
-        .filter((v) => !usedVideoIds.has(v.videoId))
-        .filter((v) => {
-          const text = normalizeCaption(v.text || "");
-          return captions.some((c) => text.startsWith(c));
-        })
+      // Strong captions (≥15 chars) match on prefix alone. Weak captions
+      // (one word etc.) must also sit within ±30 min of the confirmed
+      // publish AND be the only weak candidate — otherwise we skip.
+      const unused = available.filter((v) => !usedVideoIds.has(v.videoId));
+      const strongMatches = unused
+        .filter((v) => strongCaptions.some((c) => normalizeCaption(v.text || "").startsWith(c)))
         .sort((a, b) => a.createTime.getTime() - b.createTime.getTime());
+
+      let match: ProviderVideo | null = null;
+      let confidence = "high";
+      let matchCount = 0;
+      if (strongMatches.length > 0) {
+        match = strongMatches[0];
+        matchCount = strongMatches.length;
+        confidence = strongMatches.length === 1 ? "high" : "medium";
+      } else if (weakCaptions.length > 0) {
+        const jobPublishedMs = job.publishedAt.getTime();
+        const weakMatches = unused
+          .filter((v) => weakCaptions.some((c) => normalizeCaption(v.text || "").startsWith(c)))
+          .filter(
+            (v) => Math.abs(v.createTime.getTime() - jobPublishedMs) <= WEAK_MATCH_WINDOW_MS
+          )
+          .sort((a, b) => a.createTime.getTime() - b.createTime.getTime());
+        if (weakMatches.length === 1) {
+          match = weakMatches[0];
+          matchCount = 1;
+          confidence = "low"; // short caption + time window — visible as less certain
+        }
+      }
 
       const placeholderId = unresolvedPlaceholderId(job.id);
 
-      if (matches.length === 0) {
+      if (!match) {
         await prisma.trackedVideo.upsert({
           where: { tiktokVideoId: placeholderId },
           create: {
@@ -266,9 +296,7 @@ export async function runRecoveryPass(
         continue;
       }
 
-      const match = matches[0];
       usedVideoIds.add(match.videoId);
-      const confidence = matches.length === 1 ? "high" : "medium";
       const now = new Date();
 
       try {
@@ -333,7 +361,7 @@ export async function runRecoveryPass(
         });
 
         console.log(
-          `[Recover] Job ${job.id} → video ${match.videoId} (confidence ${confidence}, ${matches.length} caption match(es))`
+          `[Recover] Job ${job.id} → video ${match.videoId} (confidence ${confidence}, ${matchCount} caption match(es))`
         );
         counters.succeeded++;
       } catch (err: any) {
