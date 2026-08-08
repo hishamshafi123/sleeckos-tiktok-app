@@ -138,15 +138,23 @@ export async function ingestDriveFiles(accountId: string) {
  */
 export async function claimNextVideo(accountId: string, workerId = "worker-default") {
   return await prisma.$transaction(async (tx) => {
-    // Select first AVAILABLE job with pessimistic locking, skipping locked rows
+    // Select first AVAILABLE job with pessimistic locking, skipping locked rows.
+    // LEFT JOIN Campaign (plain column, no FK) to:
+    //  - exclude jobs whose campaign is PAUSED (null campaignId is never paused)
+    //  - order priority campaigns first: priorityQuota set and not yet exhausted,
+    //    then oldest-first within each tier.
     const availableJobs = await tx.$queryRaw<any[]>`
-      SELECT id FROM "PostJob"
-      WHERE "accountId" = ${accountId}
-        AND "state" = 'AVAILABLE'
-        AND ("lockedAt" IS NULL OR "lockedAt" < ${new Date(Date.now() - 15 * 60 * 1000)})
-      ORDER BY "createdAt" ASC
+      SELECT j.id FROM "PostJob" j
+      LEFT JOIN "Campaign" c ON c."id" = j."campaignId"
+      WHERE j."accountId" = ${accountId}
+        AND j."state" = 'AVAILABLE'
+        AND (j."lockedAt" IS NULL OR j."lockedAt" < ${new Date(Date.now() - 15 * 60 * 1000)})
+        AND (c."id" IS NULL OR c."status" <> 'PAUSED')
+      ORDER BY
+        CASE WHEN c."priorityQuota" IS NOT NULL AND c."priorityUsed" < c."priorityQuota" THEN 0 ELSE 1 END ASC,
+        j."createdAt" ASC
       LIMIT 1
-      FOR UPDATE SKIP LOCKED
+      FOR UPDATE OF j SKIP LOCKED
     `;
 
     if (!availableJobs || availableJobs.length === 0) {
@@ -540,6 +548,12 @@ export async function confirmPublished(jobId: string, tiktokVideoId?: string, pl
     await prisma.campaign.update({
       where: { id: job.campaignId },
       data: { postedCount: { increment: 1 } },
+    });
+    // Count against the priority quota when one is set. Once priorityUsed
+    // reaches priorityQuota the claim ordering stops matching (auto-off).
+    await prisma.campaign.updateMany({
+      where: { id: job.campaignId, priorityQuota: { not: null } },
+      data: { priorityUsed: { increment: 1 } },
     });
     await prisma.campaignEvent.create({
       data: {

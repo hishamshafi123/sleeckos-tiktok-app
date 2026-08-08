@@ -158,6 +158,11 @@ model Campaign {
   failedCount           Int            @default(0)
   exportedCount         Int            @default(0)
 
+  // Posting priority: when priorityQuota is set, this campaign's AVAILABLE jobs
+  // are claimed before all others until priorityUsed reaches the quota (auto-off).
+  priorityQuota         Int?
+  priorityUsed          Int            @default(0)
+
   // Goal / calculator parameters
   targetViews            Int         @default(0)
   accountsCount          Int         @default(0)

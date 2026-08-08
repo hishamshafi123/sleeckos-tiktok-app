@@ -3,7 +3,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Plus, Search, HelpCircle, AlertCircle, X, Loader2, ArrowRight } from "lucide-react";
+import { Plus, Search, HelpCircle, AlertCircle, X, Loader2, ArrowRight, Pause, Play, Zap } from "lucide-react";
 import { toast } from "sonner";
 import { Campaign } from "@prisma/client";
 
@@ -30,6 +30,37 @@ export default function CampaignsClient({ initialCampaigns }: CampaignsClientPro
   const [avgViewsPerVideo, setAvgViewsPerVideo] = useState(10000);
   const [videosPerAccountPerDay, setVideosPerAccountPerDay] = useState(2);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [togglingStatusId, setTogglingStatusId] = useState<string | null>(null);
+
+  // Pause / Resume quick action — paused campaigns are skipped by the poster
+  const handleToggleStatus = async (c: any) => {
+    const nextStatus = c.status === "PAUSED" ? "ACTIVE" : "PAUSED";
+    if (nextStatus === "PAUSED" && !confirm("Paused campaigns are skipped by the poster")) {
+      return;
+    }
+
+    setTogglingStatusId(c.id);
+    try {
+      const res = await fetch(`/api/campaigns/${c.id}/status`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: nextStatus }),
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || `Failed to ${nextStatus === "PAUSED" ? "pause" : "resume"} campaign`);
+      }
+
+      const data = await res.json();
+      setCampaigns((prev) => prev.map((p) => (p.id === c.id ? { ...p, status: data.status } : p)));
+      toast.success(nextStatus === "PAUSED" ? "Campaign paused" : "Campaign resumed");
+    } catch (err: any) {
+      toast.error(err.message);
+    } finally {
+      setTogglingStatusId(null);
+    }
+  };
 
   const STATUS_COLORS: Record<string, string> = {
     DRAFT: "text-zinc-400 bg-zinc-400/10 border-zinc-500/20",
@@ -210,9 +241,23 @@ export default function CampaignsClient({ initialCampaigns }: CampaignsClientPro
                       {TYPE_LABELS[c.type] || "General"}
                     </td>
                     <td className="py-3.5 px-4">
-                      <span className={`text-[10px] font-semibold px-2 py-0.5 rounded border ${STATUS_COLORS[c.status] || STATUS_COLORS.DRAFT}`}>
-                        {c.status}
-                      </span>
+                      <div className="flex flex-col items-start gap-1">
+                        <span className={`text-[10px] font-semibold px-2 py-0.5 rounded border ${STATUS_COLORS[c.status] || STATUS_COLORS.DRAFT}`}>
+                          {c.status}
+                        </span>
+                        {c.priorityQuota != null && c.priorityQuota > 0 && (
+                          (c.priorityUsed ?? 0) >= c.priorityQuota ? (
+                            <span className="text-[10px] font-semibold px-2 py-0.5 rounded border text-zinc-500 bg-zinc-500/10 border-zinc-600/20">
+                              Priority done
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded border text-[#E11D48] bg-[#E11D48]/10 border-[#E11D48]/20">
+                              <Zap size={9} />
+                              Priority · {(c.priorityUsed ?? 0).toLocaleString()}/{c.priorityQuota.toLocaleString()}
+                            </span>
+                          )
+                        )}
+                      </div>
                     </td>
                     <td className="py-3.5 px-4 text-right text-zinc-300 font-mono">
                       {c.targetViews ? c.targetViews.toLocaleString() : "—"}
@@ -236,13 +281,30 @@ export default function CampaignsClient({ initialCampaigns }: CampaignsClientPro
                       {(c.failedCount ?? 0).toLocaleString()}
                     </td>
                     <td className="py-3.5 px-4 text-right">
-                      <Link
-                        href={`/admin/campaigns/${c.id}`}
-                        className="inline-flex items-center gap-1 text-zinc-400 hover:text-zinc-100 transition text-[11px]"
-                      >
-                        Workspace
-                        <ArrowRight size={12} className="opacity-0 group-hover:opacity-100 transition" />
-                      </Link>
+                      <div className="inline-flex items-center gap-3">
+                        <button
+                          onClick={() => handleToggleStatus(c)}
+                          disabled={togglingStatusId === c.id}
+                          className="inline-flex items-center gap-1 text-zinc-400 hover:text-zinc-100 transition text-[11px] disabled:opacity-50"
+                          title={c.status === "PAUSED" ? "Resume campaign" : "Pause campaign"}
+                        >
+                          {togglingStatusId === c.id ? (
+                            <Loader2 size={12} className="animate-spin" />
+                          ) : c.status === "PAUSED" ? (
+                            <Play size={12} />
+                          ) : (
+                            <Pause size={12} />
+                          )}
+                          {c.status === "PAUSED" ? "Resume" : "Pause"}
+                        </button>
+                        <Link
+                          href={`/admin/campaigns/${c.id}`}
+                          className="inline-flex items-center gap-1 text-zinc-400 hover:text-zinc-100 transition text-[11px]"
+                        >
+                          Workspace
+                          <ArrowRight size={12} className="opacity-0 group-hover:opacity-100 transition" />
+                        </Link>
+                      </div>
                     </td>
                   </tr>
                 );

@@ -34,7 +34,10 @@ import {
   Copy,
   Share2,
   Eye,
-  Check
+  Check,
+  Pause,
+  Play,
+  Zap
 } from "lucide-react";
 import { toast } from "sonner";
 import { Campaign, CampaignResource, CampaignStatus } from "@prisma/client";
@@ -46,8 +49,26 @@ type CampaignAutoPostFields = {
   descTagCount?: number | null;
 };
 
+// Posting priority fields (added to the Campaign model concurrently with this UI)
+type CampaignPriorityFields = {
+  priorityQuota?: number | null;
+  priorityUsed?: number | null;
+};
+
+// Files of a paused campaign still sitting in Drive folders (GET paused-files)
+interface PausedFilesFolder {
+  driveFolderId: string;
+  driveFolderName: string;
+  fileCount: number;
+}
+
+interface PausedFiles {
+  folders: PausedFilesFolder[];
+  totalFiles: number;
+}
+
 interface CampaignDetailClientProps {
-  campaign: Campaign & { resources: CampaignResource[] } & CampaignAutoPostFields;
+  campaign: Campaign & { resources: CampaignResource[] } & CampaignAutoPostFields & CampaignPriorityFields;
   exportAnalytics: {
     totalExported: number;
     dailyExports: { date: string; count: number }[];
@@ -294,6 +315,174 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
   const [isCreatingShare, setIsCreatingShare] = useState(false);
   const [copiedShareId, setCopiedShareId] = useState<string | null>(null);
   const [revokingShareId, setRevokingShareId] = useState<string | null>(null);
+
+  // Posting priority
+  const [priorityEnabled, setPriorityEnabled] = useState(campaign.priorityQuota != null && campaign.priorityQuota > 0);
+  const [priorityQuotaInput, setPriorityQuotaInput] = useState<string>(
+    campaign.priorityQuota != null ? String(campaign.priorityQuota) : "100"
+  );
+  const [priorityQuota, setPriorityQuota] = useState<number | null>(campaign.priorityQuota ?? null);
+  const [priorityUsed, setPriorityUsed] = useState<number>(campaign.priorityUsed ?? 0);
+  const [isSavingPriority, setIsSavingPriority] = useState(false);
+
+  // Pause / resume + paused-campaign Drive files
+  const [isTogglingStatus, setIsTogglingStatus] = useState(false);
+  const [pausedFiles, setPausedFiles] = useState<PausedFiles | null>(null);
+  const [pausedFilesLoading, setPausedFilesLoading] = useState(false);
+  const [pausedFilesError, setPausedFilesError] = useState<string | null>(null);
+  const [isDeletingPausedFiles, setIsDeletingPausedFiles] = useState(false);
+
+  const fetchPausedFiles = async () => {
+    setPausedFilesLoading(true);
+    setPausedFilesError(null);
+    try {
+      const res = await fetch(`/api/campaigns/${campaign.id}/paused-files`);
+      if (!res.ok) throw new Error(`Request failed with status ${res.status}`);
+      const data: PausedFiles = await res.json();
+      setPausedFiles(data);
+    } catch (err) {
+      setPausedFiles(null);
+      setPausedFilesError(err instanceof Error ? err.message : "Failed to load paused-campaign files");
+    } finally {
+      setPausedFilesLoading(false);
+    }
+  };
+
+  // Paused campaigns keep their unposted files parked in Drive — list them while paused
+  useEffect(() => {
+    if (status === "PAUSED") {
+      fetchPausedFiles();
+    } else {
+      setPausedFiles(null);
+      setPausedFilesError(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [campaign.id, status]);
+
+  // Pause / Resume — paused campaigns are skipped by the poster
+  const handleToggleStatus = async () => {
+    const nextStatus = status === "PAUSED" ? "ACTIVE" : "PAUSED";
+    if (nextStatus === "PAUSED" && !confirm("Paused campaigns are skipped by the poster")) {
+      return;
+    }
+
+    setIsTogglingStatus(true);
+    try {
+      const res = await fetch(`/api/campaigns/${campaign.id}/status`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: nextStatus }),
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || `Failed to ${nextStatus === "PAUSED" ? "pause" : "resume"} campaign`);
+      }
+
+      const data = await res.json();
+      setStatus(data.status as CampaignStatus);
+      setCampaign((prev) => ({ ...prev, status: data.status as CampaignStatus }));
+      toast.success(nextStatus === "PAUSED" ? "Campaign paused" : "Campaign resumed");
+    } catch (err: any) {
+      toast.error(err.message);
+    } finally {
+      setIsTogglingStatus(false);
+    }
+  };
+
+  // Save the priority post target (quota in posts)
+  const handleSavePriority = async () => {
+    const quota = Number(priorityQuotaInput);
+    if (!Number.isFinite(quota) || quota <= 0) {
+      toast.error("Priority post target must be a positive number");
+      return;
+    }
+
+    setIsSavingPriority(true);
+    try {
+      const res = await fetch(`/api/campaigns/${campaign.id}/priority`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ quota }),
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || "Failed to save posting priority");
+      }
+
+      const data = await res.json();
+      setPriorityQuota(data.priorityQuota);
+      setPriorityUsed(data.priorityUsed);
+      setPriorityEnabled(data.priorityQuota != null && data.priorityQuota > 0);
+      setCampaign((prev) => ({ ...prev, priorityQuota: data.priorityQuota, priorityUsed: data.priorityUsed }));
+      toast.success("Posting priority saved");
+    } catch (err: any) {
+      toast.error(err.message);
+    } finally {
+      setIsSavingPriority(false);
+    }
+  };
+
+  // Clear priority (quota null) — back to normal posting order
+  const handleClearPriority = async () => {
+    setIsSavingPriority(true);
+    try {
+      const res = await fetch(`/api/campaigns/${campaign.id}/priority`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ quota: null }),
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || "Failed to clear posting priority");
+      }
+
+      const data = await res.json();
+      setPriorityQuota(data.priorityQuota);
+      setPriorityUsed(data.priorityUsed);
+      setPriorityEnabled(false);
+      setCampaign((prev) => ({ ...prev, priorityQuota: data.priorityQuota, priorityUsed: data.priorityUsed }));
+      toast.success("Posting priority cleared");
+    } catch (err: any) {
+      toast.error(err.message);
+    } finally {
+      setIsSavingPriority(false);
+    }
+  };
+
+  // Delete the paused campaign's parked Drive files and mark them skipped
+  const handleDeletePausedFiles = async () => {
+    const total = pausedFiles?.totalFiles ?? 0;
+    if (!confirm(`Delete ${total} files from Drive and mark them skipped? This cannot be undone.`)) {
+      return;
+    }
+
+    setIsDeletingPausedFiles(true);
+    try {
+      const res = await fetch(`/api/campaigns/${campaign.id}/paused-files/delete`, {
+        method: "POST",
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || "Failed to delete paused-campaign files");
+      }
+
+      const data = await res.json();
+      toast.success(
+        `Deleted ${data.deleted} files, ${data.jobsMarked} jobs marked skipped` +
+          (data.failedToDelete > 0 ? ` (${data.failedToDelete} failed to delete)` : "")
+      );
+      await fetchPausedFiles();
+    } catch (err: any) {
+      toast.error(err.message);
+    } finally {
+      setIsDeletingPausedFiles(false);
+    }
+  };
+
 
   const fetchTracking = async (silent = false) => {
     if (!silent) {
@@ -1344,6 +1533,216 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
 
       {/* Lifetime Header Stats */}
       {renderLifetimeStats()}
+
+      {/* Posting Priority + Pause Controls */}
+      <div className="border border-[#27272a] rounded-md bg-[#09090b] p-5 space-y-4">
+        <div className="flex items-center justify-between border-b border-[#27272a] pb-3">
+          <h3 className="text-sm font-semibold text-zinc-200 flex items-center gap-2">
+            <Zap className="w-4 h-4 text-[#E11D48]" />
+            Posting Priority
+          </h3>
+          {/* High priority toggle */}
+          <button
+            type="button"
+            role="switch"
+            aria-checked={priorityEnabled}
+            aria-label="High priority"
+            disabled={isSavingPriority}
+            onClick={() => {
+              if (priorityEnabled) {
+                handleClearPriority();
+              } else {
+                setPriorityEnabled(true);
+              }
+            }}
+            className={`relative inline-flex h-5 w-9 items-center rounded-full transition disabled:opacity-50 ${
+              priorityEnabled ? "bg-[#E11D48]" : "bg-zinc-700"
+            }`}
+          >
+            <span
+              className={`inline-block h-3.5 w-3.5 rounded-full bg-zinc-100 transition-transform ${
+                priorityEnabled ? "translate-x-[18px]" : "translate-x-[3px]"
+              }`}
+            />
+          </button>
+        </div>
+
+        {/* Priority quota config + progress */}
+        {priorityEnabled ? (
+          <div className="space-y-3 text-xs">
+            <div className="flex flex-col sm:flex-row sm:items-end gap-3">
+              <div className="space-y-1.5">
+                <label className="text-zinc-400 font-medium">Priority post target</label>
+                <input
+                  type="number"
+                  min={1}
+                  value={priorityQuotaInput}
+                  onChange={(e) => setPriorityQuotaInput(e.target.value)}
+                  className="w-full sm:w-40 bg-[#09090b] border border-[#27272a] rounded px-3 py-1.5 text-zinc-100 font-mono focus:border-zinc-500 focus:outline-none"
+                />
+              </div>
+              <button
+                onClick={handleSavePriority}
+                disabled={isSavingPriority}
+                className="flex items-center gap-1.5 bg-zinc-100 hover:bg-zinc-200 text-zinc-950 text-[11px] font-semibold px-2.5 py-1.5 rounded transition disabled:opacity-50"
+              >
+                {isSavingPriority ? (
+                  <>
+                    <Loader2 size={11} className="animate-spin" />
+                    Saving...
+                  </>
+                ) : (
+                  <>
+                    <Save size={11} />
+                    Save
+                  </>
+                )}
+              </button>
+              {priorityQuota != null && priorityQuota > 0 && (
+                <button
+                  onClick={handleClearPriority}
+                  disabled={isSavingPriority}
+                  className="text-[11px] text-zinc-400 hover:text-zinc-100 transition disabled:opacity-50 px-1 py-1.5"
+                >
+                  Clear priority
+                </button>
+              )}
+            </div>
+
+            {priorityQuota != null && priorityQuota > 0 && (
+              priorityUsed >= priorityQuota ? (
+                <div className="flex items-start gap-2.5 bg-emerald-500/5 border border-emerald-500/20 text-emerald-400 rounded p-3">
+                  <CheckCircle2 size={15} className="mt-0.5 flex-shrink-0" />
+                  <div>
+                    <span className="font-semibold">Priority complete</span> — normal posting resumed. {priorityUsed.toLocaleString()}/{priorityQuota.toLocaleString()} priority posts delivered.
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between text-[11px]">
+                    <span className="text-zinc-400">
+                      <span className="font-mono font-semibold text-zinc-100">{priorityUsed.toLocaleString()}</span>
+                      {" / "}
+                      <span className="font-mono text-zinc-300">{priorityQuota.toLocaleString()}</span> priority posts
+                    </span>
+                    <span className="text-zinc-500">auto-turns off when reached</span>
+                  </div>
+                  <div className="h-1.5 w-full bg-zinc-800 rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-[#E11D48] rounded-full transition-all"
+                      style={{ width: `${Math.min(100, (priorityUsed / priorityQuota) * 100)}%` }}
+                    />
+                  </div>
+                </div>
+              )
+            )}
+          </div>
+        ) : (
+          <p className="text-[11px] text-zinc-500">
+            High priority is off. Turn it on to front-load a set number of posts from this campaign before others.
+          </p>
+        )}
+
+        {/* Pause campaign + parked Drive files */}
+        <div className="border-t border-[#27272a] pt-4 space-y-3">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="space-y-0.5">
+              <h4 className="text-xs font-semibold text-zinc-200">Pause campaign</h4>
+              <p className="text-[11px] text-zinc-500">Paused campaigns are skipped by the poster.</p>
+            </div>
+            <button
+              onClick={handleToggleStatus}
+              disabled={isTogglingStatus}
+              className={`flex items-center justify-center gap-1.5 text-[11px] font-semibold px-3 py-1.5 rounded border transition disabled:opacity-50 ${
+                status === "PAUSED"
+                  ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20 hover:bg-emerald-500/20"
+                  : "bg-amber-500/10 text-amber-400 border-amber-500/20 hover:bg-amber-500/20"
+              }`}
+            >
+              {isTogglingStatus ? (
+                <Loader2 size={12} className="animate-spin" />
+              ) : status === "PAUSED" ? (
+                <Play size={12} />
+              ) : (
+                <Pause size={12} />
+              )}
+              {status === "PAUSED" ? "Resume campaign" : "Pause campaign"}
+            </button>
+          </div>
+
+          {status === "PAUSED" && (
+            <div className="space-y-2.5">
+              {pausedFilesLoading ? (
+                <div className="space-y-2">
+                  {[0, 1].map((i) => (
+                    <div key={i} className="h-9 bg-zinc-800/60 border border-[#27272a] rounded animate-pulse" />
+                  ))}
+                </div>
+              ) : pausedFilesError ? (
+                <div className="flex items-start gap-2.5 bg-red-950/20 border border-red-900/30 text-red-400 rounded p-3 text-xs">
+                  <AlertTriangle size={15} className="mt-0.5 flex-shrink-0" />
+                  <span>{pausedFilesError}</span>
+                </div>
+              ) : pausedFiles && pausedFiles.totalFiles > 0 ? (
+                <>
+                  <p className="text-[11px] text-zinc-400">
+                    <span className="font-mono font-semibold text-amber-400">{pausedFiles.totalFiles.toLocaleString()}</span>{" "}
+                    files of this campaign are sitting in Drive folders and won&apos;t be posted:
+                  </p>
+                  <div className="space-y-1.5">
+                    {pausedFiles.folders.map((f) => (
+                      <div
+                        key={f.driveFolderId}
+                        className="flex items-center justify-between gap-3 bg-zinc-950/40 border border-[#27272a] rounded px-2.5 py-1.5"
+                      >
+                        <div className="flex items-center gap-2 min-w-0">
+                          <FolderOpen size={13} className="text-zinc-400 flex-shrink-0" />
+                          <span className="text-[11px] text-zinc-300 truncate" title={f.driveFolderName}>
+                            {f.driveFolderName}
+                          </span>
+                          <span className="text-[10px] text-zinc-500 font-mono flex-shrink-0">
+                            {f.fileCount.toLocaleString()} files
+                          </span>
+                        </div>
+                        <a
+                          href={`https://drive.google.com/drive/folders/${f.driveFolderId}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1 text-[10px] text-blue-400 hover:text-blue-300 font-semibold flex-shrink-0 hover:underline"
+                        >
+                          Open in Drive
+                          <ExternalLink size={10} />
+                        </a>
+                      </div>
+                    ))}
+                  </div>
+                  <div>
+                    <button
+                      onClick={handleDeletePausedFiles}
+                      disabled={isDeletingPausedFiles}
+                      className="flex items-center gap-1.5 bg-red-950/20 text-red-400 hover:bg-red-950/40 border border-red-900/30 rounded transition text-[11px] font-semibold px-3 py-1.5 disabled:opacity-50"
+                    >
+                      {isDeletingPausedFiles ? (
+                        <>
+                          <Loader2 size={12} className="animate-spin" />
+                          Deleting...
+                        </>
+                      ) : (
+                        <>
+                          <Trash2 size={12} />
+                          Delete these files
+                        </>
+                      )}
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <p className="text-[11px] text-zinc-500 italic">No paused-campaign files in Drive folders.</p>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
 
       {/* Main Grid Layout */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
