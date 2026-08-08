@@ -9,6 +9,8 @@ export interface ProviderVideo {
   videoId: string;
   url: string;
   createTime: Date;
+  /** Video description/caption text (used by caption-match recovery). */
+  text: string;
   views: bigint;
   likes: bigint;
   comments: bigint;

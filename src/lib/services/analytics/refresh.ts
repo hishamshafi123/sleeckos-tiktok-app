@@ -5,7 +5,8 @@
  */
 
 import prisma from "@/lib/db";
-import { AnalyticsProvider, ProviderError } from "./provider";
+import { ProviderError } from "./provider";
+import type { AnalyticsProvider } from "./provider";
 import { apifyProvider } from "./apify";
 import { getOrgTimezone, getZonedDateString } from "@/lib/services/timezone";
 

@@ -9,7 +9,7 @@
  */
 
 import prisma from "@/lib/db";
-import { AnalyticsProvider, ProviderVideo } from "./provider";
+import type { AnalyticsProvider, ProviderVideo } from "./provider";
 import { apifyProvider } from "./apify";
 
 // PostPeer's publish CONFIRMATION lags the actual TikTok upload by several

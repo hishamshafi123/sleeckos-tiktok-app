@@ -2,7 +2,7 @@ export const dynamic = "force-dynamic";
 import { NextRequest, NextResponse } from "next/server";
 import { getSession } from "@/lib/session";
 import { can } from "@/lib/services/permissions";
-import { getCampaigns, createCampaign } from "@/lib/services/campaigns";
+import { getCampaigns, createCampaign, FixedTextConflictError } from "@/lib/services/campaigns";
 
 // GET /api/campaigns
 export async function GET(req: NextRequest) {
@@ -41,6 +41,9 @@ export async function POST(req: NextRequest) {
     const campaign = await createCampaign(body, session.userId);
     return NextResponse.json(campaign, { status: 201 });
   } catch (error: any) {
+    if (error instanceof FixedTextConflictError) {
+      return NextResponse.json({ error: error.message }, { status: 409 });
+    }
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }

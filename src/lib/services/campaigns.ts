@@ -1,5 +1,44 @@
 import prisma from "@/lib/db";
 import { Campaign, CampaignResource, CampaignStatus } from "@prisma/client";
+import { normalizeCaption } from "@/lib/services/analytics/recover";
+
+/**
+ * Thrown when a campaign create/update tries to use a fixed caption that
+ * another campaign already uses. Captions are the caption-match recovery
+ * signal (see analytics/recover.ts), so a shared caption would make video
+ * attribution ambiguous. Routes map this to HTTP 409.
+ */
+export class FixedTextConflictError extends Error {
+  conflictTitle: string;
+  constructor(conflictTitle: string) {
+    super(
+      `This caption is already used by campaign '${conflictTitle}'. Change it or clear the other campaign's caption first.`
+    );
+    this.name = "FixedTextConflictError";
+    this.conflictTitle = conflictTitle;
+  }
+}
+
+/** Reject when any normalized fixedText is already used by another campaign. */
+async function assertFixedTextsUnique(
+  fixedTexts: string[] | undefined,
+  excludeId?: string
+): Promise<void> {
+  const normalized = new Set(
+    (fixedTexts ?? []).map(normalizeCaption).filter((c) => c.length > 0)
+  );
+  if (normalized.size === 0) return;
+
+  const others = await prisma.campaign.findMany({
+    where: excludeId ? { id: { not: excludeId } } : {},
+    select: { title: true, fixedTexts: true },
+  });
+  for (const other of others) {
+    if (other.fixedTexts.some((t) => normalized.has(normalizeCaption(t)))) {
+      throw new FixedTextConflictError(other.title);
+    }
+  }
+}
 
 export interface CalculatorInputs {
   targetViews: number;
@@ -102,6 +141,8 @@ export interface CreateCampaignData {
 }
 
 export async function createCampaign(data: CreateCampaignData, createdById?: string) {
+  await assertFixedTextsUnique(data.fixedTexts);
+
   // Generate a safe unique slug
   const baseSlug = (data.name || data.title)
     .toLowerCase()
@@ -144,6 +185,10 @@ export async function createCampaign(data: CreateCampaignData, createdById?: str
 }
 
 export async function updateCampaign(id: string, data: Partial<CreateCampaignData>) {
+  if (data.fixedTexts !== undefined) {
+    await assertFixedTextsUnique(data.fixedTexts, id);
+  }
+
   const updateData: any = { ...data };
   
   if (data.title && !data.name) {

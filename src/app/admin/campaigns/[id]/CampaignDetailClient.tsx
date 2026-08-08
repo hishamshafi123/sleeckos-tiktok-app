@@ -130,6 +130,16 @@ interface CampaignTracking {
   videos: TrackedVideoRow[];
   trend: { date: string; views: number; likes: number }[];
   unresolvedCount: number;
+  // Latest link-recovery run (POST /tracking/recover), if any
+  lastRecovery: {
+    startedAt: string;
+    status: "running" | "done" | "failed";
+    attempted: number;
+    succeeded: number;
+    failed: number;
+    skipped: number;
+    error: string | null;
+  } | null;
 }
 
 interface ShareCode {
@@ -274,6 +284,8 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
   const [trackSearch, setTrackSearch] = useState("");
   const [trackVisible, setTrackVisible] = useState(TRACK_PAGE_SIZE);
   const refreshPollRef = useRef<NodeJS.Timeout | null>(null);
+  const [isRecovering, setIsRecovering] = useState(false);
+  const recoveryPollRef = useRef<NodeJS.Timeout | null>(null);
 
   // Share codes ("Client access")
   const [shareCodes, setShareCodes] = useState<ShareCode[]>([]);
@@ -329,6 +341,7 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
   useEffect(() => {
     return () => {
       if (refreshPollRef.current) clearInterval(refreshPollRef.current);
+      if (recoveryPollRef.current) clearInterval(recoveryPollRef.current);
     };
   }, []);
 
@@ -357,6 +370,50 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
       }, 15000);
     } catch (err: any) {
       toast.error(err.message || "Failed to start refresh");
+    }
+  };
+
+  // Recover links → start background recovery of links that missed capture,
+  // then poll the tracking endpoint every 10s until the run leaves "running".
+  // When it flips to done/failed the refreshed totals land automatically.
+  const pollRecoveryOnce = async () => {
+    try {
+      const res = await fetch(`/api/campaigns/${campaign.id}/tracking`);
+      if (!res.ok) return;
+      const data: CampaignTracking = await res.json();
+      setTracking(data);
+      const recovery = data.lastRecovery;
+      if (recovery && recovery.status !== "running") {
+        if (recoveryPollRef.current) clearInterval(recoveryPollRef.current);
+        recoveryPollRef.current = null;
+        setIsRecovering(false);
+        if (recovery.status === "done") {
+          toast.success(`Recovery complete: ${recovery.succeeded} links recovered`);
+        } else {
+          toast.error(recovery.error || "Recovery failed");
+        }
+      }
+    } catch {
+      // Transient poll failure — keep polling
+    }
+  };
+
+  const handleRecoverLinks = async () => {
+    try {
+      const res = await fetch(`/api/campaigns/${campaign.id}/tracking/recover`, { method: "POST" });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || `Request failed with status ${res.status}`);
+      }
+      toast.success("Recovery started");
+      setIsRecovering(true);
+
+      if (recoveryPollRef.current) clearInterval(recoveryPollRef.current);
+      recoveryPollRef.current = setInterval(pollRecoveryOnce, 10000);
+      // Pick up the fresh lastRecovery right away
+      pollRecoveryOnce();
+    } catch (err: any) {
+      toast.error(err.message || "Failed to start recovery");
     }
   };
 
@@ -1616,6 +1673,17 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
                   <RefreshCw size={11} className={isRefreshing ? "animate-spin" : ""} />
                   {isRefreshing ? "Refreshing..." : "Refresh now"}
                 </button>
+
+                {/* Recover missed links */}
+                <button
+                  onClick={handleRecoverLinks}
+                  disabled={isRecovering || trackingLoading}
+                  className="flex items-center gap-1.5 bg-zinc-900 hover:bg-zinc-800 border border-[#27272a] text-zinc-300 text-[11px] font-semibold px-2.5 py-1 rounded transition disabled:opacity-50"
+                  title="Fetch TikTok links for posts that missed capture (matches by campaign caption)"
+                >
+                  <Link2 size={11} className={isRecovering ? "animate-pulse" : ""} />
+                  {isRecovering ? "Recovering..." : "Recover links"}
+                </button>
               </div>
             </div>
 
@@ -1669,9 +1737,62 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
                   ))}
                 </div>
 
+                {/* Link recovery status (last POST /tracking/recover run) */}
+                {tracking.lastRecovery && (() => {
+                  const recovery = tracking.lastRecovery;
+                  const captionIssue =
+                    !!recovery.error &&
+                    /caption/i.test(recovery.error) &&
+                    /(missing|ambiguous)/i.test(recovery.error);
+                  return (
+                    <div
+                      className={`flex items-start gap-2 rounded border p-2.5 text-[11px] ${
+                        recovery.status === "running"
+                          ? "border-amber-900/40 bg-amber-950/20 text-amber-400"
+                          : recovery.status === "done"
+                          ? "border-emerald-900/40 bg-emerald-950/20 text-emerald-400"
+                          : "border-red-900/30 bg-red-950/20 text-red-400"
+                      }`}
+                    >
+                      {recovery.status === "running" ? (
+                        <Loader2 size={13} className="mt-0.5 flex-shrink-0 animate-spin" />
+                      ) : recovery.status === "done" ? (
+                        <CheckCircle2 size={13} className="mt-0.5 flex-shrink-0" />
+                      ) : (
+                        <AlertTriangle size={13} className="mt-0.5 flex-shrink-0" />
+                      )}
+                      <div className="space-y-0.5">
+                        <p>
+                          {recovery.status === "running" ? (
+                            <>
+                              Recovering links… ({recovery.attempted} attempted, {recovery.succeeded} matched so far)
+                            </>
+                          ) : recovery.status === "done" ? (
+                            <>
+                              Recovery complete: {recovery.succeeded} links recovered · {recovery.skipped} skipped · {recovery.failed} failed
+                            </>
+                          ) : (
+                            <>Recovery failed: {recovery.error || "Unknown error"}</>
+                          )}{" "}
+                          <span
+                            className="text-zinc-500"
+                            title={formatAbsoluteIST(recovery.startedAt)}
+                          >
+                            · {timeAgo(recovery.startedAt)}
+                          </span>
+                        </p>
+                        {captionIssue && (
+                          <p className="text-zinc-400">
+                            Set a distinctive caption (≥15 chars) on this campaign&apos;s fixed text
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })()}
+
                 {/* Views-over-time trend */}
                 {renderTrackingTrendChart()}
-
                 {/* Per-video table */}
                 <div className="space-y-2 pt-1">
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">

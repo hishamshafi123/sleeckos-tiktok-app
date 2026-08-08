@@ -10,9 +10,9 @@
  *   APIFY_TIMEOUT_MS       per-call timeout, default 120000
  */
 
-import {
+import { ProviderError } from "./provider";
+import type {
   AnalyticsProvider,
-  ProviderError,
   ProviderVideo,
   ProviderVideoStats,
 } from "./provider";
@@ -163,6 +163,7 @@ export class ApifyProvider implements AnalyticsProvider {
           item.webVideoUrl ||
           `https://www.tiktok.com/@${clean}/video/${videoId}`,
         createTime,
+        text: item?.text != null ? String(item.text) : "",
         views: toBigInt(item.playCount),
         likes: toBigInt(item.diggCount),
         comments: toBigInt(item.commentCount),

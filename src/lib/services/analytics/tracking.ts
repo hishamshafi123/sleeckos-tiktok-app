@@ -5,6 +5,7 @@
 
 import prisma from "@/lib/db";
 import { getOrgTimezone, getZonedDateString } from "@/lib/services/timezone";
+import { getLastRecoveryRun } from "./recover";
 
 const TREND_DAYS = 30;
 
@@ -58,9 +59,10 @@ export async function getCampaignTracking(campaignId: string) {
   });
   if (!campaign) return null;
 
-  const [videos, unresolvedCount] = await Promise.all([
+  const [videos, unresolvedCount, lastRecovery] = await Promise.all([
     getCampaignTrackingVideos(campaignId),
     prisma.trackedVideo.count({ where: { campaignId, status: "unresolved" } }),
+    getLastRecoveryRun(campaignId),
   ]);
 
   const views = videos.reduce((s, v) => s + v.views, 0);
@@ -112,5 +114,6 @@ export async function getCampaignTracking(campaignId: string) {
     videos,
     trend,
     unresolvedCount,
+    lastRecovery,
   };
 }
