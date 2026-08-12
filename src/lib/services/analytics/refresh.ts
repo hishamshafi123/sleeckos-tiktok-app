@@ -47,7 +47,7 @@ export function isDueForRefresh(
 }
 
 /** Write at most one snapshot per video per org-timezone (IST) day. */
-async function ensureDailySnapshot(
+export async function ensureDailySnapshot(
   trackedVideoId: string,
   stats: { views: bigint; likes: bigint; comments: bigint; shares: bigint },
   timezone: string,

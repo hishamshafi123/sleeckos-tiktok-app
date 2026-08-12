@@ -571,11 +571,17 @@ export async function confirmPublished(jobId: string, tiktokVideoId?: string, pl
   // Fire-and-forget campaign link capture (Apify). TikTok takes ~1-2 min to
   // surface a new video on the profile, so delay 90s. Capture is fully
   // self-contained — it catches its own errors and never affects posting.
-  setTimeout(() => {
-    captureVideoLink(jobId).catch((err) =>
-      console.error(`[Posting Pipeline] Link capture failed for job ${jobId}:`, err)
-    );
-  }, 90_000);
+  //
+  // OFF by default: the daily account sweep (cron /api/cron/account-sweep) is
+  // the primary capture path — one Apify call per account per day instead of
+  // one per post. Set CAPTURE_ON_PUBLISH=true to also capture instantly.
+  if (process.env.CAPTURE_ON_PUBLISH === "true") {
+    setTimeout(() => {
+      captureVideoLink(jobId).catch((err) =>
+        console.error(`[Posting Pipeline] Link capture failed for job ${jobId}:`, err)
+      );
+    }, 90_000);
+  }
 }
 
 /**
