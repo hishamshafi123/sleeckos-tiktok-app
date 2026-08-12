@@ -31,6 +31,11 @@
  * Safety rails (same as capture.ts / recover.ts):
  *  - A videoId already attributed to ANY TrackedVideo row is never stolen,
  *    and within a sweep each videoId is handed out at most once.
+ *  - PAUSED campaigns are never swept: their jobs are not matched and their
+ *    captured videos are not stats-refreshed (same "off switch" the posting
+ *    pipeline uses). Jobs with no campaign are still captured (time-window
+ *    match) so History links stay correct; per their standing rule they are
+ *    not stats-refreshed.
  *  - Jobs that match nothing are NOT marked unresolved — tomorrow's sweep
  *    retries them while they're inside the lookback window. The campaign
  *    "Recover links" button (fetches 50 deep) is the backstop for
@@ -75,6 +80,11 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 interface CaptionPool {
   strong: string[];
   weak: string[];
+}
+
+interface CampaignInfo {
+  status: string;
+  pool: CaptionPool | null;
 }
 
 export interface SweepSummary {
@@ -129,17 +139,21 @@ export async function runDailyAccountSweep(
     select: { id: true, tiktokUsername: true },
   });
 
-  // Caption pools cached per campaign (normalized, split strong/weak).
-  const captionCache = new Map<string, CaptionPool | null>();
-  const getCaptionPool = async (campaignId: string): Promise<CaptionPool | null> => {
-    if (captionCache.has(campaignId)) return captionCache.get(campaignId)!;
+  // Campaign info (status + caption pool) cached per campaign.
+  const campaignCache = new Map<string, CampaignInfo | null>();
+  const getCampaignInfo = async (campaignId: string): Promise<CampaignInfo | null> => {
+    if (campaignCache.has(campaignId)) return campaignCache.get(campaignId)!;
     const campaign = await prisma.campaign.findUnique({
       where: { id: campaignId },
-      select: { fixedTexts: true },
+      select: { status: true, fixedTexts: true },
     });
+    if (!campaign) {
+      campaignCache.set(campaignId, null);
+      return null;
+    }
     const all = [
       ...new Set(
-        (campaign?.fixedTexts ?? [])
+        (campaign.fixedTexts ?? [])
           .map(normalizeCaption)
           .filter((c) => c.length >= MIN_CAPTION_LENGTH)
       ),
@@ -151,9 +165,12 @@ export async function runDailyAccountSweep(
             strong: all.filter((c) => c.length >= MIN_STRONG_CAPTION_LENGTH),
             weak: all.filter((c) => c.length < MIN_STRONG_CAPTION_LENGTH),
           };
-    captionCache.set(campaignId, pool);
-    return pool;
+    const info: CampaignInfo = { status: campaign.status, pool };
+    campaignCache.set(campaignId, info);
+    return info;
   };
+  const isPaused = async (campaignId: string): Promise<boolean> =>
+    (await getCampaignInfo(campaignId))?.status === "PAUSED";
 
   // ── Per-account sweep ────────────────────────────────────────────────────
   for (const account of accounts) {
@@ -180,16 +197,18 @@ export async function runDailyAccountSweep(
     accountsSwept++;
 
     // Videos already attributed to ANY TrackedVideo row are untouchable for
-    // matching — but they DO get a free stats refresh from this payload.
+    // matching — but they DO get a free stats refresh from this payload
+    // (unless their campaign is PAUSED — paused campaigns are never swept).
     const tracked = await prisma.trackedVideo.findMany({
       where: { tiktokVideoId: { in: latest.map((v) => v.videoId) } },
-      select: { id: true, tiktokVideoId: true, status: true },
+      select: { id: true, tiktokVideoId: true, status: true, campaignId: true },
     });
     const trackedById = new Map(tracked.map((t) => [t.tiktokVideoId, t]));
 
     for (const v of latest) {
       const row = trackedById.get(v.videoId);
       if (!row || row.status !== "captured") continue;
+      if (row.campaignId && (await isPaused(row.campaignId))) continue;
       try {
         const stats = { views: v.views, likes: v.likes, comments: v.comments, shares: v.shares };
         await prisma.trackedVideo.update({
@@ -235,9 +254,15 @@ export async function runDailyAccountSweep(
       let match: ProviderVideo | null = null;
       let confidence = "high";
 
-      // (a) Caption match for campaign jobs.
+      // (a) Caption match for campaign jobs. PAUSED campaigns are never
+      // swept — their jobs stay uncaptured until the campaign is resumed.
       if (job.campaignId) {
-        const pool = await getCaptionPool(job.campaignId);
+        const info = await getCampaignInfo(job.campaignId);
+        if (info?.status === "PAUSED") {
+          counters.skipped++;
+          continue;
+        }
+        const pool = info?.pool;
         if (pool) {
           const strongMatches = available
             .filter((v) =>

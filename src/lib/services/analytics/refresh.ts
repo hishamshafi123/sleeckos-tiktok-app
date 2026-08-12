@@ -118,12 +118,19 @@ export async function runAnalyticsRefresh(opts: RefreshOptions = {}): Promise<{ 
 
   // ── Select due videos ─────────────────────────────────────────────────────
   const ignoreTiers = type === "manual" && !!campaignId;
+  // Paused campaigns are never refreshed — pausing is the operator's "stop
+  // spending on this campaign" switch (posting already respects it).
+  const paused = await prisma.campaign.findMany({
+    where: { status: "PAUSED" },
+    select: { id: true },
+  });
+  const pausedIds = paused.map((p) => p.id);
   const all = await prisma.trackedVideo.findMany({
     where: {
       status: "captured",
       // Non-campaign videos are never refreshed (operator decision: refresh
       // budget goes to campaign-attributed videos only).
-      campaignId: campaignId ? campaignId : { not: null },
+      campaignId: campaignId ? campaignId : { not: null, notIn: pausedIds },
     },
     select: { id: true, tiktokVideoId: true, url: true, publishedAt: true, lastRefreshedAt: true },
   });
