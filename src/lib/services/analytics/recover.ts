@@ -6,7 +6,9 @@
  * Post captions are built as "<one random pick from campaign.fixedTexts> +
  * hashtags" (see buildPostCaption in posting-pipeline.ts), so the TikTok
  * description STARTS WITH one of the campaign's fixedTexts. That prefix is
- * the recovery signal.
+ * the recovery signal. Two legacy shapes are also matched: before the
+ * Copy-of parser fix, unparsed files posted with the raw filename as
+ * caption — "(Title) slug_..." or "Copy of (Title) slug_...".
  *
  * Safety rails:
  *  - Strong captions (normalized length ≥ 15 chars) match on prefix alone.
@@ -133,7 +135,16 @@ export async function runRecoveryPass(
   });
   const allCaptions = [
     ...new Set(
-      (campaign?.fixedTexts ?? [])
+      [
+        ...(campaign?.fixedTexts ?? []),
+        // Legacy misattribution: before the Copy-of parser fix, files whose
+        // campaign bracket failed to parse posted with the RAW FILENAME as
+        // caption — "(Title) slug_..." or "Copy of (Title) slug_...". Add
+        // those shapes as caption prefixes so recovery can find those posts.
+        ...(campaign?.title
+          ? [`(${campaign.title})`, `Copy of (${campaign.title})`]
+          : []),
+      ]
         .map(normalizeCaption)
         .filter((c) => c.length >= MIN_CAPTION_LENGTH)
     ),

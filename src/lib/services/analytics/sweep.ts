@@ -145,7 +145,7 @@ export async function runDailyAccountSweep(
     if (campaignCache.has(campaignId)) return campaignCache.get(campaignId)!;
     const campaign = await prisma.campaign.findUnique({
       where: { id: campaignId },
-      select: { status: true, fixedTexts: true },
+      select: { title: true, status: true, fixedTexts: true },
     });
     if (!campaign) {
       campaignCache.set(campaignId, null);
@@ -153,7 +153,12 @@ export async function runDailyAccountSweep(
     }
     const all = [
       ...new Set(
-        (campaign.fixedTexts ?? [])
+        [
+          ...(campaign.fixedTexts ?? []),
+          // Legacy misattribution (same as recover.ts): unparsed files posted
+          // with the raw filename as caption — "(Title) ..." / "Copy of (Title) ...".
+          ...(campaign.title ? [`(${campaign.title})`, `Copy of (${campaign.title})`] : []),
+        ]
           .map(normalizeCaption)
           .filter((c) => c.length >= MIN_CAPTION_LENGTH)
       ),
