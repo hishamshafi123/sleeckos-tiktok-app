@@ -242,20 +242,23 @@ export async function runRecoveryPass(
     );
 
     for (const job of accountJobs) {
-      if (!job.publishedAt) {
-        counters.skipped++;
-        continue;
-      }
+      // publishedAt may be null on legacy rows. A strong caption match needs
+      // no timestamp, so only the weak tier and the unresolved placeholder
+      // require it.
+      const publishedMs = job.publishedAt?.getTime() ?? null;
 
-      // Oldest matching video first; a video used by an earlier job in this
-      // run is no longer a candidate.
       // Strong captions (≥15 chars) match on prefix alone. Weak captions
       // (one word etc.) must also sit within ±30 min of the confirmed
       // publish AND be the only weak candidate — otherwise we skip.
       const unused = available.filter((v) => !usedVideoIds.has(v.videoId));
       const strongMatches = unused
         .filter((v) => strongCaptions.some((c) => normalizeCaption(v.text || "").startsWith(c)))
-        .sort((a, b) => a.createTime.getTime() - b.createTime.getTime());
+        .sort((a, b) =>
+          publishedMs == null
+            ? a.createTime.getTime() - b.createTime.getTime() // no timestamp: oldest first
+            : Math.abs(a.createTime.getTime() - publishedMs) -
+              Math.abs(b.createTime.getTime() - publishedMs)
+        );
 
       let match: ProviderVideo | null = null;
       let confidence = "high";
@@ -264,13 +267,10 @@ export async function runRecoveryPass(
         match = strongMatches[0];
         matchCount = strongMatches.length;
         confidence = strongMatches.length === 1 ? "high" : "medium";
-      } else if (weakCaptions.length > 0) {
-        const jobPublishedMs = job.publishedAt.getTime();
+      } else if (weakCaptions.length > 0 && publishedMs != null) {
         const weakMatches = unused
           .filter((v) => weakCaptions.some((c) => normalizeCaption(v.text || "").startsWith(c)))
-          .filter(
-            (v) => Math.abs(v.createTime.getTime() - jobPublishedMs) <= WEAK_MATCH_WINDOW_MS
-          )
+          .filter((v) => Math.abs(v.createTime.getTime() - publishedMs) <= WEAK_MATCH_WINDOW_MS)
           .sort((a, b) => a.createTime.getTime() - b.createTime.getTime());
         if (weakMatches.length === 1) {
           match = weakMatches[0];
@@ -282,6 +282,12 @@ export async function runRecoveryPass(
       const placeholderId = unresolvedPlaceholderId(job.id);
 
       if (!match) {
+        if (publishedMs == null) {
+          // No timestamp → only the strong tier was available; the video
+          // likely scrolled past the fetch window. Nothing more to try.
+          counters.skipped++;
+          continue;
+        }
         await prisma.trackedVideo.upsert({
           where: { tiktokVideoId: placeholderId },
           create: {
@@ -290,7 +296,7 @@ export async function runRecoveryPass(
             accountId: job.accountId,
             campaignId: job.campaignId,
             postJobId: job.id,
-            publishedAt: job.publishedAt,
+            publishedAt: job.publishedAt!, // non-null: null-publishedAt jobs are skipped above
             captureMethod: "caption_match",
             status: "unresolved",
             captureAttempts: 1,
@@ -321,7 +327,9 @@ export async function runRecoveryPass(
             accountId: job.accountId,
             campaignId: job.campaignId,
             postJobId: job.id,
-            publishedAt: job.publishedAt,
+            // Legacy rows may lack publishedAt — the video's real TikTok
+            // createTime is the better value anyway.
+            publishedAt: job.publishedAt ?? match.createTime,
             captureMethod: "caption_match",
             confidence,
             status: "captured",
