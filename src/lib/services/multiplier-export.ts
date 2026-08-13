@@ -470,7 +470,8 @@ async function processExportQueue() {
         .substring(0, 30);
 
       // Full campaign title in literal parentheses at position 0 — the posting
-      // pipeline parses /^\(([^)]+)\)/ to attribute posts to campaigns.
+      // pipeline's parseCampaignBracket() attributes posts to campaigns from it
+      // (it tolerates Drive's "Copy of " prefix on duplicated files).
       const campaignPrefix = campaignTitle ? formatCampaignBracketPrefix(campaignTitle) : "";
 
       const cleanHookSlug = video.hook.text

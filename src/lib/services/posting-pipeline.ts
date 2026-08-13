@@ -82,12 +82,13 @@ export async function ingestDriveFiles(accountId: string) {
       });
 
       if (!existingJob) {
-        // Match a leading "(Campaign Title)" bracket in the file name to a Campaign
+        // Match the campaign bracket in the file name to a Campaign
+        // (tolerates Drive's "Copy of " prefix on duplicated files).
         let campaignId: string | null = null;
-        const bracketMatch = file.name?.match(/^\(([^)]+)\)/);
-        if (bracketMatch) {
+        const bracketTitle = parseCampaignBracket(file.name);
+        if (bracketTitle) {
           const campaign = await prisma.campaign.findFirst({
-            where: { title: { equals: bracketMatch[1].trim(), mode: "insensitive" } },
+            where: { title: { equals: bracketTitle, mode: "insensitive" } },
             select: { id: true },
           });
           campaignId = campaign?.id ?? null;
@@ -131,6 +132,29 @@ export async function ingestDriveFiles(accountId: string) {
     console.error(`[Ingestion] Failed for account ${accountId}:`, err);
     return { success: false, error: err.message };
   }
+}
+
+/**
+ * Parse the campaign bracket from a Drive file name. Exports name files
+ * "(Campaign Title)_....mp4" with the bracket at position 0, but files
+ * duplicated inside Google Drive get a "Copy of " prefix (which stacks on
+ * repeated copies: "Copy of Copy of (Campaign) ..."). Tolerate that prefix
+ * and square brackets — otherwise attribution silently fails, and an
+ * unattributed job also bypasses the PAUSED-campaign filter in claimNextVideo.
+ */
+export function parseCampaignBracket(fileName: string | null | undefined): string | null {
+  const m = fileName?.match(/^\s*(?:copy of\s+)*[\(\[]([^\)\]]+)[\)\]]/i);
+  return m ? m[1].trim() : null;
+}
+
+/** Filename minus extension, "Copy of " prefixes and the campaign bracket —
+ *  used as the caption fallback so unparsed files never post raw junk. */
+function cleanDriveFileName(name: string | null | undefined): string {
+  return (name || "")
+    .replace(/\.[^.]+$/, "")
+    .replace(/^\s*(?:copy of\s+)+/i, "")
+    .replace(/^\s*[\(\[][^\)\]]+[\)\]]\s*/, "")
+    .trim();
 }
 
 /**
@@ -430,7 +454,9 @@ export function buildPostCaption(
   if (fixedPool.length > 0) {
     caption = fixedPool[Math.floor(Math.random() * fixedPool.length)];
   } else {
-    caption = (job.driveFileName || "").replace(/\.[^.]+$/, "");
+    // Cleaned filename (no "Copy of" prefix / campaign bracket) so an
+    // unparsed file never posts raw junk as its caption.
+    caption = cleanDriveFileName(job.driveFileName);
   }
 
   // Campaign hashtag pool overrides the section pool when set
