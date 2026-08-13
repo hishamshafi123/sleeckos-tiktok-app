@@ -314,6 +314,7 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
   const [shareLabel, setShareLabel] = useState("");
   const [isCreatingShare, setIsCreatingShare] = useState(false);
   const [copiedShareId, setCopiedShareId] = useState<string | null>(null);
+  const [copiedCampaignId, setCopiedCampaignId] = useState(false);
   const [revokingShareId, setRevokingShareId] = useState<string | null>(null);
 
   // Posting priority
@@ -2403,6 +2404,33 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
                         );
                       })
                     )}
+                  </div>
+
+                  {/* API access — campaign id + how a client pulls the data */}
+                  <div className="pt-2.5 border-t border-[#27272a] space-y-1.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[9px] text-zinc-600 uppercase tracking-wider font-semibold">
+                        API access
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          navigator.clipboard.writeText(campaign.id);
+                          setCopiedCampaignId(true);
+                          setTimeout(() => setCopiedCampaignId(false), 1500);
+                        }}
+                        className="flex items-center gap-1 text-[9px] font-semibold text-zinc-400 hover:text-zinc-200 transition"
+                        title="Copy campaign ID"
+                      >
+                        {copiedCampaignId ? <Check size={9} className="text-emerald-400" /> : <Copy size={9} />}
+                        {copiedCampaignId ? "Copied" : "Copy campaign ID"}
+                      </button>
+                    </div>
+                    <p className="text-[9px] text-zinc-600 font-mono break-all leading-relaxed">
+                      GET /api/public/v1/campaigns/{campaign.id}/stats
+                      <br />
+                      header: x-api-key: CODE (any active share code above)
+                    </p>
                   </div>
                 </div>
               </div>

@@ -79,7 +79,7 @@ export type PublicTrackedVideo = {
 };
 
 export type PublicTrackingPayload = {
-  campaign: { title: string };
+  campaign: { id: string; title: string };
   totals: {
     posted: number;
     captured: number;
@@ -87,8 +87,12 @@ export type PublicTrackingPayload = {
     scheduled: number;
     views: number;
     likes: number;
+    comments: number;
+    shares: number;
     avgViews: number;
   };
+  /** Max lastRefreshedAt across captured videos — when stats were last updated. */
+  dataUpdatedAt: string | null;
   trend: { date: string; views: number; likes: number }[];
   videos: PublicTrackedVideo[];
 };
@@ -115,6 +119,7 @@ export async function getPublicTrackingPayload(campaignId: string): Promise<Publ
         comments: true,
         shares: true,
         status: true,
+        lastRefreshedAt: true,
       },
       orderBy: { views: "desc" },
     }),
@@ -130,6 +135,12 @@ export async function getPublicTrackingPayload(campaignId: string): Promise<Publ
   const published = videos.filter((v) => v.status === "captured").length;
   const totalViews = captured.reduce((sum, v) => sum + Number(v.views), 0);
   const totalLikes = captured.reduce((sum, v) => sum + Number(v.likes), 0);
+  const totalComments = captured.reduce((sum, v) => sum + Number(v.comments), 0);
+  const totalShares = captured.reduce((sum, v) => sum + Number(v.shares), 0);
+  const dataUpdatedAt = videos.reduce<Date | null>(
+    (max, v) => (v.lastRefreshedAt && (!max || v.lastRefreshedAt > max) ? v.lastRefreshedAt : max),
+    null
+  );
 
   // ── Trend: cumulative views/likes per day (org tz), last 30 days ──
   const tz = await getOrgTimezone();
@@ -182,7 +193,7 @@ export async function getPublicTrackingPayload(campaignId: string): Promise<Publ
   }
 
   return {
-    campaign: { title: campaign.title || campaign.name || "Campaign" },
+    campaign: { id: campaign.id, title: campaign.title || campaign.name || "Campaign" },
     totals: {
       posted: campaign.postedCount,
       captured: captured.length,
@@ -190,8 +201,11 @@ export async function getPublicTrackingPayload(campaignId: string): Promise<Publ
       scheduled: scheduledAgg._sum.videoCount ?? 0,
       views: totalViews,
       likes: totalLikes,
+      comments: totalComments,
+      shares: totalShares,
       avgViews: captured.length > 0 ? Math.round(totalViews / captured.length) : 0,
     },
+    dataUpdatedAt: dataUpdatedAt ? dataUpdatedAt.toISOString() : null,
     trend,
     videos: captured.map((v) => ({
       url: v.url,
@@ -201,6 +215,66 @@ export async function getPublicTrackingPayload(campaignId: string): Promise<Publ
       comments: Number(v.comments),
       shares: Number(v.shares),
     })),
+  };
+}
+
+// ─── Public REST API (auth: x-api-key = share code, scoped to one campaign) ──
+
+/**
+ * Validate an API key against a specific campaign. The key IS a share code:
+ * it must be valid (exists, not revoked, not expired) AND belong to this
+ * campaign — a client can only ever read their own campaign.
+ */
+export async function validateCampaignApiKey(
+  campaignId: string,
+  apiKey: string
+): Promise<boolean> {
+  const share = await findValidShare(apiKey);
+  return !!share && share.campaignId === campaignId;
+}
+
+/**
+ * GET /api/public/v1/campaigns/:id/stats payload — campaign totals, 30-day
+ * trend, and a data-freshness marker. Returns null when the campaign doesn't
+ * exist (routes map this to 404, same as an invalid key: no oracle).
+ */
+export async function getPublicCampaignStats(campaignId: string) {
+  const payload = await getPublicTrackingPayload(campaignId);
+  if (!payload) return null;
+  const timezone = await getOrgTimezone();
+  return {
+    campaign: payload.campaign,
+    timezone,
+    dataUpdatedAt: payload.dataUpdatedAt,
+    refreshCadence: "daily",
+    totals: {
+      postsPublished: payload.totals.posted,
+      postsScheduled: payload.totals.scheduled,
+      linksCaptured: payload.totals.captured,
+      totalViews: payload.totals.views,
+      totalLikes: payload.totals.likes,
+      totalComments: payload.totals.comments,
+      totalShares: payload.totals.shares,
+      avgViewsPerPost: payload.totals.avgViews,
+    },
+    // Cumulative views/likes per day (org timezone), oldest first, 30 days.
+    trend: payload.trend,
+  };
+}
+
+/**
+ * GET /api/public/v1/campaigns/:id/posts payload — every tracked post with
+ * its link and current stats, newest first.
+ */
+export async function getPublicCampaignPosts(campaignId: string) {
+  const payload = await getPublicTrackingPayload(campaignId);
+  if (!payload) return null;
+  const posts = [...payload.videos].sort((a, b) => b.publishedAt.localeCompare(a.publishedAt));
+  return {
+    campaign: payload.campaign,
+    dataUpdatedAt: payload.dataUpdatedAt,
+    count: posts.length,
+    posts,
   };
 }
 
