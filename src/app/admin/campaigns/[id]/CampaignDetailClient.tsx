@@ -2431,6 +2431,14 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
                       <br />
                       header: x-api-key: CODE (any active share code above)
                     </p>
+                    <a
+                      href="/docs/campaign-client-api.md"
+                      download="campaign-client-api.md"
+                      className="inline-flex items-center gap-1 text-[10px] font-semibold text-zinc-300 hover:text-zinc-100 bg-zinc-900 border border-[#27272a] hover:border-zinc-600 rounded px-2 py-0.5 transition"
+                    >
+                      <Download size={10} />
+                      Download API docs
+                    </a>
                   </div>
                 </div>
               </div>
