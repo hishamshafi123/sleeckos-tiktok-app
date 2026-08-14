@@ -1733,6 +1733,45 @@ model CampaignShare {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// Client API keys — one key per CLIENT, granted access to many campaigns.
+// The client swaps the campaignId in the URL; their key never changes.
+// Raw keys are shown once at creation; only the SHA-256 hash is stored.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+model ApiClient {
+  id        String              @id @default(uuid())
+  name      String
+  notes     String?
+  createdAt DateTime            @default(now())
+  revokedAt DateTime?
+  keys      ApiClientKey[]
+  campaigns ApiClientCampaign[]
+}
+
+model ApiClientKey {
+  id         String    @id @default(uuid())
+  clientId   String
+  client     ApiClient @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  keyHash    String    @unique
+  keyPrefix  String // first ~12 chars, for identification in the UI ("slk_Ab3X9…")
+  label      String?
+  createdAt  DateTime  @default(now())
+  lastUsedAt DateTime?
+  revokedAt  DateTime?
+  @@index([clientId])
+}
+
+model ApiClientCampaign {
+  id         String    @id @default(uuid())
+  clientId   String
+  client     ApiClient @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  campaignId String // plain column, no FK (matches CampaignShare pattern)
+  createdAt  DateTime  @default(now())
+  @@unique([clientId, campaignId])
+  @@index([campaignId])
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // Bulk Link Sourcing — paste TikTok links → yt-dlp download → Drive distribution
 // ═══════════════════════════════════════════════════════════════════════════════
 

@@ -39,6 +39,7 @@ const OPERATIONS_NAV = [
   { href: "/admin/accounts/history", label: "History", icon: History, toolKey: "history" },
   { href: "/admin/accounts/posting-history", label: "Posting Sheet", icon: Table, toolKey: "history" },
   { href: "/admin/campaigns", label: "Campaigns", icon: FolderOpen, toolKey: "campaigns" },
+  { href: "/admin/api-clients", label: "API Clients", icon: Key, toolKey: "campaigns" },
   { href: "/admin/distribution", label: "Distribution", icon: Send, toolKey: "accounts" },
   { href: "/admin/projects", label: "Projects", icon: FolderOpen, toolKey: "projects" },
   { href: "/admin/vault", label: "Data Vault", icon: Database, toolKey: "data_vault" },

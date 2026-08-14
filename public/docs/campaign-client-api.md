@@ -6,7 +6,7 @@ likes, comments, shares) into an external platform.
 ## Quick answers
 
 - **API base URL:** `https://sleeckos.com`
-- **Auth:** header **`x-api-key: <API_KEY>`** — one key per campaign (we send it to you; it is the same code that powers your public tracking page)
+- **Auth:** header **`x-api-key: <API_KEY>`** — one key per client, valid for every campaign we grant you (we send it to you once)
 - **Method:** a simple **HTTP GET is sufficient** — no POST, no signing, no SDK
 - **Timing:** stats refresh **once per day** (see "Data freshness" below). A **once-per-day pull is ideal** — polling more often returns the same numbers.
 - **Rate limit:** 30 requests/minute per IP (429 if exceeded).
@@ -18,8 +18,14 @@ Every request needs two things:
 1. The **campaign ID** in the URL path (UUID — we include it in the handover message, and it's shown on your tracking page).
 2. The **API key** in the `x-api-key` header.
 
-The key only works for its own campaign. Keys can be revoked or given an
-expiry on our side — if your key stops working, ask us for a fresh one.
+You receive **one API key from us that works for every campaign we run for
+you** — when a new campaign starts, we grant your key access to it and send
+you the new campaign ID; you only change the ID in the URL, never the key.
+Keys can be revoked or re-scoped on our side — if your key stops working, ask
+us for a fresh one.
+
+(Legacy note: single-campaign share codes — 10-character codes like
+`F88FM8L255` — also work as API keys for their own campaign.)
 
 Example:
 

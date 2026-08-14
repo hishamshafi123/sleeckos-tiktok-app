@@ -4,7 +4,7 @@ import {
   checkTrackRateLimit,
   getClientIp,
   getPublicCampaignPosts,
-  validateCampaignApiKey,
+  validateCampaignAccess,
 } from "@/lib/services/track-share";
 
 // GET /api/public/v1/campaigns/[campaignId]/posts — PUBLIC client API.
@@ -21,7 +21,7 @@ export async function GET(
 
   const { campaignId } = await params;
   const apiKey = req.headers.get("x-api-key") || "";
-  if (!apiKey.trim() || !(await validateCampaignApiKey(campaignId, apiKey))) {
+  if (!apiKey.trim() || !(await validateCampaignAccess(campaignId, apiKey))) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
 

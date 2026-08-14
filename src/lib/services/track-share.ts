@@ -2,6 +2,7 @@ import crypto from "crypto";
 import prisma from "@/lib/db";
 import type { CampaignShare } from "@prisma/client";
 import { getOrgTimezone, getZonedDateString, getZonedFutureStartOfDay } from "@/lib/services/timezone";
+import { validateClientApiKey } from "@/lib/services/api-clients";
 
 // ─── Share code generation ────────────────────────────────────────────────────
 // The code IS the secret — stored in plain text so it can be shown/copied in
@@ -221,9 +222,9 @@ export async function getPublicTrackingPayload(campaignId: string): Promise<Publ
 // ─── Public REST API (auth: x-api-key = share code, scoped to one campaign) ──
 
 /**
- * Validate an API key against a specific campaign. The key IS a share code:
- * it must be valid (exists, not revoked, not expired) AND belong to this
- * campaign — a client can only ever read their own campaign.
+ * Validate a legacy share-code API key against a specific campaign. The key
+ * IS a share code: it must be valid (exists, not revoked, not expired) AND
+ * belong to this campaign — a client can only ever read their own campaign.
  */
 export async function validateCampaignApiKey(
   campaignId: string,
@@ -231,6 +232,22 @@ export async function validateCampaignApiKey(
 ): Promise<boolean> {
   const share = await findValidShare(apiKey);
   return !!share && share.campaignId === campaignId;
+}
+
+/**
+ * Validate an API key against a specific campaign. Accepts either:
+ *  - a client API key ("slk_…", hash-stored, granted per campaign), or
+ *  - a legacy per-campaign share code.
+ * True only when the credential is valid AND covers this campaign.
+ */
+export async function validateCampaignAccess(
+  campaignId: string,
+  apiKey: string
+): Promise<boolean> {
+  if (apiKey.startsWith("slk_")) {
+    return validateClientApiKey(campaignId, apiKey);
+  }
+  return validateCampaignApiKey(campaignId, apiKey);
 }
 
 /**

@@ -2431,6 +2431,13 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
                       <br />
                       header: x-api-key: CODE (any active share code above)
                     </p>
+                    <p className="text-[9px] text-zinc-600 leading-relaxed">
+                      Client with multiple campaigns? Use{" "}
+                      <a href="/admin/api-clients" className="underline hover:text-zinc-300">
+                        API Clients
+                      </a>{" "}
+                      — one key that works across every campaign you grant them.
+                    </p>
                     <a
                       href="/docs/campaign-client-api.md"
                       download="campaign-client-api.md"
