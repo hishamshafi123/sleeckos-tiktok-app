@@ -3,7 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/db";
 import { getSession } from "@/lib/session";
 import { can } from "@/lib/services/permissions";
-import { uploadAndPublish, pollJobStatus } from "@/lib/services/posting-pipeline";
+import { uploadAndPublish, pollJobStatus, buildPostCaption, resolveCampaignCaptionConfig } from "@/lib/services/posting-pipeline";
 
 // POST /api/managed/posts/[id]/retry — retry a FAILED post via PostPeer
 export async function POST(
@@ -22,7 +22,7 @@ export async function POST(
 
   const post = await prisma.scheduledPost.findUnique({
     where: { id },
-    include: { account: true },
+    include: { account: { include: { section: true } } },
   });
 
   if (!post) {
@@ -98,7 +98,11 @@ export async function POST(
         // Resume polling only — re-uploading would duplicate the post
         await pollJobStatus(job!.id);
       } else {
-        await uploadAndPublish(job!.id, post.caption);
+        // Rebuild the caption from the campaign pool + hashtags — never reuse
+        // the stored caption (legacy rows may hold a raw file name).
+        const campaignConfig = await resolveCampaignCaptionConfig(job!.campaignId);
+        const caption = buildPostCaption(account, job!, campaignConfig);
+        await uploadAndPublish(job!.id, caption);
         // Wait a few seconds and poll immediately
         await new Promise((resolve) => setTimeout(resolve, 5000));
         await pollJobStatus(job!.id);

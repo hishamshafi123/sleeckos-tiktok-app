@@ -127,13 +127,16 @@ export async function ingestDriveFiles(accountId: string) {
               },
             });
 
-            // Create corresponding ScheduledPost so that it is visible in the active post queue
+            // Create corresponding ScheduledPost so that it is visible in the active post queue.
+            // Caption starts empty — the real caption (campaign pool + hashtags)
+            // is computed at post time and written back after upload. File names
+            // are never stored as captions.
             await tx.scheduledPost.create({
               data: {
                 accountId: account.id,
                 driveFileId: file.id,
                 driveFileName: file.name,
-                caption: file.name?.replace(/\.[^.]+$/, "") || "",
+                caption: "",
                 scheduledFor: new Date(),
                 status: "QUEUED",
               },
@@ -174,16 +177,6 @@ export function canonicalDriveFileName(name: string | null | undefined): string 
 export function parseCampaignBracket(fileName: string | null | undefined): string | null {
   const m = fileName?.match(/^\s*(?:copy of\s+)*[\(\[]([^\)\]]+)[\)\]]/i);
   return m ? m[1].trim() : null;
-}
-
-/** Filename minus extension, "Copy of " prefixes and the campaign bracket —
- *  used as the caption fallback so unparsed files never post raw junk. */
-function cleanDriveFileName(name: string | null | undefined): string {
-  return (name || "")
-    .replace(/\.[^.]+$/, "")
-    .replace(/^\s*(?:copy of\s+)+/i, "")
-    .replace(/^\s*[\(\[][^\)\]]+[\)\]]\s*/, "")
-    .trim();
 }
 
 /**
@@ -296,7 +289,9 @@ export async function uploadAndPublish(jobId: string, captionOverride?: string) 
   });
 
   const account = job.account;
-  const caption = captionOverride || job.driveFileName?.replace(/\.[^.]+$/, "") || "video";
+  // Caption comes from the caller (campaign fixedTexts pool + hashtags).
+  // Empty is acceptable — NEVER fall back to the Drive file name.
+  const caption = captionOverride ?? "";
 
   try {
     // Idempotency guard: Verify if this video has already been published
@@ -471,12 +466,14 @@ export async function resolveCampaignCaptionConfig(campaignId: string | null): P
  *
  * Chain:
  *  1. Base caption — one random pick from the campaign's fixedTexts pool
- *     (trimmed, non-empty entries). Falls back to the Drive file name
- *     (minus extension) when the pool is empty or there is no campaign.
+ *     (trimmed, non-empty entries). When the pool is empty or there is no
+ *     campaign, the base stays EMPTY — file/folder names must NEVER appear
+ *     as a post caption.
  *  2. Hashtags — when the campaign has a non-empty descTags pool it
  *     overrides the section pool: descTagCount random tags are picked from
  *     it. Otherwise the section pool (account.section.descTags /
- *     descTagCount) is used.
+ *     descTagCount) is used. With no base caption, the caption is hashtags
+ *     only; with neither, it is empty.
  */
 export function buildPostCaption(
   account: {
@@ -492,11 +489,8 @@ export function buildPostCaption(
     .filter((t) => t.length > 0);
   if (fixedPool.length > 0) {
     caption = fixedPool[Math.floor(Math.random() * fixedPool.length)];
-  } else {
-    // Cleaned filename (no "Copy of" prefix / campaign bracket) so an
-    // unparsed file never posts raw junk as its caption.
-    caption = cleanDriveFileName(job.driveFileName);
   }
+  // No fallback to the Drive file name — ever.
 
   // Campaign hashtag pool overrides the section pool when set
   const sec = account.section;
