@@ -173,11 +173,18 @@ async function runScheduler() {
       }
 
       // Hard guard: never post twice within 15 min for the same account.
-      // Multiple cron ticks can match one slot (±5 min window at 5-min cadence).
-      const recentPost = await prisma.scheduledPost.count({
+      // Multiple cron ticks can match one slot (±5 min window at 5-min
+      // cadence). Keyed on PostJob ACTIVITY (lockedAt is set at claim time,
+      // publishedAt at confirmation) — NOT on ScheduledPost.createdAt, which
+      // reflects ingestion time and goes blind for pre-ingested files.
+      const fifteenMinAgo = new Date(now.getTime() - 15 * 60 * 1000);
+      const recentPost = await prisma.postJob.count({
         where: {
           accountId: account.id,
-          createdAt: { gte: new Date(now.getTime() - 15 * 60 * 1000) },
+          OR: [
+            { lockedAt: { gte: fifteenMinAgo } },
+            { publishedAt: { gte: fifteenMinAgo } },
+          ],
         },
       });
 
@@ -189,16 +196,17 @@ async function runScheduler() {
       // Minimum 3-hour gap between posts per account (automated pipeline only —
       // the manual "Post Now" button in Managed Accounts overrides this).
       // No back-to-back posting: anything published or in-flight within the
-      // last 3 hours blocks the next automated post.
+      // last 3 hours blocks the next automated post. Keyed on PostJob
+      // publishedAt / updatedAt (activity), not row creation time.
       const threeHoursAgo = new Date(now.getTime() - 3 * 60 * 60 * 1000);
-      const activityWithinGap = await prisma.scheduledPost.findFirst({
+      const activityWithinGap = await prisma.postJob.findFirst({
         where: {
           accountId: account.id,
           OR: [
             { publishedAt: { gte: threeHoursAgo } },
             {
-              status: { in: ["CLAIMED", "UPLOADING", "PROCESSING", "DOWNLOADING"] },
-              createdAt: { gte: threeHoursAgo },
+              state: { in: ["CLAIMED", "UPLOADING", "PENDING_DELETION"] },
+              updatedAt: { gte: threeHoursAgo },
             },
           ],
         },

@@ -68,6 +68,18 @@ export async function ingestDriveFiles(accountId: string) {
       console.log(`[Ingestion] Retired ${vanished.length} job(s) whose Drive file was deleted (account ${accountId})`);
     }
 
+    // Dedupe by canonical file name: the same video re-added to the folder
+    // ("Copy of ..." duplicates, re-uploads) must never enter the queue twice.
+    // An existing non-FAILED job with the same canonical name blocks ingest;
+    // FAILED-only histories allow a deliberate re-upload to post.
+    const existingJobs = await prisma.postJob.findMany({
+      where: { accountId: account.id, state: { not: "FAILED" } },
+      select: { driveFileName: true },
+    });
+    const existingNames = new Set(
+      existingJobs.map((j) => canonicalDriveFileName(j.driveFileName))
+    );
+
     for (const file of files) {
       if (!file.id) continue;
 
@@ -82,6 +94,14 @@ export async function ingestDriveFiles(accountId: string) {
       });
 
       if (!existingJob) {
+        const canonicalName = canonicalDriveFileName(file.name);
+        if (existingNames.has(canonicalName)) {
+          console.warn(
+            `[Ingestion] Skipping duplicate video "${file.name}" for account ${accountId} — a job with the same file name already exists`
+          );
+          continue;
+        }
+
         // Match the campaign bracket in the file name to a Campaign
         // (tolerates Drive's "Copy of " prefix on duplicated files).
         let campaignId: string | null = null;
@@ -120,6 +140,8 @@ export async function ingestDriveFiles(accountId: string) {
             });
           });
           ingestedCount++;
+          // Guard against two copies landing in the same ingest pass.
+          existingNames.add(canonicalName);
         } catch (dbErr) {
           // Ignore unique constraint conflicts caused by parallel worker runs
           console.warn(`[Ingestion] Skip duplicate file entry ${file.id}:`, dbErr);
@@ -132,6 +154,13 @@ export async function ingestDriveFiles(accountId: string) {
     console.error(`[Ingestion] Failed for account ${accountId}:`, err);
     return { success: false, error: err.message };
   }
+}
+
+/** Filename minus Drive's "Copy of " prefixes — the identity key for
+ *  duplicate detection: the same video re-added to a folder (Drive's "Make a
+ *  copy", re-uploads) must never be posted twice on one account. */
+export function canonicalDriveFileName(name: string | null | undefined): string {
+  return (name || "").replace(/^\s*(copy of\s+)+/i, "").trim();
 }
 
 /**
@@ -167,6 +196,9 @@ export async function claimNextVideo(accountId: string, workerId = "worker-defau
     //  - exclude jobs whose campaign is PAUSED (null campaignId is never paused)
     //  - order priority campaigns first: priorityQuota set and not yet exhausted,
     //    then oldest-first within each tier.
+    // NOT EXISTS: never claim a file whose canonical name (Drive "Copy of "
+    // prefixes stripped) was already published on this account — the same
+    // video must never go out twice, even if it was re-added to the folder.
     const availableJobs = await tx.$queryRaw<any[]>`
       SELECT j.id FROM "PostJob" j
       LEFT JOIN "Campaign" c ON c."id" = j."campaignId"
@@ -174,6 +206,13 @@ export async function claimNextVideo(accountId: string, workerId = "worker-defau
         AND j."state" = 'AVAILABLE'
         AND (j."lockedAt" IS NULL OR j."lockedAt" < ${new Date(Date.now() - 15 * 60 * 1000)})
         AND (c."id" IS NULL OR c."status" <> 'PAUSED')
+        AND NOT EXISTS (
+          SELECT 1 FROM "PostJob" p
+          WHERE p."accountId" = j."accountId"
+            AND p."state" IN ('PUBLISHED', 'PENDING_DELETION', 'DELETED')
+            AND regexp_replace(p."driveFileName", '^\s*([Cc]opy [Oo]f\s+)+', '')
+              = regexp_replace(j."driveFileName", '^\s*([Cc]opy [Oo]f\s+)+', '')
+        )
       ORDER BY
         CASE WHEN c."priorityQuota" IS NOT NULL AND c."priorityUsed" < c."priorityQuota" THEN 0 ELSE 1 END ASC,
         j."createdAt" ASC
