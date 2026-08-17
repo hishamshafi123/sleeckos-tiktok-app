@@ -21,7 +21,8 @@ import {
   Send,
   Activity,
   Table,
-  Link2
+  Link2,
+  TrendingUp
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -35,6 +36,7 @@ const OPERATIONS_NAV = [
   { href: "/admin", label: "Overview", icon: LayoutDashboard, exact: true, toolKey: "overview" },
   { href: "/admin/accounts", label: "Managed Accounts", icon: MonitorPlay, exact: true, toolKey: "accounts" },
   { href: "/admin/accounts/dashboard", label: "Analytics", icon: BarChart3, toolKey: "analytics" },
+  { href: "/admin/account-performance", label: "Account Performance", icon: TrendingUp, toolKey: "analytics" },
   { href: "/admin/accounts/queue", label: "Post Queue", icon: Clock, toolKey: "post_queue" },
   { href: "/admin/accounts/history", label: "History", icon: History, toolKey: "history" },
   { href: "/admin/accounts/posting-history", label: "Posting Sheet", icon: Table, toolKey: "history" },

@@ -305,6 +305,7 @@ model ManagedAccount {
   scheduledPosts        ScheduledPost[]
   postJobs              PostJob[]
   dailyAnalytics        AccountDailyAnalytics[]
+  dailyStats            AccountDailyStat[]
   sourcingNiches        SourcingNicheAccount[]
   genreConfigs          AccountGenreConfig[]
   backgroundVideos      AccountBackgroundVideo[]
@@ -414,6 +415,25 @@ model AccountDailyAnalytics {
   totalLikes     BigInt         @default(0)
 
   @@unique([accountId, date])
+}
+
+// Daily per-account rollup for the Account Performance page. One row per
+// account per org-timezone (IST) day; `date` is the UTC instant of IST
+// midnight for that day. Written by the daily sweep cron (rollupYesterday)
+// and recomputed on demand — safe to rebuild from PostJob + VideoStatSnapshot.
+model AccountDailyStat {
+  id          String         @id @default(uuid())
+  accountId   String
+  account     ManagedAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  date        DateTime       // UTC instant corresponding to IST 00:00 of the day
+  postsCount  Int            @default(0)
+  viewsGained Int            @default(0)
+  likesGained Int            @default(0)
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  @@unique([accountId, date])
+  @@index([date])
 }
 
 model GoogleCredential {

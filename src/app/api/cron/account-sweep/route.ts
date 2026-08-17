@@ -1,6 +1,7 @@
 export const dynamic = "force-dynamic";
 import { NextRequest, NextResponse } from "next/server";
 import { runDailyAccountSweep } from "@/lib/services/analytics/sweep";
+import { rollupYesterday } from "@/lib/services/analytics/account-stats";
 
 function verifyCronSecret(req: NextRequest) {
   const secret =
@@ -22,6 +23,13 @@ export async function GET(req: NextRequest) {
       await runDailyAccountSweep();
     } catch (err) {
       console.error("[Cron account-sweep] Background pass failed:", err);
+    }
+    // Roll up yesterday's (and today's partial) AccountDailyStat after the
+    // sweep — a rollup failure must never break the sweep.
+    try {
+      await rollupYesterday();
+    } catch (err) {
+      console.error("[Cron account-sweep] AccountDailyStat rollup failed:", err);
     }
   })();
 

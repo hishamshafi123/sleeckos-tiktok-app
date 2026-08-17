@@ -1,0 +1,797 @@
+"use client";
+import { useState, useEffect, useCallback } from "react";
+import {
+  Loader2,
+  AlertCircle,
+  RefreshCw,
+  Search,
+  X,
+  TrendingUp,
+  TrendingDown,
+  Minus,
+} from "lucide-react";
+
+// ── API contract types ──────────────────────────────────────────────────────
+type Period = "today" | "yesterday" | "7d" | "30d";
+
+type Overview = {
+  totalAccounts: number;
+  activeAccounts: number;
+  postsYesterday: number;
+  viewsYesterday: number;
+  silentAccounts: number;
+  unusedAccounts: number;
+  flaggedAccounts: number;
+};
+
+type PerfRow = {
+  accountId: string;
+  accountName: string;
+  driveFolderName: string | null;
+  color: string;
+  connectionState: string;
+  posts: number;
+  viewsGained: number;
+  likesGained: number;
+  avgViewsPerPost: number;
+  zeroViewStreak: number;
+  flagged: boolean;
+  lastPostAt: string | null;
+  sparkline: number[];
+};
+
+type Coverage = {
+  days: string[];
+  accounts: {
+    accountId: string;
+    accountName: string;
+    driveFolderName: string | null;
+    cells: Record<string, number>;
+  }[];
+  silent: { accountId: string; accountName: string; daysQuiet: number }[];
+  unused: { accountId: string; accountName: string; daysQuiet: number | null }[];
+};
+
+type Trajectory = {
+  days: { day: string; views: number }[];
+  last7Avg: number;
+  prev7Avg: number;
+  growthRate: number;
+  projections: {
+    next7: { conservative: number; current: number; optimistic: number };
+    next30: { conservative: number; current: number; optimistic: number };
+  };
+};
+
+type AccountDetail = {
+  account: {
+    accountId: string;
+    accountName: string;
+    displayName: string;
+    avatarUrl: string;
+    driveFolderName: string | null;
+    sectionName: string | null;
+    color: string;
+    connectionState: string;
+  };
+  days: { day: string; posts: number; views: number; likes: number }[];
+  totals: { posts: number; views: number; likes: number };
+  zeroViewStreak: number;
+  lastPostAt: string | null;
+  recentVideos: {
+    id: string;
+    url: string;
+    views: number;
+    likes: number;
+    publishedAt: string;
+    status: string;
+  }[];
+};
+
+// ── Formatting helpers (all display times IST) ──────────────────────────────
+const IST = "Asia/Kolkata";
+const compact = new Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 1 });
+const fmt = (n: number) => compact.format(n);
+const full = (n: number) => n.toLocaleString("en-IN");
+
+const istDateTimeFmt = new Intl.DateTimeFormat("en-GB", {
+  timeZone: IST,
+  day: "2-digit",
+  month: "short",
+  hour: "2-digit",
+  minute: "2-digit",
+  hour12: false,
+});
+const istDateTime = (iso: string | null) => (iso ? istDateTimeFmt.format(new Date(iso)) : "—");
+
+// day is a YYYY-MM-DD IST day string from the server
+const dayLabel = (day: string) =>
+  new Intl.DateTimeFormat("en-GB", { day: "2-digit", month: "short", timeZone: "UTC" }).format(
+    new Date(`${day}T00:00:00Z`)
+  );
+const weekdayLabel = (day: string) =>
+  new Intl.DateTimeFormat("en-GB", { weekday: "short", timeZone: "UTC" }).format(
+    new Date(`${day}T00:00:00Z`)
+  );
+
+// ── Fetch helper with per-section state ─────────────────────────────────────
+type Resource<T> = { data: T | null; loading: boolean; error: string | null };
+
+function useResource<T>(url: string, deps: unknown[] = []): Resource<T> & { reload: () => void } {
+  const [state, setState] = useState<Resource<T>>({ data: null, loading: true, error: null });
+  const [nonce, setNonce] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    setState((s) => ({ ...s, loading: true, error: null }));
+    fetch(url)
+      .then(async (res) => {
+        if (!res.ok) throw new Error((await res.json().catch(() => ({})))?.error || `HTTP ${res.status}`);
+        return res.json();
+      })
+      .then((data) => !cancelled && setState({ data, loading: false, error: null }))
+      .catch((err) => !cancelled && setState({ data: null, loading: false, error: err.message }));
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [...deps, nonce]);
+
+  return { ...state, reload: () => setNonce((n) => n + 1) };
+}
+
+// ── Small presentational pieces ─────────────────────────────────────────────
+function SectionError({ message, onRetry }: { message: string; onRetry: () => void }) {
+  return (
+    <div className="flex items-center justify-between border border-red-500/20 bg-red-500/5 rounded-lg px-4 py-3">
+      <div className="flex items-center gap-2 text-red-400 text-xs">
+        <AlertCircle className="w-3.5 h-3.5" />
+        <span>{message}</span>
+      </div>
+      <button
+        onClick={onRetry}
+        className="flex items-center gap-1.5 text-xs text-zinc-400 hover:text-zinc-200 border border-[#27272a] rounded-md px-2.5 py-1.5"
+      >
+        <RefreshCw className="w-3 h-3" /> Retry
+      </button>
+    </div>
+  );
+}
+
+function SkeletonRows({ rows = 6, height = "h-8" }: { rows?: number; height?: string }) {
+  return (
+    <div className="space-y-2">
+      {Array.from({ length: rows }).map((_, i) => (
+        <div key={i} className={`${height} rounded-md bg-zinc-900 animate-pulse`} />
+      ))}
+    </div>
+  );
+}
+
+function Sparkline({ values }: { values: number[] }) {
+  const w = 72;
+  const h = 22;
+  const max = Math.max(...values, 1);
+  const pts = values.map((v, i) => `${(i / (values.length - 1)) * w},${h - (v / max) * (h - 2) - 1}`);
+  const allZero = values.every((v) => v === 0);
+  return (
+    <svg width={w} height={h} className="block">
+      <polyline
+        points={pts.join(" ")}
+        fill="none"
+        stroke={allZero ? "#3f3f46" : "#60a5fa"}
+        strokeWidth="1.5"
+        strokeLinejoin="round"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+function BarSeries({
+  data,
+  height = 96,
+  color = "#60a5fa",
+}: {
+  data: { day: string; value: number }[];
+  height?: number;
+  color?: string;
+}) {
+  const max = Math.max(...data.map((d) => d.value), 1);
+  return (
+    <div className="flex items-end gap-[3px]" style={{ height }}>
+      {data.map((d) => (
+        <div
+          key={d.day}
+          title={`${dayLabel(d.day)} — ${full(d.value)}`}
+          className="flex-1 rounded-sm min-w-[3px]"
+          style={{
+            height: `${Math.max((d.value / max) * 100, d.value > 0 ? 4 : 1)}%`,
+            backgroundColor: d.value > 0 ? color : "#27272a",
+          }}
+        />
+      ))}
+    </div>
+  );
+}
+
+const PERIODS: { key: Period; label: string }[] = [
+  { key: "today", label: "Today" },
+  { key: "yesterday", label: "Yesterday" },
+  { key: "7d", label: "7d" },
+  { key: "30d", label: "30d" },
+];
+
+// ── Main page ───────────────────────────────────────────────────────────────
+export default function ClientPage() {
+  const [period, setPeriod] = useState<Period>("7d");
+  const [query, setQuery] = useState("");
+  const [debouncedQuery, setDebouncedQuery] = useState("");
+  const [flaggedOnly, setFlaggedOnly] = useState(false);
+  const [detailId, setDetailId] = useState<string | null>(null);
+
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedQuery(query.trim()), 300);
+    return () => clearTimeout(t);
+  }, [query]);
+
+  const overview = useResource<Overview>("/api/admin/account-performance/overview");
+  const accounts = useResource<{ rows: PerfRow[] }>(
+    `/api/admin/account-performance/accounts?period=${period}&flaggedOnly=${flaggedOnly ? 1 : 0}&query=${encodeURIComponent(debouncedQuery)}`,
+    [period, flaggedOnly, debouncedQuery]
+  );
+  const coverage = useResource<Coverage>("/api/admin/account-performance/coverage");
+  const trajectory = useResource<Trajectory>("/api/admin/account-performance/trajectory");
+
+  const openDetail = useCallback((id: string) => setDetailId(id), []);
+
+  return (
+    <div className="space-y-8">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-xl font-semibold text-white">Account Performance</h1>
+          <p className="text-xs text-zinc-500 mt-1">
+            Posting output and view gains across all managed accounts · all times IST
+          </p>
+        </div>
+      </div>
+
+      {/* ── KPI strip ──────────────────────────────────────────────────── */}
+      <section>
+        {overview.error ? (
+          <SectionError message={overview.error} onRetry={overview.reload} />
+        ) : overview.loading || !overview.data ? (
+          <div className="grid grid-cols-6 gap-3">
+            {Array.from({ length: 6 }).map((_, i) => (
+              <div key={i} className="h-20 rounded-lg bg-zinc-900 animate-pulse" />
+            ))}
+          </div>
+        ) : (
+          <div className="grid grid-cols-6 gap-3">
+            <KpiCard
+              label="Active (24h)"
+              value={`${overview.data.activeAccounts} / ${overview.data.totalAccounts}`}
+              tone="text-green-400"
+            />
+            <KpiCard label="Posts yesterday" value={full(overview.data.postsYesterday)} />
+            <KpiCard
+              label="Views yesterday"
+              value={fmt(overview.data.viewsYesterday)}
+              title={full(overview.data.viewsYesterday)}
+            />
+            <KpiCard label="Silent (1–2d)" value={full(overview.data.silentAccounts)} tone="text-amber-400" />
+            <KpiCard label="Unused (3d+)" value={full(overview.data.unusedAccounts)} tone="text-red-400" />
+            <KpiCard label="Flagged" value={full(overview.data.flaggedAccounts)} tone="text-red-400" />
+          </div>
+        )}
+      </section>
+
+      {/* ── Ranked accounts table ──────────────────────────────────────── */}
+      <section className="space-y-3">
+        <div className="flex items-center justify-between gap-3 flex-wrap">
+          <h2 className="text-sm font-semibold text-zinc-200">Accounts</h2>
+          <div className="flex items-center gap-2">
+            <div className="relative">
+              <Search className="w-3.5 h-3.5 text-zinc-600 absolute left-2.5 top-1/2 -translate-y-1/2" />
+              <input
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Search account or drive folder"
+                className="bg-[#09090b] border border-[#27272a] rounded-md pl-8 pr-3 py-1.5 text-xs text-zinc-200 placeholder:text-zinc-600 focus:outline-none focus:border-zinc-600 w-60"
+              />
+            </div>
+            <button
+              onClick={() => setFlaggedOnly((f) => !f)}
+              className={`text-xs rounded-md border px-2.5 py-1.5 transition-colors ${
+                flaggedOnly
+                  ? "border-red-500/30 bg-red-500/10 text-red-400"
+                  : "border-[#27272a] text-zinc-400 hover:text-zinc-200"
+              }`}
+            >
+              Flagged only
+            </button>
+            <div className="flex border border-[#27272a] rounded-md overflow-hidden">
+              {PERIODS.map((p) => (
+                <button
+                  key={p.key}
+                  onClick={() => setPeriod(p.key)}
+                  className={`text-xs px-3 py-1.5 transition-colors ${
+                    period === p.key
+                      ? "bg-zinc-800 text-white"
+                      : "text-zinc-500 hover:text-zinc-300"
+                  }`}
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {accounts.error ? (
+          <SectionError message={accounts.error} onRetry={accounts.reload} />
+        ) : accounts.loading || !accounts.data ? (
+          <SkeletonRows rows={10} />
+        ) : accounts.data.rows.length === 0 ? (
+          <div className="border border-[#27272a] rounded-lg px-4 py-10 text-center text-xs text-zinc-600">
+            {flaggedOnly || debouncedQuery
+              ? "No accounts match the current filters."
+              : "No performance data yet. Run the AccountDailyStat backfill, then the daily sweep keeps it current."}
+          </div>
+        ) : (
+          <div className="border border-[#27272a] rounded-lg overflow-hidden">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="border-b border-[#27272a] bg-[#0c0c10]">
+                  <th className="text-left px-4 py-2.5 text-zinc-500 font-medium">Account</th>
+                  <th className="text-right px-3 py-2.5 text-zinc-500 font-medium">Posts</th>
+                  <th className="text-right px-3 py-2.5 text-zinc-500 font-medium">Views</th>
+                  <th className="text-right px-3 py-2.5 text-zinc-500 font-medium">Avg/post</th>
+                  <th className="text-right px-3 py-2.5 text-zinc-500 font-medium">Likes</th>
+                  <th className="text-left px-3 py-2.5 text-zinc-500 font-medium">Last post</th>
+                  <th className="text-left px-3 py-2.5 text-zinc-500 font-medium">7d trend</th>
+                  <th className="text-left px-3 py-2.5 text-zinc-500 font-medium">Flag</th>
+                </tr>
+              </thead>
+              <tbody>
+                {accounts.data.rows.map((r) => (
+                  <tr
+                    key={r.accountId}
+                    className="border-b border-[#1c1c21] last:border-0 hover:bg-zinc-900/40"
+                  >
+                    <td className="px-4 py-2.5">
+                      <button
+                        onClick={() => openDetail(r.accountId)}
+                        className="text-left group"
+                      >
+                        <div className="text-zinc-100 group-hover:text-blue-400 transition-colors font-medium">
+                          @{r.accountName}
+                        </div>
+                        <div className="text-zinc-600 text-[11px] truncate max-w-[220px]">
+                          {r.driveFolderName ?? "—"}
+                        </div>
+                      </button>
+                    </td>
+                    <td className="px-3 py-2.5 text-right text-zinc-300 tabular-nums">{r.posts}</td>
+                    <td className="px-3 py-2.5 text-right text-zinc-100 tabular-nums font-medium">
+                      <span title={full(r.viewsGained)}>{fmt(r.viewsGained)}</span>
+                    </td>
+                    <td className="px-3 py-2.5 text-right text-zinc-400 tabular-nums">
+                      <span title={full(r.avgViewsPerPost)}>{fmt(r.avgViewsPerPost)}</span>
+                    </td>
+                    <td className="px-3 py-2.5 text-right text-zinc-400 tabular-nums">
+                      <span title={full(r.likesGained)}>{fmt(r.likesGained)}</span>
+                    </td>
+                    <td className="px-3 py-2.5 text-zinc-500 whitespace-nowrap">
+                      {istDateTime(r.lastPostAt)}
+                    </td>
+                    <td className="px-3 py-2.5">
+                      <Sparkline values={r.sparkline} />
+                    </td>
+                    <td className="px-3 py-2.5 whitespace-nowrap">
+                      {r.flagged ? (
+                        <span className="inline-flex items-center gap-1.5 text-red-400">
+                          <span className="w-1.5 h-1.5 rounded-full bg-red-500" />
+                          0-view streak ×{r.zeroViewStreak}
+                        </span>
+                      ) : r.zeroViewStreak > 0 ? (
+                        <span className="inline-flex items-center gap-1.5 text-amber-400/80">
+                          <span className="w-1.5 h-1.5 rounded-full bg-amber-500/70" />
+                          streak ×{r.zeroViewStreak}
+                        </span>
+                      ) : (
+                        <span className="text-zinc-700">—</span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+
+      {/* ── Coverage grid + quiet lists ────────────────────────────────── */}
+      <section className="space-y-3">
+        <h2 className="text-sm font-semibold text-zinc-200">Posting coverage — last 7 days</h2>
+        {coverage.error ? (
+          <SectionError message={coverage.error} onRetry={coverage.reload} />
+        ) : coverage.loading || !coverage.data ? (
+          <SkeletonRows rows={8} />
+        ) : (
+          <CoverageSection data={coverage.data} onOpen={openDetail} />
+        )}
+      </section>
+
+      {/* ── Trajectory ─────────────────────────────────────────────────── */}
+      <section className="space-y-3">
+        <h2 className="text-sm font-semibold text-zinc-200">Views trajectory — last 28 days</h2>
+        {trajectory.error ? (
+          <SectionError message={trajectory.error} onRetry={trajectory.reload} />
+        ) : trajectory.loading || !trajectory.data ? (
+          <SkeletonRows rows={3} height="h-10" />
+        ) : (
+          <div className="border border-[#27272a] rounded-lg p-5 space-y-5">
+            <div className="flex items-center gap-6 text-xs text-zinc-500">
+              <span>
+                Last 7d avg: <span className="text-zinc-200 font-medium">{fmt(trajectory.data.last7Avg)}</span> views/day
+              </span>
+              <span>
+                Prior 7d avg: <span className="text-zinc-200 font-medium">{fmt(trajectory.data.prev7Avg)}</span> views/day
+              </span>
+              <GrowthBadge rate={trajectory.data.growthRate} />
+            </div>
+            <BarSeries data={trajectory.data.days.map((d) => ({ day: d.day, value: d.views }))} />
+            <div className="flex justify-between text-[10px] text-zinc-600">
+              <span>{dayLabel(trajectory.data.days[0]?.day ?? "")}</span>
+              <span>{dayLabel(trajectory.data.days[trajectory.data.days.length - 1]?.day ?? "")}</span>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <ProjectionCard
+                label="Next 7 days"
+                current={trajectory.data.projections.next7.current}
+                low={trajectory.data.projections.next7.conservative}
+                high={trajectory.data.projections.next7.optimistic}
+              />
+              <ProjectionCard
+                label="Next 30 days"
+                current={trajectory.data.projections.next30.current}
+                low={trajectory.data.projections.next30.conservative}
+                high={trajectory.data.projections.next30.optimistic}
+              />
+            </div>
+          </div>
+        )}
+      </section>
+
+      {detailId && <DrillDown accountId={detailId} onClose={() => setDetailId(null)} />}
+    </div>
+  );
+}
+
+// ── Coverage section ────────────────────────────────────────────────────────
+function CoverageSection({ data, onOpen }: { data: Coverage; onOpen: (id: string) => void }) {
+  return (
+    <div className="grid grid-cols-3 gap-4 items-start">
+      <div className="col-span-2 border border-[#27272a] rounded-lg overflow-hidden">
+        <div className="max-h-[420px] overflow-y-auto">
+          <table className="w-full text-xs">
+            <thead className="sticky top-0 bg-[#0c0c10] z-10">
+              <tr className="border-b border-[#27272a]">
+                <th className="text-left px-4 py-2.5 text-zinc-500 font-medium">Account</th>
+                {data.days.map((d) => (
+                  <th key={d} className="px-2 py-2.5 text-zinc-500 font-medium text-center w-12">
+                    <div>{weekdayLabel(d)}</div>
+                    <div className="text-[10px] text-zinc-600">{dayLabel(d)}</div>
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {data.accounts.map((a) => (
+                <tr key={a.accountId} className="border-b border-[#1c1c21] last:border-0 hover:bg-zinc-900/40">
+                  <td className="px-4 py-2">
+                    <button
+                      onClick={() => onOpen(a.accountId)}
+                      className="text-zinc-200 hover:text-blue-400 transition-colors"
+                    >
+                      @{a.accountName}
+                    </button>
+                  </td>
+                  {data.days.map((d) => {
+                    const n = a.cells[d] ?? 0;
+                    return (
+                      <td key={d} className="px-2 py-2 text-center tabular-nums">
+                        {n > 0 ? (
+                          <span
+                            className={`inline-block min-w-[24px] rounded px-1 py-0.5 ${
+                              n >= 3
+                                ? "bg-green-500/15 text-green-400"
+                                : "bg-blue-500/10 text-blue-300"
+                            }`}
+                          >
+                            {n}
+                          </span>
+                        ) : (
+                          <span className="text-zinc-800">·</span>
+                        )}
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        {data.accounts.length === 0 && (
+          <div className="px-4 py-10 text-center text-xs text-zinc-600">No accounts found.</div>
+        )}
+      </div>
+
+      <div className="space-y-4">
+        <QuietPanel
+          title="Silent accounts"
+          subtitle="No post in 1–2 days"
+          tone="amber"
+          rows={data.silent.map((s) => ({
+            accountId: s.accountId,
+            accountName: s.accountName,
+            label: `${s.daysQuiet}d quiet`,
+          }))}
+          onOpen={onOpen}
+        />
+        <QuietPanel
+          title="Unused accounts"
+          subtitle="No post in 3+ days, or never posted"
+          tone="red"
+          rows={data.unused.map((s) => ({
+            accountId: s.accountId,
+            accountName: s.accountName,
+            label: s.daysQuiet === null ? "never posted" : `${s.daysQuiet}d quiet`,
+          }))}
+          onOpen={onOpen}
+        />
+      </div>
+    </div>
+  );
+}
+
+// ── KPI / panels ────────────────────────────────────────────────────────────
+function KpiCard({ label, value, tone, title }: { label: string; value: string; tone?: string; title?: string }) {
+  return (
+    <div className="border border-[#27272a] rounded-lg px-4 py-3 bg-[#0c0c10]">
+      <div className={`text-lg font-semibold tabular-nums ${tone ?? "text-white"}`} title={title}>
+        {value}
+      </div>
+      <div className="text-[11px] text-zinc-500 mt-0.5">{label}</div>
+    </div>
+  );
+}
+
+function QuietPanel({
+  title,
+  subtitle,
+  tone,
+  rows,
+  onOpen,
+}: {
+  title: string;
+  subtitle: string;
+  tone: "amber" | "red";
+  rows: { accountId: string; accountName: string; label: string }[];
+  onOpen: (id: string) => void;
+}) {
+  const dot = tone === "amber" ? "bg-amber-500" : "bg-red-500";
+  return (
+    <div className="border border-[#27272a] rounded-lg overflow-hidden">
+      <div className="px-4 py-3 border-b border-[#27272a] bg-[#0c0c10]">
+        <div className="text-xs font-semibold text-zinc-200">
+          {title} <span className="text-zinc-500 font-normal">({rows.length})</span>
+        </div>
+        <div className="text-[10px] text-zinc-600 mt-0.5">{subtitle}</div>
+      </div>
+      <div className="max-h-[220px] overflow-y-auto">
+        {rows.length === 0 ? (
+          <div className="px-4 py-6 text-center text-xs text-zinc-600">None right now.</div>
+        ) : (
+          rows.map((r) => (
+            <button
+              key={r.accountId}
+              onClick={() => onOpen(r.accountId)}
+              className="w-full flex items-center justify-between px-4 py-2 text-xs border-b border-[#1c1c21] last:border-0 hover:bg-zinc-900/40 text-left"
+            >
+              <span className="flex items-center gap-2 text-zinc-200">
+                <span className={`w-1.5 h-1.5 rounded-full ${dot}`} />@{r.accountName}
+              </span>
+              <span className="text-zinc-500">{r.label}</span>
+            </button>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
+function GrowthBadge({ rate }: { rate: number }) {
+  const pct = Math.abs(rate * 100).toFixed(0);
+  if (rate > 0.005) {
+    return (
+      <span className="inline-flex items-center gap-1 text-green-400">
+        <TrendingUp className="w-3.5 h-3.5" /> +{pct}% week over week
+      </span>
+    );
+  }
+  if (rate < -0.005) {
+    return (
+      <span className="inline-flex items-center gap-1 text-red-400">
+        <TrendingDown className="w-3.5 h-3.5" /> −{pct}% week over week
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center gap-1 text-zinc-500">
+      <Minus className="w-3.5 h-3.5" /> flat week over week
+    </span>
+  );
+}
+
+function ProjectionCard({ label, current, low, high }: { label: string; current: number; low: number; high: number }) {
+  return (
+    <div className="border border-[#27272a] rounded-lg px-4 py-3 bg-[#0c0c10]">
+      <div className="text-[11px] text-zinc-500">{label}</div>
+      <div className="text-lg font-semibold text-white tabular-nums mt-0.5" title={full(current)}>
+        ~{fmt(current)} views
+      </div>
+      <div className="text-[11px] text-zinc-600 mt-0.5 tabular-nums">
+        range {fmt(low)} – {fmt(high)}
+      </div>
+    </div>
+  );
+}
+
+// ── Drill-down slide-over ───────────────────────────────────────────────────
+function DrillDown({ accountId, onClose }: { accountId: string; onClose: () => void }) {
+  const detail = useResource<AccountDetail>(`/api/admin/account-performance/accounts/${accountId}`, [accountId]);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  return (
+    <div className="fixed inset-0 z-50">
+      <div className="absolute inset-0 bg-black/60" onClick={onClose} />
+      <div className="absolute inset-y-0 right-0 w-[520px] max-w-full bg-[#0a0a0f] border-l border-[#27272a] flex flex-col">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-[#27272a]">
+          <div className="text-sm font-semibold text-zinc-100">
+            {detail.data ? `@${detail.data.account.accountName}` : "Account detail"}
+          </div>
+          <button onClick={onClose} className="text-zinc-500 hover:text-zinc-200">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-5 py-4 space-y-6">
+          {detail.error ? (
+            <SectionError message={detail.error} onRetry={detail.reload} />
+          ) : detail.loading || !detail.data ? (
+            <div className="flex items-center gap-2 text-zinc-500 text-xs pt-8 justify-center">
+              <Loader2 className="w-4 h-4 animate-spin" /> Loading account detail…
+            </div>
+          ) : (
+            <>
+              <div className="flex items-center gap-3">
+                {detail.data.account.avatarUrl ? (
+                  <img src={detail.data.account.avatarUrl} alt="" className="w-10 h-10 rounded-full" />
+                ) : (
+                  <div className="w-10 h-10 rounded-full bg-zinc-800" />
+                )}
+                <div>
+                  <div className="text-sm text-zinc-100 font-medium">
+                    {detail.data.account.displayName || `@${detail.data.account.accountName}`}
+                  </div>
+                  <div className="text-[11px] text-zinc-500">
+                    {detail.data.account.driveFolderName ?? "No drive folder"}
+                    {detail.data.account.sectionName ? ` · ${detail.data.account.sectionName}` : ""}
+                    {` · ${detail.data.account.connectionState}`}
+                  </div>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-3 gap-2">
+                <KpiCard label="Posts (30d)" value={full(detail.data.totals.posts)} />
+                <KpiCard label="Views (30d)" value={fmt(detail.data.totals.views)} title={full(detail.data.totals.views)} />
+                <KpiCard label="Likes (30d)" value={fmt(detail.data.totals.likes)} title={full(detail.data.totals.likes)} />
+              </div>
+
+              {detail.data.zeroViewStreak > 0 && (
+                <div
+                  className={`flex items-center gap-2 border rounded-lg px-3 py-2 text-xs ${
+                    detail.data.zeroViewStreak >= 5
+                      ? "border-red-500/20 bg-red-500/5 text-red-400"
+                      : "border-amber-500/20 bg-amber-500/5 text-amber-400"
+                  }`}
+                >
+                  <AlertCircle className="w-3.5 h-3.5" />
+                  Latest {detail.data.zeroViewStreak} video{detail.data.zeroViewStreak !== 1 ? "s" : ""} under 10 views
+                </div>
+              )}
+
+              <div>
+                <div className="text-xs font-semibold text-zinc-300 mb-2">Daily views — last 30 days</div>
+                <BarSeries
+                  data={detail.data.days.map((d) => ({ day: d.day, value: d.views }))}
+                  height={80}
+                />
+                <div className="flex justify-between text-[10px] text-zinc-600 mt-1">
+                  <span>{dayLabel(detail.data.days[0]?.day ?? "")}</span>
+                  <span>{dayLabel(detail.data.days[detail.data.days.length - 1]?.day ?? "")}</span>
+                </div>
+              </div>
+
+              <div>
+                <div className="text-xs font-semibold text-zinc-300 mb-2">Posts per day</div>
+                <BarSeries
+                  data={detail.data.days.map((d) => ({ day: d.day, value: d.posts }))}
+                  height={48}
+                  color="#34d399"
+                />
+              </div>
+
+              <div>
+                <div className="text-xs font-semibold text-zinc-300 mb-2">Recent videos</div>
+                {detail.data.recentVideos.length === 0 ? (
+                  <div className="border border-[#27272a] rounded-lg px-4 py-6 text-center text-xs text-zinc-600">
+                    No tracked videos for this account yet.
+                  </div>
+                ) : (
+                  <div className="border border-[#27272a] rounded-lg overflow-hidden">
+                    <table className="w-full text-xs">
+                      <thead>
+                        <tr className="border-b border-[#27272a] bg-[#0c0c10]">
+                          <th className="text-left px-3 py-2 text-zinc-500 font-medium">Video</th>
+                          <th className="text-right px-3 py-2 text-zinc-500 font-medium">Views</th>
+                          <th className="text-right px-3 py-2 text-zinc-500 font-medium">Likes</th>
+                          <th className="text-right px-3 py-2 text-zinc-500 font-medium">Posted (IST)</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {detail.data.recentVideos.map((v) => (
+                          <tr key={v.id} className="border-b border-[#1c1c21] last:border-0">
+                            <td className="px-3 py-2">
+                              <a
+                                href={v.url}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="text-blue-400 hover:underline"
+                              >
+                                Open
+                              </a>
+                              {v.status !== "captured" && (
+                                <span className="text-zinc-600 ml-2">({v.status})</span>
+                              )}
+                            </td>
+                            <td className="px-3 py-2 text-right text-zinc-200 tabular-nums">
+                              <span title={full(v.views)}>{fmt(v.views)}</span>
+                            </td>
+                            <td className="px-3 py-2 text-right text-zinc-400 tabular-nums">
+                              <span title={full(v.likes)}>{fmt(v.likes)}</span>
+                            </td>
+                            <td className="px-3 py-2 text-right text-zinc-500 whitespace-nowrap">
+                              {istDateTime(v.publishedAt)}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
