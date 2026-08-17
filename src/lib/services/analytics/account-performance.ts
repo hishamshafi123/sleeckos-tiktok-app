@@ -205,6 +205,7 @@ export interface AccountPerformanceRow {
   accountId: string;
   accountName: string;
   driveFolderName: string | null;
+  driveFolderId: string | null; // linked Google Drive output folder (for external link)
   color: string;
   connectionState: string;
   posts: number;
@@ -256,6 +257,7 @@ export async function getAccountPerformance(
       id: true,
       tiktokUsername: true,
       driveFolderName: true,
+      driveFolderId: true,
       color: true,
       connectionState: true,
     },
@@ -317,6 +319,7 @@ export async function getAccountPerformance(
       accountId: a.id,
       accountName: a.tiktokUsername,
       driveFolderName: a.driveFolderName,
+      driveFolderId: a.driveFolderId,
       color: a.color,
       connectionState: a.connectionState,
       posts,

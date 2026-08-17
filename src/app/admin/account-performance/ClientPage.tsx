@@ -9,6 +9,7 @@ import {
   TrendingUp,
   TrendingDown,
   Minus,
+  ChevronRight,
 } from "lucide-react";
 
 // ── API contract types ──────────────────────────────────────────────────────
@@ -28,6 +29,7 @@ type PerfRow = {
   accountId: string;
   accountName: string;
   driveFolderName: string | null;
+  driveFolderId: string | null;
   color: string;
   connectionState: string;
   posts: number;
@@ -458,17 +460,43 @@ function AccountsTable({ rows, onOpen }: { rows: PerfRow[]; onOpen: (id: string)
             {pageRows.map((r) => (
               <tr
                 key={r.accountId}
-                className="border-b border-[#1c1c21] last:border-0 hover:bg-zinc-900/40"
+                onClick={() => onOpen(r.accountId)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    onOpen(r.accountId);
+                  }
+                }}
+                tabIndex={0}
+                className="border-b border-[#1c1c21] last:border-0 hover:bg-zinc-900/40 cursor-pointer focus:outline-none focus:bg-zinc-900/60"
               >
                 <td className="px-4 py-2.5">
-                  <button onClick={() => onOpen(r.accountId)} className="text-left group">
-                    <div className="text-zinc-100 group-hover:text-blue-400 transition-colors font-medium">
+                  <div>
+                    <a
+                      href={`https://www.tiktok.com/@${r.accountName}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      onClick={(e) => e.stopPropagation()}
+                      className="text-zinc-100 font-medium hover:text-blue-400 hover:underline"
+                    >
                       @{r.accountName}
+                    </a>
+                    <div className="text-[11px] truncate max-w-[220px]">
+                      {r.driveFolderId ? (
+                        <a
+                          href={`https://drive.google.com/drive/folders/${r.driveFolderId}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          onClick={(e) => e.stopPropagation()}
+                          className="text-zinc-600 hover:text-blue-400 hover:underline"
+                        >
+                          {r.driveFolderName ?? "Drive folder"}
+                        </a>
+                      ) : (
+                        <span className="text-zinc-600">{r.driveFolderName ?? "—"}</span>
+                      )}
                     </div>
-                    <div className="text-zinc-600 text-[11px] truncate max-w-[220px]">
-                      {r.driveFolderName ?? "—"}
-                    </div>
-                  </button>
+                  </div>
                 </td>
                 <td className="px-3 py-2.5 text-right text-zinc-300 tabular-nums">{r.posts}</td>
                 <td className="px-3 py-2.5 text-right text-zinc-100 tabular-nums font-medium">
@@ -560,12 +588,24 @@ function CoverageSection({ data, onOpen }: { data: Coverage; onOpen: (id: string
               {data.accounts.map((a) => (
                 <tr key={a.accountId} className="border-b border-[#1c1c21] last:border-0 hover:bg-zinc-900/40">
                   <td className="px-4 py-2">
-                    <button
-                      onClick={() => onOpen(a.accountId)}
-                      className="text-zinc-200 hover:text-blue-400 transition-colors"
-                    >
-                      @{a.accountName}
-                    </button>
+                    <span className="inline-flex items-center gap-1">
+                      <a
+                        href={`https://www.tiktok.com/@${a.accountName}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-zinc-200 hover:text-blue-400 hover:underline"
+                      >
+                        @{a.accountName}
+                      </a>
+                      <button
+                        onClick={() => onOpen(a.accountId)}
+                        aria-label={`Open details for @${a.accountName}`}
+                        title="Open account details"
+                        className="text-zinc-600 hover:text-zinc-300 p-0.5"
+                      >
+                        <ChevronRight className="w-3 h-3" />
+                      </button>
+                    </span>
                   </td>
                   {data.days.map((d) => {
                     const n = a.cells[d] ?? 0;
@@ -664,16 +704,33 @@ function QuietPanel({
           <div className="px-4 py-6 text-center text-xs text-zinc-600">None right now.</div>
         ) : (
           rows.map((r) => (
-            <button
+            <div
               key={r.accountId}
               onClick={() => onOpen(r.accountId)}
-              className="w-full flex items-center justify-between px-4 py-2 text-xs border-b border-[#1c1c21] last:border-0 hover:bg-zinc-900/40 text-left"
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  onOpen(r.accountId);
+                }
+              }}
+              tabIndex={0}
+              role="button"
+              className="w-full flex items-center justify-between px-4 py-2 text-xs border-b border-[#1c1c21] last:border-0 hover:bg-zinc-900/40 cursor-pointer focus:outline-none focus:bg-zinc-900/60"
             >
               <span className="flex items-center gap-2 text-zinc-200">
-                <span className={`w-1.5 h-1.5 rounded-full ${dot}`} />@{r.accountName}
+                <span className={`w-1.5 h-1.5 rounded-full ${dot}`} />
+                <a
+                  href={`https://www.tiktok.com/@${r.accountName}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={(e) => e.stopPropagation()}
+                  className="hover:text-blue-400 hover:underline"
+                >
+                  @{r.accountName}
+                </a>
               </span>
               <span className="text-zinc-500">{r.label}</span>
-            </button>
+            </div>
           ))
         )}
       </div>
