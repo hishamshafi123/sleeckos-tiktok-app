@@ -93,6 +93,114 @@ async function computeLastPostAt(accountIds: string[]): Promise<Map<string, Date
   return map;
 }
 
+// ── Active-account view-rate model ──────────────────────────────────────────
+// "In-use" account: ≥1 published PostJob in the last 7 IST days. For each
+// in-use account we estimate its current views/day from its recent video
+// performance: take the last 3 captured TrackedVideos, age-normalize each
+// (perDayViews = views ÷ max(1, whole days since publishedAt) — a 3-day-old
+// video accumulated its views over 3 days, so raw views would inflate the
+// daily rate), average those per-day rates, and multiply by the account's
+// posting rate (published jobs in the last 7 days ÷ 7). The org baseline is
+// the sum across in-use accounts. This complements AccountDailyStat deltas,
+// which are thin before snapshots accumulate.
+
+const VIEW_RATE_WINDOW_DAYS = 7;
+const VIEW_RATE_SAMPLE_VIDEOS = 3;
+
+export interface ActiveViewRate {
+  accountId: string;
+  postsPerDay: number;
+  avgPerVideoPerDay: number; // mean age-normalized views/day across sampled videos
+  estViewsPerDay: number;
+  videosSampled: number;
+}
+
+async function computeActiveAccountViewRates(
+  tz: string
+): Promise<{ rates: Map<string, ActiveViewRate>; orgBaselinePerDay: number }> {
+  const now = new Date();
+  const today = zonedDayString(now, tz);
+  const sinceDay = new Date(Date.parse(`${today}T00:00:00Z`) - (VIEW_RATE_WINDOW_DAYS - 1) * DAY_MS)
+    .toISOString()
+    .slice(0, 10);
+  const { start } = zonedDayBounds(sinceDay, tz);
+
+  // Posting rate per account over the window.
+  const jobRows = await prisma.postJob.groupBy({
+    by: ["accountId"],
+    where: { state: { in: TERMINAL_PUBLISHED_STATES }, publishedAt: { gte: start } },
+    _count: { _all: true },
+  });
+  const activeIds = jobRows.map((r) => r.accountId);
+  if (activeIds.length === 0) return { rates: new Map(), orgBaselinePerDay: 0 };
+
+  // Recent captured videos for those accounts; last N per account in memory.
+  const videos = await prisma.trackedVideo.findMany({
+    where: { accountId: { in: activeIds }, status: "captured" },
+    orderBy: { publishedAt: "desc" },
+    select: { accountId: true, views: true, publishedAt: true },
+  });
+  const sampled = new Map<string, number[]>();
+  for (const v of videos) {
+    const arr = sampled.get(v.accountId);
+    if (arr && arr.length >= VIEW_RATE_SAMPLE_VIDEOS) continue;
+    // Age-normalize: views ÷ whole days live (<24h old counts as 1 day).
+    const ageDays = Math.max(1, Math.floor((now.getTime() - v.publishedAt.getTime()) / DAY_MS));
+    (arr ?? sampled.set(v.accountId, []).get(v.accountId)!).push(Number(v.views) / ageDays);
+  }
+
+  const rates = new Map<string, ActiveViewRate>();
+  let orgBaselinePerDay = 0;
+  for (const r of jobRows) {
+    const postsPerDay = r._count._all / VIEW_RATE_WINDOW_DAYS;
+    const perDayViews = sampled.get(r.accountId) ?? [];
+    const avgPerVideoPerDay =
+      perDayViews.length > 0
+        ? Math.round(perDayViews.reduce((a, b) => a + b, 0) / perDayViews.length)
+        : 0;
+    const estViewsPerDay = Math.round(avgPerVideoPerDay * postsPerDay);
+    orgBaselinePerDay += estViewsPerDay;
+    rates.set(r.accountId, {
+      accountId: r.accountId,
+      postsPerDay: Math.round(postsPerDay * 100) / 100,
+      avgPerVideoPerDay,
+      estViewsPerDay,
+      videosSampled: perDayViews.length,
+    });
+  }
+  return { rates, orgBaselinePerDay };
+}
+
+export interface ActiveAccountViewRateRow extends ActiveViewRate {
+  accountName: string;
+  driveFolderName: string | null;
+}
+
+export async function getActiveAccountViewRates(
+  userId: string
+): Promise<{
+  activeAccounts: number;
+  orgBaselinePerDay: number;
+  rows: ActiveAccountViewRateRow[];
+}> {
+  await assertAccess(userId);
+  const tz = await getOrgTimezone();
+  const { rates, orgBaselinePerDay } = await computeActiveAccountViewRates(tz);
+
+  const accounts = await prisma.managedAccount.findMany({
+    where: { id: { in: [...rates.keys()] } },
+    select: { id: true, tiktokUsername: true, driveFolderName: true },
+  });
+  const rows: ActiveAccountViewRateRow[] = accounts.map((a) => ({
+    ...rates.get(a.id)!,
+    accountName: a.tiktokUsername,
+    driveFolderName: a.driveFolderName,
+  }));
+  rows.sort((a, b) => b.estViewsPerDay - a.estViewsPerDay);
+
+  return { activeAccounts: rows.length, orgBaselinePerDay, rows };
+}
+
 export interface AccountPerformanceRow {
   accountId: string;
   accountName: string;
@@ -107,6 +215,7 @@ export interface AccountPerformanceRow {
   flagged: boolean;
   lastPostAt: string | null;
   sparkline: number[]; // last 7 IST days viewsGained, oldest first
+  estViewsPerDay: number | null; // null when the account is not "in use" (no post in 7d)
 }
 
 export async function getAccountPerformance(
@@ -171,7 +280,7 @@ export async function getAccountPerformance(
     new Date(Date.parse(`${toDay}T00:00:00Z`) - 6 * DAY_MS).toISOString().slice(0, 10),
     tz
   ).start;
-  const [stats, sparkRows, streaks, lastPosts] = await Promise.all([
+  const [stats, sparkRows, streaks, lastPosts, viewRates] = await Promise.all([
     prisma.accountDailyStat.groupBy({
       by: ["accountId"],
       where: { accountId: { in: accountIds }, date: { gte: start, lt: end } },
@@ -183,6 +292,7 @@ export async function getAccountPerformance(
     }),
     computeZeroViewStreaks(accountIds),
     computeLastPostAt(accountIds),
+    computeActiveAccountViewRates(tz),
   ]);
 
   const statsByAccount = new Map(stats.map((s) => [s.accountId, s._sum]));
@@ -217,6 +327,7 @@ export async function getAccountPerformance(
       flagged: streak >= FLAG_STREAK,
       lastPostAt: lastPosts.get(a.id)?.toISOString() ?? null,
       sparkline: sparkDays.map((d) => spark?.get(d) ?? 0),
+      estViewsPerDay: viewRates.rates.get(a.id)?.estViewsPerDay ?? null,
     };
   });
 
@@ -384,6 +495,13 @@ export interface Trajectory {
   last7Avg: number;
   prev7Avg: number;
   growthRate: number; // 7d-over-7d rate, e.g. 0.25 = +25%
+  // Rate model (see computeActiveAccountViewRates): the projection "current"
+  // rate is max(observed 7-day avg daily viewsGained, active-account baseline)
+  // when the rollup has ≥7 days of data, otherwise the baseline alone.
+  baselinePerDay: number; // sum of est views/day across in-use accounts
+  activeAccounts: number; // in-use accounts the baseline is built from
+  currentRatePerDay: number; // rate actually used for projections
+  source: "observed" | "estimated"; // which side drove currentRatePerDay
   projections: {
     next7: { conservative: number; current: number; optimistic: number };
     next30: { conservative: number; current: number; optimistic: number };
@@ -399,11 +517,14 @@ export async function getTrajectory(userId: string): Promise<Trajectory> {
   );
   const { start } = zonedDayBounds(dayList[0], tz);
 
-  const rows = await prisma.accountDailyStat.groupBy({
-    by: ["date"],
-    where: { date: { gte: start } },
-    _sum: { viewsGained: true },
-  });
+  const [rows, viewRates] = await Promise.all([
+    prisma.accountDailyStat.groupBy({
+      by: ["date"],
+      where: { date: { gte: start } },
+      _sum: { viewsGained: true },
+    }),
+    computeActiveAccountViewRates(tz),
+  ]);
   const byDay = new Map(rows.map((r) => [zonedDayString(r.date, tz), r._sum.viewsGained ?? 0]));
   const series = dayList.map((day) => ({ day, views: byDay.get(day) ?? 0 }));
 
@@ -413,18 +534,34 @@ export async function getTrajectory(userId: string): Promise<Trajectory> {
   const prev7Avg = avg(values.slice(-14, -7));
   const growthRate = prev7Avg > 0 ? last7Avg / prev7Avg - 1 : 0;
 
-  // Projection model (kept deliberately simple): next-N totals = last-7-day
-  // daily average × N × (1 + effectiveRate), where the effectiveRate is the
-  // observed 7d-over-7d growth scaled per band — conservative ×0.7, current
-  // ×1.0, optimistic ×1.3 — and floored at −100% so totals never go negative.
-  const project = (days: number, band: number) =>
-    Math.max(0, Math.round(last7Avg * days * (1 + Math.max(-1, growthRate * band))));
+  // Projection model: daily rate × horizon, with fixed uncertainty bands
+  // (conservative ×0.7, optimistic ×1.3). The daily rate is the active-account
+  // baseline (recent per-video views × posting rate), blended with the
+  // observed rollup once the rollup has ≥7 days of non-zero data — whichever
+  // is larger wins, and `source` records which side drove it.
+  const baseline = viewRates.orgBaselinePerDay;
+  const daysWithData = values.filter((v) => v > 0).length;
+  let currentRatePerDay: number;
+  let source: Trajectory["source"];
+  if (daysWithData >= 7 && last7Avg >= baseline) {
+    currentRatePerDay = last7Avg;
+    source = "observed";
+  } else {
+    currentRatePerDay = baseline;
+    source = "estimated";
+  }
+
+  const project = (days: number, band: number) => Math.max(0, Math.round(currentRatePerDay * days * band));
 
   return {
     days: series,
     last7Avg: Math.round(last7Avg),
     prev7Avg: Math.round(prev7Avg),
     growthRate,
+    baselinePerDay: baseline,
+    activeAccounts: viewRates.rates.size,
+    currentRatePerDay: Math.round(currentRatePerDay),
+    source,
     projections: {
       next7: {
         conservative: project(7, 0.7),

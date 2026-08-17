@@ -38,6 +38,7 @@ type PerfRow = {
   flagged: boolean;
   lastPostAt: string | null;
   sparkline: number[];
+  estViewsPerDay: number | null;
 };
 
 type Coverage = {
@@ -57,6 +58,10 @@ type Trajectory = {
   last7Avg: number;
   prev7Avg: number;
   growthRate: number;
+  baselinePerDay: number;
+  activeAccounts: number;
+  currentRatePerDay: number;
+  source: "observed" | "estimated";
   projections: {
     next7: { conservative: number; current: number; optimistic: number };
     next30: { conservative: number; current: number; optimistic: number };
@@ -286,6 +291,30 @@ export default function ClientPage() {
         )}
       </section>
 
+      {/* ── Trajectory ─────────────────────────────────────────────────── */}
+      <section className="space-y-3">
+        <h2 className="text-sm font-semibold text-zinc-200">Views trajectory — last 28 days</h2>
+        {trajectory.error ? (
+          <SectionError message={trajectory.error} onRetry={trajectory.reload} />
+        ) : trajectory.loading || !trajectory.data ? (
+          <SkeletonRows rows={3} height="h-10" />
+        ) : (
+          <TrajectoryPanel data={trajectory.data} />
+        )}
+      </section>
+
+      {/* ── Coverage grid + quiet lists ────────────────────────────────── */}
+      <section className="space-y-3">
+        <h2 className="text-sm font-semibold text-zinc-200">Posting coverage — last 7 days</h2>
+        {coverage.error ? (
+          <SectionError message={coverage.error} onRetry={coverage.reload} />
+        ) : coverage.loading || !coverage.data ? (
+          <SkeletonRows rows={8} />
+        ) : (
+          <CoverageSection data={coverage.data} onOpen={openDetail} />
+        )}
+      </section>
+
       {/* ── Ranked accounts table ──────────────────────────────────────── */}
       <section className="space-y-3">
         <div className="flex items-center justify-between gap-3 flex-wrap">
@@ -339,132 +368,172 @@ export default function ClientPage() {
               : "No performance data yet. Run the AccountDailyStat backfill, then the daily sweep keeps it current."}
           </div>
         ) : (
-          <div className="border border-[#27272a] rounded-lg overflow-hidden">
-            <table className="w-full text-xs">
-              <thead>
-                <tr className="border-b border-[#27272a] bg-[#0c0c10]">
-                  <th className="text-left px-4 py-2.5 text-zinc-500 font-medium">Account</th>
-                  <th className="text-right px-3 py-2.5 text-zinc-500 font-medium">Posts</th>
-                  <th className="text-right px-3 py-2.5 text-zinc-500 font-medium">Views</th>
-                  <th className="text-right px-3 py-2.5 text-zinc-500 font-medium">Avg/post</th>
-                  <th className="text-right px-3 py-2.5 text-zinc-500 font-medium">Likes</th>
-                  <th className="text-left px-3 py-2.5 text-zinc-500 font-medium">Last post</th>
-                  <th className="text-left px-3 py-2.5 text-zinc-500 font-medium">7d trend</th>
-                  <th className="text-left px-3 py-2.5 text-zinc-500 font-medium">Flag</th>
-                </tr>
-              </thead>
-              <tbody>
-                {accounts.data.rows.map((r) => (
-                  <tr
-                    key={r.accountId}
-                    className="border-b border-[#1c1c21] last:border-0 hover:bg-zinc-900/40"
-                  >
-                    <td className="px-4 py-2.5">
-                      <button
-                        onClick={() => openDetail(r.accountId)}
-                        className="text-left group"
-                      >
-                        <div className="text-zinc-100 group-hover:text-blue-400 transition-colors font-medium">
-                          @{r.accountName}
-                        </div>
-                        <div className="text-zinc-600 text-[11px] truncate max-w-[220px]">
-                          {r.driveFolderName ?? "—"}
-                        </div>
-                      </button>
-                    </td>
-                    <td className="px-3 py-2.5 text-right text-zinc-300 tabular-nums">{r.posts}</td>
-                    <td className="px-3 py-2.5 text-right text-zinc-100 tabular-nums font-medium">
-                      <span title={full(r.viewsGained)}>{fmt(r.viewsGained)}</span>
-                    </td>
-                    <td className="px-3 py-2.5 text-right text-zinc-400 tabular-nums">
-                      <span title={full(r.avgViewsPerPost)}>{fmt(r.avgViewsPerPost)}</span>
-                    </td>
-                    <td className="px-3 py-2.5 text-right text-zinc-400 tabular-nums">
-                      <span title={full(r.likesGained)}>{fmt(r.likesGained)}</span>
-                    </td>
-                    <td className="px-3 py-2.5 text-zinc-500 whitespace-nowrap">
-                      {istDateTime(r.lastPostAt)}
-                    </td>
-                    <td className="px-3 py-2.5">
-                      <Sparkline values={r.sparkline} />
-                    </td>
-                    <td className="px-3 py-2.5 whitespace-nowrap">
-                      {r.flagged ? (
-                        <span className="inline-flex items-center gap-1.5 text-red-400">
-                          <span className="w-1.5 h-1.5 rounded-full bg-red-500" />
-                          0-view streak ×{r.zeroViewStreak}
-                        </span>
-                      ) : r.zeroViewStreak > 0 ? (
-                        <span className="inline-flex items-center gap-1.5 text-amber-400/80">
-                          <span className="w-1.5 h-1.5 rounded-full bg-amber-500/70" />
-                          streak ×{r.zeroViewStreak}
-                        </span>
-                      ) : (
-                        <span className="text-zinc-700">—</span>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </section>
-
-      {/* ── Coverage grid + quiet lists ────────────────────────────────── */}
-      <section className="space-y-3">
-        <h2 className="text-sm font-semibold text-zinc-200">Posting coverage — last 7 days</h2>
-        {coverage.error ? (
-          <SectionError message={coverage.error} onRetry={coverage.reload} />
-        ) : coverage.loading || !coverage.data ? (
-          <SkeletonRows rows={8} />
-        ) : (
-          <CoverageSection data={coverage.data} onOpen={openDetail} />
-        )}
-      </section>
-
-      {/* ── Trajectory ─────────────────────────────────────────────────── */}
-      <section className="space-y-3">
-        <h2 className="text-sm font-semibold text-zinc-200">Views trajectory — last 28 days</h2>
-        {trajectory.error ? (
-          <SectionError message={trajectory.error} onRetry={trajectory.reload} />
-        ) : trajectory.loading || !trajectory.data ? (
-          <SkeletonRows rows={3} height="h-10" />
-        ) : (
-          <div className="border border-[#27272a] rounded-lg p-5 space-y-5">
-            <div className="flex items-center gap-6 text-xs text-zinc-500">
-              <span>
-                Last 7d avg: <span className="text-zinc-200 font-medium">{fmt(trajectory.data.last7Avg)}</span> views/day
-              </span>
-              <span>
-                Prior 7d avg: <span className="text-zinc-200 font-medium">{fmt(trajectory.data.prev7Avg)}</span> views/day
-              </span>
-              <GrowthBadge rate={trajectory.data.growthRate} />
-            </div>
-            <BarSeries data={trajectory.data.days.map((d) => ({ day: d.day, value: d.views }))} />
-            <div className="flex justify-between text-[10px] text-zinc-600">
-              <span>{dayLabel(trajectory.data.days[0]?.day ?? "")}</span>
-              <span>{dayLabel(trajectory.data.days[trajectory.data.days.length - 1]?.day ?? "")}</span>
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              <ProjectionCard
-                label="Next 7 days"
-                current={trajectory.data.projections.next7.current}
-                low={trajectory.data.projections.next7.conservative}
-                high={trajectory.data.projections.next7.optimistic}
-              />
-              <ProjectionCard
-                label="Next 30 days"
-                current={trajectory.data.projections.next30.current}
-                low={trajectory.data.projections.next30.conservative}
-                high={trajectory.data.projections.next30.optimistic}
-              />
-            </div>
-          </div>
+          <AccountsTable
+            // Remounting on any filter change resets pagination to page 1.
+            key={`${period}|${flaggedOnly}|${debouncedQuery}`}
+            rows={accounts.data.rows}
+            onOpen={openDetail}
+          />
         )}
       </section>
 
       {detailId && <DrillDown accountId={detailId} onClose={() => setDetailId(null)} />}
+    </div>
+  );
+}
+
+// ── Trajectory panel ────────────────────────────────────────────────────────
+function TrajectoryPanel({ data }: { data: Trajectory }) {
+  return (
+    <div className="border border-[#27272a] rounded-lg p-5 space-y-5">
+      <div className="flex items-center gap-6 text-xs text-zinc-500 flex-wrap">
+        <span>
+          Last 7d avg: <span className="text-zinc-200 font-medium">{fmt(data.last7Avg)}</span> views/day
+        </span>
+        <span>
+          Prior 7d avg: <span className="text-zinc-200 font-medium">{fmt(data.prev7Avg)}</span> views/day
+        </span>
+        <GrowthBadge rate={data.growthRate} />
+      </div>
+      <BarSeries data={data.days.map((d) => ({ day: d.day, value: d.views }))} />
+      <div className="flex justify-between text-[10px] text-zinc-600">
+        <span>{dayLabel(data.days[0]?.day ?? "")}</span>
+        <span>{dayLabel(data.days[data.days.length - 1]?.day ?? "")}</span>
+      </div>
+      <div className="border-t border-[#1c1c21] pt-4 space-y-3">
+        <div className="text-xs text-zinc-500">
+          Projection rate:{" "}
+          <span className="text-zinc-200 font-medium">~{fmt(data.currentRatePerDay)} views/day</span>
+          {" — "}
+          {data.source === "observed"
+            ? `driven by observed daily view gains (7-day average), cross-checked against the age-normalized estimate from the last 3 videos of ${data.activeAccounts} active accounts (${fmt(data.baselinePerDay)}/day).`
+            : `age-normalized views/day from the last 3 videos of ${data.activeAccounts} active accounts (posted in the last 7 days).`}
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <ProjectionCard
+            label="Next 7 days"
+            current={data.projections.next7.current}
+            low={data.projections.next7.conservative}
+            high={data.projections.next7.optimistic}
+          />
+          <ProjectionCard
+            label="Next 30 days"
+            current={data.projections.next30.current}
+            low={data.projections.next30.conservative}
+            high={data.projections.next30.optimistic}
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Ranked accounts table (paginated, sticky header, internal scroll) ───────
+const PAGE_SIZE = 50;
+
+function AccountsTable({ rows, onOpen }: { rows: PerfRow[]; onOpen: (id: string) => void }) {
+  const [page, setPage] = useState(1);
+  const pageCount = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
+  const safePage = Math.min(page, pageCount);
+  const pageRows = rows.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
+
+  return (
+    <div className="border border-[#27272a] rounded-lg overflow-hidden">
+      <div className="max-h-[65vh] overflow-y-auto">
+        <table className="w-full text-xs">
+          <thead className="sticky top-0 bg-[#0c0c10] z-10">
+            <tr className="border-b border-[#27272a]">
+              <th className="text-left px-4 py-2.5 text-zinc-500 font-medium">Account</th>
+              <th className="text-right px-3 py-2.5 text-zinc-500 font-medium">Posts</th>
+              <th className="text-right px-3 py-2.5 text-zinc-500 font-medium">Views</th>
+              <th className="text-right px-3 py-2.5 text-zinc-500 font-medium">Avg/post</th>
+              <th className="text-right px-3 py-2.5 text-zinc-500 font-medium">Est. views/day</th>
+              <th className="text-right px-3 py-2.5 text-zinc-500 font-medium">Likes</th>
+              <th className="text-left px-3 py-2.5 text-zinc-500 font-medium">Last post</th>
+              <th className="text-left px-3 py-2.5 text-zinc-500 font-medium">7d trend</th>
+              <th className="text-left px-3 py-2.5 text-zinc-500 font-medium">Flag</th>
+            </tr>
+          </thead>
+          <tbody>
+            {pageRows.map((r) => (
+              <tr
+                key={r.accountId}
+                className="border-b border-[#1c1c21] last:border-0 hover:bg-zinc-900/40"
+              >
+                <td className="px-4 py-2.5">
+                  <button onClick={() => onOpen(r.accountId)} className="text-left group">
+                    <div className="text-zinc-100 group-hover:text-blue-400 transition-colors font-medium">
+                      @{r.accountName}
+                    </div>
+                    <div className="text-zinc-600 text-[11px] truncate max-w-[220px]">
+                      {r.driveFolderName ?? "—"}
+                    </div>
+                  </button>
+                </td>
+                <td className="px-3 py-2.5 text-right text-zinc-300 tabular-nums">{r.posts}</td>
+                <td className="px-3 py-2.5 text-right text-zinc-100 tabular-nums font-medium">
+                  <span title={full(r.viewsGained)}>{fmt(r.viewsGained)}</span>
+                </td>
+                <td className="px-3 py-2.5 text-right text-zinc-400 tabular-nums">
+                  <span title={full(r.avgViewsPerPost)}>{fmt(r.avgViewsPerPost)}</span>
+                </td>
+                <td className="px-3 py-2.5 text-right text-zinc-400 tabular-nums">
+                  {r.estViewsPerDay === null ? (
+                    <span className="text-zinc-700">—</span>
+                  ) : (
+                    <span title={full(r.estViewsPerDay)}>{fmt(r.estViewsPerDay)}</span>
+                  )}
+                </td>
+                <td className="px-3 py-2.5 text-right text-zinc-400 tabular-nums">
+                  <span title={full(r.likesGained)}>{fmt(r.likesGained)}</span>
+                </td>
+                <td className="px-3 py-2.5 text-zinc-500 whitespace-nowrap">
+                  {istDateTime(r.lastPostAt)}
+                </td>
+                <td className="px-3 py-2.5">
+                  <Sparkline values={r.sparkline} />
+                </td>
+                <td className="px-3 py-2.5 whitespace-nowrap">
+                  {r.flagged ? (
+                    <span className="inline-flex items-center gap-1.5 text-red-400">
+                      <span className="w-1.5 h-1.5 rounded-full bg-red-500" />
+                      0-view streak ×{r.zeroViewStreak}
+                    </span>
+                  ) : r.zeroViewStreak > 0 ? (
+                    <span className="inline-flex items-center gap-1.5 text-amber-400/80">
+                      <span className="w-1.5 h-1.5 rounded-full bg-amber-500/70" />
+                      streak ×{r.zeroViewStreak}
+                    </span>
+                  ) : (
+                    <span className="text-zinc-700">—</span>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div className="flex items-center justify-between px-4 py-2 border-t border-[#27272a] bg-[#0c0c10]">
+        <span className="text-[11px] text-zinc-500 tabular-nums">
+          {full(rows.length)} accounts · page {safePage} of {pageCount}
+        </span>
+        <div className="flex items-center gap-1.5">
+          <button
+            onClick={() => setPage((p) => Math.max(1, p - 1))}
+            disabled={safePage <= 1}
+            className="text-xs text-zinc-400 hover:text-zinc-200 border border-[#27272a] rounded-md px-2.5 py-1 disabled:opacity-40 disabled:hover:text-zinc-400"
+          >
+            Prev
+          </button>
+          <button
+            onClick={() => setPage((p) => Math.min(pageCount, p + 1))}
+            disabled={safePage >= pageCount}
+            className="text-xs text-zinc-400 hover:text-zinc-200 border border-[#27272a] rounded-md px-2.5 py-1 disabled:opacity-40 disabled:hover:text-zinc-400"
+          >
+            Next
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
