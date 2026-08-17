@@ -31,11 +31,16 @@ export interface SmartExportUnfulfillable {
  * preserving both hard rules (≤1 video per group per folder, count ≤ requested).
  * Folders that can't be fully satisfied keep their partial videos and are
  * reported in `unfulfillable` with their partial assignedCount.
+ *
+ * `priorGroupsByFolder` seeds the per-folder used-group sets with groups the
+ * folder already received in EARLIER export runs — the one-variation-per-
+ * account rule holds across runs, not just within one.
  */
 export function assignVideosFairRoundRobin(
   groupIds: string[],
   videoIdsByGroup: Record<string, string[]>,
-  folders: SmartExportFolderRequest[]
+  folders: SmartExportFolderRequest[],
+  priorGroupsByFolder: Record<string, string[]> = {}
 ): {
   assignments: SmartExportAssignmentResult[];
   unfulfillable: SmartExportUnfulfillable[];
@@ -43,7 +48,7 @@ export function assignVideosFairRoundRobin(
   const state = folders.map((folder) => ({
     folder,
     videoIds: [] as string[],
-    usedGroupIds: new Set<string>(),
+    usedGroupIds: new Set<string>(priorGroupsByFolder[folder.id] ?? []),
   }));
 
   for (const groupId of groupIds) {

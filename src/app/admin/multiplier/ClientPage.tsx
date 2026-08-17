@@ -1159,6 +1159,14 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
         const displayNames = selectedPickerFolders.map((f) => f.name).join(", ");
         const firstFolderId = selectedPickerFolders[0].id;
 
+        // One variation per account: warn when there aren't enough accounts
+        // for every variation — the export skips the overflow.
+        if (selectedPickerFolders.length < groupObj.outputs.length) {
+          toast.warning(
+            `Only 1 variation per account is exported — ${groupObj.outputs.length - selectedPickerFolders.length} of ${groupObj.outputs.length} variations will be skipped unless you select more accounts.`
+          );
+        }
+
         const res = await fetch("/api/managed/multiplier", {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },

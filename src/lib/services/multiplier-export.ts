@@ -235,10 +235,22 @@ export async function previewSmartExport(
     videoIdsByGroup[gId] = outputsByGroup[gId].map((o) => o.id);
   });
 
+  // Cross-run one-variation-per-account: folders that already received an
+  // output of a group in ANY previous export are ineligible for that group.
+  const priorAssignments = await prisma.smartExportAssignment.findMany({
+    where: { sourceGroupId: { in: groupIds }, status: { not: "failed" } },
+    select: { driveFolderId: true, sourceGroupId: true },
+  });
+  const priorGroupsByFolder: Record<string, string[]> = {};
+  for (const a of priorAssignments) {
+    (priorGroupsByFolder[a.driveFolderId] ??= []).push(a.sourceGroupId);
+  }
+
   const { assignments, unfulfillable } = assignVideosFairRoundRobin(
     groupIds,
     videoIdsByGroup,
-    activeFolderCounts
+    activeFolderCounts,
+    priorGroupsByFolder
   );
 
   return {

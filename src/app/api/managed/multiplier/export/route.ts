@@ -73,13 +73,56 @@ export async function POST(req: Request) {
         return NextResponse.json({ error: "No completed videos in this group have a Drive folder assigned. Set a folder first." }, { status: 400 });
       }
 
-      exportGroupOutputsToDriveInBackground(groupId, exportableOutputs, settings.driveFolderId, group.campaign?.title || group.campaign?.name || null).catch((err) => {
+      // One-variation-per-account rule: a folder may receive at most ONE
+      // variation of this group (source video) across ALL exports. Seed with
+      // folders already served by previous exports, then keep only the first
+      // output planned per folder — the rest are visibly skipped, not exported.
+      const servedFolders = new Set<string>(
+        group.outputs
+          .filter((o: any) => o.exportStatus === "exported" && o.exportDestinationFolderId)
+          .map((o: any) => o.exportDestinationFolderId as string)
+      );
+      const skippedOutputIds: string[] = [];
+      const outputsToExport = exportableOutputs.filter((out: any) => {
+        const folder = out.driveFolderId || settings.driveFolderId;
+        if (servedFolders.has(folder)) {
+          skippedOutputIds.push(out.id);
+          return false;
+        }
+        servedFolders.add(folder);
+        return true;
+      });
+
+      if (skippedOutputIds.length > 0) {
+        await prisma.multiplierOutput.updateMany({
+          where: { id: { in: skippedOutputIds } },
+          data: {
+            errorMessage:
+              "Skipped: one variation per account — this account already has a variation of this video. Assign a different Drive folder to export it.",
+          },
+        });
+      }
+
+      if (outputsToExport.length === 0) {
+        return NextResponse.json({
+          error: "Nothing to export: every assigned account already has a variation of this video (one variation per account rule). Assign more accounts first.",
+        }, { status: 400 });
+      }
+
+      exportGroupOutputsToDriveInBackground(groupId, outputsToExport, settings.driveFolderId, group.campaign?.title || group.campaign?.name || null, settings.driveFolderName || null).catch((err) => {
         console.error(`[Export Worker] Group background export failed:`, err);
       });
 
-      return NextResponse.json({ 
-        success: true, 
-        message: `Queued export for ${exportableOutputs.length} videos. Skipping ${group.outputs.length - exportableOutputs.length} videos without assigned folders.` 
+      return NextResponse.json({
+        success: true,
+        message:
+          `Queued export for ${outputsToExport.length} videos.` +
+          (skippedOutputIds.length > 0
+            ? ` Skipped ${skippedOutputIds.length} variation(s) — one variation per account (assign more accounts to export them).`
+            : "") +
+          (group.outputs.length - exportableOutputs.length > 0
+            ? ` ${group.outputs.length - exportableOutputs.length} video(s) have no assigned folder.`
+            : ""),
       });
     }
 
@@ -491,7 +534,7 @@ async function exportToDriveInBackground(batchId: string) {
   }
 }
 
-async function exportGroupOutputsToDriveInBackground(groupId: string, outputs: any[], defaultFolderId: string | null, campaignTitle: string | null = null) {
+async function exportGroupOutputsToDriveInBackground(groupId: string, outputs: any[], defaultFolderId: string | null, campaignTitle: string | null = null, defaultFolderName: string | null = null) {
   console.log(`[Export Worker] Starting group bulk export for group: ${groupId} (${outputs.length} outputs)`);
   
   const drive = await getMultiplierDriveClient();
@@ -502,11 +545,25 @@ async function exportGroupOutputsToDriveInBackground(groupId: string, outputs: a
 
   const publicDir = path.join(process.cwd(), "public");
   const campaignPrefix = campaignTitle ? formatCampaignBracketPrefix(campaignTitle) : "";
+  // Defense in depth: never two outputs of this group into one folder in a run.
+  const servedInRun = new Set<string>();
 
   for (let i = 0; i < outputs.length; i++) {
     const out = outputs[i];
     const finalFolderId = out.driveFolderId || defaultFolderId;
     if (!finalFolderId || !out.outputRef) continue;
+
+    if (servedInRun.has(finalFolderId)) {
+      console.warn(`[Export Worker] Skipping output ${out.id} — folder ${finalFolderId} already received a variation of this group in this run`);
+      await prisma.multiplierOutput.update({
+        where: { id: out.id },
+        data: {
+          errorMessage:
+            "Skipped: one variation per account — this account already has a variation of this video. Assign a different Drive folder to export it.",
+        },
+      });
+      continue;
+    }
 
     const localFilePath = path.join(publicDir, out.outputRef);
     if (!fs.existsSync(localFilePath)) {
@@ -521,9 +578,19 @@ async function exportGroupOutputsToDriveInBackground(groupId: string, outputs: a
     const result = await uploadWithRetry(drive, localFilePath, fileName, finalFolderId);
     
     if (result.success) {
+      servedInRun.add(finalFolderId);
       await prisma.multiplierOutput.update({
         where: { id: out.id },
-        data: { driveFolderId: finalFolderId },
+        data: {
+          driveFolderId: finalFolderId,
+          // Record export history — this is what the one-variation-per-account
+          // rule checks on future exports (cross-run dedupe).
+          exportStatus: "exported",
+          exportedAt: new Date(),
+          exportDestinationFolderId: finalFolderId,
+          exportDestinationFolderName: out.driveFolderName || defaultFolderName,
+          errorMessage: null,
+        },
       });
     } else {
       console.error(`[Export Worker] Failed uploading output ${out.id}: ${result.error}`);
