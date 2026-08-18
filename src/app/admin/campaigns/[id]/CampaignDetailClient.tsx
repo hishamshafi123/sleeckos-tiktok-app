@@ -135,7 +135,7 @@ interface TrackedVideoRow {
   comments: number;
   shares: number;
   lastRefreshedAt: string | null;
-  status: string; // "captured" | "unresolved" | "unavailable"
+  status: string; // "captured" | "dormant" | "unresolved" | "unavailable"
 }
 
 interface CampaignTracking {
@@ -144,6 +144,7 @@ interface CampaignTracking {
     posted: number;
     captured: number;
     unresolved: number;
+    dormant: number;
     views: number;
     likes: number;
     avgViews: number;
@@ -151,6 +152,7 @@ interface CampaignTracking {
   videos: TrackedVideoRow[];
   trend: { date: string; views: number; likes: number }[];
   unresolvedCount: number;
+  dormantCount: number;
   // Latest link-recovery run (POST /tracking/recover), if any
   lastRecovery: {
     startedAt: string;
@@ -2136,6 +2138,15 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
                     </div>
                   ))}
                 </div>
+
+                {/* Dormant (0-view) links — excluded from the paid refresh rotation */}
+                {tracking.dormantCount > 0 && (
+                  <p className="text-[11px] text-zinc-500">
+                    {tracking.dormantCount} dormant (0-view) link{tracking.dormantCount !== 1 ? "s" : ""} excluded from
+                    refresh — they still get checked by the free daily sweep and wake up automatically if views pick
+                    up.
+                  </p>
+                )}
 
                 {/* Link recovery status (last POST /tracking/recover run) */}
                 {tracking.lastRecovery && (() => {

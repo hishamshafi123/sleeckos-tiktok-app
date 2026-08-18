@@ -2,6 +2,14 @@
  * 24h analytics refresh — pulls current stats for captured TrackedVideos via
  * the analytics provider (Apify), writes per-day snapshots, and records
  * resumable AnalyticsRun rows so a crashed run continues on the next trigger.
+ *
+ * Statuses: "captured" = in the paid refresh rotation; "dormant" = views have
+ * stayed ≤ ZERO_VIEW_THRESHOLD for ZERO_VIEW_CONSEC_DAYS consecutive org-tz
+ * days (and the video is past the ZERO_VIEW_MIN_AGE_DAYS grace period) —
+ * excluded from the paid rotation to save spend, but still refreshed for free
+ * by the daily account sweep, which wakes it back to "captured" if views pick
+ * up. Manual campaign refreshes deliberately include dormant rows (operator's
+ * explicit spend). "unavailable" is never refreshed.
  */
 
 import prisma from "@/lib/db";
@@ -25,6 +33,13 @@ const STALE_RUN_MINUTES = Number(process.env.ANALYTICS_STALE_RUN_MINUTES) || 30;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const HOUR_MS = 60 * 60 * 1000;
+
+// ── Dormant-link detection (cost saving) ─────────────────────────────────────
+// A captured link whose views stay ≤ threshold across consecutive daily checks
+// drops out of the paid rotation (see header comment).
+export const ZERO_VIEW_THRESHOLD = Number(process.env.ZERO_VIEW_THRESHOLD) || 1;
+export const ZERO_VIEW_MIN_AGE_DAYS = Number(process.env.ZERO_VIEW_MIN_AGE_DAYS) || 2;
+export const ZERO_VIEW_CONSEC_DAYS = Number(process.env.ZERO_VIEW_CONSEC_DAYS) || 2;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -66,6 +81,55 @@ export async function ensureDailySnapshot(
   }
   await prisma.videoStatSnapshot.create({ data: { trackedVideoId, ...stats } });
   return true;
+}
+
+/**
+ * Mark a captured video "dormant" when its views have stayed ≤
+ * ZERO_VIEW_THRESHOLD across ZERO_VIEW_CONSEC_DAYS distinct org-tz days and it
+ * is at least ZERO_VIEW_MIN_AGE_DAYS old (grace period for new videos).
+ * Call AFTER ensureDailySnapshot so today's just-written snapshot counts.
+ * No-op (returns false) when views are above the threshold — a dormant row is
+ * revived to "captured" by the daily sweep, not here.
+ */
+export async function maybeMarkDormant(
+  video: { id: string; publishedAt: Date },
+  stats: { views: bigint },
+  timezone: string,
+  now: Date
+): Promise<boolean> {
+  if (stats.views > BigInt(ZERO_VIEW_THRESHOLD)) return false;
+  if ((now.getTime() - video.publishedAt.getTime()) / DAY_MS < ZERO_VIEW_MIN_AGE_DAYS) {
+    return false;
+  }
+
+  // Recent snapshots, newest first, deduped to distinct org-tz days.
+  const snapshots = await prisma.videoStatSnapshot.findMany({
+    where: { trackedVideoId: video.id },
+    orderBy: { recordedAt: "desc" },
+    take: ZERO_VIEW_CONSEC_DAYS * 3,
+    select: { views: true, recordedAt: true },
+  });
+  const seenDays = new Set<string>();
+  const distinctDays: bigint[] = [];
+  for (const s of snapshots) {
+    const day = getZonedDateString(s.recordedAt, timezone);
+    if (seenDays.has(day)) continue;
+    seenDays.add(day);
+    distinctDays.push(s.views);
+    if (distinctDays.length >= ZERO_VIEW_CONSEC_DAYS) break;
+  }
+  if (distinctDays.length < ZERO_VIEW_CONSEC_DAYS) return false;
+  if (!distinctDays.every((v) => v <= BigInt(ZERO_VIEW_THRESHOLD))) return false;
+
+  // Only transition captured → dormant; never clobber "unavailable".
+  const res = await prisma.trackedVideo.updateMany({
+    where: { id: video.id, status: "captured" },
+    data: { status: "dormant" },
+  });
+  if (res.count > 0) {
+    console.log(`[Analytics] Video ${video.id} marked dormant (0-view ${distinctDays.length}d)`);
+  }
+  return res.count > 0;
 }
 
 export interface RefreshOptions {
@@ -127,7 +191,10 @@ export async function runAnalyticsRefresh(opts: RefreshOptions = {}): Promise<{ 
   const pausedIds = paused.map((p) => p.id);
   const all = await prisma.trackedVideo.findMany({
     where: {
-      status: "captured",
+      // Daily tiered runs only spend on "captured" rows; dormant (0-view)
+      // links drop out of the paid rotation. Manual campaign refreshes are
+      // the operator's deliberate spend, so they include dormant rows.
+      status: ignoreTiers ? { in: ["captured", "dormant"] } : "captured",
       // Non-campaign videos are never refreshed (operator decision: refresh
       // budget goes to campaign-attributed videos only).
       campaignId: campaignId ? campaignId : { not: null, notIn: pausedIds },
@@ -212,6 +279,8 @@ export async function runAnalyticsRefresh(opts: RefreshOptions = {}): Promise<{ 
             data: { ...stats, lastRefreshedAt: now },
           });
           await ensureDailySnapshot(video.id, stats, timezone, now);
+          // After the snapshot so today's check counts toward the streak.
+          await maybeMarkDormant(video, stats, timezone, now);
           counters.succeeded++;
         }
       } catch (err: any) {

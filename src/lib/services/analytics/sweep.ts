@@ -27,6 +27,12 @@
  *     payload), so fresh videos effectively get a daily stats update for free.
  *     Older videos that scrolled past the N-deep profile window are still
  *     handled by the tiered analytics-refresh cron.
+ *     DORMANT LINKS — videos whose views stayed ≤ ZERO_VIEW_THRESHOLD across
+ *     consecutive daily checks are excluded from the PAID refresh rotation,
+ *     but still refreshed here for free. A dormant row whose views rise above
+ *     the threshold wakes back to "captured"; a still-zero captured row is
+ *     evaluated for dormancy via maybeMarkDormant (sweep-refreshed young
+ *     videos otherwise never enter the paid rotation where that check runs).
  *
  * Safety rails (same as capture.ts / recover.ts):
  *  - A videoId already attributed to ANY TrackedVideo row is never stolen,
@@ -59,7 +65,7 @@ import type { AnalyticsProvider, ProviderVideo } from "./provider";
 import { apifyProvider } from "./apify";
 import { normalizeCaption } from "./recover";
 import { unresolvedPlaceholderId } from "./capture";
-import { ensureDailySnapshot } from "./refresh";
+import { ensureDailySnapshot, maybeMarkDormant, ZERO_VIEW_THRESHOLD } from "./refresh";
 import { getOrgTimezone } from "@/lib/services/timezone";
 
 const TERMINAL_PUBLISHED_STATES = ["PUBLISHED", "PENDING_DELETION", "DELETED"];
@@ -206,21 +212,31 @@ export async function runDailyAccountSweep(
     // (unless their campaign is PAUSED — paused campaigns are never swept).
     const tracked = await prisma.trackedVideo.findMany({
       where: { tiktokVideoId: { in: latest.map((v) => v.videoId) } },
-      select: { id: true, tiktokVideoId: true, status: true, campaignId: true },
+      select: { id: true, tiktokVideoId: true, status: true, campaignId: true, publishedAt: true },
     });
     const trackedById = new Map(tracked.map((t) => [t.tiktokVideoId, t]));
 
     for (const v of latest) {
       const row = trackedById.get(v.videoId);
-      if (!row || row.status !== "captured") continue;
+      // Captured rows refresh as normal; dormant rows also refresh (free —
+      // the data is in the payload) and wake back to "captured" when views
+      // rise above the zero-view threshold.
+      if (!row || (row.status !== "captured" && row.status !== "dormant")) continue;
       if (row.campaignId && (await isPaused(row.campaignId))) continue;
       try {
         const stats = { views: v.views, likes: v.likes, comments: v.comments, shares: v.shares };
+        const wake = row.status === "dormant" && v.views > BigInt(ZERO_VIEW_THRESHOLD);
         await prisma.trackedVideo.update({
           where: { id: row.id },
-          data: { ...stats, lastRefreshedAt: now },
+          data: { ...stats, lastRefreshedAt: now, ...(wake ? { status: "captured" } : {}) },
         });
         await ensureDailySnapshot(row.id, stats, timezone, now);
+        if (wake) {
+          console.log(`[Sweep] Dormant video ${v.videoId} revived (${v.views} views)`);
+        } else if (row.status === "captured") {
+          // After the snapshot so today's check counts toward the streak.
+          await maybeMarkDormant(row, stats, timezone, now);
+        }
         refreshed++;
       } catch (err: any) {
         console.error(`[Sweep] Stats update failed for video ${v.videoId}:`, err?.message || err);

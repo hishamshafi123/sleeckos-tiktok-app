@@ -23,10 +23,10 @@ export interface TrackingVideoRow {
   status: string;
 }
 
-/** Video list rows (captured + unavailable — unresolved surface via counts). */
+/** Video list rows (captured + dormant + unavailable — unresolved surface via counts). */
 export async function getCampaignTrackingVideos(campaignId: string): Promise<TrackingVideoRow[]> {
   const videos = await prisma.trackedVideo.findMany({
-    where: { campaignId, status: { in: ["captured", "unavailable"] } },
+    where: { campaignId, status: { in: ["captured", "dormant", "unavailable"] } },
     orderBy: { publishedAt: "desc" },
   });
 
@@ -59,9 +59,10 @@ export async function getCampaignTracking(campaignId: string) {
   });
   if (!campaign) return null;
 
-  const [videos, unresolvedCount, lastRecovery] = await Promise.all([
+  const [videos, unresolvedCount, dormantCount, lastRecovery] = await Promise.all([
     getCampaignTrackingVideos(campaignId),
     prisma.trackedVideo.count({ where: { campaignId, status: "unresolved" } }),
+    prisma.trackedVideo.count({ where: { campaignId, status: "dormant" } }),
     getLastRecoveryRun(campaignId),
   ]);
 
@@ -107,6 +108,7 @@ export async function getCampaignTracking(campaignId: string) {
       posted: campaign.postedCount,
       captured: videos.filter((v) => v.status === "captured").length,
       unresolved: unresolvedCount,
+      dormant: dormantCount,
       views,
       likes,
       avgViews: videos.length > 0 ? Math.round(views / videos.length) : 0,
@@ -114,6 +116,7 @@ export async function getCampaignTracking(campaignId: string) {
     videos,
     trend,
     unresolvedCount,
+    dormantCount,
     lastRecovery,
   };
 }
