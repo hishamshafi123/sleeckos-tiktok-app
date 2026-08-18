@@ -6,6 +6,11 @@ import { spawn, exec } from "child_process";
 import fs from "fs";
 import path from "path";
 import os from "os";
+import { renderStill, selectComposition } from "@remotion/renderer";
+import { getRemotionBundle } from "../remotion-bundle";
+import { enqueueRender } from "./style-lab";
+import { LAYERED_TEMPLATE_KEY, coerceLayers } from "../style-lab/layers";
+import { SAMPLE_LYRIC_LINES } from "../style-lab/schema";
 
 // Directory constants
 const UPLOADS_DIR = path.join(process.cwd(), "public", "uploads", "multiplier");
@@ -395,6 +400,11 @@ export async function previewOutputCount(groupId: string): Promise<number> {
   return vCount * hCount; // each hook on each variation
 }
 
+// Pillow (scripts/generate_still.py) only supports these 4 built-in style
+// keys. Anything else — layered styles, brat/imported/ai Style Lab templates —
+// renders through Remotion (see renderCaptionStillRemotion).
+const PILLOW_BUILTIN_STYLE_IDS = ["news-lower-third", "breaking-headline", "subtitle-box", "quote-card"];
+
 export async function renderCaptionStill(
   styleId: string,
   hookText: string,
@@ -407,6 +417,7 @@ export async function renderCaptionStill(
 
   let finalStyleId = styleId;
   let customProps = settings || {};
+  let savedLayers: unknown = null;
 
   // If styleId is a SavedStyle UUID, resolve it
   if (styleId.length > 20) {
@@ -415,6 +426,7 @@ export async function renderCaptionStill(
     });
     if (savedStyle) {
       finalStyleId = savedStyle.templateKey;
+      savedLayers = (savedStyle as any).layers;
       let savedParams: any = savedStyle.params;
       if (typeof savedParams === "string") {
         try {
@@ -434,7 +446,20 @@ export async function renderCaptionStill(
     }
   }
 
-  // Merge presets default settings based on finalStyleId
+  // Non-Pillow styles (incl. any style with a layer stack) → Remotion.
+  const layers = coerceLayers(savedLayers);
+  if (!PILLOW_BUILTIN_STYLE_IDS.includes(finalStyleId) || layers.length > 0) {
+    return renderCaptionStillRemotion({
+      styleId,
+      templateKey: finalStyleId,
+      layers,
+      params: customProps,
+      hookText,
+      stillPath,
+    });
+  }
+
+  // Pillow path (built-in styles only) — unchanged.
   const fontSize = customProps.fontSize ?? 32;
   const fontColor = customProps.fontColor ?? customProps.textColor ?? "#FFFFFF";
   const bgStripColor = customProps.bgStripColor ?? customProps.bgColor ?? "#000000";
@@ -480,6 +505,96 @@ export async function renderCaptionStill(
         reject(new Error(`Pillow generating overlay failed with code ${code}. Stderr: ${stderr}`));
       }
     });
+  });
+}
+
+/**
+ * Remotion still path for styles Pillow can't render (layered styles, Style
+ * Lab templates like brat-lyrics/imported/ai_*). Hook text is wired the way
+ * style-lab's renderTestSample shapes inputProps: quoteText + text carry the
+ * hook (quote-bound layers and quote comps read quoteText; flat text params
+ * read text), author comes from the merged params, and the coerced layer
+ * stack rides along for the layered-style comp. Sample lyric lines are
+ * included so lyric-bound layers/comps have content (comps ignore props they
+ * don't read).
+ *
+ * Renders the mid-composition frame (entry animations completed) through the
+ * shared style-lab serial render queue (Remotion renders are heavy — one at
+ * a time on the 2-core VPS). Results are cached by content hash in
+ * STILLS_DIR: repeated hooks across groups/outputs reuse the rendered PNG
+ * ("render once, composite many"). The returned path is always a per-output
+ * COPY — the render worker deletes it after compositing; the cache file
+ * stays. Failures throw naming the style — never a silent Pillow fallback.
+ */
+async function renderCaptionStillRemotion(opts: {
+  styleId: string;
+  templateKey: string;
+  layers: ReturnType<typeof coerceLayers>;
+  params: any;
+  hookText: string;
+  stillPath: string;
+}): Promise<string> {
+  const { styleId, templateKey, layers, params, hookText, stillPath } = opts;
+  const layered = layers.length > 0;
+  const compositionId = layered ? LAYERED_TEMPLATE_KEY : templateKey;
+  const styleLabel = `${styleId} (${compositionId})`;
+
+  const inputProps: Record<string, any> = {
+    ...params,
+    lines: SAMPLE_LYRIC_LINES,
+    quoteText: hookText,
+    text: hookText,
+    author: params?.author ?? "",
+    ...(layered ? { layers } : {}),
+  };
+
+  const hash = crypto
+    .createHash("sha256")
+    .update(JSON.stringify({ v: 1, styleId, compositionId, inputProps }))
+    .digest("hex");
+  const cachePath = path.join(STILLS_DIR, `still_cache_${hash}.png`);
+
+  const reuseCache = (): boolean => {
+    try {
+      if (fs.existsSync(cachePath) && fs.statSync(cachePath).size > 1024) {
+        fs.copyFileSync(cachePath, stillPath);
+        return true;
+      }
+    } catch {}
+    return false;
+  };
+
+  if (reuseCache()) return stillPath;
+
+  return enqueueRender(async () => {
+    if (reuseCache()) return stillPath; // another queued render may have produced it
+    try {
+      const bundleLocation = await getRemotionBundle();
+      const composition = await selectComposition({
+        serveUrl: bundleLocation,
+        id: compositionId,
+        inputProps,
+      });
+      const frame = Math.max(0, Math.floor(composition.durationInFrames / 2));
+      await renderStill({
+        composition,
+        serveUrl: bundleLocation,
+        output: cachePath,
+        inputProps,
+        frame,
+        browserExecutable: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
+      });
+      if (!fs.existsSync(cachePath) || fs.statSync(cachePath).size === 0) {
+        throw new Error("renderer finished but produced no output");
+      }
+      fs.copyFileSync(cachePath, stillPath);
+      return stillPath;
+    } catch (err: any) {
+      try { fs.unlinkSync(cachePath); } catch {}
+      throw new Error(
+        `[Multiplier] Remotion caption-still render failed for style ${styleLabel}: ${err?.message || err}`
+      );
+    }
   });
 }
 
