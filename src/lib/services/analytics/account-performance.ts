@@ -18,6 +18,10 @@ import {
 const DAY_MS = 24 * 60 * 60 * 1000;
 const ZERO_VIEW_THRESHOLD = 10; // views below this count as "zero-view"
 const FLAG_STREAK = 5; // streak at/above this flags the account
+// Quiet-account buckets, in whole IST days since the last published post:
+// silent = 2–7 days, unused = 8+ days or never posted.
+const SILENT_MIN_DAYS = 2;
+const UNUSED_MIN_DAYS = 8;
 // Window for the streak scan. An account with nothing newer is quiet, so its
 // streak is reported as 0 (it shows up under Silent/Unused instead).
 const STREAK_SCAN_DAYS = 90;
@@ -345,8 +349,8 @@ export interface PerformanceOverview {
   activeAccounts: number; // posted in the last 24h
   postsYesterday: number;
   viewsYesterday: number;
-  silentAccounts: number; // last post 1–2 IST days ago
-  unusedAccounts: number; // last post 3+ IST days ago, or never posted
+  silentAccounts: number; // last post 2–7 IST days ago
+  unusedAccounts: number; // last post 8+ IST days ago, or never posted
   flaggedAccounts: number; // zeroViewStreak >= FLAG_STREAK
 }
 
@@ -392,8 +396,8 @@ export async function getPerformanceOverview(userId: string): Promise<Performanc
     const daysQuiet = Math.round(
       (todayStart.getTime() - zonedDayBounds(lastDay, tz).start.getTime()) / DAY_MS
     );
-    if (daysQuiet >= 3) unused++;
-    else if (daysQuiet >= 1) silent++;
+    if (daysQuiet >= UNUSED_MIN_DAYS) unused++;
+    else if (daysQuiet >= SILENT_MIN_DAYS) silent++;
   }
 
   let flagged = 0;
@@ -418,8 +422,16 @@ export interface PostingCoverage {
     driveFolderName: string | null;
     cells: Record<string, number>; // day → posts
   }[];
-  silent: { accountId: string; accountName: string; daysQuiet: number }[];
-  unused: { accountId: string; accountName: string; daysQuiet: number | null }[]; // null = never posted
+  silent: QuietAccount[]; // daysQuiet 2–7
+  unused: QuietAccount[]; // daysQuiet 8+, or null = never posted
+}
+
+interface QuietAccount {
+  accountId: string;
+  accountName: string;
+  driveFolderName: string | null;
+  driveFolderId: string | null;
+  daysQuiet: number | null;
 }
 
 export async function getPostingCoverage(userId: string, days = 7): Promise<PostingCoverage> {
@@ -433,7 +445,7 @@ export async function getPostingCoverage(userId: string, days = 7): Promise<Post
   const { start: todayStart } = zonedDayBounds(today, tz);
 
   const accounts = await prisma.managedAccount.findMany({
-    select: { id: true, tiktokUsername: true, driveFolderName: true },
+    select: { id: true, tiktokUsername: true, driveFolderName: true, driveFolderId: true },
     orderBy: { tiktokUsername: "asc" },
   });
   const accountIds = accounts.map((a) => a.id);
@@ -461,21 +473,29 @@ export async function getPostingCoverage(userId: string, days = 7): Promise<Post
   const silent: PostingCoverage["silent"] = [];
   const unused: PostingCoverage["unused"] = [];
   for (const a of accounts) {
+    const base = {
+      accountId: a.id,
+      accountName: a.tiktokUsername,
+      driveFolderName: a.driveFolderName,
+      driveFolderId: a.driveFolderId,
+    };
     const last = lastPosts.get(a.id);
     if (!last) {
-      unused.push({ accountId: a.id, accountName: a.tiktokUsername, daysQuiet: null });
+      unused.push({ ...base, daysQuiet: null });
       continue;
     }
     const daysQuiet = Math.round(
       (todayStart.getTime() - zonedDayBounds(zonedDayString(last, tz), tz).start.getTime()) / DAY_MS
     );
-    if (daysQuiet >= 3) {
-      unused.push({ accountId: a.id, accountName: a.tiktokUsername, daysQuiet });
-    } else if (daysQuiet >= 1) {
-      silent.push({ accountId: a.id, accountName: a.tiktokUsername, daysQuiet });
+    if (daysQuiet >= UNUSED_MIN_DAYS) {
+      unused.push({ ...base, daysQuiet });
+    } else if (daysQuiet >= SILENT_MIN_DAYS) {
+      silent.push({ ...base, daysQuiet });
     }
   }
-  silent.sort((a, b) => b.daysQuiet - a.daysQuiet || a.accountName.localeCompare(b.accountName));
+  silent.sort(
+    (a, b) => (b.daysQuiet ?? 0) - (a.daysQuiet ?? 0) || a.accountName.localeCompare(b.accountName)
+  );
   unused.sort(
     (a, b) => (b.daysQuiet ?? Number.MAX_SAFE_INTEGER) - (a.daysQuiet ?? Number.MAX_SAFE_INTEGER)
   );

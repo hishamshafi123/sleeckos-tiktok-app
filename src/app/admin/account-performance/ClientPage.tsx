@@ -1,5 +1,5 @@
 "use client";
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import {
   Loader2,
   AlertCircle,
@@ -10,6 +10,8 @@ import {
   TrendingDown,
   Minus,
   ChevronRight,
+  ArrowUp,
+  ArrowDown,
 } from "lucide-react";
 
 // ── API contract types ──────────────────────────────────────────────────────
@@ -51,8 +53,16 @@ type Coverage = {
     driveFolderName: string | null;
     cells: Record<string, number>;
   }[];
-  silent: { accountId: string; accountName: string; daysQuiet: number }[];
-  unused: { accountId: string; accountName: string; daysQuiet: number | null }[];
+  silent: QuietAccount[];
+  unused: QuietAccount[];
+};
+
+type QuietAccount = {
+  accountId: string;
+  accountName: string;
+  driveFolderName: string | null;
+  driveFolderId: string | null;
+  daysQuiet: number | null; // null = never posted
 };
 
 type Trajectory = {
@@ -286,8 +296,18 @@ export default function ClientPage() {
               value={fmt(overview.data.viewsYesterday)}
               title={full(overview.data.viewsYesterday)}
             />
-            <KpiCard label="Silent (1–2d)" value={full(overview.data.silentAccounts)} tone="text-amber-400" />
-            <KpiCard label="Unused (3d+)" value={full(overview.data.unusedAccounts)} tone="text-red-400" />
+            <KpiCard
+              label="Silent (2–7d)"
+              value={full(overview.data.silentAccounts)}
+              tone="text-amber-400"
+              hint="No posts in 2–7 days"
+            />
+            <KpiCard
+              label="Unused (7d+)"
+              value={full(overview.data.unusedAccounts)}
+              tone="text-red-400"
+              hint="No posts in 7+ days, or never posted"
+            />
             <KpiCard label="Flagged" value={full(overview.data.flaggedAccounts)} tone="text-red-400" />
           </div>
         )}
@@ -430,14 +450,80 @@ function TrajectoryPanel({ data }: { data: Trajectory }) {
   );
 }
 
-// ── Ranked accounts table (paginated, sticky header, internal scroll) ───────
+// ── Ranked accounts table (sortable, paginated, sticky header, internal scroll)
 const PAGE_SIZE = 50;
+
+type SortKey = "account" | "posts" | "views" | "avg" | "est" | "likes";
+type SortDir = "asc" | "desc";
 
 function AccountsTable({ rows, onOpen }: { rows: PerfRow[]; onOpen: (id: string) => void }) {
   const [page, setPage] = useState(1);
-  const pageCount = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
+  const [sort, setSort] = useState<{ key: SortKey; dir: SortDir }>({ key: "views", dir: "desc" });
+
+  const toggleSort = (key: SortKey) =>
+    setSort((s) =>
+      s.key === key
+        ? { key, dir: s.dir === "desc" ? "asc" : "desc" }
+        : { key, dir: key === "account" ? "asc" : "desc" }
+    );
+
+  // Sort the full filtered set BEFORE pagination slices it. Est. views/day
+  // nulls ("—", account not in use) always sort last regardless of direction.
+  const sorted = useMemo(() => {
+    const value = (r: PerfRow): number | string | null => {
+      switch (sort.key) {
+        case "account":
+          return r.accountName.toLowerCase();
+        case "posts":
+          return r.posts;
+        case "views":
+          return r.viewsGained;
+        case "avg":
+          return r.avgViewsPerPost;
+        case "est":
+          return r.estViewsPerDay;
+        case "likes":
+          return r.likesGained;
+      }
+    };
+    const dir = sort.dir === "asc" ? 1 : -1;
+    return [...rows].sort((a, b) => {
+      const va = value(a);
+      const vb = value(b);
+      if (sort.key === "est") {
+        if (va === null && vb === null) return 0;
+        if (va === null) return 1; // nulls last either way
+        if (vb === null) return -1;
+      }
+      if (typeof va === "string" && typeof vb === "string") return va.localeCompare(vb) * dir;
+      return ((va as number) - (vb as number)) * dir;
+    });
+  }, [rows, sort]);
+
+  const pageCount = Math.max(1, Math.ceil(sorted.length / PAGE_SIZE));
   const safePage = Math.min(page, pageCount);
-  const pageRows = rows.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
+  const pageRows = sorted.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
+
+  const SortableTh = ({ label, k, right = true }: { label: string; k: SortKey; right?: boolean }) => (
+    <th
+      className={`${right ? "text-right px-3" : "text-left px-4"} py-2.5 text-zinc-500 font-medium`}
+    >
+      <button
+        onClick={() => toggleSort(k)}
+        className={`inline-flex items-center gap-1 ${right ? "flex-row-reverse" : ""} hover:text-zinc-200 transition-colors ${
+          sort.key === k ? "text-zinc-300" : ""
+        }`}
+      >
+        {label}
+        {sort.key === k &&
+          (sort.dir === "desc" ? (
+            <ArrowDown className="w-3 h-3" />
+          ) : (
+            <ArrowUp className="w-3 h-3" />
+          ))}
+      </button>
+    </th>
+  );
 
   return (
     <div className="border border-[#27272a] rounded-lg overflow-hidden">
@@ -445,12 +531,12 @@ function AccountsTable({ rows, onOpen }: { rows: PerfRow[]; onOpen: (id: string)
         <table className="w-full text-xs">
           <thead className="sticky top-0 bg-[#0c0c10] z-10">
             <tr className="border-b border-[#27272a]">
-              <th className="text-left px-4 py-2.5 text-zinc-500 font-medium">Account</th>
-              <th className="text-right px-3 py-2.5 text-zinc-500 font-medium">Posts</th>
-              <th className="text-right px-3 py-2.5 text-zinc-500 font-medium">Views</th>
-              <th className="text-right px-3 py-2.5 text-zinc-500 font-medium">Avg/post</th>
-              <th className="text-right px-3 py-2.5 text-zinc-500 font-medium">Est. views/day</th>
-              <th className="text-right px-3 py-2.5 text-zinc-500 font-medium">Likes</th>
+              <SortableTh label="Account" k="account" right={false} />
+              <SortableTh label="Posts" k="posts" />
+              <SortableTh label="Views" k="views" />
+              <SortableTh label="Avg/post" k="avg" />
+              <SortableTh label="Est. views/day" k="est" />
+              <SortableTh label="Likes" k="likes" />
               <th className="text-left px-3 py-2.5 text-zinc-500 font-medium">Last post</th>
               <th className="text-left px-3 py-2.5 text-zinc-500 font-medium">7d trend</th>
               <th className="text-left px-3 py-2.5 text-zinc-500 font-medium">Flag</th>
@@ -640,24 +726,16 @@ function CoverageSection({ data, onOpen }: { data: Coverage; onOpen: (id: string
       <div className="space-y-4">
         <QuietPanel
           title="Silent accounts"
-          subtitle="No post in 1–2 days"
-          tone="amber"
-          rows={data.silent.map((s) => ({
-            accountId: s.accountId,
-            accountName: s.accountName,
-            label: `${s.daysQuiet}d quiet`,
-          }))}
+          subtitle="No posts in 2–7 days"
+          kind="silent"
+          rows={data.silent}
           onOpen={onOpen}
         />
         <QuietPanel
           title="Unused accounts"
-          subtitle="No post in 3+ days, or never posted"
-          tone="red"
-          rows={data.unused.map((s) => ({
-            accountId: s.accountId,
-            accountName: s.accountName,
-            label: s.daysQuiet === null ? "never posted" : `${s.daysQuiet}d quiet`,
-          }))}
+          subtitle="No posts in 7+ days, or never posted"
+          kind="unused"
+          rows={data.unused}
           onOpen={onOpen}
         />
       </div>
@@ -666,9 +744,21 @@ function CoverageSection({ data, onOpen }: { data: Coverage; onOpen: (id: string
 }
 
 // ── KPI / panels ────────────────────────────────────────────────────────────
-function KpiCard({ label, value, tone, title }: { label: string; value: string; tone?: string; title?: string }) {
+function KpiCard({
+  label,
+  value,
+  tone,
+  title,
+  hint,
+}: {
+  label: string;
+  value: string;
+  tone?: string;
+  title?: string;
+  hint?: string;
+}) {
   return (
-    <div className="border border-[#27272a] rounded-lg px-4 py-3 bg-[#0c0c10]">
+    <div className="border border-[#27272a] rounded-lg px-4 py-3 bg-[#0c0c10]" title={hint}>
       <div className={`text-lg font-semibold tabular-nums ${tone ?? "text-white"}`} title={title}>
         {value}
       </div>
@@ -680,17 +770,28 @@ function KpiCard({ label, value, tone, title }: { label: string; value: string; 
 function QuietPanel({
   title,
   subtitle,
-  tone,
+  kind,
   rows,
   onOpen,
 }: {
   title: string;
   subtitle: string;
-  tone: "amber" | "red";
-  rows: { accountId: string; accountName: string; label: string }[];
+  kind: "silent" | "unused";
+  rows: QuietAccount[];
   onOpen: (id: string) => void;
 }) {
-  const dot = tone === "amber" ? "bg-amber-500" : "bg-red-500";
+  // Intensity by days quiet: silent 2–3 = amber, 4–6 = orange, 7 = red;
+  // unused rows are always red.
+  const toneFor = (daysQuiet: number | null): { dot: string; text: string } => {
+    if (kind === "unused" || (daysQuiet !== null && daysQuiet >= 7)) {
+      return { dot: "bg-red-500", text: "text-red-400" };
+    }
+    if (daysQuiet !== null && daysQuiet >= 4) {
+      return { dot: "bg-orange-500", text: "text-orange-400" };
+    }
+    return { dot: "bg-amber-500", text: "text-amber-400" };
+  };
+
   return (
     <div className="border border-[#27272a] rounded-lg overflow-hidden">
       <div className="px-4 py-3 border-b border-[#27272a] bg-[#0c0c10]">
@@ -703,35 +804,57 @@ function QuietPanel({
         {rows.length === 0 ? (
           <div className="px-4 py-6 text-center text-xs text-zinc-600">None right now.</div>
         ) : (
-          rows.map((r) => (
-            <div
-              key={r.accountId}
-              onClick={() => onOpen(r.accountId)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" || e.key === " ") {
-                  e.preventDefault();
-                  onOpen(r.accountId);
-                }
-              }}
-              tabIndex={0}
-              role="button"
-              className="w-full flex items-center justify-between px-4 py-2 text-xs border-b border-[#1c1c21] last:border-0 hover:bg-zinc-900/40 cursor-pointer focus:outline-none focus:bg-zinc-900/60"
-            >
-              <span className="flex items-center gap-2 text-zinc-200">
-                <span className={`w-1.5 h-1.5 rounded-full ${dot}`} />
-                <a
-                  href={`https://www.tiktok.com/@${r.accountName}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  onClick={(e) => e.stopPropagation()}
-                  className="hover:text-blue-400 hover:underline"
-                >
-                  @{r.accountName}
-                </a>
-              </span>
-              <span className="text-zinc-500">{r.label}</span>
-            </div>
-          ))
+          rows.map((r) => {
+            const tone = toneFor(r.daysQuiet);
+            return (
+              <div
+                key={r.accountId}
+                onClick={() => onOpen(r.accountId)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    onOpen(r.accountId);
+                  }
+                }}
+                tabIndex={0}
+                role="button"
+                className="w-full flex items-center justify-between gap-3 px-4 py-2 text-xs border-b border-[#1c1c21] last:border-0 hover:bg-zinc-900/40 cursor-pointer focus:outline-none focus:bg-zinc-900/60"
+              >
+                <span className="flex items-start gap-2 min-w-0">
+                  <span className={`w-1.5 h-1.5 rounded-full mt-1.5 flex-shrink-0 ${tone.dot}`} />
+                  <span className="min-w-0">
+                    <a
+                      href={`https://www.tiktok.com/@${r.accountName}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      onClick={(e) => e.stopPropagation()}
+                      className="text-zinc-200 hover:text-blue-400 hover:underline"
+                    >
+                      @{r.accountName}
+                    </a>
+                    <span className="block text-[11px] truncate max-w-[180px]">
+                      {r.driveFolderId ? (
+                        <a
+                          href={`https://drive.google.com/drive/folders/${r.driveFolderId}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          onClick={(e) => e.stopPropagation()}
+                          className="text-zinc-600 hover:text-blue-400 hover:underline"
+                        >
+                          {r.driveFolderName ?? "Drive folder"}
+                        </a>
+                      ) : (
+                        <span className="text-zinc-600">{r.driveFolderName ?? "—"}</span>
+                      )}
+                    </span>
+                  </span>
+                </span>
+                <span className={`flex-shrink-0 tabular-nums ${tone.text}`}>
+                  {r.daysQuiet === null ? "never posted" : `${r.daysQuiet} days quiet`}
+                </span>
+              </div>
+            );
+          })
         )}
       </div>
     </div>
