@@ -469,9 +469,11 @@ async function getBundle(): Promise<string> {
 }
 
 // In-process serial queue — one render at a time, like the style-studio worker.
+// Exported: the Multiplier's Remotion caption-still path routes through this
+// same queue so heavy Remotion stills never stampede the 2-core VPS.
 let renderQueue: Promise<unknown> = Promise.resolve();
 
-function enqueueRender<T>(job: () => Promise<T>): Promise<T> {
+export function enqueueRender<T>(job: () => Promise<T>): Promise<T> {
   const run = renderQueue.then(job);
   renderQueue = run.catch(() => undefined);
   return run;
@@ -562,8 +564,9 @@ function pngHasAlphaChannel(file: string): boolean | null {
  * Transparency invariant: a style whose bg is transparent must produce an
  * output with a real alpha channel. Throws (fails the render loudly) when
  * the encoder silently dropped alpha.
+ * Exported for scratch verification scripts (e.g. multiplier still renders).
  */
-async function assertAlphaOutput(
+export async function assertAlphaOutput(
   file: string,
   kind: TestRenderFormat,
   styleName: string,
