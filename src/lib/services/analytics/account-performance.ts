@@ -431,7 +431,9 @@ interface QuietAccount {
   accountName: string;
   driveFolderName: string | null;
   driveFolderId: string | null;
+  sectionName: string | null; // AccountSection name — the account's group
   daysQuiet: number | null;
+  lastPostAt: string | null; // ISO, null = never posted
 }
 
 export async function getPostingCoverage(userId: string, days = 7): Promise<PostingCoverage> {
@@ -445,7 +447,13 @@ export async function getPostingCoverage(userId: string, days = 7): Promise<Post
   const { start: todayStart } = zonedDayBounds(today, tz);
 
   const accounts = await prisma.managedAccount.findMany({
-    select: { id: true, tiktokUsername: true, driveFolderName: true, driveFolderId: true },
+    select: {
+      id: true,
+      tiktokUsername: true,
+      driveFolderName: true,
+      driveFolderId: true,
+      section: { select: { name: true } },
+    },
     orderBy: { tiktokUsername: "asc" },
   });
   const accountIds = accounts.map((a) => a.id);
@@ -478,19 +486,20 @@ export async function getPostingCoverage(userId: string, days = 7): Promise<Post
       accountName: a.tiktokUsername,
       driveFolderName: a.driveFolderName,
       driveFolderId: a.driveFolderId,
+      sectionName: a.section?.name ?? null,
     };
     const last = lastPosts.get(a.id);
     if (!last) {
-      unused.push({ ...base, daysQuiet: null });
+      unused.push({ ...base, daysQuiet: null, lastPostAt: null });
       continue;
     }
     const daysQuiet = Math.round(
       (todayStart.getTime() - zonedDayBounds(zonedDayString(last, tz), tz).start.getTime()) / DAY_MS
     );
     if (daysQuiet >= UNUSED_MIN_DAYS) {
-      unused.push({ ...base, daysQuiet });
+      unused.push({ ...base, daysQuiet, lastPostAt: last.toISOString() });
     } else if (daysQuiet >= SILENT_MIN_DAYS) {
-      silent.push({ ...base, daysQuiet });
+      silent.push({ ...base, daysQuiet, lastPostAt: last.toISOString() });
     }
   }
   silent.sort(
