@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSession } from "@/lib/session";
 import { can } from "@/lib/services/permissions";
-import { startGroupRender, retryOutput } from "@/lib/services/multiplier";
+import { startGroupRender, retryOutput, applyStyleSplitToGroup } from "@/lib/services/multiplier";
 import prisma from "@/lib/db";
 
 // POST /api/managed/multiplier/groups/[id]/render — Trigger rendering for the group
@@ -27,14 +27,24 @@ export async function POST(
       return NextResponse.json({ error: "Group not found" }, { status: 404 });
     }
 
-    const { mappingMode, styleId, settings } = await req.json();
+    const { mappingMode, styleId, styleIds, settings } = await req.json();
+
+    // Multi-preset split: persist a round-robin per-variation assignment
+    // before outputs are mapped (decided at build time, not mid-render).
+    // The split function sets group.styleId to the first preset itself.
+    const cleanStyleIds: string[] = Array.isArray(styleIds)
+      ? styleIds.filter((s: unknown) => typeof s === "string")
+      : [];
+    if (cleanStyleIds.length > 0) {
+      await applyStyleSplitToGroup(groupId, cleanStyleIds);
+    }
 
     // Dynamically update mapping configuration if changed
     await prisma.multiplierGroup.update({
       where: { id: groupId },
       data: {
         mappingMode: mappingMode || group.mappingMode,
-        styleId: styleId || group.styleId,
+        ...(cleanStyleIds.length > 0 ? {} : { styleId: styleId || group.styleId }),
         settings: settings || group.settings,
       },
     });

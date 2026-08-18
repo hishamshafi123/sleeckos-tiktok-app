@@ -67,6 +67,7 @@ interface MultiplierVariation {
   id: string;
   videoRef: string;
   order: number;
+  styleId?: string | null; // per-video preset from the multi-preset split
 }
 
 interface MultiplierOutput {
@@ -314,8 +315,23 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
 
   // Bulk intake state
   const [bulkCampaignId, setBulkCampaignId] = useState("");
-  const [bulkStyleId, setBulkStyleId] = useState("");
+  // Multi-preset selection ("" = Default style chip). ≥1 required to upload;
+  // files are split round-robin across the selected presets server-side.
+  const [bulkStyleIds, setBulkStyleIds] = useState<string[]>([]);
+  // Group Builder preset split — carries over from the bulk intake selection.
+  const [builderStyleIds, setBuilderStyleIds] = useState<string[]>([]);
   const [bulkNamePrefix, setBulkNamePrefix] = useState("");
+
+  // Bulk-intake preset selection carries over to the Group Builder.
+  useEffect(() => {
+    setBuilderStyleIds(bulkStyleIds);
+  }, [bulkStyleIds]);
+
+  const toggleStyleId = (list: string[], id: string): string[] =>
+    list.includes(id) ? list.filter((s) => s !== id) : [...list, id];
+
+  const presetLabel = (id: string): string =>
+    id === "" ? "Default style" : savedStyles.find((s: any) => s.id === id)?.name ?? id;
   const [bulkFiles, setBulkFiles] = useState<File[]>([]);
   const [bulkUploading, setBulkUploading] = useState(false);
   const [bulkUploadProgress, setBulkUploadProgress] = useState<{ current: number; total: number; fileName: string } | null>(null);
@@ -897,6 +913,10 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
       toast.error("Please select at least one video file.");
       return;
     }
+    if (bulkStyleIds.length === 0) {
+      toast.error("Select at least one style preset — videos are split evenly across the selected presets.");
+      return;
+    }
     setBulkUploading(true);
     setBulkError(null);
     const total = bulkFiles.length;
@@ -915,7 +935,7 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
           formData.append("jobId", jobId);
         } else {
           if (bulkCampaignId) formData.append("campaignId", bulkCampaignId);
-          if (bulkStyleId) formData.append("styleId", bulkStyleId);
+          formData.append("styleIds", JSON.stringify(bulkStyleIds));
           if (bulkNamePrefix.trim()) formData.append("namePrefix", bulkNamePrefix.trim());
         }
         if (isLast) formData.append("finalize", "true");
@@ -1873,6 +1893,9 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
         body: JSON.stringify({
           mappingMode,
           styleId,
+          // Multi-preset split: when presets are selected, the route assigns
+          // them round-robin across variations (persisted before rendering).
+          ...(builderStyleIds.length > 0 ? { styleIds: builderStyleIds } : {}),
           settings: settingsObj,
         }),
       });
@@ -2655,6 +2678,11 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
                             >
                               <Play className="w-3.5 h-3.5 text-[#71717a] group-hover:text-[#E11D48] transition-colors" />
                               <span className="text-xs font-semibold text-[#fafafa] group-hover:text-white">Variation #{i + 1}</span>
+                              {v.styleId && (
+                                <span className="text-[9px] font-semibold uppercase px-1.5 py-0.5 rounded border border-[#E11D48]/30 text-[#fda4af] bg-[#E11D48]/5">
+                                  {presetLabel(v.styleId)}
+                                </span>
+                              )}
                             </button>
                             <button
                               type="button"
@@ -2908,6 +2936,42 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
                     <span className="bg-[#E11D48] text-white text-xs w-5 h-5 flex items-center justify-center rounded-full font-bold">5</span>
                     Select Editorial Still Caption Style
                   </h2>
+
+                  {/* Multi-preset split — carries over from Bulk Intake; when
+                      presets are selected here, variations are split evenly
+                      (round-robin) across them at render time. */}
+                  <div className="mb-6 p-4 bg-[#18181b] rounded-xl border border-[#27272a]">
+                    <label className="block text-[10px] uppercase font-bold text-[#a1a1aa] mb-2">
+                      Split Across Presets{bulkStyleIds.length > 0 ? " (from Bulk Intake)" : ""}
+                    </label>
+                    <div className="flex flex-wrap gap-1.5">
+                      {(bulkStyleIds.length > 0
+                        ? bulkStyleIds.map((id) => ({ id, name: presetLabel(id) }))
+                        : [{ id: "", name: "Default style" }, ...savedStyles]
+                      ).map((s: any) => {
+                        const active = builderStyleIds.includes(s.id);
+                        return (
+                          <button
+                            key={s.id || "__default"}
+                            type="button"
+                            onClick={() => setBuilderStyleIds((prev) => toggleStyleId(prev, s.id))}
+                            className={`px-3 py-1.5 text-xs rounded-lg border transition-all cursor-pointer ${
+                              active
+                                ? "bg-[#E11D48]/10 border-[#E11D48]/40 text-[#fda4af] font-semibold"
+                                : "bg-[#09090b] border-[#27272a] text-[#a1a1aa] hover:border-[#3f3f46]"
+                            }`}
+                          >
+                            {s.name}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <p className="text-[10px] text-[#71717a] mt-1.5">
+                      {builderStyleIds.length > 0
+                        ? `${builderStyleIds.length} preset${builderStyleIds.length !== 1 ? "s" : ""} selected — variations split evenly across them (round-robin).`
+                        : "None selected — the single style below applies to the whole group."}
+                    </p>
+                  </div>
 
                   {/* Load/CRUD Presets Panel */}
                   <div className="flex flex-wrap items-center gap-4 mb-6 p-4 bg-[#18181b] rounded-xl border border-[#27272a]">
@@ -3351,19 +3415,37 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
                 </select>
               </div>
               <div>
-                <label className="block text-xs font-semibold uppercase tracking-wider text-[#a1a1aa] mb-2">Style Preset (optional)</label>
-                <select
-                  value={bulkStyleId}
-                  onChange={(e) => setBulkStyleId(e.target.value)}
-                  className="w-full bg-[#09090b] border border-[#27272a] rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:border-[#E11D48] text-[#fafafa]"
-                >
-                  <option value="">Default style</option>
-                  {savedStyles.map((s: any) => (
-                    <option key={s.id} value={s.id}>
-                      {s.name}
-                    </option>
-                  ))}
-                </select>
+                <label className="block text-xs font-semibold uppercase tracking-wider text-[#a1a1aa] mb-2">
+                  Style Presets <span className="normal-case font-normal text-[#71717a]">(videos split evenly across selected)</span>
+                </label>
+                <div className="flex flex-wrap gap-1.5">
+                  {[{ id: "", name: "Default style" }, ...savedStyles].map((s: any) => {
+                    const active = bulkStyleIds.includes(s.id);
+                    return (
+                      <button
+                        key={s.id || "__default"}
+                        type="button"
+                        onClick={() => setBulkStyleIds((prev) => toggleStyleId(prev, s.id))}
+                        className={`px-3 py-1.5 text-xs rounded-lg border transition-all cursor-pointer ${
+                          active
+                            ? "bg-[#E11D48]/10 border-[#E11D48]/40 text-[#fda4af] font-semibold"
+                            : "bg-[#09090b] border-[#27272a] text-[#a1a1aa] hover:border-[#3f3f46]"
+                        }`}
+                      >
+                        {s.name}
+                      </button>
+                    );
+                  })}
+                </div>
+                {bulkStyleIds.length > 0 && bulkFiles.length > 0 && (
+                  <p className="text-[10px] text-[#71717a] mt-1.5">
+                    {bulkFiles.length} video{bulkFiles.length !== 1 ? "s" : ""} × {bulkStyleIds.length} preset
+                    {bulkStyleIds.length !== 1 ? "s" : ""} → ~
+                    {Math.floor(bulkFiles.length / bulkStyleIds.length) ||
+                      Math.ceil(bulkFiles.length / bulkStyleIds.length)}{" "}
+                    per preset
+                  </p>
+                )}
               </div>
             </div>
 

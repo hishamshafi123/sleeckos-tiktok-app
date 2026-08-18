@@ -24,6 +24,16 @@ export async function POST(req: NextRequest) {
     const files = formData.getAll("files") as File[];
     const campaignId = (formData.get("campaignId") as string) || null;
     const styleId = (formData.get("styleId") as string) || null;
+    // Multi-preset selection: JSON array of preset ids ("" = default style).
+    // Only meaningful on batch creation; appends read it from the job row.
+    let styleIds: string[] = [];
+    const styleIdsRaw = formData.get("styleIds") as string;
+    if (styleIdsRaw) {
+      try {
+        const parsed = JSON.parse(styleIdsRaw);
+        if (Array.isArray(parsed)) styleIds = parsed.filter((s) => typeof s === "string");
+      } catch {}
+    }
     // Append mode: add files to an existing batch; finalize starts processing.
     // Clients upload one file per request to stay under proxy body-size limits.
     const existingJobId = (formData.get("jobId") as string) || null;
@@ -65,6 +75,7 @@ export async function POST(req: NextRequest) {
         files: staged,
         campaignId,
         styleId,
+        styleIds,
         namePrefix,
         createdBy: session.userId,
       });

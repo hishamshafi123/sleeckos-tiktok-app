@@ -690,8 +690,10 @@ async function renderWorkerLoop(workerId: number) {
         : (output.group.settings || {});
 
       // 1. Render transparent PNG still in Remotion
+      // Per-variation preset (multi-preset split) wins over the group style.
+      const outputStyleId = output.variation.styleId || output.group.styleId;
       console.log(`[Multiplier Worker] Rendering still for Hook: "${output.hook.text.substring(0, 30)}..."`);
-      stillPath = await renderCaptionStill(output.group.styleId, output.hook.text, settings, output.id);
+      stillPath = await renderCaptionStill(outputStyleId, output.hook.text, settings, output.id);
 
       // 2. Composite variation with still overlay in FFmpeg
       console.log(`[Multiplier Worker] Compositing still on video: ${output.variation.videoRef}`);
@@ -885,11 +887,49 @@ export async function retryOutput(outputId: string) {
 
 const DEFAULT_BULK_STYLE_ID = "news-lower-third";
 
+/**
+ * Deterministic round-robin preset assignment: item at `index` (0-based) gets
+ * styleIds[index % styleIds.length]. Evenly splits N items across K presets
+ * (15/3 → 5/5/5, 16/3 → 6/5/5) in a mixed order. Empty/blank entries fall
+ * back to the default style so "Default style" can be one of the chips.
+ */
+export function pickRoundRobinStyle(styleIds: string[], index: number): string {
+  if (styleIds.length === 0) return DEFAULT_BULK_STYLE_ID;
+  return styleIds[index % styleIds.length] || DEFAULT_BULK_STYLE_ID;
+}
+
+/**
+ * Persist a per-variation preset split for a group: variations (in `order`)
+ * are assigned styleIds round-robin. The group's own styleId is set to the
+ * first preset as the fallback for anything without an assignment. Called at
+ * render-trigger time so the assignment is stored, not recomputed mid-render.
+ */
+export async function applyStyleSplitToGroup(groupId: string, styleIds: string[]): Promise<void> {
+  const clean = styleIds.filter((s) => typeof s === "string");
+  if (clean.length === 0) return;
+  const variations = await prisma.multiplierGroupVariation.findMany({
+    where: { groupId },
+    orderBy: { order: "asc" },
+    select: { id: true },
+  });
+  for (let i = 0; i < variations.length; i++) {
+    await prisma.multiplierGroupVariation.update({
+      where: { id: variations[i].id },
+      data: { styleId: pickRoundRobinStyle(clean, i) },
+    });
+  }
+  await prisma.multiplierGroup.update({
+    where: { id: groupId },
+    data: { styleId: pickRoundRobinStyle(clean, 0) },
+  });
+}
+
 async function addFileToBulkBatch(input: {
   jobId: string;
   file: { tempPath: string; fileName: string };
   campaignId?: string | null;
   styleId?: string | null;
+  styleIds?: string[]; // multi-preset selection — takes precedence over styleId
   createdBy?: string | null;
   namePrefix?: string | null;
   seq?: number; // 1-based position in the naming sequence
@@ -898,11 +938,16 @@ async function addFileToBulkBatch(input: {
     const name = input.namePrefix && input.seq != null
       ? `${input.namePrefix} ${String(input.seq).padStart(2, "0")}`
       : input.file.fileName.replace(/\.[^.]+$/, "") || input.file.fileName;
+    const styleIds = input.styleIds ?? [];
+    const assignedStyle =
+      styleIds.length > 0 && input.seq != null
+        ? pickRoundRobinStyle(styleIds, input.seq - 1)
+        : input.styleId || DEFAULT_BULK_STYLE_ID;
     const group = await prisma.multiplierGroup.create({
       data: {
         name,
         campaignId: input.campaignId || null,
-        styleId: input.styleId || DEFAULT_BULK_STYLE_ID,
+        styleId: assignedStyle,
         mappingMode: "distribute",
         settings: {},
         createdBy: input.createdBy || null,
@@ -946,17 +991,21 @@ export async function createBulkBatch(input: {
   files: { tempPath: string; fileName: string }[];
   campaignId?: string | null;
   styleId?: string | null;
+  styleIds?: string[]; // multi-preset selection — persisted on the job
   namePrefix?: string | null;
   createdBy?: string | null;
 }): Promise<{ jobId: string; groupIds: string[] }> {
   ensureDirsExist();
 
   const namePrefix = input.namePrefix?.trim() || null;
+  const styleIds = (input.styleIds ?? []).filter((s) => typeof s === "string");
   const job = await prisma.multiplierBatchJob.create({
     data: {
       status: "RECEIVING",
       campaignId: input.campaignId || null,
-      styleId: input.styleId || null,
+      // Legacy single-style column keeps the first preset for display compat.
+      styleId: styleIds[0] || input.styleId || null,
+      styleIds,
       namePrefix,
       createdBy: input.createdBy || null,
     },
@@ -969,6 +1018,7 @@ export async function createBulkBatch(input: {
       file: input.files[i],
       campaignId: input.campaignId,
       styleId: input.styleId,
+      styleIds,
       createdBy: input.createdBy,
       namePrefix,
       seq: i + 1,
@@ -1001,6 +1051,7 @@ export async function appendToBulkBatch(
       file: files[i],
       campaignId: job.campaignId,
       styleId: job.styleId,
+      styleIds: job.styleIds,
       createdBy: job.createdBy,
       namePrefix: job.namePrefix,
       seq: job._count.items + i + 1,

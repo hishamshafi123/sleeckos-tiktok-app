@@ -8,8 +8,8 @@
  * days (and the video is past the ZERO_VIEW_MIN_AGE_DAYS grace period) —
  * excluded from the paid rotation to save spend, but still refreshed for free
  * by the daily account sweep, which wakes it back to "captured" if views pick
- * up. Manual campaign refreshes deliberately include dormant rows (operator's
- * explicit spend). "unavailable" is never refreshed.
+ * up. Manual campaign refreshes also exclude dormant rows — dormant links are
+ * never part of any paid refresh again. "unavailable" is never refreshed.
  */
 
 import prisma from "@/lib/db";
@@ -191,10 +191,10 @@ export async function runAnalyticsRefresh(opts: RefreshOptions = {}): Promise<{ 
   const pausedIds = paused.map((p) => p.id);
   const all = await prisma.trackedVideo.findMany({
     where: {
-      // Daily tiered runs only spend on "captured" rows; dormant (0-view)
-      // links drop out of the paid rotation. Manual campaign refreshes are
-      // the operator's deliberate spend, so they include dormant rows.
-      status: ignoreTiers ? { in: ["captured", "dormant"] } : "captured",
+      // Dormant (0-view) links are excluded from ALL paid refreshes — daily
+      // tiered runs and manual campaign refreshes alike (operator decision).
+      // They are still updated for free by the daily sweep.
+      status: "captured",
       // Non-campaign videos are never refreshed (operator decision: refresh
       // budget goes to campaign-attributed videos only).
       campaignId: campaignId ? campaignId : { not: null, notIn: pausedIds },

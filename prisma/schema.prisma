@@ -891,6 +891,7 @@ model MultiplierGroupVariation {
   group     MultiplierGroup    @relation(fields: [groupId], references: [id], onDelete: Cascade)
   videoRef  String             // File path in public/uploads/
   order     Int                @default(0)
+  styleId   String?            // per-video preset assignment (null = inherit group.styleId); set by the multi-preset split
   createdAt DateTime           @default(now())
   outputs   MultiplierOutput[]
 }
@@ -960,6 +961,7 @@ model MultiplierBatchJob {
   namePrefix String?                  // optional "PREFIX 01, 02, …" group naming sequence
   campaignId String?
   styleId    String?
+  styleIds   String[]                 @default([]) // multi-preset selection — files/groups round-robin across these
   createdBy  String?
   items      MultiplierBatchJobItem[]
   createdAt  DateTime                 @default(now())
