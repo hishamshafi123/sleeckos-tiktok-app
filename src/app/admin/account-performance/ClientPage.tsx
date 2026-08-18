@@ -925,9 +925,10 @@ function QuietListModal({
   const [removedIds, setRemovedIds] = useState<Set<string>>(new Set());
   const [confirmId, setConfirmId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
-  // Explicitly toggled sections; effective state is XORed with the default
-  // (all expanded when ≤3 sections, all collapsed otherwise).
-  const [toggled, setToggled] = useState<Set<string>>(new Set());
+  // Selected section chip; null = All sections.
+  const [section, setSection] = useState<string | null>(null);
+  // "Show more" is keyed by section+query so changing either re-caps the list.
+  const [expandedKey, setExpandedKey] = useState<string | null>(null);
 
   const q = query.trim().toLowerCase();
   const visible = rows.filter(
@@ -938,28 +939,30 @@ function QuietListModal({
         (r.driveFolderName ?? "").toLowerCase().includes(q))
   );
 
-  const sections = useMemo(() => {
-    const map = new Map<string, QuietAccount[]>();
+  const sectionCounts = useMemo(() => {
+    const map = new Map<string, number>();
     for (const r of visible) {
       const key = r.sectionName ?? "Other";
-      const arr = map.get(key) ?? [];
-      arr.push(r);
-      map.set(key, arr);
+      map.set(key, (map.get(key) ?? 0) + 1);
     }
     return [...map.entries()].sort(
-      (a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0])
+      (a, b) => b[1] - a[1] || a[0].localeCompare(b[0])
     );
   }, [visible]);
 
-  const defaultExpanded = sections.length <= 3;
-  const isExpanded = (name: string) => defaultExpanded !== toggled.has(name);
-  const toggleSection = (name: string) =>
-    setToggled((s) => {
-      const next = new Set(s);
-      if (next.has(name)) next.delete(name);
-      else next.add(name);
-      return next;
-    });
+  const filtered = useMemo(() => {
+    const list = section
+      ? visible.filter((r) => (r.sectionName ?? "Other") === section)
+      : visible;
+    return [...list].sort(
+      (a, b) => (b.daysQuiet ?? 9999) - (a.daysQuiet ?? 9999)
+    );
+  }, [visible, section]);
+
+  const RENDER_CAP = 150;
+  const listKey = `${section ?? "all"}|${q}`;
+  const shown =
+    expandedKey === listKey ? filtered : filtered.slice(0, RENDER_CAP);
 
   const toneFor = (daysQuiet: number | null): { dot: string; text: string } => {
     if (kind === "unused" || (daysQuiet !== null && daysQuiet >= 7)) {
@@ -1006,106 +1009,133 @@ function QuietListModal({
             className="w-full bg-[#09090b] border border-[#27272a] rounded-md pl-8 pr-3 py-1.5 text-xs text-zinc-200 placeholder:text-zinc-600 focus:outline-none focus:border-zinc-600"
           />
         </div>
-        <div className="max-h-[60vh] overflow-y-auto -mx-1 px-1 space-y-3">
-          {sections.length === 0 ? (
+        {/* Section selector — click a section to see only its accounts */}
+        <div className="flex flex-wrap gap-1.5">
+          <button
+            onClick={() => setSection(null)}
+            className={`text-[11px] rounded-md px-2.5 py-1 border ${
+              section === null
+                ? "bg-zinc-200 text-zinc-900 border-zinc-200 font-medium"
+                : "text-zinc-400 border-[#27272a] hover:text-zinc-200 hover:border-zinc-600"
+            }`}
+          >
+            All ({visible.length})
+          </button>
+          {sectionCounts.map(([name, count]) => (
+            <button
+              key={name}
+              onClick={() => setSection(name)}
+              className={`text-[11px] rounded-md px-2.5 py-1 border ${
+                section === name
+                  ? "bg-zinc-200 text-zinc-900 border-zinc-200 font-medium"
+                  : "text-zinc-400 border-[#27272a] hover:text-zinc-200 hover:border-zinc-600"
+              }`}
+            >
+              {name} ({count})
+            </button>
+          ))}
+        </div>
+        <div className="max-h-[55vh] overflow-y-auto -mx-1 px-1">
+          {shown.length === 0 ? (
             <div className="py-8 text-center text-xs text-zinc-600">
-              {q ? "No accounts match the search." : "No accounts in this bucket."}
+              {q
+                ? "No accounts match the search."
+                : section
+                  ? `No accounts in ${section}.`
+                  : "No accounts in this bucket."}
             </div>
           ) : (
-            sections.map(([name, group]) => (
-              <div key={name}>
-                <button
-                  onClick={() => toggleSection(name)}
-                  className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-zinc-500 hover:text-zinc-300 mb-1"
-                >
-                  <ChevronRight
-                    className={`w-3 h-3 transition-transform ${isExpanded(name) ? "rotate-90" : ""}`}
-                  />
-                  {name}
-                  <span className="text-zinc-600 font-normal normal-case">({group.length})</span>
-                </button>
-                {isExpanded(name) && (
-                  <div className="border border-[#1c1c21] rounded-md overflow-hidden">
-                    {group.map((r) => {
-                      const tone = toneFor(r.daysQuiet);
-                      return (
-                        <div
-                          key={r.accountId}
-                          className="flex items-center justify-between gap-3 px-3 py-2 text-xs border-b border-[#1c1c21] last:border-0"
+            <div className="border border-[#1c1c21] rounded-md overflow-hidden">
+              {shown.map((r) => {
+                const tone = toneFor(r.daysQuiet);
+                return (
+                  <div
+                    key={r.accountId}
+                    className="flex items-center justify-between gap-3 px-3 py-2 text-xs border-b border-[#1c1c21] last:border-0"
+                  >
+                    <span className="flex items-start gap-2 min-w-0">
+                      <span className={`w-1.5 h-1.5 rounded-full mt-1.5 flex-shrink-0 ${tone.dot}`} />
+                      <span className="min-w-0">
+                        <a
+                          href={`https://www.tiktok.com/@${r.accountName}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-zinc-200 hover:text-blue-400 hover:underline"
                         >
-                          <span className="flex items-start gap-2 min-w-0">
-                            <span className={`w-1.5 h-1.5 rounded-full mt-1.5 flex-shrink-0 ${tone.dot}`} />
-                            <span className="min-w-0">
-                              <a
-                                href={`https://www.tiktok.com/@${r.accountName}`}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="text-zinc-200 hover:text-blue-400 hover:underline"
-                              >
-                                @{r.accountName}
-                              </a>
-                              <span className="block text-[11px] truncate max-w-[220px]">
-                                {r.driveFolderId ? (
-                                  <a
-                                    href={`https://drive.google.com/drive/folders/${r.driveFolderId}`}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    className="text-zinc-600 hover:text-blue-400 hover:underline"
-                                  >
-                                    {r.driveFolderName ?? "Drive folder"}
-                                  </a>
-                                ) : (
-                                  <span className="text-zinc-600">{r.driveFolderName ?? "—"}</span>
-                                )}
-                              </span>
-                            </span>
-                          </span>
-                          <span className="flex items-center gap-3 flex-shrink-0">
-                            <span className="text-right">
-                              <span className={`block tabular-nums ${tone.text}`}>
-                                {r.daysQuiet === null ? "never posted" : `${r.daysQuiet} days quiet`}
-                              </span>
-                              <span className="block text-[10px] text-zinc-600">
-                                last post {istDateTime(r.lastPostAt)}
-                              </span>
-                            </span>
-                            {kind === "unused" &&
-                              (confirmId === r.accountId ? (
-                                <span className="flex items-center gap-1.5">
-                                  <button
-                                    onClick={() => handleDelete(r)}
-                                    disabled={deletingId === r.accountId}
-                                    className="text-[11px] text-red-400 hover:text-red-300 border border-red-500/30 rounded px-2 py-1 disabled:opacity-40"
-                                  >
-                                    {deletingId === r.accountId ? (
-                                      <Loader2 className="w-3 h-3 animate-spin" />
-                                    ) : (
-                                      `Confirm delete @${r.accountName}`
-                                    )}
-                                  </button>
-                                  <button
-                                    onClick={() => setConfirmId(null)}
-                                    className="text-[11px] text-zinc-500 hover:text-zinc-300 border border-[#27272a] rounded px-2 py-1"
-                                  >
-                                    Cancel
-                                  </button>
-                                </span>
+                          @{r.accountName}
+                        </a>
+                        <span className="block text-[11px] truncate max-w-[220px]">
+                          {r.driveFolderId ? (
+                            <a
+                              href={`https://drive.google.com/drive/folders/${r.driveFolderId}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-zinc-600 hover:text-blue-400 hover:underline"
+                            >
+                              {r.driveFolderName ?? "Drive folder"}
+                            </a>
+                          ) : (
+                            <span className="text-zinc-600">{r.driveFolderName ?? "—"}</span>
+                          )}
+                        </span>
+                      </span>
+                    </span>
+                    <span className="flex items-center gap-3 flex-shrink-0">
+                      <span className="text-right">
+                        <span className={`block tabular-nums ${tone.text}`}>
+                          {r.daysQuiet === null ? "never posted" : `${r.daysQuiet} days quiet`}
+                        </span>
+                        <span className="block text-[10px] text-zinc-600">
+                          {section === null && (
+                            <span className="text-zinc-500">{r.sectionName ?? "Other"} · </span>
+                          )}
+                          last post {istDateTime(r.lastPostAt)}
+                        </span>
+                      </span>
+                      {kind === "unused" &&
+                        (confirmId === r.accountId ? (
+                          <span className="flex items-center gap-1.5">
+                            <button
+                              onClick={() => handleDelete(r)}
+                              disabled={deletingId === r.accountId}
+                              className="text-[11px] text-red-400 hover:text-red-300 border border-red-500/30 rounded px-2 py-1 disabled:opacity-40"
+                            >
+                              {deletingId === r.accountId ? (
+                                <Loader2 className="w-3 h-3 animate-spin" />
                               ) : (
-                                <button
-                                  onClick={() => setConfirmId(r.accountId)}
-                                  className="text-[11px] text-zinc-600 hover:text-red-400 border border-transparent hover:border-red-500/30 rounded px-2 py-1"
-                                >
-                                  Delete
-                                </button>
-                              ))}
+                                `Confirm delete @${r.accountName}`
+                              )}
+                            </button>
+                            <button
+                              onClick={() => setConfirmId(null)}
+                              className="text-[11px] text-zinc-500 hover:text-zinc-300 border border-[#27272a] rounded px-2 py-1"
+                            >
+                              Cancel
+                            </button>
                           </span>
-                        </div>
-                      );
-                    })}
+                        ) : (
+                          <button
+                            onClick={() => setConfirmId(r.accountId)}
+                            className="text-[11px] text-zinc-600 hover:text-red-400 border border-transparent hover:border-red-500/30 rounded px-2 py-1"
+                          >
+                            Delete
+                          </button>
+                        ))}
+                    </span>
                   </div>
-                )}
-              </div>
-            ))
+                );
+              })}
+            </div>
+          )}
+          {filtered.length > shown.length && (
+            <div className="py-2 text-center">
+              <button
+                onClick={() => setExpandedKey(listKey)}
+                className="text-[11px] text-zinc-400 hover:text-zinc-200 border border-[#27272a] rounded-md px-3 py-1"
+              >
+                Show all {filtered.length} accounts
+              </button>
+            </div>
           )}
         </div>
       </DialogContent>
