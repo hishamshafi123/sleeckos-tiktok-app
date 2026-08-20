@@ -12,6 +12,7 @@ import {
   ChevronRight,
   ArrowUp,
   ArrowDown,
+  ListChecks,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -250,6 +251,7 @@ export default function ClientPage() {
   const [debouncedQuery, setDebouncedQuery] = useState("");
   const [flaggedOnly, setFlaggedOnly] = useState(false);
   const [detailId, setDetailId] = useState<string | null>(null);
+  const [spotCheckOpen, setSpotCheckOpen] = useState(false);
 
   useEffect(() => {
     const t = setTimeout(() => setDebouncedQuery(query.trim()), 300);
@@ -275,6 +277,12 @@ export default function ClientPage() {
             Posting output and view gains across all managed accounts · all times IST
           </p>
         </div>
+        <button
+          onClick={() => setSpotCheckOpen(true)}
+          className="flex items-center gap-1.5 text-xs text-zinc-300 hover:text-white border border-[#27272a] hover:border-zinc-600 rounded-md px-3 py-1.5 transition-colors"
+        >
+          <ListChecks className="w-3.5 h-3.5" /> Spot-check campaigns
+        </button>
       </div>
 
       {/* ── KPI strip ──────────────────────────────────────────────────── */}
@@ -411,6 +419,7 @@ export default function ClientPage() {
       </section>
 
       {detailId && <DrillDown accountId={detailId} onClose={() => setDetailId(null)} />}
+      <SpotCheckModal open={spotCheckOpen} onClose={() => setSpotCheckOpen(false)} />
     </div>
   );
 }
@@ -1324,5 +1333,501 @@ function DrillDown({ accountId, onClose }: { accountId: string; onClose: () => v
         </div>
       </div>
     </div>
+  );
+}
+
+// ── Campaign Spot-Check modal ───────────────────────────────────────────────
+// Pick campaigns + a sample size, preview the last N published posts per
+// campaign (free), then pay for a targeted refresh of exactly the sampled
+// captured videos. Each paid run is saved; the previous overlapping run is
+// shown for avg-views comparison. Dormant/unavailable links are never sent to
+// the paid provider (operator rule) — they render muted in the table.
+
+type SpotCheckCampaignOpt = { id: string; title: string; status: string };
+
+type SpotCheckPostRow = {
+  postJobId: string;
+  publishedAt: string;
+  accountHandle: string;
+  link: string;
+  linkIsProfileFallback: boolean;
+  video: {
+    id: string;
+    url: string;
+    views: number;
+    likes: number;
+    lastRefreshedAt: string | null;
+    status: string;
+  } | null;
+};
+
+type SpotCheckCampaignSample = {
+  campaignId: string;
+  title: string;
+  posts: SpotCheckPostRow[];
+  withLinks: number;
+  withStats: number;
+  avgViews: number | null;
+};
+
+type SpotCheckSample = { sampleSize: number; campaigns: SpotCheckCampaignSample[] };
+
+type SpotCheckTotalsEntry = {
+  campaignId: string;
+  title: string;
+  posts: number;
+  withLinks: number;
+  withStats: number;
+  avgViews: number | null;
+};
+
+type SpotCheckRunSummary = {
+  id: string;
+  createdAt: string;
+  createdBy: string | null;
+  campaignIds: string[];
+  sampleSize: number;
+  refreshedCount: number;
+  totals: SpotCheckTotalsEntry[];
+};
+
+type SpotCheckRunResult = {
+  run: SpotCheckRunSummary;
+  sample: SpotCheckSample;
+  previousRun: SpotCheckRunSummary | null;
+  aborted: { kind: string; message: string } | null;
+};
+
+const SPOT_SAMPLE_SIZES = [10, 25, 50, 100];
+const SPOT_API = "/api/admin/account-performance/spot-check";
+
+async function fetchJson(url: string, init?: RequestInit) {
+  const res = await fetch(url, init);
+  if (!res.ok) throw new Error((await res.json().catch(() => ({})))?.error || `HTTP ${res.status}`);
+  return res.json();
+}
+
+function SpotCheckDelta({ prev, curr }: { prev: number; curr: number }) {
+  if (prev <= 0) {
+    return (
+      <span className="inline-flex items-center gap-1 text-zinc-500">
+        {fmt(prev)} → {fmt(curr)}
+      </span>
+    );
+  }
+  const pct = Math.round(((curr - prev) / prev) * 100);
+  const up = pct > 0;
+  const flat = pct === 0;
+  return (
+    <span
+      className={`inline-flex items-center gap-1 ${
+        flat ? "text-zinc-500" : up ? "text-green-400" : "text-red-400"
+      }`}
+    >
+      {flat ? (
+        <Minus className="w-3 h-3" />
+      ) : up ? (
+        <TrendingUp className="w-3 h-3" />
+      ) : (
+        <TrendingDown className="w-3 h-3" />
+      )}
+      {fmt(prev)} → {fmt(curr)} ({pct > 0 ? "+" : ""}
+      {pct}%)
+    </span>
+  );
+}
+
+function SpotCheckModal({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const [campaigns, setCampaigns] = useState<SpotCheckCampaignOpt[] | null>(null);
+  const [campaignsError, setCampaignsError] = useState<string | null>(null);
+  const [selected, setSelected] = useState<string[]>([]);
+  const [pickerQuery, setPickerQuery] = useState("");
+  const [sampleSize, setSampleSize] = useState(25);
+
+  const [sample, setSample] = useState<SpotCheckSample | null>(null);
+  const [sampleLoading, setSampleLoading] = useState(false);
+  const [sampleError, setSampleError] = useState<string | null>(null);
+
+  const [running, setRunning] = useState(false);
+  const [runError, setRunError] = useState<string | null>(null);
+  const [lastRun, setLastRun] = useState<SpotCheckRunResult | null>(null);
+
+  const [history, setHistory] = useState<SpotCheckRunSummary[] | null>(null);
+
+  const loadHistory = useCallback(() => {
+    fetchJson(`${SPOT_API}/history`)
+      .then((d) => setHistory(d.runs))
+      .catch(() => setHistory([])); // history is auxiliary — fail quiet
+  }, []);
+
+  // Load the campaign list (once) and past runs (every open).
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    if (!campaigns && !campaignsError) {
+      fetchJson(`${SPOT_API}/campaigns`)
+        .then((d) => !cancelled && setCampaigns(d.campaigns))
+        .catch((e) => !cancelled && setCampaignsError(e.message));
+    }
+    loadHistory();
+    return () => {
+      cancelled = true;
+    };
+  }, [open, campaigns, campaignsError, loadHistory]);
+
+  const titleById = useMemo(
+    () => new Map((campaigns ?? []).map((c) => [c.id, c.title])),
+    [campaigns]
+  );
+
+  const pq = pickerQuery.trim().toLowerCase();
+  const pickerList = (campaigns ?? []).filter(
+    (c) => !selected.includes(c.id) && (!pq || c.title.toLowerCase().includes(pq))
+  );
+
+  const loadSample = async () => {
+    setSampleLoading(true);
+    setSampleError(null);
+    setLastRun(null); // a new preview invalidates the previous comparison
+    setRunError(null);
+    try {
+      const params = new URLSearchParams({
+        campaignIds: selected.join(","),
+        sampleSize: String(sampleSize),
+      });
+      setSample(await fetchJson(`${SPOT_API}?${params}`));
+    } catch (err: any) {
+      setSample(null);
+      setSampleError(err?.message || "Failed to load posts");
+    } finally {
+      setSampleLoading(false);
+    }
+  };
+
+  const collectLatest = async () => {
+    setRunning(true);
+    setRunError(null);
+    try {
+      const result: SpotCheckRunResult = await fetchJson(SPOT_API, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ campaignIds: selected, sampleSize }),
+      });
+      setLastRun(result);
+      setSample(result.sample);
+      loadHistory();
+      if (result.aborted) {
+        toast.error(`Refresh aborted (${result.aborted.kind}): ${result.aborted.message}`);
+      } else {
+        toast.success(`Collected latest views for ${result.run.refreshedCount} videos`);
+      }
+    } catch (err: any) {
+      setRunError(err?.message || "Refresh failed");
+    } finally {
+      setRunning(false);
+    }
+  };
+
+  // Paid-refresh target count for the current preview (captured videos only).
+  const refreshTargets =
+    sample?.campaigns.reduce(
+      (a, c) => a + c.posts.filter((r) => r.video?.status === "captured").length,
+      0
+    ) ?? 0;
+
+  const prevTotalsById = new Map(
+    (lastRun?.previousRun?.totals ?? []).map((t) => [t.campaignId, t])
+  );
+
+  return (
+    <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="bg-zinc-950 border border-zinc-800 sm:max-w-3xl max-h-[85vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle className="text-white text-sm">Spot-check campaigns</DialogTitle>
+        </DialogHeader>
+
+        {/* ── Picker ──────────────────────────────────────────────────── */}
+        <div className="space-y-2">
+          {selected.length > 0 && (
+            <div className="flex flex-wrap gap-1.5">
+              {selected.map((id) => (
+                <span
+                  key={id}
+                  className="inline-flex items-center gap-1 text-[11px] text-zinc-200 border border-[#27272a] rounded-md pl-2 pr-1 py-0.5"
+                >
+                  {titleById.get(id) ?? id}
+                  <button
+                    onClick={() => setSelected((s) => s.filter((x) => x !== id))}
+                    aria-label={`Remove ${titleById.get(id) ?? id}`}
+                    className="text-zinc-500 hover:text-zinc-200 p-0.5"
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
+          <div className="relative">
+            <Search className="w-3.5 h-3.5 text-zinc-600 absolute left-2.5 top-1/2 -translate-y-1/2" />
+            <input
+              value={pickerQuery}
+              onChange={(e) => setPickerQuery(e.target.value)}
+              placeholder="Search campaigns"
+              className="w-full bg-[#09090b] border border-[#27272a] rounded-md pl-8 pr-3 py-1.5 text-xs text-zinc-200 placeholder:text-zinc-600 focus:outline-none focus:border-zinc-600"
+            />
+          </div>
+          <div className="max-h-[140px] overflow-y-auto border border-[#1c1c21] rounded-md">
+            {campaignsError ? (
+              <div className="px-3 py-4 text-center text-xs text-red-400">{campaignsError}</div>
+            ) : campaigns === null ? (
+              <div className="px-3 py-4 flex items-center justify-center gap-2 text-xs text-zinc-500">
+                <Loader2 className="w-3.5 h-3.5 animate-spin" /> Loading campaigns…
+              </div>
+            ) : pickerList.length === 0 ? (
+              <div className="px-3 py-4 text-center text-xs text-zinc-600">
+                {pq ? "No campaigns match the search." : "No more campaigns to add."}
+              </div>
+            ) : (
+              pickerList.slice(0, 50).map((c) => (
+                <button
+                  key={c.id}
+                  onClick={() => setSelected((s) => [...s, c.id])}
+                  className="w-full flex items-center justify-between gap-2 px-3 py-1.5 text-xs text-left border-b border-[#1c1c21] last:border-0 hover:bg-zinc-900/40"
+                >
+                  <span className="text-zinc-200 truncate">{c.title}</span>
+                  <span className="text-[10px] text-zinc-600 flex-shrink-0">{c.status}</span>
+                </button>
+              ))
+            )}
+          </div>
+        </div>
+
+        {/* ── Sample size + actions ───────────────────────────────────── */}
+        <div className="flex items-center justify-between gap-3 flex-wrap">
+          <div className="flex items-center gap-2">
+            <span className="text-[11px] text-zinc-500">Last</span>
+            <div className="flex border border-[#27272a] rounded-md overflow-hidden">
+              {SPOT_SAMPLE_SIZES.map((n) => (
+                <button
+                  key={n}
+                  onClick={() => setSampleSize(n)}
+                  className={`text-xs px-3 py-1.5 transition-colors ${
+                    sampleSize === n ? "bg-zinc-800 text-white" : "text-zinc-500 hover:text-zinc-300"
+                  }`}
+                >
+                  {n}
+                </button>
+              ))}
+            </div>
+            <span className="text-[11px] text-zinc-500">posts per campaign</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={loadSample}
+              disabled={selected.length === 0 || sampleLoading || running}
+              className="flex items-center gap-1.5 text-xs text-zinc-300 hover:text-white border border-[#27272a] hover:border-zinc-600 rounded-md px-3 py-1.5 disabled:opacity-40 disabled:hover:text-zinc-300 transition-colors"
+            >
+              {sampleLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : null}
+              Load posts
+            </button>
+            <button
+              onClick={collectLatest}
+              disabled={!sample || running || sampleLoading || refreshTargets === 0}
+              title={
+                refreshTargets === 0 && sample
+                  ? "No captured videos in this sample to refresh"
+                  : `Refreshes ${refreshTargets} captured videos via the paid provider`
+              }
+              className="flex items-center gap-1.5 text-xs text-zinc-900 bg-zinc-200 hover:bg-white rounded-md px-3 py-1.5 font-medium disabled:opacity-40 disabled:hover:bg-zinc-200 transition-colors"
+            >
+              {running ? (
+                <Loader2 className="w-3 h-3 animate-spin" />
+              ) : (
+                <RefreshCw className="w-3 h-3" />
+              )}
+              Collect latest views{sample ? ` (${refreshTargets})` : ""}
+            </button>
+          </div>
+        </div>
+
+        {runError && (
+          <div className="flex items-center gap-2 border border-red-500/20 bg-red-500/5 rounded-lg px-3 py-2 text-xs text-red-400">
+            <AlertCircle className="w-3.5 h-3.5" /> {runError}
+          </div>
+        )}
+        {lastRun?.aborted && (
+          <div className="flex items-center gap-2 border border-amber-500/20 bg-amber-500/5 rounded-lg px-3 py-2 text-xs text-amber-400">
+            <AlertCircle className="w-3.5 h-3.5" />
+            Refresh aborted ({lastRun.aborted.kind}) after {lastRun.run.refreshedCount} videos —
+            results below are partial. {lastRun.aborted.message}
+          </div>
+        )}
+
+        {/* ── Results ─────────────────────────────────────────────────── */}
+        {sampleError ? (
+          <SectionError message={sampleError} onRetry={loadSample} />
+        ) : sampleLoading ? (
+          <SkeletonRows rows={6} />
+        ) : sample ? (
+          sample.campaigns.length === 0 || sample.campaigns.every((c) => c.posts.length === 0) ? (
+            <div className="border border-[#27272a] rounded-lg px-4 py-8 text-center text-xs text-zinc-600">
+              No published posts found for the selected campaigns.
+            </div>
+          ) : (
+            <div className="space-y-5">
+              {sample.campaigns.map((c) => {
+                const prev = prevTotalsById.get(c.campaignId);
+                const last10 = c.posts
+                  .slice(0, 10)
+                  .filter((r) => r.video && r.video.status !== "unresolved");
+                const last10Avg =
+                  c.posts.length > 10 && last10.length > 0
+                    ? Math.round(last10.reduce((a, r) => a + r.video!.views, 0) / last10.length)
+                    : null;
+                return (
+                  <div key={c.campaignId} className="space-y-2">
+                    <div className="flex items-center justify-between gap-2 flex-wrap">
+                      <div className="text-xs font-semibold text-zinc-200">{c.title}</div>
+                      {prev && prev.avgViews !== null && c.avgViews !== null && (
+                        <div className="text-[11px]">
+                          <SpotCheckDelta prev={prev.avgViews} curr={c.avgViews} />
+                          {lastRun?.previousRun && lastRun.previousRun.sampleSize !== sample.sampleSize && (
+                            <span className="text-zinc-600 ml-1.5">
+                              (previous run N={lastRun.previousRun.sampleSize},{" "}
+                              {istDateTime(lastRun.previousRun.createdAt)})
+                            </span>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                    <div className="grid grid-cols-4 gap-2">
+                      <KpiCard
+                        label={`Avg views (N=${c.posts.length})`}
+                        value={c.avgViews === null ? "—" : fmt(c.avgViews)}
+                        title={c.avgViews === null ? undefined : full(c.avgViews)}
+                      />
+                      {last10Avg !== null ? (
+                        <KpiCard label="Avg views (last 10)" value={fmt(last10Avg)} title={full(last10Avg)} />
+                      ) : (
+                        <KpiCard label="With stats" value={full(c.withStats)} />
+                      )}
+                      <KpiCard label="Posts" value={full(c.posts.length)} />
+                      <KpiCard label="With links" value={full(c.withLinks)} />
+                    </div>
+                    <div className="border border-[#27272a] rounded-lg overflow-hidden">
+                      <table className="w-full text-xs">
+                        <thead>
+                          <tr className="border-b border-[#27272a] bg-[#0c0c10]">
+                            <th className="text-left px-3 py-2 text-zinc-500 font-medium">Posted (IST)</th>
+                            <th className="text-left px-3 py-2 text-zinc-500 font-medium">Link</th>
+                            <th className="text-right px-3 py-2 text-zinc-500 font-medium">Views</th>
+                            <th className="text-right px-3 py-2 text-zinc-500 font-medium">Likes</th>
+                            <th className="text-right px-3 py-2 text-zinc-500 font-medium">Last checked</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {c.posts.map((r) => {
+                            const dormant = r.video?.status === "dormant";
+                            return (
+                              <tr
+                                key={r.postJobId}
+                                className={`border-b border-[#1c1c21] last:border-0 ${
+                                  dormant ? "opacity-50" : ""
+                                }`}
+                              >
+                                <td className="px-3 py-2 text-zinc-500 whitespace-nowrap">
+                                  {istDateTime(r.publishedAt)}
+                                </td>
+                                <td className="px-3 py-2">
+                                  <a
+                                    href={r.link}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="text-blue-400 hover:underline"
+                                  >
+                                    Open
+                                  </a>
+                                  <span className="text-zinc-600 ml-2">@{r.accountHandle}</span>
+                                  {r.linkIsProfileFallback && (
+                                    <span className="ml-1.5 text-[10px] text-zinc-500 border border-[#27272a] rounded px-1 py-px">
+                                      profile
+                                    </span>
+                                  )}
+                                  {dormant && (
+                                    <span
+                                      className="ml-1.5 text-[10px] text-amber-500/80 border border-amber-500/20 rounded px-1 py-px"
+                                      title="0-view link — never sent to the paid provider"
+                                    >
+                                      dormant
+                                    </span>
+                                  )}
+                                  {r.video && r.video.status !== "captured" && !dormant && (
+                                    <span className="ml-1.5 text-[10px] text-zinc-600">
+                                      ({r.video.status})
+                                    </span>
+                                  )}
+                                </td>
+                                <td className="px-3 py-2 text-right text-zinc-200 tabular-nums">
+                                  {r.video ? <span title={full(r.video.views)}>{fmt(r.video.views)}</span> : "—"}
+                                </td>
+                                <td className="px-3 py-2 text-right text-zinc-400 tabular-nums">
+                                  {r.video ? <span title={full(r.video.likes)}>{fmt(r.video.likes)}</span> : "—"}
+                                </td>
+                                <td className="px-3 py-2 text-right text-zinc-500 whitespace-nowrap">
+                                  {r.video?.lastRefreshedAt ? istDateTime(r.video.lastRefreshedAt) : "never"}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )
+        ) : (
+          <div className="border border-dashed border-[#27272a] rounded-lg px-4 py-8 text-center text-xs text-zinc-600">
+            Pick one or more campaigns, then load posts to preview the sample.
+          </div>
+        )}
+
+        {/* ── Past runs ───────────────────────────────────────────────── */}
+        <div className="space-y-2">
+          <div className="text-xs font-semibold text-zinc-300">Past runs</div>
+          {history === null ? (
+            <SkeletonRows rows={3} height="h-6" />
+          ) : history.length === 0 ? (
+            <div className="text-[11px] text-zinc-600">No saved runs yet.</div>
+          ) : (
+            <div className="border border-[#1c1c21] rounded-md overflow-hidden">
+              {history.slice(0, 10).map((r) => {
+                const avgs = r.totals.filter((t) => t.avgViews !== null);
+                const overallAvg =
+                  avgs.length > 0
+                    ? Math.round(avgs.reduce((a, t) => a + t.avgViews!, 0) / avgs.length)
+                    : null;
+                return (
+                  <div
+                    key={r.id}
+                    className="flex items-center justify-between gap-3 px-3 py-1.5 text-[11px] border-b border-[#1c1c21] last:border-0"
+                  >
+                    <span className="text-zinc-500 whitespace-nowrap">{istDateTime(r.createdAt)}</span>
+                    <span className="text-zinc-400 truncate min-w-0">
+                      {r.campaignIds.map((id) => titleById.get(id) ?? "?").join(", ")}
+                    </span>
+                    <span className="text-zinc-500 flex-shrink-0 tabular-nums">
+                      N={r.sampleSize} · avg {overallAvg === null ? "—" : fmt(overallAvg)} ·{" "}
+                      {r.refreshedCount} refreshed
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }

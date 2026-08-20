@@ -1735,6 +1735,22 @@ model AnalyticsRun {
   finishedAt DateTime?
 }
 
+/// Saved Campaign Spot-Check run (Account Performance page). One row per
+/// "Collect latest views" run: which campaigns were sampled, at what sample
+/// size, how many videos were refreshed via the paid provider, and the
+/// per-campaign totals. totalsJson is [{campaignId, title, posts, withLinks,
+/// withStats, avgViews}] — view counts are stored as plain JS numbers because
+/// JSON cannot serialize BigInt (safe: view counts << 2^53).
+model CampaignSpotCheck {
+  id             String   @id @default(uuid())
+  createdBy      String?
+  createdAt      DateTime @default(now())
+  campaignIds    String[]
+  sampleSize     Int
+  totalsJson     Json
+  refreshedCount Int      @default(0)
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // Client-facing campaign tracking share links
 // ═══════════════════════════════════════════════════════════════════════════════
