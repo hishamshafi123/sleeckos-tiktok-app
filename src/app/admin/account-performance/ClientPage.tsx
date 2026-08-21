@@ -1388,6 +1388,9 @@ type SpotCheckRunSummary = {
   campaignIds: string[];
   sampleSize: number;
   refreshedCount: number;
+  capturedNow: number;
+  noMatch: number;
+  accountLookups: number;
   totals: SpotCheckTotalsEntry[];
 };
 
@@ -1396,6 +1399,13 @@ type SpotCheckRunResult = {
   sample: SpotCheckSample;
   previousRun: SpotCheckRunSummary | null;
   aborted: { kind: string; message: string } | null;
+  capture: {
+    accountLookups: number;
+    capturedNow: number;
+    noMatch: number;
+    unmatchedPostJobIds: string[];
+    skippedAccounts: string[];
+  };
 };
 
 const SPOT_SAMPLE_SIZES = [10, 25, 50, 100];
@@ -1519,7 +1529,9 @@ function SpotCheckModal({ open, onClose }: { open: boolean; onClose: () => void 
       if (result.aborted) {
         toast.error(`Refresh aborted (${result.aborted.kind}): ${result.aborted.message}`);
       } else {
-        toast.success(`Collected latest views for ${result.run.refreshedCount} videos`);
+        toast.success(
+          `Found ${result.capture.capturedNow} links · refreshed ${result.run.refreshedCount} videos`
+        );
       }
     } catch (err: any) {
       setRunError(err?.message || "Refresh failed");
@@ -1528,10 +1540,17 @@ function SpotCheckModal({ open, onClose }: { open: boolean; onClose: () => void 
     }
   };
 
-  // Paid-refresh target count for the current preview (captured videos only).
+  // Paid-refresh target count + link-less posts for the current preview.
+  // The run also hunts for the missing links (one profile lookup per account).
   const refreshTargets =
     sample?.campaigns.reduce(
       (a, c) => a + c.posts.filter((r) => r.video?.status === "captured").length,
+      0
+    ) ?? 0;
+  const missingLinks =
+    sample?.campaigns.reduce(
+      (a, c) =>
+        a + c.posts.filter((r) => !r.video || r.video.status === "unresolved").length,
       0
     ) ?? 0;
 
@@ -1632,11 +1651,11 @@ function SpotCheckModal({ open, onClose }: { open: boolean; onClose: () => void 
             </button>
             <button
               onClick={collectLatest}
-              disabled={!sample || running || sampleLoading || refreshTargets === 0}
+              disabled={!sample || running || sampleLoading || refreshTargets + missingLinks === 0}
               title={
-                refreshTargets === 0 && sample
-                  ? "No captured videos in this sample to refresh"
-                  : `Refreshes ${refreshTargets} captured videos via the paid provider`
+                sample && refreshTargets + missingLinks === 0
+                  ? "Nothing to do — no captured videos to refresh and no missing links"
+                  : `Finds missing links (one profile lookup per account, ${missingLinks} posts need one) and refreshes ${refreshTargets} captured videos`
               }
               className="flex items-center gap-1.5 text-xs text-zinc-900 bg-zinc-200 hover:bg-white rounded-md px-3 py-1.5 font-medium disabled:opacity-40 disabled:hover:bg-zinc-200 transition-colors"
             >
@@ -1645,10 +1664,35 @@ function SpotCheckModal({ open, onClose }: { open: boolean; onClose: () => void 
               ) : (
                 <RefreshCw className="w-3 h-3" />
               )}
-              Collect latest views{sample ? ` (${refreshTargets})` : ""}
+              Collect latest views
+              {sample ? ` (${refreshTargets + missingLinks})` : ""}
             </button>
           </div>
         </div>
+
+        {sample && (
+          <div className="text-[10px] text-zinc-600 -my-1">
+            Collect latest views also finds missing links (one profile lookup per account
+            {missingLinks > 0 ? ` — ${missingLinks} sampled posts need one` : ""}) and fetches
+            current stats for the {refreshTargets} captured videos.
+          </div>
+        )}
+
+        {lastRun && (
+          <div className="text-[11px] text-zinc-500">
+            links found: <span className="text-zinc-200 tabular-nums">{lastRun.capture.capturedNow}</span>
+            {" · "}refreshed: <span className="text-zinc-200 tabular-nums">{lastRun.run.refreshedCount}</span>
+            {" · "}still unmatched: <span className="text-zinc-200 tabular-nums">{lastRun.capture.noMatch}</span>
+            <span className="text-zinc-600"> ({lastRun.capture.accountLookups} account lookups)</span>
+            {lastRun.capture.skippedAccounts.length > 0 && (
+              <span className="text-amber-400/80">
+                {" — "}skipped {lastRun.capture.skippedAccounts.length} account
+                {lastRun.capture.skippedAccounts.length !== 1 ? "s" : ""} over the 25-lookup limit:{" "}
+                {lastRun.capture.skippedAccounts.map((h) => `@${h}`).join(", ")}
+              </span>
+            )}
+          </div>
+        )}
 
         {runError && (
           <div className="flex items-center gap-2 border border-red-500/20 bg-red-500/5 rounded-lg px-3 py-2 text-xs text-red-400">
@@ -1748,11 +1792,19 @@ function SpotCheckModal({ open, onClose }: { open: boolean; onClose: () => void 
                                     Open
                                   </a>
                                   <span className="text-zinc-600 ml-2">@{r.accountHandle}</span>
-                                  {r.linkIsProfileFallback && (
-                                    <span className="ml-1.5 text-[10px] text-zinc-500 border border-[#27272a] rounded px-1 py-px">
-                                      profile
-                                    </span>
-                                  )}
+                                  {r.linkIsProfileFallback &&
+                                    (lastRun?.capture.unmatchedPostJobIds.includes(r.postJobId) ? (
+                                      <span
+                                        className="ml-1.5 text-[10px] text-zinc-600 border border-[#27272a] rounded px-1 py-px"
+                                        title="Profile lookup ran for this account but no video matched this post"
+                                      >
+                                        no link found
+                                      </span>
+                                    ) : (
+                                      <span className="ml-1.5 text-[10px] text-zinc-500 border border-[#27272a] rounded px-1 py-px">
+                                        profile
+                                      </span>
+                                    ))}
                                   {dormant && (
                                     <span
                                       className="ml-1.5 text-[10px] text-amber-500/80 border border-amber-500/20 rounded px-1 py-px"

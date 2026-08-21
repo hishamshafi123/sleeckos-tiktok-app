@@ -1,0 +1,4 @@
+-- AlterTable
+ALTER TABLE "CampaignSpotCheck" ADD COLUMN     "accountLookups" INTEGER NOT NULL DEFAULT 0,
+ADD COLUMN     "capturedNow" INTEGER NOT NULL DEFAULT 0,
+ADD COLUMN     "noMatch" INTEGER NOT NULL DEFAULT 0;

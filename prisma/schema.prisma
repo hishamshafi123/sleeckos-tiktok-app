@@ -1749,6 +1749,10 @@ model CampaignSpotCheck {
   sampleSize     Int
   totalsJson     Json
   refreshedCount Int      @default(0)
+  // Capture pass (pre-refresh link hunt, captureMethod "spot_check"):
+  capturedNow    Int      @default(0) // sample posts this run linked to a video
+  noMatch        Int      @default(0) // sample posts still without a link after the run
+  accountLookups Int      @default(0) // paid profile calls made by the capture pass
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

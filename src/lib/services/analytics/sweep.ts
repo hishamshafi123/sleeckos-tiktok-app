@@ -93,6 +93,279 @@ interface CampaignInfo {
   pool: CaptionPool | null;
 }
 
+/** Per-campaign info cache shared across accounts within a run. */
+export type CampaignInfoCache = Map<string, CampaignInfo | null>;
+
+/** Campaign status + caption pool, cached per campaign (module-scope helper). */
+async function getCampaignInfo(
+  cache: CampaignInfoCache,
+  campaignId: string
+): Promise<CampaignInfo | null> {
+  if (cache.has(campaignId)) return cache.get(campaignId)!;
+  const campaign = await prisma.campaign.findUnique({
+    where: { id: campaignId },
+    select: { title: true, status: true, fixedTexts: true },
+  });
+  if (!campaign) {
+    cache.set(campaignId, null);
+    return null;
+  }
+  const all = [
+    ...new Set(
+      [
+        ...(campaign.fixedTexts ?? []),
+        // Legacy misattribution (same as recover.ts): unparsed files posted
+        // with the raw filename as caption — "(Title) ..." / "Copy of (Title) ...".
+        ...(campaign.title ? [`(${campaign.title})`, `Copy of (${campaign.title})`] : []),
+      ]
+        .map(normalizeCaption)
+        .filter((c) => c.length >= MIN_CAPTION_LENGTH)
+    ),
+  ];
+  const pool: CaptionPool | null =
+    all.length === 0
+      ? null
+      : {
+          strong: all.filter((c) => c.length >= MIN_STRONG_CAPTION_LENGTH),
+          weak: all.filter((c) => c.length < MIN_STRONG_CAPTION_LENGTH),
+        };
+  const info: CampaignInfo = { status: campaign.status, pool };
+  cache.set(campaignId, info);
+  return info;
+}
+
+export interface CaptureJobInput {
+  id: string;
+  accountId: string;
+  campaignId: string | null;
+  publishedAt: Date | null;
+  tiktokPublishId: string | null;
+  driveFileId: string;
+}
+
+export interface CaptureJobsResult {
+  succeeded: number;
+  failed: number;
+  skipped: number;
+}
+
+/**
+ * Match one account's uncaptured terminal-published jobs against that
+ * account's latest-videos payload, and persist a captured TrackedVideo per
+ * match. Shared by the daily sweep (captureMethod "daily_sweep") and the
+ * campaign spot-check capture pass (captureMethod "spot_check").
+ *
+ * Matching rules (identical for both callers):
+ *  a. Caption match (campaign jobs): strong captions (normalized length ≥ 15)
+ *     match on prefix alone; weak captions (3–14) must also sit within ±30 min
+ *     of the confirmed publish AND be the only candidate.
+ *  b. Time-window fallback (only rule for non-campaign jobs): createTime
+ *     within [publishedAt − 20 min, publishedAt + 5 min], preferring the
+ *     candidate closest BEFORE publishedAt.
+ *
+ * Rails: a videoId already attributed to ANY TrackedVideo row is never
+ * stolen, each videoId is handed out at most once per call, PAUSED-campaign
+ * jobs are skipped, and non-matching jobs are left untouched (no placeholder
+ * writes) so a later pass can retry them.
+ *
+ * On a match: upsert the TrackedVideo (replacing the unresolved placeholder
+ * row when one exists), write the initial snapshot, and write the real video
+ * URL back to the ScheduledPost so History links to the video.
+ *
+ * `trackedById` — when the caller already queried which payload videoIds are
+ * attributed (the sweep does, for its free stats refresh), pass that map to
+ * avoid a duplicate query; otherwise the helper queries it here.
+ * `timezone` is accepted for caller symmetry but currently unused — the
+ * capture path writes one initial snapshot per match, no tz-day dedup.
+ */
+export async function captureJobsFromAccountVideos(opts: {
+  account: { id: string; tiktokUsername: string };
+  jobs: CaptureJobInput[]; // uncaptured terminal-published jobs for this account
+  latestVideos: ProviderVideo[];
+  timezone: string;
+  now: Date;
+  captureMethod: string;
+  campaignCache?: CampaignInfoCache;
+  trackedById?: ReadonlyMap<string, unknown>;
+  logTag?: string;
+}): Promise<CaptureJobsResult> {
+  const {
+    account,
+    jobs,
+    latestVideos: latest,
+    now,
+    captureMethod,
+    logTag = "[Sweep]",
+  } = opts;
+  const campaignCache = opts.campaignCache ?? new Map<string, CampaignInfo | null>();
+  const counters: CaptureJobsResult = { succeeded: 0, failed: 0, skipped: 0 };
+
+  // Videos already attributed to ANY TrackedVideo row are untouchable.
+  let trackedById: ReadonlyMap<string, unknown>;
+  if (opts.trackedById) {
+    trackedById = opts.trackedById;
+  } else {
+    const tracked = await prisma.trackedVideo.findMany({
+      where: { tiktokVideoId: { in: latest.map((v) => v.videoId) } },
+      select: { tiktokVideoId: true },
+    });
+    trackedById = new Map(tracked.map((t) => [t.tiktokVideoId, t]));
+  }
+
+  const usedVideoIds = new Set<string>();
+
+  for (const job of jobs) {
+    if (!job.publishedAt) {
+      counters.skipped++;
+      continue;
+    }
+    const publishedMs = job.publishedAt.getTime();
+    const available = latest.filter(
+      (v) => !trackedById.has(v.videoId) && !usedVideoIds.has(v.videoId)
+    );
+
+    let match: ProviderVideo | null = null;
+    let confidence = "high";
+
+    // (a) Caption match for campaign jobs. PAUSED campaigns are never
+    // matched — their jobs stay uncaptured until the campaign is resumed.
+    if (job.campaignId) {
+      const info = await getCampaignInfo(campaignCache, job.campaignId);
+      if (info?.status === "PAUSED") {
+        counters.skipped++;
+        continue;
+      }
+      const pool = info?.pool;
+      if (pool) {
+        const strongMatches = available
+          .filter((v) =>
+            pool.strong.some((c) => normalizeCaption(v.text || "").startsWith(c))
+          )
+          .sort(
+            (a, b) =>
+              Math.abs(a.createTime.getTime() - publishedMs) -
+              Math.abs(b.createTime.getTime() - publishedMs)
+          );
+        if (strongMatches.length > 0) {
+          match = strongMatches[0];
+          confidence = strongMatches.length === 1 ? "high" : "medium";
+        } else if (pool.weak.length > 0) {
+          const weakMatches = available
+            .filter((v) =>
+              pool.weak.some((c) => normalizeCaption(v.text || "").startsWith(c))
+            )
+            .filter((v) => Math.abs(v.createTime.getTime() - publishedMs) <= WEAK_MATCH_WINDOW_MS);
+          if (weakMatches.length === 1) {
+            match = weakMatches[0];
+            confidence = "low"; // short caption + time window — less certain
+          }
+        }
+      }
+    }
+
+    // (b) Time-window fallback (only rule for non-campaign jobs).
+    if (!match) {
+      const inWindow = available.filter(
+        (v) =>
+          v.createTime.getTime() >= publishedMs - WINDOW_BEFORE_MS &&
+          v.createTime.getTime() <= publishedMs + WINDOW_AFTER_MS
+      );
+      // Prefer the candidate closest BEFORE publishedAt (videos are created
+      // before our confirmation); fall back to closest overall.
+      const before = inWindow
+        .filter((v) => v.createTime.getTime() <= publishedMs)
+        .sort((a, b) => b.createTime.getTime() - a.createTime.getTime());
+      const after = inWindow
+        .filter((v) => v.createTime.getTime() > publishedMs)
+        .sort((a, b) => a.createTime.getTime() - b.createTime.getTime());
+      const ranked = [...before, ...after];
+      if (ranked.length > 0) {
+        match = ranked[0];
+        confidence = inWindow.length === 1 ? "high" : "medium";
+      }
+    }
+
+    if (!match) {
+      // No placeholder row: a later pass retries the job; the campaign
+      // "Recover links" button (fetches 50 deep) is the backstop.
+      counters.skipped++;
+      continue;
+    }
+
+    usedVideoIds.add(match.videoId);
+    const placeholderId = unresolvedPlaceholderId(job.id);
+
+    try {
+      const row = await prisma.trackedVideo.upsert({
+        where: { tiktokVideoId: placeholderId },
+        create: {
+          tiktokVideoId: match.videoId,
+          url: match.url,
+          accountId: job.accountId,
+          campaignId: job.campaignId,
+          postJobId: job.id,
+          publishedAt: job.publishedAt,
+          captureMethod,
+          confidence,
+          status: "captured",
+          views: match.views,
+          likes: match.likes,
+          comments: match.comments,
+          shares: match.shares,
+          lastRefreshedAt: now,
+        },
+        update: {
+          tiktokVideoId: match.videoId,
+          url: match.url,
+          campaignId: job.campaignId,
+          captureMethod,
+          confidence,
+          status: "captured",
+          views: match.views,
+          likes: match.likes,
+          comments: match.comments,
+          shares: match.shares,
+          lastRefreshedAt: now,
+          captureAttempts: { increment: 1 },
+        },
+      });
+
+      await prisma.videoStatSnapshot.create({
+        data: {
+          trackedVideoId: row.id,
+          views: match.views,
+          likes: match.likes,
+          comments: match.comments,
+          shares: match.shares,
+        },
+      });
+
+      // Write the REAL video URL back to the ScheduledPost (same pattern as
+      // capture.ts) so the History page links to the video, not the profile.
+      await prisma.scheduledPost.updateMany({
+        where: {
+          accountId: job.accountId,
+          OR: [
+            { tiktokPublishId: job.tiktokPublishId ?? undefined },
+            { driveFileId: job.driveFileId },
+          ],
+        },
+        data: { tiktokPostUrl: match.url },
+      });
+
+      console.log(
+        `${logTag} Job ${job.id} → video ${match.videoId} (@${account.tiktokUsername}, confidence ${confidence})`
+      );
+      counters.succeeded++;
+    } catch (err: any) {
+      console.error(`${logTag} Failed to persist capture for job ${job.id}:`, err?.message || err);
+      counters.failed++;
+    }
+  }
+
+  return counters;
+}
+
 export interface SweepSummary {
   runId: string;
   accountsSwept: number;
@@ -146,42 +419,9 @@ export async function runDailyAccountSweep(
   });
 
   // Campaign info (status + caption pool) cached per campaign.
-  const campaignCache = new Map<string, CampaignInfo | null>();
-  const getCampaignInfo = async (campaignId: string): Promise<CampaignInfo | null> => {
-    if (campaignCache.has(campaignId)) return campaignCache.get(campaignId)!;
-    const campaign = await prisma.campaign.findUnique({
-      where: { id: campaignId },
-      select: { title: true, status: true, fixedTexts: true },
-    });
-    if (!campaign) {
-      campaignCache.set(campaignId, null);
-      return null;
-    }
-    const all = [
-      ...new Set(
-        [
-          ...(campaign.fixedTexts ?? []),
-          // Legacy misattribution (same as recover.ts): unparsed files posted
-          // with the raw filename as caption — "(Title) ..." / "Copy of (Title) ...".
-          ...(campaign.title ? [`(${campaign.title})`, `Copy of (${campaign.title})`] : []),
-        ]
-          .map(normalizeCaption)
-          .filter((c) => c.length >= MIN_CAPTION_LENGTH)
-      ),
-    ];
-    const pool: CaptionPool | null =
-      all.length === 0
-        ? null
-        : {
-            strong: all.filter((c) => c.length >= MIN_STRONG_CAPTION_LENGTH),
-            weak: all.filter((c) => c.length < MIN_STRONG_CAPTION_LENGTH),
-          };
-    const info: CampaignInfo = { status: campaign.status, pool };
-    campaignCache.set(campaignId, info);
-    return info;
-  };
+  const campaignCache: CampaignInfoCache = new Map();
   const isPaused = async (campaignId: string): Promise<boolean> =>
-    (await getCampaignInfo(campaignId))?.status === "PAUSED";
+    (await getCampaignInfo(campaignCache, campaignId))?.status === "PAUSED";
 
   // ── Per-account sweep ────────────────────────────────────────────────────
   for (const account of accounts) {
@@ -260,156 +500,20 @@ export async function runDailyAccountSweep(
     const missing = jobs.filter((j) => !capturedJobIds.has(j.id));
     counters.attempted += missing.length;
 
-    const usedVideoIds = new Set<string>();
-
-    for (const job of missing) {
-      if (!job.publishedAt) {
-        counters.skipped++;
-        continue;
-      }
-      const publishedMs = job.publishedAt.getTime();
-      const available = latest.filter(
-        (v) => !trackedById.has(v.videoId) && !usedVideoIds.has(v.videoId)
-      );
-
-      let match: ProviderVideo | null = null;
-      let confidence = "high";
-
-      // (a) Caption match for campaign jobs. PAUSED campaigns are never
-      // swept — their jobs stay uncaptured until the campaign is resumed.
-      if (job.campaignId) {
-        const info = await getCampaignInfo(job.campaignId);
-        if (info?.status === "PAUSED") {
-          counters.skipped++;
-          continue;
-        }
-        const pool = info?.pool;
-        if (pool) {
-          const strongMatches = available
-            .filter((v) =>
-              pool.strong.some((c) => normalizeCaption(v.text || "").startsWith(c))
-            )
-            .sort(
-              (a, b) =>
-                Math.abs(a.createTime.getTime() - publishedMs) -
-                Math.abs(b.createTime.getTime() - publishedMs)
-            );
-          if (strongMatches.length > 0) {
-            match = strongMatches[0];
-            confidence = strongMatches.length === 1 ? "high" : "medium";
-          } else if (pool.weak.length > 0) {
-            const weakMatches = available
-              .filter((v) =>
-                pool.weak.some((c) => normalizeCaption(v.text || "").startsWith(c))
-              )
-              .filter((v) => Math.abs(v.createTime.getTime() - publishedMs) <= WEAK_MATCH_WINDOW_MS);
-            if (weakMatches.length === 1) {
-              match = weakMatches[0];
-              confidence = "low"; // short caption + time window — less certain
-            }
-          }
-        }
-      }
-
-      // (b) Time-window fallback (only rule for non-campaign jobs).
-      if (!match) {
-        const inWindow = available.filter(
-          (v) =>
-            v.createTime.getTime() >= publishedMs - WINDOW_BEFORE_MS &&
-            v.createTime.getTime() <= publishedMs + WINDOW_AFTER_MS
-        );
-        // Prefer the candidate closest BEFORE publishedAt (videos are created
-        // before our confirmation); fall back to closest overall.
-        const before = inWindow
-          .filter((v) => v.createTime.getTime() <= publishedMs)
-          .sort((a, b) => b.createTime.getTime() - a.createTime.getTime());
-        const after = inWindow
-          .filter((v) => v.createTime.getTime() > publishedMs)
-          .sort((a, b) => a.createTime.getTime() - b.createTime.getTime());
-        const ranked = [...before, ...after];
-        if (ranked.length > 0) {
-          match = ranked[0];
-          confidence = inWindow.length === 1 ? "high" : "medium";
-        }
-      }
-
-      if (!match) {
-        // No placeholder row: tomorrow's sweep retries while the job is inside
-        // the lookback window; the Recover button is the deep backstop.
-        counters.skipped++;
-        continue;
-      }
-
-      usedVideoIds.add(match.videoId);
-      const placeholderId = unresolvedPlaceholderId(job.id);
-
-      try {
-        const row = await prisma.trackedVideo.upsert({
-          where: { tiktokVideoId: placeholderId },
-          create: {
-            tiktokVideoId: match.videoId,
-            url: match.url,
-            accountId: job.accountId,
-            campaignId: job.campaignId,
-            postJobId: job.id,
-            publishedAt: job.publishedAt,
-            captureMethod: "daily_sweep",
-            confidence,
-            status: "captured",
-            views: match.views,
-            likes: match.likes,
-            comments: match.comments,
-            shares: match.shares,
-            lastRefreshedAt: now,
-          },
-          update: {
-            tiktokVideoId: match.videoId,
-            url: match.url,
-            campaignId: job.campaignId,
-            captureMethod: "daily_sweep",
-            confidence,
-            status: "captured",
-            views: match.views,
-            likes: match.likes,
-            comments: match.comments,
-            shares: match.shares,
-            lastRefreshedAt: now,
-            captureAttempts: { increment: 1 },
-          },
-        });
-
-        await prisma.videoStatSnapshot.create({
-          data: {
-            trackedVideoId: row.id,
-            views: match.views,
-            likes: match.likes,
-            comments: match.comments,
-            shares: match.shares,
-          },
-        });
-
-        // Write the REAL video URL back to the ScheduledPost (same pattern as
-        // capture.ts) so the History page links to the video, not the profile.
-        await prisma.scheduledPost.updateMany({
-          where: {
-            accountId: job.accountId,
-            OR: [
-              { tiktokPublishId: job.tiktokPublishId ?? undefined },
-              { driveFileId: job.driveFileId },
-            ],
-          },
-          data: { tiktokPostUrl: match.url },
-        });
-
-        console.log(
-          `[Sweep] Job ${job.id} → video ${match.videoId} (@${account.tiktokUsername}, confidence ${confidence})`
-        );
-        counters.succeeded++;
-      } catch (err: any) {
-        console.error(`[Sweep] Failed to persist capture for job ${job.id}:`, err?.message || err);
-        counters.failed++;
-      }
-    }
+    const cap = await captureJobsFromAccountVideos({
+      account,
+      jobs: missing,
+      latestVideos: latest,
+      timezone,
+      now,
+      captureMethod: "daily_sweep",
+      campaignCache,
+      trackedById,
+      logTag: "[Sweep]",
+    });
+    counters.succeeded += cap.succeeded;
+    counters.failed += cap.failed;
+    counters.skipped += cap.skipped;
 
     await saveProgress();
     if (accounts[accounts.length - 1] !== account) await sleep(SLEEP_MS);
