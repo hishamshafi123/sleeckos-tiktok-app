@@ -951,6 +951,9 @@ model SmartExportAssignment {
   driveFolderId String
   status        String           @default("pending") // pending | uploading | done | failed
   error         String?          @db.Text
+  // Drives stale-"uploading" recovery (crash mid-upload → reset to pending).
+  updatedAt     DateTime         @default(now()) @updatedAt
+  @@index([status])
 }
 
 // ─── Multiplier Bulk Intake (batch upload of many videos) ────────────────────

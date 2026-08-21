@@ -719,6 +719,16 @@ export async function triggerQueueWorker() {
   });
 }
 
+// Boot/cron resume: a restart strands PENDING outputs (the in-memory worker
+// flag died with the process). Unlike resumeRenderQueue() this does NOT clear
+// an operator pause — triggerQueueWorker itself stays paused.
+export async function resumeRenderQueueIfWorkPending(): Promise<{ recovered: number; pending: number }> {
+  const recovered = await recoverStaleRenderingOutputs();
+  const pending = await prisma.multiplierOutput.count({ where: { status: "PENDING" } });
+  if (pending > 0) triggerQueueWorker();
+  return { recovered, pending };
+}
+
 // 2 concurrent renders: each ffmpeg is pinned to -threads 2, so two workers
 // keep ~4 threads busy — sized for the app container's raised 3-core limit.
 // More than 2 would oversubscribe the shared CPU (renders are CPU-bound) and

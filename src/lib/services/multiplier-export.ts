@@ -393,57 +393,184 @@ export async function retryExportAssignment(assignmentId: string) {
 
 // ─── Background Processing ──────────────────────────────────────────────────
 
+// Assignments left in "uploading" by a crash/restart are never picked up again
+// (the loop only fetches "pending") — older than this, they're reset.
+const STALE_UPLOADING_MINUTES = 10;
+
 let isExportWorkerRunning = false;
 
 export async function triggerSmartExportWorker() {
   if (isExportWorkerRunning) return;
   isExportWorkerRunning = true;
-  processExportQueue().finally(() => {
-    isExportWorkerRunning = false;
+  processExportQueue()
+    .catch((err) => {
+      // Last-resort guard: the loop body is individually hardened, but a
+      // throw here must never become an unhandled rejection.
+      console.error("[Smart Export Worker] Queue processing crashed:", err);
+    })
+    .finally(() => {
+      isExportWorkerRunning = false;
+    });
+}
+
+/**
+ * Boot/cron resume — the worker loop is in-memory (isExportWorkerRunning dies
+ * with the process), so after a deploy or mid-day crash pending assignments
+ * would be stranded forever without this. Cheap: the stale-upload reset plus
+ * one indexed status count. Called from instrumentation register() and the
+ * post-scheduler cron as a safety net.
+ */
+export async function resumeSmartExportQueue(): Promise<{ resetUploading: number; pending: number }> {
+  const staleBefore = new Date(Date.now() - STALE_UPLOADING_MINUTES * 60 * 1000);
+  const reset = await prisma.smartExportAssignment.updateMany({
+    where: { status: "uploading", updatedAt: { lt: staleBefore } },
+    data: { status: "pending" },
   });
+  if (reset.count > 0) {
+    console.log(`[Smart Export] Recovered ${reset.count} assignment(s) stuck in uploading`);
+  }
+
+  // Jobs whose assignments all reached a terminal state but whose status flip
+  // was lost to a crash get finalized now.
+  await finalizeDrainedJobs();
+
+  const pending = await prisma.smartExportAssignment.count({ where: { status: "pending" } });
+  if (pending > 0) {
+    console.log(`[Smart Export] Resuming queue: ${pending} pending assignment(s)`);
+    triggerSmartExportWorker().catch((err) => {
+      console.error("[Smart Export] Failed to trigger worker on resume:", err);
+    });
+  }
+  return { resetUploading: reset.count, pending };
+}
+
+/**
+ * Job-level "Resume / retry remaining": failed assignments → pending (error
+ * cleared), this job's stale uploading → pending, job back to "uploading",
+ * worker triggered. Returns what was requeued.
+ */
+export async function resumeSmartExportJob(jobId: string): Promise<{
+  requeuedFailed: number;
+  requeuedStaleUploading: number;
+  pendingTotal: number;
+}> {
+  const job = await prisma.smartExportJob.findUnique({ where: { id: jobId } });
+  if (!job) throw new Error("Smart Export Job not found");
+
+  const staleBefore = new Date(Date.now() - STALE_UPLOADING_MINUTES * 60 * 1000);
+  const requeueable = await prisma.smartExportAssignment.findMany({
+    where: {
+      jobId,
+      OR: [{ status: "failed" }, { status: "uploading", updatedAt: { lt: staleBefore } }],
+    },
+    select: { id: true, status: true, videoId: true },
+  });
+  const requeuedFailed = requeueable.filter((a) => a.status === "failed").length;
+  const requeuedStaleUploading = requeueable.length - requeuedFailed;
+
+  if (requeueable.length > 0) {
+    await prisma.$transaction([
+      prisma.smartExportAssignment.updateMany({
+        where: { id: { in: requeueable.map((a) => a.id) } },
+        data: { status: "pending", error: null },
+      }),
+      // Videos of failed assignments were reverted to not_exported on failure —
+      // mark them exporting again so they don't look eligible for a new plan.
+      prisma.multiplierOutput.updateMany({
+        where: { id: { in: requeueable.map((a) => a.videoId) } },
+        data: { exportStatus: "exporting" },
+      }),
+    ]);
+  }
+
+  const pendingTotal = await prisma.smartExportAssignment.count({
+    where: { jobId, status: "pending" },
+  });
+
+  if (pendingTotal > 0) {
+    await prisma.smartExportJob.update({
+      where: { id: jobId },
+      data: { status: "uploading" },
+    });
+    triggerSmartExportWorker().catch((err) => {
+      console.error("[Smart Export Service] Failed to trigger background worker on job resume:", err);
+    });
+  }
+
+  return { requeuedFailed, requeuedStaleUploading, pendingTotal };
+}
+
+// Jobs stuck in pending/uploading whose assignments are ALL terminal (crash
+// between the last assignment and the status flip) get their final status.
+async function finalizeDrainedJobs() {
+  const openJobs = await prisma.smartExportJob.findMany({
+    where: { status: { in: ["pending", "uploading"] } },
+    include: { assignments: { select: { status: true } } },
+  });
+  for (const job of openJobs) {
+    const anyOpen = job.assignments.some(
+      (a) => a.status === "pending" || a.status === "uploading"
+    );
+    if (!anyOpen && job.assignments.length > 0) {
+      await updateParentJobStatus(job.id);
+    }
+  }
 }
 
 async function processExportQueue() {
   console.log("[Smart Export Worker] Starting processing queue...");
 
+
   while (true) {
-    const assignment = await prisma.smartExportAssignment.findFirst({
-      where: { status: "pending" },
-      include: {
-        video: {
-          include: {
-            hook: { select: { text: true } },
-            group: {
-              include: {
-                campaign: {
-                  select: { title: true, name: true }
+    // Fetch + claim the next pending assignment. A throw here is almost
+    // certainly the DB itself — stop the worker (the cron/boot resume
+    // re-triggers it) instead of hot-looping on the same row.
+    let assignment;
+    try {
+      assignment = await prisma.smartExportAssignment.findFirst({
+        where: { status: "pending" },
+        include: {
+          video: {
+            include: {
+              hook: { select: { text: true } },
+              group: {
+                include: {
+                  campaign: {
+                    select: { title: true, name: true }
+                  }
                 }
               }
-            }
+            },
           },
+          job: true,
         },
-        job: true,
-      },
-      orderBy: { id: "asc" },
-    });
+        orderBy: { id: "asc" },
+      });
 
-    if (!assignment) {
-      console.log("[Smart Export Worker] Queue empty. Going to sleep.");
-      break;
-    }
+      if (!assignment) {
+        console.log("[Smart Export Worker] Queue empty. Going to sleep.");
+        break;
+      }
 
-    // Set to uploading
-    await prisma.smartExportAssignment.update({
-      where: { id: assignment.id },
-      data: { status: "uploading" },
-    });
-
-    // Update parent job status to uploading if it was pending
-    if (assignment.job.status === "pending") {
-      await prisma.smartExportJob.update({
-        where: { id: assignment.jobId },
+      // Set to uploading
+      await prisma.smartExportAssignment.update({
+        where: { id: assignment.id },
         data: { status: "uploading" },
       });
+
+      // Update parent job status to uploading if it was pending
+      if (assignment.job.status === "pending") {
+        await prisma.smartExportJob.update({
+          where: { id: assignment.jobId },
+          data: { status: "uploading" },
+        });
+      }
+    } catch (err) {
+      console.error(
+        "[Smart Export Worker] Queue fetch/claim failed — stopping worker (cron resume will retrigger):",
+        err
+      );
+      break;
     }
 
     try {
@@ -542,27 +669,45 @@ async function processExportQueue() {
       console.log(`[Smart Export Worker] Upload complete for assignment: ${assignment.id}`);
 
     } catch (err: any) {
+      // One bad video must never kill the loop: mark THIS assignment failed
+      // with the real error and continue with the next one. If the failure
+      // was the DB itself, the mark-failed write may also fail — log it and
+      // let the next iteration's fetch decide whether to stop.
       const errMsg = err?.message || String(err);
       console.error(`[Smart Export Worker] Assignment ${assignment.id} failed:`, errMsg);
 
-      await prisma.$transaction([
-        prisma.smartExportAssignment.update({
-          where: { id: assignment.id },
-          data: { status: "failed", error: errMsg },
-        }),
-        prisma.multiplierOutput.update({
-          where: { id: assignment.videoId },
-          data: { exportStatus: "not_exported" }, // Revert to eligible for export
-        }),
-      ]);
+      try {
+        await prisma.$transaction([
+          prisma.smartExportAssignment.update({
+            where: { id: assignment.id },
+            data: { status: "failed", error: errMsg },
+          }),
+          prisma.multiplierOutput.update({
+            where: { id: assignment.videoId },
+            data: { exportStatus: "not_exported" }, // Revert to eligible for export
+          }),
+        ]);
+      } catch (markErr) {
+        console.error(
+          `[Smart Export Worker] Failed to mark assignment ${assignment.id} as failed:`,
+          markErr
+        );
+      }
     }
 
     // Update parent job status check
-    await updateParentJobStatus(assignment.jobId);
+    await updateParentJobStatus(assignment.jobId).catch((err) => {
+      console.error(`[Smart Export Worker] Parent status update failed for job ${assignment.jobId}:`, err);
+    });
 
     // Rate limiting: 2s pause
     await new Promise((resolve) => setTimeout(resolve, 2000));
   }
+
+  // Queue drained — finalize any job whose status flip was lost to a crash.
+  await finalizeDrainedJobs().catch((err) => {
+    console.error("[Smart Export Worker] Drained-job finalization failed:", err);
+  });
 }
 
 async function updateParentJobStatus(jobId: string) {

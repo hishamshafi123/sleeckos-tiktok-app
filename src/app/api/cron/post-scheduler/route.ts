@@ -8,6 +8,8 @@ import {
   buildPostCaption,
   resolveCampaignCaptionConfig,
 } from "@/lib/services/posting-pipeline";
+import { resumeSmartExportQueue } from "@/lib/services/multiplier-export";
+import { resumeRenderQueueIfWorkPending } from "@/lib/services/multiplier";
 import { toZonedTime } from "date-fns-tz";
 
 function verifyCronSecret(req: NextRequest) {
@@ -64,6 +66,16 @@ export async function GET(req: NextRequest) {
   if (!verifyCronSecret(req)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
+
+  // Safety net for restart/crash-stranded background queues (their worker
+  // loops are in-memory). Fire-and-forget, cheap indexed queries — runs every
+  // 5 min with this cron, so a mid-day crash self-heals within minutes.
+  resumeSmartExportQueue().catch((err) =>
+    console.error("[PostScheduler] Smart Export queue resume failed:", err)
+  );
+  resumeRenderQueueIfWorkPending().catch((err) =>
+    console.error("[PostScheduler] Render queue resume failed:", err)
+  );
 
   if (isRunning) {
     return NextResponse.json({ skipped: "already running" });

@@ -287,6 +287,8 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
   const [loadingPreview, setLoadingPreview] = useState(false);
   const [exportingJobId, setExportingJobId] = useState<string | null>(null);
   const [exportJobDetails, setExportJobDetails] = useState<any | null>(null);
+  const [exportPollNonce, setExportPollNonce] = useState(0);
+  const [resumingExportJob, setResumingExportJob] = useState(false);
   const [pollingJobDetails, setPollingJobDetails] = useState(false);
   const [exportDays, setExportDays] = useState(1);
   const [exportRunError, setExportRunError] = useState<string | null>(null);
@@ -817,7 +819,29 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
     return () => {
       active = false;
     };
-  }, [exportingJobId]);
+  }, [exportingJobId, exportPollNonce]);
+
+  const handleResumeExportJob = async (jobId: string) => {
+    if (resumingExportJob) return;
+    setResumingExportJob(true);
+    try {
+      const res = await fetch(`/api/managed/multiplier/smart-export/jobs/${jobId}/resume`, {
+        method: "POST",
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Resume failed");
+      toast.success(
+        `Requeued ${data.requeuedFailed} failed + ${data.requeuedStaleUploading} stale (${data.pendingTotal} pending total)`
+      );
+      // Bumping the nonce restarts the polling effect even if it had stopped
+      // at a terminal status.
+      setExportPollNonce((n) => n + 1);
+    } catch (err: any) {
+      toast.error(err.message || "Failed to resume job");
+    } finally {
+      setResumingExportJob(false);
+    }
+  };
 
   const handleRetryAssignment = async (assignmentId: string) => {
     try {
@@ -5084,6 +5108,16 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
                   <span>Uploaded: <span className="text-green-400 font-bold">{done}</span></span>
                   <span>Failed: <span className="text-red-400 font-bold">{failed}</span></span>
                 </div>
+                {(failed > 0 || pending > 0) && (
+                  <button
+                    onClick={() => handleResumeExportJob(job.id)}
+                    disabled={resumingExportJob}
+                    className="w-full mt-1 px-3 py-2 bg-blue-600/15 hover:bg-blue-600/25 text-blue-400 text-xs font-bold rounded-lg border border-blue-500/20 transition-colors cursor-pointer disabled:opacity-50 flex items-center justify-center gap-2"
+                  >
+                    {resumingExportJob && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                    Resume remaining (retry {failed} failed + {pending} pending)
+                  </button>
+                )}
               </div>
 
               <div className="flex-1 overflow-y-auto space-y-2.5 pr-1 custom-scrollbar">
