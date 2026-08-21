@@ -1753,6 +1753,15 @@ model CampaignSpotCheck {
   capturedNow    Int      @default(0) // sample posts this run linked to a video
   noMatch        Int      @default(0) // sample posts still without a link after the run
   accountLookups Int      @default(0) // paid profile calls made by the capture pass
+  // Background-run tracking: POST creates the row with status "running" and
+  // returns immediately; the worker updates progress counters as it goes and
+  // writes totalsJson + status "done"/"failed" at the end. Polls re-read the
+  // sample live from TrackedVideo — totalsJson is the final snapshot only.
+  status           String    @default("running") // running | done | failed
+  totalTargets     Int       @default(0) // planned account lookups + refresh targets
+  processedTargets Int       @default(0)
+  error            String?   @db.Text
+  finishedAt       DateTime?
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

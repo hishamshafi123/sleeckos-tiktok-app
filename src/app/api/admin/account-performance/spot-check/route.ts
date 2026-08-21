@@ -5,7 +5,8 @@ import {
   ForbiddenError,
   SpotCheckGuardrailError,
   getSpotCheckSample,
-  runSpotCheck,
+  startSpotCheckRun,
+  executeSpotCheck,
 } from "@/lib/services/analytics/spot-check";
 
 function parseIds(raw: unknown): string[] {
@@ -43,8 +44,9 @@ export async function GET(req: NextRequest) {
 }
 
 // POST /api/admin/account-performance/spot-check { campaignIds, sampleSize }
-// Paid run: refreshes exactly the sampled captured videos, saves the run, and
-// returns fresh results plus the previous matching run for comparison.
+// Starts a paid run (capture missing links + refresh captured videos) in the
+// BACKGROUND — the work outlasts a gateway timeout on real data. Returns
+// { runId, status: "running" } immediately; poll GET .../spot-check/[runId].
 export async function POST(req: NextRequest) {
   const session = await getSession();
   if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -53,8 +55,19 @@ export async function POST(req: NextRequest) {
     const body = await req.json().catch(() => ({}));
     const campaignIds = parseIds(body?.campaignIds);
     const sampleSize = Number(body?.sampleSize);
-    const result = await runSpotCheck(session.userId, campaignIds, sampleSize);
-    return NextResponse.json(result);
+    const { runId } = await startSpotCheckRun(session.userId, campaignIds, sampleSize);
+
+    // executeSpotCheck never throws on work failures (it marks the run row
+    // "failed"); the catch here is just a last-resort log.
+    (async () => {
+      try {
+        await executeSpotCheck(runId);
+      } catch (err) {
+        console.error("[AccountPerformance spot-check] Background run failed:", err);
+      }
+    })();
+
+    return NextResponse.json({ runId, status: "running" });
   } catch (err: any) {
     return handle(err, "POST");
   }

@@ -11,8 +11,13 @@
  *     the payload — no extra call.
  *  2. REFRESH PASS — batched fetchStatsForVideoUrls for the sample's
  *     previously-captured videos.
- * Each paid run is saved as a CampaignSpotCheck row so the next run can
- * compare averages against the previous one.
+ * Runs execute in the BACKGROUND (startSpotCheckRun creates the row with
+ * status "running" and returns; executeSpotCheck does the work and writes
+ * progress counters after every account lookup / refresh batch) because the
+ * sleeps + batched provider calls far exceed a gateway timeout. Clients poll
+ * getSpotCheckRunStatus, which re-reads the sample live from TrackedVideo.
+ * totalsJson (final averages) is written when the run finishes, so the next
+ * run can compare against the previous one.
  *
  * Cost rules (operator policy, same as refresh.ts / sweep.ts):
  * - Only "captured" TrackedVideos are ever sent to fetchStatsForVideoUrls.
@@ -129,24 +134,19 @@ export interface SpotCheckRunSummary {
   capturedNow: number; // links found by this run's capture pass
   noMatch: number; // sampled posts still without a link after the run
   accountLookups: number; // paid profile calls made by the capture pass
+  status: string; // running | done | failed
+  totalTargets: number; // planned account lookups + refresh targets
+  processedTargets: number; // live progress while running
+  error: string | null;
+  finishedAt: string | null; // ISO
   totals: SpotCheckTotalsEntry[];
 }
 
-/** Capture-pass breakdown returned alongside a run (not persisted per-post). */
-export interface SpotCheckCaptureSummary {
-  accountLookups: number;
-  capturedNow: number;
-  noMatch: number;
-  unmatchedPostJobIds: string[]; // sample posts still link-less after the run
-  skippedAccounts: string[]; // handles skipped by the MAX_ACCOUNT_LOOKUPS guardrail
-}
-
-export interface SpotCheckRunResult {
+/** Poll payload: run row + the sample re-read live from TrackedVideo. */
+export interface SpotCheckRunStatusResult {
   run: SpotCheckRunSummary;
-  sample: SpotCheckSample; // fresh, post-capture + post-refresh
-  previousRun: SpotCheckRunSummary | null; // most recent prior run with overlapping campaigns
-  aborted: { kind: string; message: string } | null; // set when auth/rate_limited cut the run short
-  capture: SpotCheckCaptureSummary;
+  sample: SpotCheckSample; // fresh at poll time — partial progress shows real per-row numbers
+  previousRun: SpotCheckRunSummary | null; // most recent OTHER run with overlapping campaigns
 }
 
 // ── Validation ───────────────────────────────────────────────────────────────
@@ -349,6 +349,11 @@ function serializeRun(run: {
   capturedNow: number;
   noMatch: number;
   accountLookups: number;
+  status: string;
+  totalTargets: number;
+  processedTargets: number;
+  error: string | null;
+  finishedAt: Date | null;
   totalsJson: unknown;
 }): SpotCheckRunSummary {
   return {
@@ -361,6 +366,11 @@ function serializeRun(run: {
     capturedNow: run.capturedNow,
     noMatch: run.noMatch,
     accountLookups: run.accountLookups,
+    status: run.status,
+    totalTargets: run.totalTargets,
+    processedTargets: run.processedTargets,
+    error: run.error,
+    finishedAt: run.finishedAt?.toISOString() ?? null,
     totals: (run.totalsJson as SpotCheckTotalsEntry[]) ?? [],
   };
 }
@@ -381,226 +391,315 @@ async function findPreviousRun(
 }
 
 /**
- * Paid run, two passes:
- *  1. CAPTURE — sample posts with no link yet (no TrackedVideo, or only an
- *     unresolved placeholder) are grouped by account; each account gets one
- *     fetchLatestVideosForAccount call (depth covers its uncaptured posts,
- *     min 5 / max 15) and the shared sweep matcher links what it can
- *     (captureMethod "spot_check", stats + snapshot from the payload, no
- *     extra call). At most MAX_ACCOUNT_LOOKUPS profile calls per run —
- *     accounts past the cap are skipped and reported in capture.skippedAccounts.
- *  2. REFRESH — batched fetchStatsForVideoUrls for the sample's previously-
- *     captured videos (dormant/unavailable are never sent to the provider).
- * Then a CampaignSpotCheck row is persisted and fresh results returned plus
- * the previous matching run for comparison.
+ * Start a paid run: validates, samples (free), enforces the cost guardrails,
+ * creates the CampaignSpotCheck row with status "running", and returns its id
+ * immediately. The caller (route) backgrounds executeSpotCheck(runId) — the
+ * capture pass sleeps between account calls and the refresh pass is batched,
+ * so the whole run far exceeds a gateway timeout on real data.
  *
- * Provider failure policy mirrors refresh.ts/sweep.ts: auth/rate_limited
- * aborts the run (still saved with whatever succeeded, `aborted` set); a
- * transient account/batch failure is logged and the run continues.
+ * Concurrent runs over the same campaigns are allowed: all writes are
+ * idempotent (upserts / stat overwrites), so a second POST just costs extra
+ * provider spend — the guardrails still cap each run.
  */
-export async function runSpotCheck(
+export async function startSpotCheckRun(
   userId: string,
   campaignIds: string[],
-  sampleSize: number,
-  provider: AnalyticsProvider = apifyProvider
-): Promise<SpotCheckRunResult> {
+  sampleSize: number
+): Promise<{ runId: string }> {
   await assertAccess(userId);
   const ids = validateInputs(campaignIds, sampleSize);
-  const timezone = await getOrgTimezone();
-  const now = new Date();
 
-  const { sample, jobsById } = await buildSample(ids, sampleSize);
+  const { sample } = await buildSample(ids, sampleSize);
 
-  // Refresh targets: sampled rows with a captured TrackedVideo only.
-  const targets = new Map<string, { id: string; tiktokUrl: string }>();
-  // Capture candidates: rows with no link (dormant/unavailable rows already
-  // HAVE a link — excluded here and from the paid refresh alike).
-  const uncapturedJobIds: string[] = [];
-  const handleByAccount = new Map<string, string>();
+  let refreshTargets = 0;
+  const uncapturedAccounts = new Set<string>();
   for (const c of sample.campaigns) {
     for (const row of c.posts) {
-      if (row.accountHandle) handleByAccount.set(row.accountId, row.accountHandle);
       if (row.video && row.video.status === "captured") {
-        targets.set(row.video.id, { id: row.video.id, tiktokUrl: row.video.url });
-      } else if (!row.video || row.video.status === "unresolved") {
-        uncapturedJobIds.push(row.postJobId);
+        refreshTargets++;
+      } else if ((!row.video || row.video.status === "unresolved") && row.accountHandle) {
+        uncapturedAccounts.add(row.accountId);
       }
     }
   }
-  const targetList = [...targets.values()];
 
   // Cost guardrail — worst case: every link-less post captures, then every
   // captured link refreshes, so capturedNow + refreshed ≤ targets + uncaptured.
-  if (targetList.length + uncapturedJobIds.length > MAX_REFRESH_TARGETS) {
+  const uncapturedCount = sample.campaigns.reduce(
+    (a, c) => a + c.posts.filter((r) => !r.video || r.video.status === "unresolved").length,
+    0
+  );
+  if (refreshTargets + uncapturedCount > MAX_REFRESH_TARGETS) {
     throw new SpotCheckGuardrailError(
-      `This sample could touch up to ${targetList.length + uncapturedJobIds.length} videos (${targetList.length} linked + ${uncapturedJobIds.length} link-less) — over the ${MAX_REFRESH_TARGETS}-per-run limit. Pick fewer campaigns or a smaller sample size.`
+      `This sample could touch up to ${refreshTargets + uncapturedCount} videos (${refreshTargets} linked + ${uncapturedCount} link-less) — over the ${MAX_REFRESH_TARGETS}-per-run limit. Pick fewer campaigns or a smaller sample size.`
+    );
+  }
+  if (refreshTargets + uncapturedCount === 0) {
+    throw new SpotCheckGuardrailError(
+      "Nothing to do — the sample has no captured videos to refresh and no link-less posts to look up."
     );
   }
 
-  // previousRun is resolved before saving so a run never compares to itself.
-  const previousRun = await findPreviousRun(ids);
-
-  let aborted: SpotCheckRunResult["aborted"] = null;
-
-  // ── Capture pass: one profile call per account with link-less posts ──────
-  const byAccount = new Map<string, CaptureJobInput[]>();
-  for (const jobId of uncapturedJobIds) {
-    const job = jobsById.get(jobId);
-    if (!job) continue;
-    const arr = byAccount.get(job.accountId) ?? [];
-    arr.push(job);
-    byAccount.set(job.accountId, arr);
-  }
-  // Oldest-first per account, same order the sweep matches in.
-  for (const jobs of byAccount.values()) {
-    jobs.sort((a, b) => (a.publishedAt?.getTime() ?? 0) - (b.publishedAt?.getTime() ?? 0));
-  }
-
-  const campaignCache: CampaignInfoCache = new Map();
-  let accountLookups = 0;
-  let capturedNow = 0;
-  const skippedAccounts: string[] = [];
-  const accountEntries = [...byAccount.entries()];
-
-  for (const [accountId, jobs] of accountEntries) {
-    if (aborted) break;
-    const handle = handleByAccount.get(accountId) ?? "";
-    if (!handle) continue; // account without a username can't be looked up
-    if (accountLookups >= MAX_ACCOUNT_LOOKUPS) {
-      skippedAccounts.push(handle);
-      continue;
-    }
-    const depth = Math.min(
-      ACCOUNT_LOOKUP_MAX_DEPTH,
-      Math.max(ACCOUNT_LOOKUP_MIN_DEPTH, jobs.length)
-    );
-
-    let latest: Awaited<ReturnType<AnalyticsProvider["fetchLatestVideosForAccount"]>>;
-    try {
-      latest = await provider.fetchLatestVideosForAccount(handle, depth);
-    } catch (err: any) {
-      if (err instanceof ProviderError && (err.kind === "rate_limited" || err.kind === "auth")) {
-        aborted = { kind: err.kind, message: err.message };
-        break;
-      }
-      console.error(
-        `[SpotCheck] Latest-videos fetch failed for @${handle} (transient): ${err?.message || err}`
-      );
-      continue;
-    }
-    accountLookups++;
-
-    const cap = await captureJobsFromAccountVideos({
-      account: { id: accountId, tiktokUsername: handle },
-      jobs,
-      latestVideos: latest,
-      timezone,
-      now,
-      captureMethod: "spot_check",
-      campaignCache,
-      logTag: "[SpotCheck]",
-    });
-    capturedNow += cap.succeeded;
-
-    if (accountEntries[accountEntries.length - 1]?.[0] !== accountId) {
-      await sleep(SLEEP_BETWEEN_CALLS_MS);
-    }
-  }
-
-  // ── Batched paid refresh of previously-captured links ───────────────────
-  let succeeded = 0;
-  let failed = 0;
-  let skipped = 0;
-
-  for (let i = 0; i < targetList.length && !aborted; i += BATCH_SIZE) {
-    const batch = targetList.slice(i, i + BATCH_SIZE);
-
-    let statsById: Awaited<ReturnType<AnalyticsProvider["fetchStatsForVideoUrls"]>>;
-    try {
-      statsById = await provider.fetchStatsForVideoUrls(batch.map((t) => t.tiktokUrl));
-    } catch (err: any) {
-      if (err instanceof ProviderError && (err.kind === "rate_limited" || err.kind === "auth")) {
-        aborted = { kind: err.kind, message: err.message };
-        break;
-      }
-      // Transient whole-batch failure: count items failed and continue.
-      console.error(`[SpotCheck] Batch fetch failed (transient): ${err?.message || err}`);
-      failed += batch.length;
-      if (i + BATCH_SIZE < targetList.length) await sleep(SLEEP_BETWEEN_CALLS_MS);
-      continue;
-    }
-
-    for (const target of batch) {
-      try {
-        // fetchStatsForVideoUrls is keyed by TikTok video id, not our row id —
-        // recover the row via the URL we sent.
-        const stats = findStatsForUrl(statsById, target.tiktokUrl);
-        if (!stats) {
-          failed++;
-        } else if ("unavailable" in stats) {
-          await prisma.trackedVideo.update({
-            where: { id: target.id },
-            data: { status: "unavailable" },
-          });
-          skipped++;
-        } else {
-          await prisma.trackedVideo.update({
-            where: { id: target.id },
-            data: { ...stats, lastRefreshedAt: now },
-          });
-          await ensureDailySnapshot(target.id, stats, timezone, now);
-          succeeded++;
-        }
-      } catch (err: any) {
-        if (err instanceof ProviderError && (err.kind === "rate_limited" || err.kind === "auth")) {
-          aborted = { kind: err.kind, message: err.message };
-          break;
-        }
-        console.error(`[SpotCheck] Refresh failed for video ${target.id}:`, err?.message || err);
-        failed++;
-      }
-    }
-
-    if (!aborted && i + BATCH_SIZE < targetList.length) await sleep(SLEEP_BETWEEN_CALLS_MS);
-  }
-
-  // ── Rebuild from fresh data, persist, return ────────────────────────────
-  const freshSample = (await buildSample(ids, sampleSize)).sample;
-  const unmatchedPostJobIds = freshSample.campaigns
-    .flatMap((c) => c.posts)
-    .filter((r) => !r.video || r.video.status === "unresolved")
-    .map((r) => r.postJobId);
-
+  const plannedLookups = Math.min(uncapturedAccounts.size, MAX_ACCOUNT_LOOKUPS);
   const run = await prisma.campaignSpotCheck.create({
     data: {
       createdBy: userId,
       campaignIds: ids,
       sampleSize,
-      totalsJson: totalsFromSample(freshSample) as unknown as Prisma.InputJsonValue,
-      refreshedCount: succeeded,
-      capturedNow,
-      noMatch: unmatchedPostJobIds.length,
-      accountLookups,
+      totalsJson: [] as unknown as Prisma.InputJsonValue, // final averages written at completion
+      status: "running",
+      totalTargets: plannedLookups + refreshTargets,
     },
   });
+  return { runId: run.id };
+}
 
-  console.log(
-    `[SpotCheck] Run ${run.id} done: lookups=${accountLookups} capturedNow=${capturedNow} targets=${targetList.length} refreshed=${succeeded} failed=${failed} skipped=${skipped} noMatch=${unmatchedPostJobIds.length}${skippedAccounts.length ? ` skippedAccounts=${skippedAccounts.length}` : ""}${aborted ? ` aborted=${aborted.kind}` : ""}`
-  );
+/**
+ * Execute a started run to completion. Never throws on provider/DB failures
+ * of the work itself — the run row always ends "done" or "failed" (with the
+ * classified error). Auth/rate_limited aborts early → "failed"; transient
+ * account/batch failures are logged and the run continues. Progress counters
+ * (processedTargets, accountLookups, capturedNow, refreshedCount) are written
+ * after every account lookup and every refresh batch so pollers see live
+ * movement; totalsJson gets the FINAL fresh averages at completion.
+ *
+ * Exported separately from the route's backgrounding so tests can await it
+ * synchronously.
+ */
+export async function executeSpotCheck(
+  runId: string,
+  provider: AnalyticsProvider = apifyProvider
+): Promise<void> {
+  const run = await prisma.campaignSpotCheck.findUnique({ where: { id: runId } });
+  if (!run) throw new Error(`CampaignSpotCheck ${runId} not found`);
+  const ids = run.campaignIds;
+  const sampleSize = run.sampleSize;
+  const timezone = await getOrgTimezone();
+  const now = new Date();
 
-  return {
-    run: serializeRun(run),
-    sample: freshSample,
-    previousRun,
-    aborted,
-    capture: {
-      accountLookups,
-      capturedNow,
-      noMatch: unmatchedPostJobIds.length,
-      unmatchedPostJobIds,
-      skippedAccounts,
-    },
-  };
+  let processed = 0;
+  let accountLookups = 0;
+  let capturedNow = 0;
+  let succeeded = 0;
+  let failed = 0;
+  let skipped = 0;
+  let targetCount = 0;
+  const skippedAccounts: string[] = [];
+  let aborted: { kind: string; message: string } | null = null;
+
+  const saveProgress = () =>
+    prisma.campaignSpotCheck.update({
+      where: { id: runId },
+      data: {
+        processedTargets: processed,
+        accountLookups,
+        capturedNow,
+        refreshedCount: succeeded,
+      },
+    });
+
+  try {
+    const { sample, jobsById } = await buildSample(ids, sampleSize);
+
+    // Refresh targets: sampled rows with a captured TrackedVideo only.
+    const targets = new Map<string, { id: string; tiktokUrl: string }>();
+    // Capture candidates: rows with no link (dormant/unavailable rows already
+    // HAVE a link — excluded here and from the paid refresh alike).
+    const uncapturedJobIds: string[] = [];
+    const handleByAccount = new Map<string, string>();
+    for (const c of sample.campaigns) {
+      for (const row of c.posts) {
+        if (row.accountHandle) handleByAccount.set(row.accountId, row.accountHandle);
+        if (row.video && row.video.status === "captured") {
+          targets.set(row.video.id, { id: row.video.id, tiktokUrl: row.video.url });
+        } else if (!row.video || row.video.status === "unresolved") {
+          uncapturedJobIds.push(row.postJobId);
+        }
+      }
+    }
+    const targetList = [...targets.values()];
+    targetCount = targetList.length;
+
+    // ── Capture pass: one profile call per account with link-less posts ──
+    const byAccount = new Map<string, CaptureJobInput[]>();
+    for (const jobId of uncapturedJobIds) {
+      const job = jobsById.get(jobId);
+      if (!job) continue;
+      const arr = byAccount.get(job.accountId) ?? [];
+      arr.push(job);
+      byAccount.set(job.accountId, arr);
+    }
+    // Oldest-first per account, same order the sweep matches in.
+    for (const jobs of byAccount.values()) {
+      jobs.sort((a, b) => (a.publishedAt?.getTime() ?? 0) - (b.publishedAt?.getTime() ?? 0));
+    }
+
+    const campaignCache: CampaignInfoCache = new Map();
+    const accountEntries = [...byAccount.entries()];
+
+    for (const [accountId, jobs] of accountEntries) {
+      if (aborted) break;
+      const handle = handleByAccount.get(accountId) ?? "";
+      if (!handle) continue; // account without a username can't be looked up
+      if (accountLookups >= MAX_ACCOUNT_LOOKUPS) {
+        skippedAccounts.push(handle);
+        continue;
+      }
+      const depth = Math.min(
+        ACCOUNT_LOOKUP_MAX_DEPTH,
+        Math.max(ACCOUNT_LOOKUP_MIN_DEPTH, jobs.length)
+      );
+
+      let latest: Awaited<ReturnType<AnalyticsProvider["fetchLatestVideosForAccount"]>>;
+      try {
+        latest = await provider.fetchLatestVideosForAccount(handle, depth);
+      } catch (err: any) {
+        if (err instanceof ProviderError && (err.kind === "rate_limited" || err.kind === "auth")) {
+          aborted = { kind: err.kind, message: err.message };
+          break;
+        }
+        console.error(
+          `[SpotCheck] Latest-videos fetch failed for @${handle} (transient): ${err?.message || err}`
+        );
+        continue;
+      }
+      accountLookups++;
+
+      const cap = await captureJobsFromAccountVideos({
+        account: { id: accountId, tiktokUsername: handle },
+        jobs,
+        latestVideos: latest,
+        timezone,
+        now,
+        captureMethod: "spot_check",
+        campaignCache,
+        logTag: "[SpotCheck]",
+      });
+      capturedNow += cap.succeeded;
+      processed++;
+      await saveProgress();
+
+      if (accountEntries[accountEntries.length - 1]?.[0] !== accountId) {
+        await sleep(SLEEP_BETWEEN_CALLS_MS);
+      }
+    }
+
+    // ── Batched paid refresh of previously-captured links ───────────────
+    for (let i = 0; i < targetList.length && !aborted; i += BATCH_SIZE) {
+      const batch = targetList.slice(i, i + BATCH_SIZE);
+
+      let statsById: Awaited<ReturnType<AnalyticsProvider["fetchStatsForVideoUrls"]>>;
+      try {
+        statsById = await provider.fetchStatsForVideoUrls(batch.map((t) => t.tiktokUrl));
+      } catch (err: any) {
+        if (err instanceof ProviderError && (err.kind === "rate_limited" || err.kind === "auth")) {
+          aborted = { kind: err.kind, message: err.message };
+          break;
+        }
+        // Transient whole-batch failure: count items failed and continue.
+        console.error(`[SpotCheck] Batch fetch failed (transient): ${err?.message || err}`);
+        failed += batch.length;
+        processed += batch.length;
+        await saveProgress();
+        if (i + BATCH_SIZE < targetList.length) await sleep(SLEEP_BETWEEN_CALLS_MS);
+        continue;
+      }
+
+      for (const target of batch) {
+        try {
+          // fetchStatsForVideoUrls is keyed by TikTok video id, not our row id —
+          // recover the row via the URL we sent.
+          const stats = findStatsForUrl(statsById, target.tiktokUrl);
+          if (!stats) {
+            failed++;
+          } else if ("unavailable" in stats) {
+            await prisma.trackedVideo.update({
+              where: { id: target.id },
+              data: { status: "unavailable" },
+            });
+            skipped++;
+          } else {
+            await prisma.trackedVideo.update({
+              where: { id: target.id },
+              data: { ...stats, lastRefreshedAt: now },
+            });
+            await ensureDailySnapshot(target.id, stats, timezone, now);
+            succeeded++;
+          }
+        } catch (err: any) {
+          if (err instanceof ProviderError && (err.kind === "rate_limited" || err.kind === "auth")) {
+            aborted = { kind: err.kind, message: err.message };
+            break;
+          }
+          console.error(`[SpotCheck] Refresh failed for video ${target.id}:`, err?.message || err);
+          failed++;
+        }
+      }
+
+      processed += batch.length;
+      await saveProgress();
+      if (!aborted && i + BATCH_SIZE < targetList.length) await sleep(SLEEP_BETWEEN_CALLS_MS);
+    }
+
+    // ── Finalize: fresh sample, final averages, terminal status ─────────
+    const freshSample = (await buildSample(ids, sampleSize)).sample;
+    const noMatch = freshSample.campaigns
+      .flatMap((c) => c.posts)
+      .filter((r) => !r.video || r.video.status === "unresolved").length;
+
+    await prisma.campaignSpotCheck.update({
+      where: { id: runId },
+      data: {
+        totalsJson: totalsFromSample(freshSample) as unknown as Prisma.InputJsonValue,
+        refreshedCount: succeeded,
+        capturedNow,
+        noMatch,
+        accountLookups,
+        processedTargets: processed,
+        finishedAt: new Date(),
+        ...(aborted
+          ? { status: "failed", error: `${aborted.kind}: ${aborted.message}` }
+          : { status: "done" }),
+      },
+    });
+
+    console.log(
+      `[SpotCheck] Run ${runId} ${aborted ? `aborted (${aborted.kind})` : "done"}: lookups=${accountLookups} capturedNow=${capturedNow} targets=${targetCount} refreshed=${succeeded} failed=${failed} skipped=${skipped} noMatch=${noMatch}${skippedAccounts.length ? ` skippedAccounts=${skippedAccounts.length}` : ""}`
+    );
+  } catch (err: any) {
+    console.error(`[SpotCheck] Run ${runId} failed:`, err?.message || err);
+    await prisma.campaignSpotCheck
+      .update({
+        where: { id: runId },
+        data: {
+          status: "failed",
+          error: String(err?.message || err),
+          finishedAt: new Date(),
+          processedTargets: processed,
+          accountLookups,
+          capturedNow,
+          refreshedCount: succeeded,
+        },
+      })
+      .catch(() => {});
+  }
+}
+
+/**
+ * Poll payload for a run: the run row (status + live progress counters) plus
+ * the sample re-read from TrackedVideo NOW — rows show real per-video numbers
+ * as they land, not the final totalsJson snapshot.
+ */
+export async function getSpotCheckRunStatus(
+  userId: string,
+  runId: string
+): Promise<SpotCheckRunStatusResult | null> {
+  await assertAccess(userId);
+  const run = await prisma.campaignSpotCheck.findUnique({ where: { id: runId } });
+  if (!run) return null;
+  const sample = (await buildSample(run.campaignIds, run.sampleSize)).sample;
+  const previousRun = await findPreviousRun(run.campaignIds, run.id);
+  return { run: serializeRun(run), sample, previousRun };
 }
 
 /**

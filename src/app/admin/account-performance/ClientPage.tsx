@@ -1,5 +1,5 @@
 "use client";
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import {
   Loader2,
   AlertCircle,
@@ -1391,21 +1391,19 @@ type SpotCheckRunSummary = {
   capturedNow: number;
   noMatch: number;
   accountLookups: number;
+  status: string; // running | done | failed
+  totalTargets: number;
+  processedTargets: number;
+  error: string | null;
+  finishedAt: string | null;
   totals: SpotCheckTotalsEntry[];
 };
 
-type SpotCheckRunResult = {
+/** Poll payload from GET .../spot-check/[runId]. */
+type SpotCheckRunStatus = {
   run: SpotCheckRunSummary;
-  sample: SpotCheckSample;
+  sample: SpotCheckSample; // live at poll time
   previousRun: SpotCheckRunSummary | null;
-  aborted: { kind: string; message: string } | null;
-  capture: {
-    accountLookups: number;
-    capturedNow: number;
-    noMatch: number;
-    unmatchedPostJobIds: string[];
-    skippedAccounts: string[];
-  };
 };
 
 const SPOT_SAMPLE_SIZES = [10, 25, 50, 100];
@@ -1460,7 +1458,14 @@ function SpotCheckModal({ open, onClose }: { open: boolean; onClose: () => void 
 
   const [running, setRunning] = useState(false);
   const [runError, setRunError] = useState<string | null>(null);
-  const [lastRun, setLastRun] = useState<SpotCheckRunResult | null>(null);
+  const [activeRunId, setActiveRunId] = useState<string | null>(null);
+  const [liveRun, setLiveRun] = useState<SpotCheckRunSummary | null>(null); // polled run row while running
+  const [lastRun, setLastRun] = useState<{
+    run: SpotCheckRunSummary;
+    previousRun: SpotCheckRunSummary | null;
+  } | null>(null);
+  const [flashIds, setFlashIds] = useState<Set<string>>(new Set());
+  const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [history, setHistory] = useState<SpotCheckRunSummary[] | null>(null);
 
@@ -1484,6 +1489,77 @@ function SpotCheckModal({ open, onClose }: { open: boolean; onClose: () => void 
       cancelled = true;
     };
   }, [open, campaigns, campaignsError, loadHistory]);
+
+  // Poll a running spot-check every ~2.5s. The sample is re-read live from
+  // the DB on each poll, so row stats update in place as they land; changed
+  // rows flash briefly. Stops on done/failed, on modal close, on unmount.
+  useEffect(() => {
+    if (!activeRunId || !open) return;
+    let cancelled = false;
+
+    const tick = async () => {
+      let d: SpotCheckRunStatus;
+      try {
+        d = await fetchJson(`${SPOT_API}/${activeRunId}`);
+      } catch (err: any) {
+        if (!cancelled) {
+          setRunError(err?.message || "Lost track of the run — check past runs below.");
+          setActiveRunId(null);
+          setRunning(false);
+        }
+        return;
+      }
+      if (cancelled) return;
+      setLiveRun(d.run);
+      setSample((prev) => {
+        if (prev) {
+          const prevRows = new Map(
+            prev.campaigns.flatMap((c) => c.posts).map((r) => [r.postJobId, r])
+          );
+          const changed = new Set<string>();
+          for (const c of d.sample.campaigns) {
+            for (const r of c.posts) {
+              const p = prevRows.get(r.postJobId);
+              if (
+                p &&
+                (p.video?.views !== r.video?.views ||
+                  p.video?.likes !== r.video?.likes ||
+                  p.link !== r.link)
+              ) {
+                changed.add(r.postJobId);
+              }
+            }
+          }
+          if (changed.size > 0) {
+            setFlashIds(changed);
+            if (flashTimer.current) clearTimeout(flashTimer.current);
+            flashTimer.current = setTimeout(() => setFlashIds(new Set()), 1200);
+          }
+        }
+        return d.sample;
+      });
+      if (d.run.status !== "running") {
+        setActiveRunId(null);
+        setRunning(false);
+        setLastRun({ run: d.run, previousRun: d.previousRun });
+        loadHistory();
+        if (d.run.status === "done") {
+          toast.success(
+            `Found ${d.run.capturedNow} links · refreshed ${d.run.refreshedCount} videos`
+          );
+        } else {
+          setRunError(d.run.error || "Run failed — partial results below.");
+        }
+      }
+    };
+
+    tick();
+    const iv = setInterval(tick, 2500);
+    return () => {
+      cancelled = true;
+      clearInterval(iv);
+    };
+  }, [activeRunId, open, loadHistory]);
 
   const titleById = useMemo(
     () => new Map((campaigns ?? []).map((c) => [c.id, c.title])),
@@ -1514,28 +1590,21 @@ function SpotCheckModal({ open, onClose }: { open: boolean; onClose: () => void 
     }
   };
 
+  // Starts the background run; the polling effect above takes it from there.
   const collectLatest = async () => {
     setRunning(true);
     setRunError(null);
+    setLastRun(null);
+    setLiveRun(null);
     try {
-      const result: SpotCheckRunResult = await fetchJson(SPOT_API, {
+      const { runId } = await fetchJson(SPOT_API, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ campaignIds: selected, sampleSize }),
       });
-      setLastRun(result);
-      setSample(result.sample);
-      loadHistory();
-      if (result.aborted) {
-        toast.error(`Refresh aborted (${result.aborted.kind}): ${result.aborted.message}`);
-      } else {
-        toast.success(
-          `Found ${result.capture.capturedNow} links · refreshed ${result.run.refreshedCount} videos`
-        );
-      }
+      setActiveRunId(runId);
     } catch (err: any) {
       setRunError(err?.message || "Refresh failed");
-    } finally {
       setRunning(false);
     }
   };
@@ -1670,7 +1739,7 @@ function SpotCheckModal({ open, onClose }: { open: boolean; onClose: () => void 
           </div>
         </div>
 
-        {sample && (
+        {sample && !running && !lastRun && (
           <div className="text-[10px] text-zinc-600 -my-1">
             Collect latest views also finds missing links (one profile lookup per account
             {missingLinks > 0 ? ` — ${missingLinks} sampled posts need one` : ""}) and fetches
@@ -1678,18 +1747,30 @@ function SpotCheckModal({ open, onClose }: { open: boolean; onClose: () => void 
           </div>
         )}
 
+        {running && (
+          <div className="flex items-center gap-2 text-[11px] text-zinc-500">
+            <Loader2 className="w-3 h-3 animate-spin" />
+            {liveRun ? (
+              <span>
+                collecting… <span className="text-zinc-300 tabular-nums">{liveRun.processedTargets}/{liveRun.totalTargets}</span>
+                {" · "}{liveRun.accountLookups} account lookups
+                {" · "}{liveRun.capturedNow} links found
+                {" · "}{liveRun.refreshedCount} refreshed
+              </span>
+            ) : (
+              "starting run…"
+            )}
+          </div>
+        )}
+
         {lastRun && (
           <div className="text-[11px] text-zinc-500">
-            links found: <span className="text-zinc-200 tabular-nums">{lastRun.capture.capturedNow}</span>
+            links found: <span className="text-zinc-200 tabular-nums">{lastRun.run.capturedNow}</span>
             {" · "}refreshed: <span className="text-zinc-200 tabular-nums">{lastRun.run.refreshedCount}</span>
-            {" · "}still unmatched: <span className="text-zinc-200 tabular-nums">{lastRun.capture.noMatch}</span>
-            <span className="text-zinc-600"> ({lastRun.capture.accountLookups} account lookups)</span>
-            {lastRun.capture.skippedAccounts.length > 0 && (
-              <span className="text-amber-400/80">
-                {" — "}skipped {lastRun.capture.skippedAccounts.length} account
-                {lastRun.capture.skippedAccounts.length !== 1 ? "s" : ""} over the 25-lookup limit:{" "}
-                {lastRun.capture.skippedAccounts.map((h) => `@${h}`).join(", ")}
-              </span>
+            {" · "}still unmatched: <span className="text-zinc-200 tabular-nums">{lastRun.run.noMatch}</span>
+            <span className="text-zinc-600"> ({lastRun.run.accountLookups} account lookups)</span>
+            {lastRun.run.status === "failed" && (
+              <span className="text-amber-400/80"> — run ended early; results are partial</span>
             )}
           </div>
         )}
@@ -1697,13 +1778,6 @@ function SpotCheckModal({ open, onClose }: { open: boolean; onClose: () => void 
         {runError && (
           <div className="flex items-center gap-2 border border-red-500/20 bg-red-500/5 rounded-lg px-3 py-2 text-xs text-red-400">
             <AlertCircle className="w-3.5 h-3.5" /> {runError}
-          </div>
-        )}
-        {lastRun?.aborted && (
-          <div className="flex items-center gap-2 border border-amber-500/20 bg-amber-500/5 rounded-lg px-3 py-2 text-xs text-amber-400">
-            <AlertCircle className="w-3.5 h-3.5" />
-            Refresh aborted ({lastRun.aborted.kind}) after {lastRun.run.refreshedCount} videos —
-            results below are partial. {lastRun.aborted.message}
           </div>
         )}
 
@@ -1775,9 +1849,9 @@ function SpotCheckModal({ open, onClose }: { open: boolean; onClose: () => void 
                             return (
                               <tr
                                 key={r.postJobId}
-                                className={`border-b border-[#1c1c21] last:border-0 ${
+                                className={`border-b border-[#1c1c21] last:border-0 transition-colors duration-700 ${
                                   dormant ? "opacity-50" : ""
-                                }`}
+                                } ${flashIds.has(r.postJobId) ? "bg-blue-500/10" : ""}`}
                               >
                                 <td className="px-3 py-2 text-zinc-500 whitespace-nowrap">
                                   {istDateTime(r.publishedAt)}
@@ -1793,7 +1867,7 @@ function SpotCheckModal({ open, onClose }: { open: boolean; onClose: () => void 
                                   </a>
                                   <span className="text-zinc-600 ml-2">@{r.accountHandle}</span>
                                   {r.linkIsProfileFallback &&
-                                    (lastRun?.capture.unmatchedPostJobIds.includes(r.postJobId) ? (
+                                    (lastRun ? (
                                       <span
                                         className="ml-1.5 text-[10px] text-zinc-600 border border-[#27272a] rounded px-1 py-px"
                                         title="Profile lookup ran for this account but no video matched this post"
@@ -1870,6 +1944,11 @@ function SpotCheckModal({ open, onClose }: { open: boolean; onClose: () => void 
                       {r.campaignIds.map((id) => titleById.get(id) ?? "?").join(", ")}
                     </span>
                     <span className="text-zinc-500 flex-shrink-0 tabular-nums">
+                      {r.status !== "done" && (
+                        <span className={r.status === "failed" ? "text-red-400" : "text-amber-400"}>
+                          {r.status} ·{" "}
+                        </span>
+                      )}
                       N={r.sampleSize} · avg {overallAvg === null ? "—" : fmt(overallAvg)} ·{" "}
                       {r.refreshedCount} refreshed
                     </span>
