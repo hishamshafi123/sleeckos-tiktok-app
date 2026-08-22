@@ -28,6 +28,7 @@ type Overview = {
   silentAccounts: number;
   unusedAccounts: number;
   flaggedAccounts: number;
+  fedSilentAccounts: number;
 };
 
 type PerfRow = {
@@ -68,6 +69,18 @@ type QuietAccount = {
   sectionName: string | null;
   daysQuiet: number | null; // null = never posted
   lastPostAt: string | null;
+};
+
+// Fed-but-silent rows carry the QuietAccount shape plus receipt stats.
+type FedAccount = QuietAccount & {
+  videosReceived7d: number;
+  lastReceivedAt: string | null;
+};
+
+const fedRightLabel = (r: QuietAccount) => {
+  const fed = r as FedAccount;
+  const quiet = r.daysQuiet === null ? "never posted" : `no post in ${r.daysQuiet}d`;
+  return `${fed.videosReceived7d ?? 0} videos received · ${quiet}`;
 };
 
 type Trajectory = {
@@ -264,6 +277,9 @@ export default function ClientPage() {
     [period, flaggedOnly, debouncedQuery]
   );
   const coverage = useResource<Coverage>("/api/admin/account-performance/coverage");
+  const fedSilent = useResource<{ windowDays: number; silentDays: number; rows: FedAccount[] }>(
+    "/api/admin/account-performance/fed-silent"
+  );
   const trajectory = useResource<Trajectory>("/api/admin/account-performance/trajectory");
 
   const openDetail = useCallback((id: string) => setDetailId(id), []);
@@ -290,13 +306,13 @@ export default function ClientPage() {
         {overview.error ? (
           <SectionError message={overview.error} onRetry={overview.reload} />
         ) : overview.loading || !overview.data ? (
-          <div className="grid grid-cols-6 gap-3">
-            {Array.from({ length: 6 }).map((_, i) => (
+          <div className="grid grid-cols-7 gap-3">
+            {Array.from({ length: 7 }).map((_, i) => (
               <div key={i} className="h-20 rounded-lg bg-zinc-900 animate-pulse" />
             ))}
           </div>
         ) : (
-          <div className="grid grid-cols-6 gap-3">
+          <div className="grid grid-cols-7 gap-3">
             <KpiCard
               label="Active (24h)"
               value={`${overview.data.activeAccounts} / ${overview.data.totalAccounts}`}
@@ -321,6 +337,12 @@ export default function ClientPage() {
               hint="No posts in 7+ days, or never posted"
             />
             <KpiCard label="Flagged" value={full(overview.data.flaggedAccounts)} tone="text-red-400" />
+            <KpiCard
+              label="Fed but silent"
+              value={full(overview.data.fedSilentAccounts)}
+              tone={overview.data.fedSilentAccounts > 0 ? "text-amber-400" : undefined}
+              hint="Received videos in the last 7 days, no posts in 3+ days"
+            />
           </div>
         )}
       </section>
@@ -347,6 +369,7 @@ export default function ClientPage() {
         ) : (
           <CoverageSection
             data={coverage.data}
+            fed={fedSilent}
             onOpen={openDetail}
             onChanged={() => {
               coverage.reload();
@@ -675,10 +698,12 @@ function AccountsTable({ rows, onOpen }: { rows: PerfRow[]; onOpen: (id: string)
 // ── Coverage section ────────────────────────────────────────────────────────
 function CoverageSection({
   data,
+  fed,
   onOpen,
   onChanged,
 }: {
   data: Coverage;
+  fed: Resource<{ windowDays: number; silentDays: number; rows: FedAccount[] }> & { reload: () => void };
   onOpen: (id: string) => void;
   onChanged: () => void;
 }) {
@@ -768,6 +793,21 @@ function CoverageSection({
           onOpen={onOpen}
           onChanged={onChanged}
         />
+        {fed.error ? (
+          <SectionError message={fed.error} onRetry={fed.reload} />
+        ) : fed.loading || !fed.data ? (
+          <div className="h-28 rounded-lg bg-zinc-900 animate-pulse" />
+        ) : (
+          <QuietPanel
+            title="Receiving but not posting"
+            subtitle={`Got videos in the last ${fed.data.windowDays} days, no posts in ${fed.data.silentDays}+ days`}
+            kind="fed"
+            rows={fed.data.rows}
+            onOpen={onOpen}
+            onChanged={onChanged}
+            rightContent={fedRightLabel}
+          />
+        )}
       </div>
     </div>
   );
@@ -804,18 +844,26 @@ function QuietPanel({
   rows,
   onOpen,
   onChanged,
+  rightContent,
 }: {
   title: string;
   subtitle: string;
-  kind: "silent" | "unused";
+  kind: "silent" | "unused" | "fed";
   rows: QuietAccount[];
   onOpen: (id: string) => void;
   onChanged: () => void;
+  // Optional override for the right-side label (used by the fed-silent panel
+  // to show "N videos received · no post in Xd").
+  rightContent?: (r: QuietAccount) => string;
 }) {
   const [viewAll, setViewAll] = useState(false);
   // Intensity by days quiet: silent 2–3 = amber, 4–6 = orange, 7 = red;
-  // unused rows are always red.
+  // unused rows are always red. Fed-silent rows are always amber (they're
+  // actionable but not necessarily neglected — the poster may just be behind).
   const toneFor = (daysQuiet: number | null): { dot: string; text: string } => {
+    if (kind === "fed") {
+      return { dot: "bg-amber-500", text: "text-amber-400" };
+    }
     if (kind === "unused" || (daysQuiet !== null && daysQuiet >= 7)) {
       return { dot: "bg-red-500", text: "text-red-400" };
     }
@@ -892,8 +940,12 @@ function QuietPanel({
                     </span>
                   </span>
                 </span>
-                <span className={`flex-shrink-0 tabular-nums ${tone.text}`}>
-                  {r.daysQuiet === null ? "never posted" : `${r.daysQuiet} days quiet`}
+                <span className={`flex-shrink-0 tabular-nums text-right ${tone.text}`}>
+                  {rightContent
+                    ? rightContent(r)
+                    : r.daysQuiet === null
+                      ? "never posted"
+                      : `${r.daysQuiet} days quiet`}
                 </span>
               </div>
             );
@@ -907,6 +959,7 @@ function QuietPanel({
         title={title}
         rows={rows}
         onChanged={onChanged}
+        rightContent={rightContent}
       />
     </div>
   );
@@ -922,13 +975,15 @@ function QuietListModal({
   title,
   rows,
   onChanged,
+  rightContent,
 }: {
   open: boolean;
   onClose: () => void;
-  kind: "silent" | "unused";
+  kind: "silent" | "unused" | "fed";
   title: string;
   rows: QuietAccount[];
   onChanged: () => void;
+  rightContent?: (r: QuietAccount) => string;
 }) {
   const [query, setQuery] = useState("");
   const [removedIds, setRemovedIds] = useState<Set<string>>(new Set());
@@ -974,6 +1029,9 @@ function QuietListModal({
     expandedKey === listKey ? filtered : filtered.slice(0, RENDER_CAP);
 
   const toneFor = (daysQuiet: number | null): { dot: string; text: string } => {
+    if (kind === "fed") {
+      return { dot: "bg-amber-500", text: "text-amber-400" };
+    }
     if (kind === "unused" || (daysQuiet !== null && daysQuiet >= 7)) {
       return { dot: "bg-red-500", text: "text-red-400" };
     }
@@ -1092,7 +1150,11 @@ function QuietListModal({
                     <span className="flex items-center gap-3 flex-shrink-0">
                       <span className="text-right">
                         <span className={`block tabular-nums ${tone.text}`}>
-                          {r.daysQuiet === null ? "never posted" : `${r.daysQuiet} days quiet`}
+                          {rightContent
+                            ? rightContent(r)
+                            : r.daysQuiet === null
+                              ? "never posted"
+                              : `${r.daysQuiet} days quiet`}
                         </span>
                         <span className="block text-[10px] text-zinc-600">
                           {section === null && (

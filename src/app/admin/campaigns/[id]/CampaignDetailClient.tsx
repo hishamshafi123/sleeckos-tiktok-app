@@ -174,7 +174,7 @@ interface ShareCode {
   revokedAt: string | null;
 }
 
-type TrackSortKey = "views" | "likes" | "date";
+type TrackSortKey = "views" | "likes" | "date" | "refreshed";
 
 const TRACK_PAGE_SIZE = 50;
 
@@ -724,6 +724,13 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
     return [...filtered].sort((a, b) => {
       if (trackSort.key === "views") return (a.views - b.views) * dir;
       if (trackSort.key === "likes") return (a.likes - b.likes) * dir;
+      if (trackSort.key === "refreshed") {
+        // Never-refreshed rows always sink to the bottom.
+        if (!a.lastRefreshedAt && !b.lastRefreshedAt) return 0;
+        if (!a.lastRefreshedAt) return 1;
+        if (!b.lastRefreshedAt) return -1;
+        return (new Date(a.lastRefreshedAt).getTime() - new Date(b.lastRefreshedAt).getTime()) * dir;
+      }
       const at = a.publishedAt ? new Date(a.publishedAt).getTime() : 0;
       const bt = b.publishedAt ? new Date(b.publishedAt).getTime() : 0;
       return (at - bt) * dir;
@@ -2299,7 +2306,7 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
                               {trackSortHeader("Likes", "likes", true)}
                               <th className="px-3 py-2 font-semibold text-right">Comments</th>
                               <th className="px-3 py-2 font-semibold text-right">Shares</th>
-                              <th className="px-3 py-2 font-semibold">Refreshed</th>
+                              {trackSortHeader("Refreshed", "refreshed")}
                               <th className="px-3 py-2 font-semibold text-center">Status</th>
                             </tr>
                           </thead>

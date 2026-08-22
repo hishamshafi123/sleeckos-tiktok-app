@@ -352,6 +352,7 @@ export interface PerformanceOverview {
   silentAccounts: number; // last post 2–7 IST days ago
   unusedAccounts: number; // last post 8+ IST days ago, or never posted
   flaggedAccounts: number; // zeroViewStreak >= FLAG_STREAK
+  fedSilentAccounts: number; // received videos in FED_WINDOW_DAYS, no posts in FED_SILENT_DAYS
 }
 
 export async function getPerformanceOverview(userId: string): Promise<PerformanceOverview> {
@@ -366,7 +367,7 @@ export async function getPerformanceOverview(userId: string): Promise<Performanc
   const accounts = await prisma.managedAccount.findMany({ select: { id: true } });
   const accountIds = accounts.map((a) => a.id);
 
-  const [activeRows, yesterdayAgg, lastPosts, streaks] = await Promise.all([
+  const [activeRows, yesterdayAgg, lastPosts, streaks, fedSilent] = await Promise.all([
     prisma.postJob.findMany({
       where: {
         state: { in: TERMINAL_PUBLISHED_STATES },
@@ -381,6 +382,7 @@ export async function getPerformanceOverview(userId: string): Promise<Performanc
     }),
     computeLastPostAt(accountIds),
     computeZeroViewStreaks(accountIds),
+    computeFedButSilent(tz),
   ]);
 
   let silent = 0;
@@ -411,7 +413,150 @@ export async function getPerformanceOverview(userId: string): Promise<Performanc
     silentAccounts: silent,
     unusedAccounts: unused,
     flaggedAccounts: flagged,
+    fedSilentAccounts: fedSilent.length,
   };
+}
+
+// ── Fed-but-silent detection ─────────────────────────────────────────────────
+// An account is "fed but silent" when it received ≥1 video in the last
+// FED_WINDOW_DAYS days AND has 0 terminal-published PostJobs in the last
+// FED_SILENT_DAYS days (never-posted accounts included).
+//
+// "Received a video" sources (unioned):
+//  - SourcedVideoAssignment (status "uploaded") — accountId direct, uploadedAt.
+//  - SmartExportAssignment (status "done") — stores driveFolderId, mapped to
+//    an account via ManagedAccount.driveFolderId; updatedAt is the completion
+//    write, i.e. the upload time.
+//  - Delivery (distribution/factory tracker) — accountId direct; videoCount
+//    is summed, deliveredAt is the receipt time. Every status counts as
+//    received (delivered/scheduled/posted all mean the folder got videos).
+export const FED_WINDOW_DAYS = Number(process.env.FED_WINDOW_DAYS) || 7;
+export const FED_SILENT_DAYS = Number(process.env.FED_SILENT_DAYS) || 3;
+
+export interface FedSilentRow {
+  accountId: string;
+  accountName: string;
+  driveFolderName: string | null;
+  driveFolderId: string | null;
+  sectionName: string | null;
+  lastPostAt: string | null; // ISO, null = never posted
+  daysQuiet: number | null; // whole org-tz days since last post, null = never posted
+  videosReceived7d: number; // union of the three sources (window = FED_WINDOW_DAYS)
+  lastReceivedAt: string | null; // ISO
+}
+
+async function computeFedButSilent(tz: string): Promise<FedSilentRow[]> {
+  const now = new Date();
+  const receivedSince = new Date(now.getTime() - FED_WINDOW_DAYS * DAY_MS);
+  const postedSince = new Date(now.getTime() - FED_SILENT_DAYS * DAY_MS);
+
+  const [sourced, smartExport, deliveries] = await Promise.all([
+    prisma.sourcedVideoAssignment.groupBy({
+      by: ["accountId"],
+      where: { status: "uploaded", uploadedAt: { gte: receivedSince } },
+      _count: { _all: true },
+      _max: { uploadedAt: true },
+    }),
+    prisma.smartExportAssignment.groupBy({
+      by: ["driveFolderId"],
+      where: { status: "done", updatedAt: { gte: receivedSince } },
+      _count: { _all: true },
+      _max: { updatedAt: true },
+    }),
+    prisma.delivery.groupBy({
+      by: ["accountId"],
+      where: { deliveredAt: { gte: receivedSince } },
+      _sum: { videoCount: true },
+      _max: { deliveredAt: true },
+    }),
+  ]);
+
+  // Smart Export rows address a Drive folder, not an account — map it.
+  const folderIds = smartExport.map((r) => r.driveFolderId);
+  const folderAccounts = folderIds.length
+    ? await prisma.managedAccount.findMany({
+        where: { driveFolderId: { in: folderIds } },
+        select: { id: true, driveFolderId: true },
+      })
+    : [];
+  const accountByFolder = new Map(folderAccounts.map((a) => [a.driveFolderId!, a.id]));
+
+  const received = new Map<string, { count: number; last: Date | null }>();
+  const bump = (accountId: string, count: number, at: Date | null) => {
+    const cur = received.get(accountId);
+    const last = cur?.last && at ? (cur.last > at ? cur.last : at) : cur?.last ?? at;
+    received.set(accountId, { count: (cur?.count ?? 0) + count, last });
+  };
+  for (const r of sourced) bump(r.accountId, r._count._all, r._max.uploadedAt);
+  for (const r of smartExport) {
+    const accountId = accountByFolder.get(r.driveFolderId);
+    if (accountId) bump(accountId, r._count._all, r._max.updatedAt);
+  }
+  for (const r of deliveries) bump(r.accountId, r._sum.videoCount ?? 0, r._max.deliveredAt);
+
+  if (received.size === 0) return [];
+
+  // Accounts that DID post inside the silent window are not silent.
+  const posted = await prisma.postJob.findMany({
+    where: {
+      accountId: { in: [...received.keys()] },
+      state: { in: TERMINAL_PUBLISHED_STATES },
+      publishedAt: { gte: postedSince },
+    },
+    select: { accountId: true },
+    distinct: ["accountId"],
+  });
+  const postedSet = new Set(posted.map((p) => p.accountId));
+  const candidateIds = [...received.keys()].filter((id) => !postedSet.has(id));
+  if (candidateIds.length === 0) return [];
+
+  const [accounts, lastPosts] = await Promise.all([
+    prisma.managedAccount.findMany({
+      where: { id: { in: candidateIds } },
+      select: {
+        id: true,
+        tiktokUsername: true,
+        driveFolderId: true,
+        driveFolderName: true,
+        section: { select: { name: true } },
+      },
+    }),
+    computeLastPostAt(candidateIds),
+  ]);
+
+  const today = zonedDayString(now, tz);
+  const { start: todayStart } = zonedDayBounds(today, tz);
+
+  const rows: FedSilentRow[] = accounts.map((a) => {
+    const last = lastPosts.get(a.id) ?? null;
+    const daysQuiet = last
+      ? Math.round(
+          (todayStart.getTime() - zonedDayBounds(zonedDayString(last, tz), tz).start.getTime()) / DAY_MS
+        )
+      : null;
+    const rec = received.get(a.id)!;
+    return {
+      accountId: a.id,
+      accountName: a.tiktokUsername,
+      driveFolderId: a.driveFolderId,
+      driveFolderName: a.driveFolderName,
+      sectionName: a.section?.name ?? null,
+      lastPostAt: last?.toISOString() ?? null,
+      daysQuiet,
+      videosReceived7d: rec.count,
+      lastReceivedAt: rec.last?.toISOString() ?? null,
+    };
+  });
+  rows.sort((a, b) => b.videosReceived7d - a.videosReceived7d || a.accountName.localeCompare(b.accountName));
+  return rows;
+}
+
+export async function getFedButSilentAccounts(
+  userId: string
+): Promise<{ windowDays: number; silentDays: number; rows: FedSilentRow[] }> {
+  await assertAccess(userId);
+  const tz = await getOrgTimezone();
+  return { windowDays: FED_WINDOW_DAYS, silentDays: FED_SILENT_DAYS, rows: await computeFedButSilent(tz) };
 }
 
 export interface PostingCoverage {
