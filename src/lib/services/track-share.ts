@@ -131,14 +131,19 @@ export async function getPublicTrackingPayload(campaignId: string): Promise<Publ
     }),
   ]);
 
-  const captured = videos.filter((v) => v.status !== "unresolved");
+  // "removed" rows (operator-removed 0-view links) stay out of the public
+  // payload entirely — lists, totals, freshness marker, and trend. Removed
+  // rows always have 0 views, so excluding them cannot distort the trend.
+  const visible = videos.filter((v) => v.status !== "removed");
+
+  const captured = visible.filter((v) => v.status !== "unresolved");
   // Confirmed live posts with links (vs. "unavailable" captures)
-  const published = videos.filter((v) => v.status === "captured").length;
+  const published = visible.filter((v) => v.status === "captured").length;
   const totalViews = captured.reduce((sum, v) => sum + Number(v.views), 0);
   const totalLikes = captured.reduce((sum, v) => sum + Number(v.likes), 0);
   const totalComments = captured.reduce((sum, v) => sum + Number(v.comments), 0);
   const totalShares = captured.reduce((sum, v) => sum + Number(v.shares), 0);
-  const dataUpdatedAt = videos.reduce<Date | null>(
+  const dataUpdatedAt = visible.reduce<Date | null>(
     (max, v) => (v.lastRefreshedAt && (!max || v.lastRefreshedAt > max) ? v.lastRefreshedAt : max),
     null
   );
@@ -147,7 +152,7 @@ export async function getPublicTrackingPayload(campaignId: string): Promise<Publ
   const tz = await getOrgTimezone();
   const trendStart = getZonedFutureStartOfDay(tz, -(TREND_DAYS - 1));
 
-  const videoIds = videos.map((v) => v.id);
+  const videoIds = visible.map((v) => v.id);
   const snapshots = videoIds.length
     ? await prisma.videoStatSnapshot.findMany({
         where: { trackedVideoId: { in: videoIds } },
@@ -159,7 +164,7 @@ export async function getPublicTrackingPayload(campaignId: string): Promise<Publ
   // Per-video point series; current counters act as a virtual "now" snapshot
   // so today's point reflects the latest refresh even without a snapshot row.
   const seriesByVideo = new Map<string, { at: number; views: number; likes: number }[]>();
-  for (const v of videos) seriesByVideo.set(v.id, []);
+  for (const v of visible) seriesByVideo.set(v.id, []);
   for (const s of snapshots) {
     seriesByVideo.get(s.trackedVideoId)?.push({
       at: s.recordedAt.getTime(),
@@ -168,7 +173,7 @@ export async function getPublicTrackingPayload(campaignId: string): Promise<Publ
     });
   }
   const now = Date.now();
-  for (const v of videos) {
+  for (const v of visible) {
     seriesByVideo.get(v.id)?.push({ at: now, views: Number(v.views), likes: Number(v.likes) });
   }
 

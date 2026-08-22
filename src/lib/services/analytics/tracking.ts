@@ -1,11 +1,18 @@
 /**
  * Campaign tracking query — backs GET /api/campaigns/[id]/tracking and the
  * CSV export. Shape here is the public UI contract; change with care.
+ *
+ * TrackedVideo.status note: "removed" rows (operator-removed 0-view links,
+ * see previewZeroViewRemoval) are excluded from every list/total here and in
+ * track-share.ts, and from all refresh paths (sweep/refresh/spot-check all
+ * select status "captured" — or "captured"+"dormant" for the free sweep
+ * refresh — so "removed" drops out automatically).
  */
 
 import prisma from "@/lib/db";
 import { getOrgTimezone, getZonedDateString } from "@/lib/services/timezone";
 import { getLastRecoveryRun } from "./recover";
+import { ZERO_VIEW_MIN_AGE_DAYS } from "./refresh";
 
 const TREND_DAYS = 30;
 
@@ -119,4 +126,61 @@ export async function getCampaignTracking(campaignId: string) {
     dormantCount,
     lastRecovery,
   };
+}
+
+// ─── Remove 0-view links (operator cleanup) ─────────────────────────────────
+// A TrackedVideo qualifies when ALL hold: views = 0, publishedAt older than
+// ZERO_VIEW_MIN_AGE_DAYS, refreshed at least once (lastRefreshedAt not null),
+// status "captured" or "dormant". Removal sets status "removed" — the row is
+// kept for history but drops out of every list, total, and refresh path.
+
+const zeroViewRemovalWhere = (campaignId: string) => ({
+  campaignId,
+  views: BigInt(0),
+  publishedAt: { lte: new Date(Date.now() - ZERO_VIEW_MIN_AGE_DAYS * 24 * 60 * 60 * 1000) },
+  lastRefreshedAt: { not: null },
+  status: { in: ["captured", "dormant"] },
+});
+
+export interface ZeroViewRemovalPreview {
+  count: number;
+  sample: {
+    url: string;
+    accountId: string;
+    publishedAt: string;
+    lastRefreshedAt: string | null;
+  }[];
+}
+
+export async function previewZeroViewRemoval(campaignId: string): Promise<ZeroViewRemovalPreview> {
+  const where = zeroViewRemovalWhere(campaignId);
+  const [count, rows] = await Promise.all([
+    prisma.trackedVideo.count({ where }),
+    prisma.trackedVideo.findMany({
+      where,
+      orderBy: { publishedAt: "desc" },
+      take: 5,
+      select: { url: true, accountId: true, publishedAt: true, lastRefreshedAt: true },
+    }),
+  ]);
+  return {
+    count,
+    sample: rows.map((r) => ({
+      url: r.url,
+      accountId: r.accountId,
+      publishedAt: r.publishedAt.toISOString(),
+      lastRefreshedAt: r.lastRefreshedAt?.toISOString() ?? null,
+    })),
+  };
+}
+
+export async function removeZeroViewVideos(campaignId: string): Promise<{ removed: number }> {
+  const res = await prisma.trackedVideo.updateMany({
+    where: zeroViewRemovalWhere(campaignId),
+    data: { status: "removed" },
+  });
+  if (res.count > 0) {
+    console.log(`[Tracking] Campaign ${campaignId}: removed ${res.count} 0-view link(s)`);
+  }
+  return { removed: res.count };
 }

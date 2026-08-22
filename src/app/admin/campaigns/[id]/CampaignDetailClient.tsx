@@ -306,6 +306,14 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
   });
   const [trackSearch, setTrackSearch] = useState("");
   const [trackVisible, setTrackVisible] = useState(TRACK_PAGE_SIZE);
+  // ── Remove 0-view links ──
+  const [showZeroViewDialog, setShowZeroViewDialog] = useState(false);
+  const [zeroViewPreview, setZeroViewPreview] = useState<{
+    count: number;
+    sample: { url: string; accountId: string; publishedAt: string; lastRefreshedAt: string | null }[];
+  } | null>(null);
+  const [zeroViewPreviewLoading, setZeroViewPreviewLoading] = useState(false);
+  const [zeroViewRemoving, setZeroViewRemoving] = useState(false);
   const refreshPollRef = useRef<NodeJS.Timeout | null>(null);
   const [isRecovering, setIsRecovering] = useState(false);
   const recoveryPollRef = useRef<NodeJS.Timeout | null>(null);
@@ -606,6 +614,40 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
       pollRecoveryOnce();
     } catch (err: any) {
       toast.error(err.message || "Failed to start recovery");
+    }
+  };
+
+  // Remove 0-view links → preview what qualifies, confirm, then execute.
+  const handleOpenZeroViewRemoval = async () => {
+    setShowZeroViewDialog(true);
+    setZeroViewPreview(null);
+    setZeroViewPreviewLoading(true);
+    try {
+      const res = await fetch(`/api/campaigns/${campaign.id}/zero-view-removal`);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `Request failed with status ${res.status}`);
+      setZeroViewPreview(data);
+    } catch (err: any) {
+      toast.error(err.message || "Failed to preview 0-view links");
+      setShowZeroViewDialog(false);
+    } finally {
+      setZeroViewPreviewLoading(false);
+    }
+  };
+
+  const handleConfirmZeroViewRemoval = async () => {
+    setZeroViewRemoving(true);
+    try {
+      const res = await fetch(`/api/campaigns/${campaign.id}/zero-view-removal`, { method: "POST" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `Request failed with status ${res.status}`);
+      toast.success(`Removed ${data.removed} 0-view link${data.removed !== 1 ? "s" : ""} from tracking`);
+      setShowZeroViewDialog(false);
+      fetchTracking(true); // refresh list + totals
+    } catch (err: any) {
+      toast.error(err.message || "Failed to remove 0-view links");
+    } finally {
+      setZeroViewRemoving(false);
     }
   };
 
@@ -2208,18 +2250,28 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
                 <div className="space-y-2 pt-1">
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                     <h4 className="text-[11px] font-semibold text-zinc-400 uppercase tracking-wider">Tracked Videos</h4>
-                    <div className="relative">
-                      <Search size={11} className="absolute left-2 top-1/2 -translate-y-1/2 text-zinc-600" />
-                      <input
-                        type="text"
-                        value={trackSearch}
-                        onChange={(e) => {
-                          setTrackSearch(e.target.value);
-                          setTrackVisible(TRACK_PAGE_SIZE);
-                        }}
-                        placeholder="Search by account..."
-                        className="bg-[#09090b] border border-[#27272a] rounded pl-7 pr-2.5 py-1 text-[11px] text-zinc-100 focus:outline-none focus:border-zinc-500 placeholder-zinc-600 w-full sm:w-48"
-                      />
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={handleOpenZeroViewRemoval}
+                        className="flex items-center gap-1.5 bg-red-950/20 hover:bg-red-950/40 border border-red-900/30 text-red-400 text-[11px] font-semibold px-2.5 py-1 rounded transition"
+                        title="Remove links with 0 views, posted ≥2 days ago and checked at least once, from tracking"
+                      >
+                        <Trash2 size={11} />
+                        Remove 0-view links
+                      </button>
+                      <div className="relative">
+                        <Search size={11} className="absolute left-2 top-1/2 -translate-y-1/2 text-zinc-600" />
+                        <input
+                          type="text"
+                          value={trackSearch}
+                          onChange={(e) => {
+                            setTrackSearch(e.target.value);
+                            setTrackVisible(TRACK_PAGE_SIZE);
+                          }}
+                          placeholder="Search by account..."
+                          className="bg-[#09090b] border border-[#27272a] rounded pl-7 pr-2.5 py-1 text-[11px] text-zinc-100 focus:outline-none focus:border-zinc-500 placeholder-zinc-600 w-full sm:w-48"
+                        />
+                      </div>
                     </div>
                   </div>
 
@@ -2849,6 +2901,87 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
           </div>
         </div>
       </div>
+
+      {/* Remove 0-view links — preview + confirm */}
+      {showZeroViewDialog && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-sm"
+          onClick={() => !zeroViewRemoving && setShowZeroViewDialog(false)}
+        >
+          <div
+            className="bg-[#18181b] border border-[#27272a] rounded-md p-5 max-w-md w-full mx-4 shadow-2xl space-y-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 className="text-sm font-semibold text-zinc-100 flex items-center gap-2">
+              <Trash2 size={14} className="text-red-400" /> Remove 0-view links
+            </h3>
+
+            {zeroViewPreviewLoading ? (
+              <div className="flex items-center justify-center gap-2 py-6 text-xs text-zinc-500">
+                <Loader2 size={14} className="animate-spin" /> Checking tracked videos…
+              </div>
+            ) : zeroViewPreview ? (
+              zeroViewPreview.count === 0 ? (
+                <p className="text-xs text-zinc-400 leading-relaxed">
+                  Nothing to remove — no tracked videos with 0 views, posted ≥2 days ago and checked
+                  at least once.
+                </p>
+              ) : (
+                <>
+                  <p className="text-xs text-zinc-400 leading-relaxed">
+                    <span className="text-zinc-100 font-semibold">{zeroViewPreview.count} video{zeroViewPreview.count !== 1 ? "s" : ""}</span>{" "}
+                    with 0 views, posted ≥2 days ago, checked at least once — remove them from
+                    tracking? They drop out of the video list, totals, the public share page, and all
+                    refresh paths. The rows are kept (status &quot;removed&quot;) but no longer updated.
+                  </p>
+                  <div className="space-y-1.5 max-h-48 overflow-y-auto border border-[#27272a] rounded p-2.5 bg-[#09090b]">
+                    {zeroViewPreview.sample.map((r) => (
+                      <div key={r.url} className="text-[11px] flex items-center justify-between gap-2">
+                        <a
+                          href={r.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-blue-400 hover:underline truncate"
+                        >
+                          {r.url}
+                        </a>
+                        <span className="text-zinc-500 flex-shrink-0" title={formatAbsoluteIST(r.publishedAt)}>
+                          posted {timeAgo(r.publishedAt)}
+                        </span>
+                      </div>
+                    ))}
+                    {zeroViewPreview.count > zeroViewPreview.sample.length && (
+                      <p className="text-[10px] text-zinc-600 italic pt-0.5">
+                        …and {zeroViewPreview.count - zeroViewPreview.sample.length} more
+                      </p>
+                    )}
+                  </div>
+                </>
+              )
+            ) : null}
+
+            <div className="flex justify-end gap-2 pt-1">
+              <button
+                onClick={() => setShowZeroViewDialog(false)}
+                disabled={zeroViewRemoving}
+                className="px-3 py-1.5 bg-zinc-900 hover:bg-zinc-800 border border-[#27272a] text-zinc-300 text-[11px] font-semibold rounded transition disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              {zeroViewPreview && zeroViewPreview.count > 0 && (
+                <button
+                  onClick={handleConfirmZeroViewRemoval}
+                  disabled={zeroViewRemoving}
+                  className="px-3 py-1.5 bg-red-600/80 hover:bg-red-600 text-white text-[11px] font-semibold rounded transition disabled:opacity-50 flex items-center gap-1.5"
+                >
+                  {zeroViewRemoving && <Loader2 size={11} className="animate-spin" />}
+                  Confirm removal ({zeroViewPreview.count})
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

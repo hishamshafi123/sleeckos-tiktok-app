@@ -292,9 +292,12 @@ async function buildSample(
 
 function summarizeRows(rows: SpotCheckPostRow[]) {
   const withLinks = rows.filter((r) => r.video !== null).length;
-  // "with stats" = link resolved to an actual video (unresolved links are
-  // placeholders with no meaningful counters).
-  const statsRows = rows.filter((r) => r.video !== null && r.video.status !== "unresolved");
+  // "with stats" = link resolved to an actual video that still tracks stats
+  // (unresolved placeholders have no counters; operator-"removed" rows are
+  // deliberately out of tracking).
+  const statsRows = rows.filter(
+    (r) => r.video !== null && r.video.status !== "unresolved" && r.video.status !== "removed"
+  );
   const withStats = statsRows.length;
   const avgViews =
     withStats > 0
