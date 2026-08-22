@@ -1703,6 +1703,12 @@ model TrackedVideo {
   likes          BigInt   @default(0)
   comments       BigInt   @default(0)
   shares         BigInt   @default(0)
+  // Consecutive daily checks with no view-count change. >= STATIC_VIEW_STREAK_DAYS
+  // (default 3) drops the video to a 5-day refresh cadence in the PAID tiered
+  // rotation (refresh.ts); any view change resets to 0. Maintained by every
+  // stats-write path via applyStatsUpdate (refresh, sweep free refresh,
+  // spot-check). Does not affect dormant/unavailable/removed exclusions.
+  unchangedViewsStreak Int  @default(0)
   lastRefreshedAt DateTime?
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt

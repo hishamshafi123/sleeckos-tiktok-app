@@ -20,6 +20,10 @@ import { getOrgTimezone, getZonedDateString } from "@/lib/services/timezone";
 
 // ── Tier config (env-overridable) ────────────────────────────────────────────
 // Tier is based on video age (publishedAt); staleness on lastRefreshedAt.
+// EXCEPTION: videos whose view count has not moved across
+// STATIC_VIEW_STREAK_DAYS consecutive checks drop out of these tiers onto the
+// 5-day slow cadence (STATIC_VIEW_STALE_HOURS) until views move again — see
+// the slow-cadence block below.
 const TIER1_MAX_AGE_DAYS = Number(process.env.ANALYTICS_TIER1_MAX_AGE_DAYS) || 7;
 const TIER1_STALE_HOURS = Number(process.env.ANALYTICS_TIER1_STALE_HOURS) || 24;
 const TIER2_MAX_AGE_DAYS = Number(process.env.ANALYTICS_TIER2_MAX_AGE_DAYS) || 30;
@@ -30,6 +34,18 @@ const BATCH_SIZE = Number(process.env.ANALYTICS_BATCH_SIZE) || 25;
 const SLEEP_BETWEEN_CALLS_MS = Number(process.env.ANALYTICS_SLEEP_MS) || 500;
 // A run still "running" after this long is treated as crashed and resumed.
 const STALE_RUN_MINUTES = Number(process.env.ANALYTICS_STALE_RUN_MINUTES) || 30;
+
+// ── Static-view slow cadence (cost saving) ───────────────────────────────────
+// A captured video whose view count has not changed across
+// STATIC_VIEW_STREAK_DAYS consecutive daily checks leaves the age tiers and is
+// refreshed only once every STATIC_VIEW_STALE_HOURS instead. Any view change
+// resets the streak (applyStatsUpdate) and normal cadence resumes immediately.
+// Paid rotation only — the free sweep keeps its daily cadence (and maintains
+// the streak signal). Manual/spot-check runs ignore tiers, so operators can
+// always force-refresh slow-cadence videos. Dormant/unavailable/removed rules
+// are unchanged and still take precedence over everything above.
+export const STATIC_VIEW_STREAK_DAYS = Number(process.env.STATIC_VIEW_STREAK_DAYS) || 3;
+export const STATIC_VIEW_STALE_HOURS = Number(process.env.STATIC_VIEW_STALE_HOURS) || 120;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const HOUR_MS = 60 * 60 * 1000;
@@ -52,13 +68,46 @@ export function staleThresholdHours(ageDays: number): number {
 
 /** True when the video is due for a refresh under the tier rules. */
 export function isDueForRefresh(
-  video: { publishedAt: Date; lastRefreshedAt: Date | null },
+  video: { publishedAt: Date; lastRefreshedAt: Date | null; unchangedViewsStreak?: number },
   now: Date
 ): boolean {
-  const ageDays = (now.getTime() - video.publishedAt.getTime()) / DAY_MS;
-  const staleHours = staleThresholdHours(ageDays);
   const basis = video.lastRefreshedAt ?? video.publishedAt;
+  // Static-view slow cadence overrides the age tiers (see header comment).
+  if ((video.unchangedViewsStreak ?? 0) >= STATIC_VIEW_STREAK_DAYS) {
+    return now.getTime() - basis.getTime() > STATIC_VIEW_STALE_HOURS * HOUR_MS;
+  }
+  const staleHours = staleThresholdHours((now.getTime() - video.publishedAt.getTime()) / DAY_MS);
   return now.getTime() - basis.getTime() > staleHours * HOUR_MS;
+}
+
+/**
+ * THE stats-write path for TrackedVideo: writes stats + lastRefreshedAt,
+ * maintains unchangedViewsStreak (increment when the view count matches the
+ * previously stored one, reset to 0 on any change), and records the per-day
+ * snapshot. Used by every refresh path (paid rotation, free sweep, spot-check)
+ * so the slow-cadence signal stays accurate no matter which path saw the
+ * video. Capture (first link creation) is the exception — a fresh link starts
+ * at streak 0. Status transitions (dormant wake, maybeMarkDormant,
+ * unavailable) stay with the callers.
+ */
+export async function applyStatsUpdate(
+  trackedVideoId: string,
+  stats: { views: bigint; likes: bigint; comments: bigint; shares: bigint },
+  timezone: string,
+  now: Date
+): Promise<{ unchangedViewsStreak: number }> {
+  const prev = await prisma.trackedVideo.findUnique({
+    where: { id: trackedVideoId },
+    select: { views: true, unchangedViewsStreak: true },
+  });
+  const streak =
+    prev && prev.views === stats.views ? prev.unchangedViewsStreak + 1 : 0;
+  await prisma.trackedVideo.update({
+    where: { id: trackedVideoId },
+    data: { ...stats, lastRefreshedAt: now, unchangedViewsStreak: streak },
+  });
+  await ensureDailySnapshot(trackedVideoId, stats, timezone, now);
+  return { unchangedViewsStreak: streak };
 }
 
 /** Write at most one snapshot per video per org-timezone (IST) day. */
@@ -199,7 +248,7 @@ export async function runAnalyticsRefresh(opts: RefreshOptions = {}): Promise<{ 
       // budget goes to campaign-attributed videos only).
       campaignId: campaignId ? campaignId : { not: null, notIn: pausedIds },
     },
-    select: { id: true, tiktokVideoId: true, url: true, publishedAt: true, lastRefreshedAt: true },
+    select: { id: true, tiktokVideoId: true, url: true, publishedAt: true, lastRefreshedAt: true, unchangedViewsStreak: true },
   });
 
   // Oldest-refreshed-first (never refreshed first).
@@ -212,6 +261,12 @@ export async function runAnalyticsRefresh(opts: RefreshOptions = {}): Promise<{ 
     const idx = due.findIndex((v) => v.id === run.cursor);
     if (idx >= 0) due = due.slice(idx + 1);
   }
+
+  // Cost-visibility: how many of this run's due videos are on the static-view
+  // slow cadence (unchangedViewsStreak >= STATIC_VIEW_STREAK_DAYS) vs normal.
+  const slowCadenceDue = due.filter(
+    (v) => v.unchangedViewsStreak >= STATIC_VIEW_STREAK_DAYS
+  ).length;
 
   const counters = {
     attempted: run.attempted,
@@ -274,11 +329,7 @@ export async function runAnalyticsRefresh(opts: RefreshOptions = {}): Promise<{ 
           });
           counters.skipped++;
         } else {
-          await prisma.trackedVideo.update({
-            where: { id: video.id },
-            data: { ...stats, lastRefreshedAt: now },
-          });
-          await ensureDailySnapshot(video.id, stats, timezone, now);
+          await applyStatsUpdate(video.id, stats, timezone, now);
           // After the snapshot so today's check counts toward the streak.
           await maybeMarkDormant(video, stats, timezone, now);
           counters.succeeded++;
@@ -300,7 +351,7 @@ export async function runAnalyticsRefresh(opts: RefreshOptions = {}): Promise<{ 
 
   await saveProgress(due.length > 0 ? due[due.length - 1].id : run.cursor, "done");
   console.log(
-    `[Analytics] Run ${run.id} (${type}) done: attempted=${counters.attempted} succeeded=${counters.succeeded} failed=${counters.failed} skipped=${counters.skipped}`
+    `[Analytics] Run ${run.id} (${type}) done: attempted=${counters.attempted} succeeded=${counters.succeeded} failed=${counters.failed} skipped=${counters.skipped} cadence: slow=${slowCadenceDue} normal=${due.length - slowCadenceDue}`
   );
   return { runId: run.id };
 }

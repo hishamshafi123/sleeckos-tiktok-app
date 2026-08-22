@@ -65,7 +65,7 @@ import type { AnalyticsProvider, ProviderVideo } from "./provider";
 import { apifyProvider } from "./apify";
 import { normalizeCaption } from "./recover";
 import { unresolvedPlaceholderId } from "./capture";
-import { ensureDailySnapshot, maybeMarkDormant, ZERO_VIEW_THRESHOLD } from "./refresh";
+import { applyStatsUpdate, maybeMarkDormant, ZERO_VIEW_THRESHOLD } from "./refresh";
 import { getOrgTimezone } from "@/lib/services/timezone";
 
 const TERMINAL_PUBLISHED_STATES = ["PUBLISHED", "PENDING_DELETION", "DELETED"];
@@ -466,12 +466,14 @@ export async function runDailyAccountSweep(
       try {
         const stats = { views: v.views, likes: v.likes, comments: v.comments, shares: v.shares };
         const wake = row.status === "dormant" && v.views > BigInt(ZERO_VIEW_THRESHOLD);
-        await prisma.trackedVideo.update({
-          where: { id: row.id },
-          data: { ...stats, lastRefreshedAt: now, ...(wake ? { status: "captured" } : {}) },
-        });
-        await ensureDailySnapshot(row.id, stats, timezone, now);
+        // Stats + lastRefreshedAt + unchangedViewsStreak + snapshot (shared
+        // path — a wake resets the streak because views moved).
+        await applyStatsUpdate(row.id, stats, timezone, now);
         if (wake) {
+          await prisma.trackedVideo.update({
+            where: { id: row.id },
+            data: { status: "captured" },
+          });
           console.log(`[Sweep] Dormant video ${v.videoId} revived (${v.views} views)`);
         } else if (row.status === "captured") {
           // After the snapshot so today's check counts toward the streak.

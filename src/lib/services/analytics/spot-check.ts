@@ -38,7 +38,7 @@ import type { Prisma } from "@prisma/client";
 import { can } from "@/lib/services/permissions";
 import { getOrgTimezone } from "@/lib/services/timezone";
 import { TERMINAL_PUBLISHED_STATES } from "@/lib/services/analytics/account-stats";
-import { ensureDailySnapshot } from "@/lib/services/analytics/refresh";
+import { applyStatsUpdate } from "@/lib/services/analytics/refresh";
 import {
   captureJobsFromAccountVideos,
   type CampaignInfoCache,
@@ -622,11 +622,7 @@ export async function executeSpotCheck(
             });
             skipped++;
           } else {
-            await prisma.trackedVideo.update({
-              where: { id: target.id },
-              data: { ...stats, lastRefreshedAt: now },
-            });
-            await ensureDailySnapshot(target.id, stats, timezone, now);
+            await applyStatsUpdate(target.id, stats, timezone, now);
             succeeded++;
           }
         } catch (err: any) {
