@@ -314,6 +314,7 @@ model ManagedAccount {
   sheetCells            SheetCell[]
   warmupEnrollment      WarmupEnrollment?
   driveFiles            DriveFile[]
+  labelAssignments      AccountLabelAssignment[]
 
   @@index([sectionId])
 }
@@ -327,6 +328,29 @@ model AccountColor {
   accounts         ManagedAccount[]
   createdAt        DateTime         @default(now())
   updatedAt        DateTime         @updatedAt
+}
+
+// Reusable triage labels for managed accounts (e.g. "Shadowbanned",
+// "PostPeer disconnected"). color is a palette KEY, not a hex — the key →
+// Tailwind-class map lives in src/lib/account-labels.ts.
+model AccountLabel {
+  id          String                   @id @default(uuid())
+  name        String                   @unique
+  color       String
+  createdAt   DateTime                 @default(now())
+  assignments AccountLabelAssignment[]
+}
+
+model AccountLabelAssignment {
+  id        String         @id @default(uuid())
+  accountId String
+  account   ManagedAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  labelId   String
+  label     AccountLabel   @relation(fields: [labelId], references: [id], onDelete: Cascade)
+  createdAt DateTime       @default(now())
+
+  @@unique([accountId, labelId])
+  @@index([labelId])
 }
 
 enum PostStatus {

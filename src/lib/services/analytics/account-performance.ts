@@ -433,6 +433,12 @@ export async function getPerformanceOverview(userId: string): Promise<Performanc
 export const FED_WINDOW_DAYS = Number(process.env.FED_WINDOW_DAYS) || 7;
 export const FED_SILENT_DAYS = Number(process.env.FED_SILENT_DAYS) || 3;
 
+export interface FedSilentLabel {
+  id: string;
+  name: string;
+  color: string; // palette key — see src/lib/account-labels.ts
+}
+
 export interface FedSilentRow {
   accountId: string;
   accountName: string;
@@ -443,6 +449,7 @@ export interface FedSilentRow {
   daysQuiet: number | null; // whole org-tz days since last post, null = never posted
   videosReceived7d: number; // union of the three sources (window = FED_WINDOW_DAYS)
   lastReceivedAt: string | null; // ISO
+  labels: FedSilentLabel[]; // triage labels attached to the account
 }
 
 async function computeFedButSilent(tz: string): Promise<FedSilentRow[]> {
@@ -510,7 +517,7 @@ async function computeFedButSilent(tz: string): Promise<FedSilentRow[]> {
   const candidateIds = [...received.keys()].filter((id) => !postedSet.has(id));
   if (candidateIds.length === 0) return [];
 
-  const [accounts, lastPosts] = await Promise.all([
+  const [accounts, lastPosts, labelRows] = await Promise.all([
     prisma.managedAccount.findMany({
       where: { id: { in: candidateIds } },
       select: {
@@ -522,7 +529,23 @@ async function computeFedButSilent(tz: string): Promise<FedSilentRow[]> {
       },
     }),
     computeLastPostAt(candidateIds),
+    // One grouped query for triage labels, joined to the label for name/color.
+    prisma.accountLabelAssignment.findMany({
+      where: { accountId: { in: candidateIds } },
+      select: {
+        accountId: true,
+        label: { select: { id: true, name: true, color: true } },
+      },
+      orderBy: { label: { name: "asc" } },
+    }),
   ]);
+
+  const labelsByAccount = new Map<string, FedSilentLabel[]>();
+  for (const r of labelRows) {
+    const arr = labelsByAccount.get(r.accountId) ?? [];
+    arr.push(r.label);
+    labelsByAccount.set(r.accountId, arr);
+  }
 
   const today = zonedDayString(now, tz);
   const { start: todayStart } = zonedDayBounds(today, tz);
@@ -545,6 +568,7 @@ async function computeFedButSilent(tz: string): Promise<FedSilentRow[]> {
       daysQuiet,
       videosReceived7d: rec.count,
       lastReceivedAt: rec.last?.toISOString() ?? null,
+      labels: labelsByAccount.get(a.id) ?? [],
     };
   });
   rows.sort((a, b) => b.videosReceived7d - a.videosReceived7d || a.accountName.localeCompare(b.accountName));

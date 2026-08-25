@@ -13,9 +13,18 @@ import {
   ArrowUp,
   ArrowDown,
   ListChecks,
+  Tag,
+  Check,
+  Plus,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import {
+  labelBadgeClass,
+  LABEL_COLORS,
+  LABEL_COLOR_KEYS,
+  type LabelColorKey,
+} from "@/lib/account-labels";
 
 // ── API contract types ──────────────────────────────────────────────────────
 type Period = "today" | "yesterday" | "7d" | "30d";
@@ -75,7 +84,11 @@ type QuietAccount = {
 type FedAccount = QuietAccount & {
   videosReceived7d: number;
   lastReceivedAt: string | null;
+  labels?: AccountLabel[]; // triage labels (fed-silent payload only)
 };
+
+type AccountLabel = { id: string; name: string; color: string };
+type AccountLabelWithUsage = AccountLabel & { createdAt: string; accountCount: number };
 
 const fedRightLabel = (r: QuietAccount) => {
   const fed = r as FedAccount;
@@ -176,6 +189,34 @@ function useResource<T>(url: string, deps: unknown[] = []): Resource<T> & { relo
 }
 
 // ── Small presentational pieces ─────────────────────────────────────────────
+// Colored label chips; `max` caps how many render before a "+N" overflow.
+function LabelChipList({
+  labels,
+  max,
+  className,
+}: {
+  labels?: AccountLabel[];
+  max?: number;
+  className?: string;
+}) {
+  if (!labels || labels.length === 0) return null;
+  const shown = max ? labels.slice(0, max) : labels;
+  const extra = labels.length - shown.length;
+  return (
+    <span className={`flex flex-wrap items-center gap-1 ${className ?? ""}`}>
+      {shown.map((l) => (
+        <span
+          key={l.id}
+          className={`inline-flex items-center rounded border px-1.5 py-px text-[10px] font-medium leading-4 ${labelBadgeClass(l.color)}`}
+        >
+          {l.name}
+        </span>
+      ))}
+      {extra > 0 && <span className="text-[10px] text-zinc-500">+{extra}</span>}
+    </span>
+  );
+}
+
 function SectionError({ message, onRetry }: { message: string; onRetry: () => void }) {
   return (
     <div className="flex items-center justify-between border border-red-500/20 bg-red-500/5 rounded-lg px-4 py-3">
@@ -923,6 +964,9 @@ function QuietPanel({
                     >
                       @{r.accountName}
                     </a>
+                    {kind === "fed" && (
+                      <LabelChipList labels={(r as FedAccount).labels} max={2} className="mt-0.5" />
+                    )}
                     <span className="block text-[11px] truncate max-w-[180px]">
                       {r.driveFolderId ? (
                         <a
@@ -994,14 +1038,103 @@ function QuietListModal({
   // "Show more" is keyed by section+query so changing either re-caps the list.
   const [expandedKey, setExpandedKey] = useState<string | null>(null);
 
+  // ── Fed-silent label triage (kind "fed" only) ─────────────────────────
+  const isFed = kind === "fed";
+  const [allLabels, setAllLabels] = useState<AccountLabelWithUsage[] | null>(null);
+  const [labelFilter, setLabelFilter] = useState<string | null>(null);
+  const [editorFor, setEditorFor] = useState<string | null>(null);
+  // Optimistic per-account label sets; rows fall back to the server payload's
+  // labels until the first toggle overrides them.
+  const [labelOverrides, setLabelOverrides] = useState<Record<string, AccountLabel[]>>({});
+
+  useEffect(() => {
+    if (!open || !isFed) return;
+    let cancelled = false;
+    fetch("/api/admin/account-labels")
+      .then(async (res) => {
+        if (!res.ok)
+          throw new Error((await res.json().catch(() => ({})))?.error || `HTTP ${res.status}`);
+        return res.json();
+      })
+      .then((data) => !cancelled && setAllLabels(data.labels))
+      .catch(
+        (err) =>
+          !cancelled && toast.error(`Failed to load labels: ${err?.message || "unknown error"}`)
+      );
+    return () => {
+      cancelled = true;
+    };
+  }, [open, isFed]);
+
+  const labelsFor = useCallback(
+    (r: QuietAccount): AccountLabel[] =>
+      labelOverrides[r.accountId] ?? (r as FedAccount).labels ?? [],
+    [labelOverrides]
+  );
+
+  const toggleLabel = async (r: QuietAccount, label: AccountLabel) => {
+    const current = labelsFor(r);
+    const next = current.some((l) => l.id === label.id)
+      ? current.filter((l) => l.id !== label.id)
+      : [...current, label].sort((a, b) => a.name.localeCompare(b.name));
+    setLabelOverrides((m) => ({ ...m, [r.accountId]: next }));
+    try {
+      const res = await fetch("/api/admin/account-labels/assign", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ accountId: r.accountId, labelIds: next.map((l) => l.id) }),
+      });
+      if (!res.ok)
+        throw new Error((await res.json().catch(() => ({})))?.error || `HTTP ${res.status}`);
+      const data = await res.json();
+      setLabelOverrides((m) => ({ ...m, [r.accountId]: data.labels }));
+    } catch (err: any) {
+      setLabelOverrides((m) => ({ ...m, [r.accountId]: current }));
+      toast.error(
+        `Failed to update labels for @${r.accountName}: ${err?.message || "unknown error"}`
+      );
+    }
+  };
+
+  // New label created from the inline editor: add it to the list and
+  // auto-assign it to the account the editor is open for.
+  const handleLabelCreated = (r: QuietAccount, label: AccountLabel) => {
+    setAllLabels((ls) =>
+      ls
+        ? [...ls, { ...label, createdAt: new Date().toISOString(), accountCount: 0 }].sort(
+            (a, b) => a.name.localeCompare(b.name)
+          )
+        : ls
+    );
+    void toggleLabel(r, label);
+  };
+
   const q = query.trim().toLowerCase();
   const visible = rows.filter(
     (r) =>
       !removedIds.has(r.accountId) &&
       (!q ||
         r.accountName.toLowerCase().includes(q) ||
-        (r.driveFolderName ?? "").toLowerCase().includes(q))
+        (r.driveFolderName ?? "").toLowerCase().includes(q)) &&
+      (!labelFilter || labelsFor(r).some((l) => l.id === labelFilter))
   );
+
+  // Per-label counts over the search-filtered rows (drives the filter chips).
+  const labelCounts = useMemo(() => {
+    const map = new Map<string, number>();
+    if (!isFed) return map;
+    for (const r of rows) {
+      if (removedIds.has(r.accountId)) continue;
+      if (
+        q &&
+        !r.accountName.toLowerCase().includes(q) &&
+        !(r.driveFolderName ?? "").toLowerCase().includes(q)
+      )
+        continue;
+      for (const l of labelsFor(r)) map.set(l.id, (map.get(l.id) ?? 0) + 1);
+    }
+    return map;
+  }, [isFed, rows, removedIds, q, labelsFor]);
 
   const sectionCounts = useMemo(() => {
     const map = new Map<string, number>();
@@ -1024,7 +1157,7 @@ function QuietListModal({
   }, [visible, section]);
 
   const RENDER_CAP = 150;
-  const listKey = `${section ?? "all"}|${q}`;
+  const listKey = `${section ?? "all"}|${labelFilter ?? "nolabel"}|${q}`;
   const shown =
     expandedKey === listKey ? filtered : filtered.slice(0, RENDER_CAP);
 
@@ -1102,6 +1235,29 @@ function QuietListModal({
             </button>
           ))}
         </div>
+        {/* Label filter — click a label to see only accounts carrying it */}
+        {isFed && allLabels && allLabels.length > 0 && (
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="text-[10px] text-zinc-600 uppercase tracking-wide">Labels</span>
+            {allLabels.map((l) => {
+              const active = labelFilter === l.id;
+              return (
+                <button
+                  key={l.id}
+                  onClick={() => setLabelFilter(active ? null : l.id)}
+                  aria-pressed={active}
+                  className={`text-[11px] rounded-md px-2 py-1 border transition-colors ${
+                    active
+                      ? labelBadgeClass(l.color)
+                      : "text-zinc-400 border-[#27272a] hover:text-zinc-200 hover:border-zinc-600"
+                  }`}
+                >
+                  {l.name} ({labelCounts.get(l.id) ?? 0})
+                </button>
+              );
+            })}
+          </div>
+        )}
         <div className="max-h-[55vh] overflow-y-auto -mx-1 px-1">
           {shown.length === 0 ? (
             <div className="py-8 text-center text-xs text-zinc-600">
@@ -1115,11 +1271,10 @@ function QuietListModal({
             <div className="border border-[#1c1c21] rounded-md overflow-hidden">
               {shown.map((r) => {
                 const tone = toneFor(r.daysQuiet);
+                const effectiveLabels = isFed ? labelsFor(r) : [];
                 return (
-                  <div
-                    key={r.accountId}
-                    className="flex items-center justify-between gap-3 px-3 py-2 text-xs border-b border-[#1c1c21] last:border-0"
-                  >
+                  <div key={r.accountId} className="border-b border-[#1c1c21] last:border-0">
+                  <div className="flex items-center justify-between gap-3 px-3 py-2 text-xs">
                     <span className="flex items-start gap-2 min-w-0">
                       <span className={`w-1.5 h-1.5 rounded-full mt-1.5 flex-shrink-0 ${tone.dot}`} />
                       <span className="min-w-0">
@@ -1131,6 +1286,7 @@ function QuietListModal({
                         >
                           @{r.accountName}
                         </a>
+                        {isFed && <LabelChipList labels={effectiveLabels} className="mt-0.5" />}
                         <span className="block text-[11px] truncate max-w-[220px]">
                           {r.driveFolderId ? (
                             <a
@@ -1148,6 +1304,23 @@ function QuietListModal({
                       </span>
                     </span>
                     <span className="flex items-center gap-3 flex-shrink-0">
+                      {isFed && (
+                        <button
+                          onClick={() =>
+                            setEditorFor((cur) => (cur === r.accountId ? null : r.accountId))
+                          }
+                          aria-label={`Edit labels for @${r.accountName}`}
+                          aria-expanded={editorFor === r.accountId}
+                          title="Edit labels"
+                          className={`p-1 rounded border transition-colors ${
+                            editorFor === r.accountId
+                              ? "text-zinc-200 border-zinc-600 bg-zinc-800"
+                              : "text-zinc-600 hover:text-zinc-300 border-transparent hover:border-[#27272a]"
+                          }`}
+                        >
+                          <Tag className="w-3 h-3" />
+                        </button>
+                      )}
                       <span className="text-right">
                         <span className={`block tabular-nums ${tone.text}`}>
                           {rightContent
@@ -1194,6 +1367,15 @@ function QuietListModal({
                         ))}
                     </span>
                   </div>
+                  {isFed && editorFor === r.accountId && (
+                    <FedLabelEditor
+                      allLabels={allLabels}
+                      assigned={effectiveLabels}
+                      onToggle={(l) => void toggleLabel(r, l)}
+                      onCreated={(l) => handleLabelCreated(r, l)}
+                    />
+                  )}
+                  </div>
                 );
               })}
             </div>
@@ -1211,6 +1393,122 @@ function QuietListModal({
         </div>
       </DialogContent>
     </Dialog>
+  );
+}
+
+// ── Inline label editor (expanding row section in the fed-silent modal) ─────
+// All labels as toggle chips with check state + an inline create form (name +
+// color swatches). Toggles fire immediately (optimistic at the modal level);
+// creating a label auto-assigns it to the account.
+function FedLabelEditor({
+  allLabels,
+  assigned,
+  onToggle,
+  onCreated,
+}: {
+  allLabels: AccountLabelWithUsage[] | null;
+  assigned: AccountLabel[];
+  onToggle: (label: AccountLabel) => void;
+  onCreated: (label: AccountLabel) => void;
+}) {
+  const [newName, setNewName] = useState("");
+  const [newColor, setNewColor] = useState<LabelColorKey>("zinc");
+  const [creating, setCreating] = useState(false);
+  const assignedIds = new Set(assigned.map((l) => l.id));
+
+  const create = async () => {
+    const name = newName.trim();
+    if (!name || creating) return;
+    setCreating(true);
+    try {
+      const res = await fetch("/api/admin/account-labels", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name, color: newColor }),
+      });
+      if (!res.ok)
+        throw new Error((await res.json().catch(() => ({})))?.error || `HTTP ${res.status}`);
+      const data = await res.json();
+      toast.success(`Label "${data.label.name}" created`);
+      setNewName("");
+      onCreated(data.label);
+    } catch (err: any) {
+      toast.error(err?.message || "Failed to create label");
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  return (
+    <div className="px-3 pb-2.5 pt-2 space-y-2 border-t border-dashed border-[#1c1c21]">
+      <div className="flex flex-wrap gap-1.5">
+        {allLabels === null ? (
+          <span className="text-[11px] text-zinc-600">Loading labels…</span>
+        ) : allLabels.length === 0 ? (
+          <span className="text-[11px] text-zinc-600">No labels yet — create one below.</span>
+        ) : (
+          allLabels.map((l) => {
+            const on = assignedIds.has(l.id);
+            return (
+              <button
+                key={l.id}
+                onClick={() => onToggle(l)}
+                aria-pressed={on}
+                className={`inline-flex items-center gap-1 rounded-md border px-2 py-1 text-[11px] transition-colors ${
+                  on
+                    ? labelBadgeClass(l.color)
+                    : "text-zinc-500 border-[#27272a] hover:text-zinc-300 hover:border-zinc-600"
+                }`}
+              >
+                {on && <Check className="w-3 h-3" />}
+                {l.name}
+              </button>
+            );
+          })
+        )}
+      </div>
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          void create();
+        }}
+        className="flex items-center gap-2 flex-wrap"
+      >
+        <input
+          value={newName}
+          onChange={(e) => setNewName(e.target.value)}
+          placeholder="New label name"
+          maxLength={40}
+          aria-label="New label name"
+          className="bg-[#09090b] border border-[#27272a] rounded-md px-2 py-1 text-[11px] text-zinc-200 placeholder:text-zinc-600 focus:outline-none focus:border-zinc-600 w-40"
+        />
+        <span className="flex items-center gap-1.5" role="radiogroup" aria-label="Label color">
+          {LABEL_COLOR_KEYS.map((key) => (
+            <button
+              key={key}
+              type="button"
+              onClick={() => setNewColor(key)}
+              aria-label={`Color ${key}`}
+              aria-pressed={newColor === key}
+              title={key}
+              className={`w-3.5 h-3.5 rounded-full ${LABEL_COLORS[key].dot} ${
+                newColor === key
+                  ? "ring-2 ring-zinc-300 ring-offset-1 ring-offset-zinc-950"
+                  : "opacity-50 hover:opacity-90"
+              }`}
+            />
+          ))}
+        </span>
+        <button
+          type="submit"
+          disabled={!newName.trim() || creating}
+          className="inline-flex items-center gap-1 text-[11px] text-zinc-300 hover:text-white border border-[#27272a] hover:border-zinc-600 rounded-md px-2 py-1 disabled:opacity-40"
+        >
+          {creating ? <Loader2 className="w-3 h-3 animate-spin" /> : <Plus className="w-3 h-3" />}
+          Add
+        </button>
+      </form>
+    </div>
   );
 }
 
