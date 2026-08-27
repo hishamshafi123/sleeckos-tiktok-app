@@ -555,7 +555,10 @@ export async function executeSpotCheck(
 
       let latest: Awaited<ReturnType<AnalyticsProvider["fetchLatestVideosForAccount"]>>;
       try {
-        latest = await provider.fetchLatestVideosForAccount(handle, depth);
+        latest = await provider.fetchLatestVideosForAccount(handle, depth, {
+          source: "spot_check",
+          refId: accountId,
+        });
       } catch (err: any) {
         if (err instanceof ProviderError && (err.kind === "rate_limited" || err.kind === "auth")) {
           aborted = { kind: err.kind, message: err.message };
@@ -593,7 +596,9 @@ export async function executeSpotCheck(
 
       let statsById: Awaited<ReturnType<AnalyticsProvider["fetchStatsForVideoUrls"]>>;
       try {
-        statsById = await provider.fetchStatsForVideoUrls(batch.map((t) => t.tiktokUrl));
+        statsById = await provider.fetchStatsForVideoUrls(batch.map((t) => t.tiktokUrl), {
+          source: "spot_check",
+        });
       } catch (err: any) {
         if (err instanceof ProviderError && (err.kind === "rate_limited" || err.kind === "auth")) {
           aborted = { kind: err.kind, message: err.message };

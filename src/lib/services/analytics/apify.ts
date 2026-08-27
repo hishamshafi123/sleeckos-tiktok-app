@@ -1,6 +1,13 @@
 /**
- * Apify analytics provider — clockworks/tiktok-scraper via Apify API v2
- * (run-sync-get-dataset-items). Raw fetch, no npm deps.
+ * Apify analytics provider — clockworks/tiktok-scraper via Apify API v2.
+ * Raw fetch, no npm deps.
+ *
+ * Invocation: POST /acts/{actor}/run-sync (returns the finished run object,
+ * including pay-per-event spend metadata) followed by GET of the run's
+ * default dataset items. run-sync-get-dataset-items is NOT used because it
+ * returns items only — no run id, hence no actual-cost data for the ledger.
+ *
+ * Every actor call is written to the ApifyCallLog ledger (fire-and-forget).
  *
  * Env:
  *   APIFY_TOKEN            (required) Apify API token
@@ -13,9 +20,11 @@
 import { ProviderError } from "./provider";
 import type {
   AnalyticsProvider,
+  ProviderCallContext,
   ProviderVideo,
   ProviderVideoStats,
 } from "./provider";
+import { logApifyCall } from "./apify-log";
 
 const DEFAULT_ACTOR = "clockworks~tiktok-scraper";
 const DEFAULT_TIMEOUT_MS = 120_000;
@@ -62,82 +71,177 @@ export function extractVideoIdFromUrl(url: string): string | null {
   return m ? m[1] : null;
 }
 
+interface ActorLogContext {
+  source: string;
+  inputType: "account" | "urls";
+  inputSummary: string;
+  inputCount: number;
+}
+
 /**
  * Call the actor synchronously and return dataset items. Throws ProviderError
  * with a classified kind on transport/HTTP/parse failure. The raw body (first
  * 500 chars) is logged whenever the response is not usable JSON.
+ *
+ * Two-step: run-sync returns the finished run object (status, dataset id, and
+ * — for pay-per-event actors like clockworks/tiktok-scraper — usageTotalUsd /
+ * chargedEventCounts), then the run's dataset items are fetched. Every call,
+ * success or failure, is written to the ApifyCallLog ledger fire-and-forget.
  */
-async function runActor(input: Record<string, unknown>): Promise<any[]> {
+async function runActor(input: Record<string, unknown>, log: ActorLogContext): Promise<any[]> {
   const token = getToken();
   const actor = process.env.APIFY_ACTOR_ID || DEFAULT_ACTOR;
   const timeoutMs = Number(process.env.APIFY_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS;
-  const url = `https://api.apify.com/v2/acts/${encodeURIComponent(
-    actor
-  )}/run-sync-get-dataset-items?token=${encodeURIComponent(token)}`;
+  const startedAt = Date.now();
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let resultCount = 0;
+  let apifyRunId: string | null = null;
+  let usageUsd: number | null = null;
+  let chargedEventCounts: Record<string, number> | null = null;
+  let status: "ok" | "error" = "ok";
+  let errorKind: string | null = null;
 
-  let res: Response;
-  try {
-    res = await fetch(url, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(input),
-      signal: controller.signal,
-    });
-  } catch (err: any) {
-    if (err?.name === "AbortError") {
-      throw new ProviderError("transient", `Apify actor call timed out after ${timeoutMs}ms`);
+  /** fetch with the per-call timeout + uniform HTTP error classification. */
+  const apifyFetch = async (
+    url: string,
+    body?: Record<string, unknown>
+  ): Promise<{ res: Response; raw: string }> => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        method: body ? "POST" : "GET",
+        headers: body ? { "content-type": "application/json" } : undefined,
+        body: body ? JSON.stringify(body) : undefined,
+        signal: controller.signal,
+      });
+    } catch (err: any) {
+      if (err?.name === "AbortError") {
+        throw new ProviderError("transient", `Apify actor call timed out after ${timeoutMs}ms`);
+      }
+      throw new ProviderError("transient", `Apify fetch failed: ${err?.message || String(err)}`);
+    } finally {
+      clearTimeout(timer);
     }
-    throw new ProviderError("transient", `Apify fetch failed: ${err?.message || String(err)}`);
-  } finally {
-    clearTimeout(timer);
-  }
+    const raw = await res.text();
+    if (!res.ok) {
+      const kind = classifyHttpStatus(res.status);
+      console.error(
+        `[Apify] HTTP ${res.status} (classified ${kind}). Body: ${raw.slice(0, 500)}`
+      );
+      throw new ProviderError(kind, `Apify HTTP ${res.status}: ${raw.slice(0, 200)}`);
+    }
+    return { res, raw };
+  };
 
-  const raw = await res.text();
-
-  if (!res.ok) {
-    const kind = classifyHttpStatus(res.status);
-    console.error(
-      `[Apify] HTTP ${res.status} (classified ${kind}). Body: ${raw.slice(0, 500)}`
-    );
-    throw new ProviderError(kind, `Apify HTTP ${res.status}: ${raw.slice(0, 200)}`);
-  }
-
-  const contentType = res.headers.get("content-type") || "";
-  if (!contentType.includes("json")) {
-    console.error(`[Apify] Non-JSON response (${contentType}). Body: ${raw.slice(0, 500)}`);
-    throw new ProviderError("transient", `Apify returned non-JSON content-type: ${contentType}`);
-  }
-
-  let items: any;
   try {
-    items = JSON.parse(raw);
-  } catch {
-    console.error(`[Apify] JSON parse failed. Body: ${raw.slice(0, 500)}`);
-    throw new ProviderError("transient", "Apify returned invalid JSON");
-  }
+    // Step 1: synchronous run — waits for the actor to finish (up to the API's
+    // 300s sync limit, bounded client-side by the abort timeout), returns the
+    // run object.
+    const runUrl = `https://api.apify.com/v2/acts/${encodeURIComponent(
+      actor
+    )}/run-sync?token=${encodeURIComponent(token)}`;
+    const { raw: runRaw } = await apifyFetch(runUrl, input);
 
-  if (!Array.isArray(items)) {
-    console.error(`[Apify] Non-array dataset. Body: ${raw.slice(0, 500)}`);
-    throw new ProviderError("transient", "Apify dataset was not an array");
-  }
+    let run: any;
+    try {
+      run = JSON.parse(runRaw)?.data;
+    } catch {
+      console.error(`[Apify] Run-object JSON parse failed. Body: ${runRaw.slice(0, 500)}`);
+      throw new ProviderError("transient", "Apify returned an invalid run object");
+    }
+    if (!run || typeof run !== "object" || !run.defaultDatasetId) {
+      console.error(`[Apify] Run object missing defaultDatasetId. Body: ${runRaw.slice(0, 500)}`);
+      throw new ProviderError("transient", "Apify run object had no defaultDatasetId");
+    }
 
-  return items;
+    apifyRunId = run.id != null ? String(run.id) : null;
+    if (typeof run.usageTotalUsd === "number" && Number.isFinite(run.usageTotalUsd)) {
+      usageUsd = run.usageTotalUsd;
+    }
+    if (run.chargedEventCounts && typeof run.chargedEventCounts === "object") {
+      chargedEventCounts = run.chargedEventCounts as Record<string, number>;
+    }
+    if (run.status && run.status !== "SUCCEEDED") {
+      // Partial results can still exist in the dataset — keep going (matches
+      // the old endpoint, which returned whatever items were collected).
+      console.warn(`[Apify] Run ${apifyRunId} finished with status ${run.status}`);
+    }
+
+    // Step 2: the run's dataset items.
+    const itemsUrl = `https://api.apify.com/v2/datasets/${encodeURIComponent(
+      String(run.defaultDatasetId)
+    )}/items?token=${encodeURIComponent(token)}`;
+    const { res, raw } = await apifyFetch(itemsUrl);
+
+    const contentType = res.headers.get("content-type") || "";
+    if (!contentType.includes("json")) {
+      console.error(`[Apify] Non-JSON response (${contentType}). Body: ${raw.slice(0, 500)}`);
+      throw new ProviderError("transient", `Apify returned non-JSON content-type: ${contentType}`);
+    }
+
+    let items: any;
+    try {
+      items = JSON.parse(raw);
+    } catch {
+      console.error(`[Apify] JSON parse failed. Body: ${raw.slice(0, 500)}`);
+      throw new ProviderError("transient", "Apify returned invalid JSON");
+    }
+
+    if (!Array.isArray(items)) {
+      console.error(`[Apify] Non-array dataset. Body: ${raw.slice(0, 500)}`);
+      throw new ProviderError("transient", "Apify dataset was not an array");
+    }
+
+    resultCount = items.length;
+    return items;
+  } catch (err) {
+    status = "error";
+    errorKind = err instanceof ProviderError ? err.kind : "transient";
+    throw err;
+  } finally {
+    // Fire-and-forget — the ledger must never break the caller.
+    void logApifyCall({
+      source: log.source,
+      inputType: log.inputType,
+      inputSummary: log.inputSummary,
+      inputCount: log.inputCount,
+      resultCount,
+      apifyRunId,
+      actorId: actor,
+      durationMs: Date.now() - startedAt,
+      usageUsd,
+      chargedEventCounts,
+      status,
+      errorKind,
+    });
+  }
 }
 
 export class ApifyProvider implements AnalyticsProvider {
   /** Latest videos for a TikTok profile, newest first. */
-  async fetchLatestVideosForAccount(username: string, max: number): Promise<ProviderVideo[]> {
+  async fetchLatestVideosForAccount(
+    username: string,
+    max: number,
+    ctx?: ProviderCallContext
+  ): Promise<ProviderVideo[]> {
     const profilesField = process.env.APIFY_PROFILES_FIELD || "profiles";
     const clean = username.replace(/^@/, "");
-    const items = await runActor({
-      [profilesField]: [clean],
-      profileSorting: "latest",
-      profileScrapeSections: ["videos"],
-      resultsPerPage: max,
-    });
+    const items = await runActor(
+      {
+        [profilesField]: [clean],
+        profileSorting: "latest",
+        profileScrapeSections: ["videos"],
+        resultsPerPage: max,
+      },
+      {
+        source: ctx?.source ?? "unknown",
+        inputType: "account",
+        inputSummary: `@${clean}`,
+        inputCount: 1,
+      }
+    );
 
     const videos: ProviderVideo[] = [];
     for (const item of items) {
@@ -176,7 +280,10 @@ export class ApifyProvider implements AnalyticsProvider {
   }
 
   /** Current stats for specific video URLs, keyed by video id. */
-  async fetchStatsForVideoUrls(urls: string[]): Promise<Map<string, ProviderVideoStats>> {
+  async fetchStatsForVideoUrls(
+    urls: string[],
+    ctx?: ProviderCallContext
+  ): Promise<Map<string, ProviderVideoStats>> {
     const result = new Map<string, ProviderVideoStats>();
     if (urls.length === 0) return result;
 
@@ -193,10 +300,18 @@ export class ApifyProvider implements AnalyticsProvider {
     if (validUrls.length === 0) return result;
 
     const urlsField = process.env.APIFY_POST_URLS_FIELD || "postURLs";
-    const items = await runActor({
-      [urlsField]: validUrls,
-      resultsPerPage: validUrls.length,
-    });
+    const items = await runActor(
+      {
+        [urlsField]: validUrls,
+        resultsPerPage: validUrls.length,
+      },
+      {
+        source: ctx?.source ?? "unknown",
+        inputType: "urls",
+        inputSummary: validUrls[0] ?? "",
+        inputCount: validUrls.length,
+      }
+    );
 
     // Index returned items by video id (item.id, else parsed from its URL).
     // Error items carry `url`/`input` instead of `webVideoUrl` — handle both,

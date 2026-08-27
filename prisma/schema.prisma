@@ -1467,6 +1467,30 @@ model VaultAuditLog {
   createdAt DateTime @default(now())
 }
 
+// Ledger of every Apify actor call (written inside the analytics provider —
+// the single chokepoint for Apify traffic). usageUsd / chargedEventCounts are
+// the ACTUAL charged amounts reported by the Apify run object when the actor
+// exposes pay-per-event pricing; null otherwise (fall back to rate estimates).
+model ApifyCallLog {
+  id                 String   @id @default(uuid())
+  createdAt          DateTime @default(now())
+  source             String   // sweep | refresh | spot_check | recover | capture
+  inputType          String   // account | urls
+  inputSummary       String   // account handle or first URL, truncated
+  inputCount         Int      // 1 for account fetch, N for URL batch
+  resultCount        Int      @default(0) // dataset items returned
+  apifyRunId         String?
+  actorId            String?
+  durationMs         Int?
+  usageUsd           Float?   // usageTotalUsd from the Apify run object
+  chargedEventCounts Json?    // raw pay-per-event charged-event map
+  status             String   @default("ok") // ok | error
+  errorKind          String?
+
+  @@index([createdAt])
+  @@index([source, createdAt])
+}
+
 model AppSetting {
   key   String @id
   value String

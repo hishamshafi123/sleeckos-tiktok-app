@@ -39,7 +39,23 @@ export class ProviderError extends Error {
 
 export interface AnalyticsProvider {
   /** Latest videos for a TikTok profile (newest first). */
-  fetchLatestVideosForAccount(username: string, max: number): Promise<ProviderVideo[]>;
+  fetchLatestVideosForAccount(
+    username: string,
+    max: number,
+    ctx?: ProviderCallContext
+  ): Promise<ProviderVideo[]>;
   /** Current stats for specific video URLs, keyed by video id. */
-  fetchStatsForVideoUrls(urls: string[]): Promise<Map<string, ProviderVideoStats>>;
+  fetchStatsForVideoUrls(
+    urls: string[],
+    ctx?: ProviderCallContext
+  ): Promise<Map<string, ProviderVideoStats>>;
+}
+
+/**
+ * Call attribution for the Apify spend ledger — every caller passes its
+ * source ("sweep" | "refresh" | "spot_check" | "recover" | "capture").
+ */
+export interface ProviderCallContext {
+  source: string;
+  refId?: string;
 }

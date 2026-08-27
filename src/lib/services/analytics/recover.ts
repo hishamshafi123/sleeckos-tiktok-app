@@ -211,7 +211,10 @@ export async function runRecoveryPass(
 
     let latest: ProviderVideo[];
     try {
-      latest = await provider.fetchLatestVideosForAccount(username, RECOVERY_FETCH_MAX);
+      latest = await provider.fetchLatestVideosForAccount(username, RECOVERY_FETCH_MAX, {
+        source: "recover",
+        refId: runId,
+      });
     } catch (err: any) {
       if (err instanceof ProviderError && (err.kind === "auth" || err.kind === "rate_limited")) {
         // Provider-wide problem — further accounts would fail the same way.

@@ -300,7 +300,10 @@ export async function runAnalyticsRefresh(opts: RefreshOptions = {}): Promise<{ 
 
     let statsById: Awaited<ReturnType<AnalyticsProvider["fetchStatsForVideoUrls"]>>;
     try {
-      statsById = await provider.fetchStatsForVideoUrls(batch.map((v) => v.url));
+      statsById = await provider.fetchStatsForVideoUrls(
+        batch.map((v) => v.url),
+        { source: "refresh", refId: run.id }
+      );
     } catch (err: any) {
       if (err instanceof ProviderError && (err.kind === "rate_limited" || err.kind === "auth")) {
         counters.attempted -= batch.length; // none of the batch was attempted

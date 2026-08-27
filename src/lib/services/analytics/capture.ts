@@ -80,7 +80,8 @@ export async function captureVideoLink(
 
     const latest = await provider.fetchLatestVideosForAccount(
       job.account.tiktokUsername,
-      5
+      5,
+      { source: "capture", refId: postJobId }
     );
 
     // Candidate must (a) be inside the publish window and (b) not already be

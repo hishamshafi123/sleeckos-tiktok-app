@@ -432,7 +432,10 @@ export async function runDailyAccountSweep(
 
     let latest: ProviderVideo[];
     try {
-      latest = await provider.fetchLatestVideosForAccount(account.tiktokUsername, MAX_VIDEOS);
+      latest = await provider.fetchLatestVideosForAccount(account.tiktokUsername, MAX_VIDEOS, {
+        source: "sweep",
+        refId: account.id,
+      });
     } catch (err: any) {
       if (err instanceof ProviderError && (err.kind === "auth" || err.kind === "rate_limited")) {
         console.error(`[Sweep] Run ${run.id} aborted (${err.kind}): ${err.message}`);
