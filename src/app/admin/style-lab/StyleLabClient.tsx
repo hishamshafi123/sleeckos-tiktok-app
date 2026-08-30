@@ -669,6 +669,33 @@ export default function StyleLabClient({ user }: StyleLabClientProps) {
     }
   };
 
+  // Style Match: upload a reference clip → Gemini recreates its caption
+  // style as a draft on the Drafts shelf (same pipeline as describe mode).
+  const handleCreateDraftFromVideo = async (file: File, family: StyleFamily) => {
+    setDraftGenBusy(true);
+    try {
+      const form = new FormData();
+      form.append("file", file);
+      form.append("family", family);
+      const res = await fetch("/api/style-lab/reference-video", { method: "POST", body: form });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Style Match failed");
+      const fontNote = data.styleMatch?.fontInstalled
+        ? ` Font "${data.styleMatch.installedFont}" installed.`
+        : data.styleMatch?.guessedFont
+          ? ` Font "${data.styleMatch.guessedFont}" not found — kept nearest match.`
+          : "";
+      toast.success(`Draft "${data.name}" recreated from your clip — find it on the Drafts shelf.${fontNote}`);
+      setShowNewTemplate(false);
+      fetchTemplates();
+      if (data.styleMatch?.fontInstalled) fetchFonts(); // newly installed Google Font
+    } catch (err: any) {
+      toast.error(err.message || "Style Match failed");
+    } finally {
+      setDraftGenBusy(false);
+    }
+  };
+
   const handleValidateDraft = async (tpl: GalleryTemplate) => {
     setDraftBusyKey(tpl.key);
     try {
@@ -1473,6 +1500,7 @@ export default function StyleLabClient({ user }: StyleLabClientProps) {
           busy={draftGenBusy}
           onClose={() => setShowNewTemplate(false)}
           onSubmit={handleCreateDraft}
+          onSubmitVideo={handleCreateDraftFromVideo}
         />
       )}
     </div>

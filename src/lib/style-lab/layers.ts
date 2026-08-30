@@ -62,6 +62,13 @@ export interface StyleLayer {
   letterSpacing?: number;
   lineHeight?: number;
   alignment?: string;
+  // text styling (v2 — all optional; absent = off, legacy stacks unchanged)
+  outlineColor?: string;
+  outlineWidth?: number;
+  shadow?: boolean;
+  shadowIntensity?: number;
+  /** When set, text renders as a linear gradient from textColor → textGradientTo. */
+  textGradientTo?: string;
   // image layers
   imageUrl?: string;
   // shape layers
@@ -69,10 +76,20 @@ export interface StyleLayer {
   shapeOpacity?: number;
   heightPercent?: number;
   borderRadius?: number;
+  /** When set, the shape fills with a linear gradient shapeColor → shapeGradientTo. */
+  shapeGradientTo?: string;
+  shapeGradientDeg?: number;
   // shared entry animation
   entryType?: string;
   entryDurationMs?: number;
   delayMs?: number;
+  /** Entry easing: "spring" | "ease-out" | "ease-in-out" | "linear". */
+  easing?: string;
+  // continuous post-entry loop (composed AFTER the entry transform)
+  /** "none" | "pulse" (scale 1→1.04→1) | "float" (y ±6px). */
+  loopType?: string;
+  /** Loop period; clamped to ≥ 400ms. */
+  loopDurationMs?: number;
 }
 
 /** Stable id of the synthesized legacy main layer (never persisted). */
@@ -90,6 +107,8 @@ const HEX_COLOR_RE = /^#(?:[0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/;
 const TEXT_TRANSFORMS = new Set(["none", "uppercase", "lowercase"]);
 const ALIGNMENTS = new Set(["left", "center", "right"]);
 const ENTRY_TYPES = new Set(["fade", "slide-up", "pop", "none"]);
+const EASINGS = new Set(["spring", "ease-out", "ease-in-out", "linear"]);
+const LOOP_TYPES = new Set(["none", "pulse", "float"]);
 
 function num(value: unknown, fallback: number, min: number, max: number): number {
   const n = typeof value === "string" ? parseFloat(value) : Number(value);
@@ -139,6 +158,16 @@ function coerceLayer(raw: any, index: number): StyleLayer | null {
     layer.letterSpacing = num(raw.letterSpacing, 0, -4, 20);
     layer.lineHeight = num(raw.lineHeight, 1.25, 1, 2.5);
     layer.alignment = enumOf(raw.alignment, ALIGNMENTS, "center");
+    // v2 fields are opt-in: only coerced when present so legacy stacks
+    // coerce byte-identically (absent = off).
+    if (raw.outlineColor !== undefined) layer.outlineColor = color(raw.outlineColor, "#000000");
+    if (raw.outlineWidth !== undefined) layer.outlineWidth = num(raw.outlineWidth, 0, 0, 12);
+    if (raw.shadow !== undefined) layer.shadow = raw.shadow === true;
+    if (raw.shadowIntensity !== undefined) layer.shadowIntensity = num(raw.shadowIntensity, 0.4, 0, 1);
+    if (raw.textGradientTo !== undefined) {
+      const c = color(raw.textGradientTo, "");
+      if (c) layer.textGradientTo = c;
+    }
   } else if (type === "image") {
     layer.imageUrl = str(raw.imageUrl, "");
   } else {
@@ -146,10 +175,18 @@ function coerceLayer(raw: any, index: number): StyleLayer | null {
     layer.shapeOpacity = num(raw.shapeOpacity, 0.6, 0, 1);
     layer.heightPercent = num(raw.heightPercent, 12, 1, 100);
     layer.borderRadius = num(raw.borderRadius, 0, 0, 200);
+    if (raw.shapeGradientTo !== undefined) {
+      const c = color(raw.shapeGradientTo, "");
+      if (c) layer.shapeGradientTo = c;
+    }
+    if (raw.shapeGradientDeg !== undefined) layer.shapeGradientDeg = num(raw.shapeGradientDeg, 180, 0, 360);
   }
   layer.entryType = enumOf(raw.entryType, ENTRY_TYPES, "fade");
   layer.entryDurationMs = num(raw.entryDurationMs, 300, 0, 2000);
   layer.delayMs = num(raw.delayMs, 0, 0, 10000);
+  if (raw.easing !== undefined) layer.easing = enumOf(raw.easing, EASINGS, "ease-out");
+  if (raw.loopType !== undefined) layer.loopType = enumOf(raw.loopType, LOOP_TYPES, "none");
+  if (raw.loopDurationMs !== undefined) layer.loopDurationMs = num(raw.loopDurationMs, 2000, 400, 10000);
   return layer;
 }
 
@@ -205,9 +242,16 @@ export function defaultTextLayer(role: "main" | "attribution"): StyleLayer {
     letterSpacing: 0,
     lineHeight: 1.25,
     alignment: "center",
+    outlineColor: "#000000",
+    outlineWidth: 0,
+    shadow: false,
+    shadowIntensity: 0.4,
     entryType: "fade",
     entryDurationMs: 300,
     delayMs: main ? 0 : 250,
+    easing: "ease-out",
+    loopType: "none",
+    loopDurationMs: 2000,
   };
 }
 
@@ -225,6 +269,9 @@ export function defaultImageLayer(): StyleLayer {
     entryType: "fade",
     entryDurationMs: 300,
     delayMs: 150,
+    easing: "ease-out",
+    loopType: "none",
+    loopDurationMs: 2000,
   };
 }
 
@@ -242,9 +289,13 @@ export function defaultShapeLayer(): StyleLayer {
     shapeOpacity: 0.55,
     heightPercent: 18,
     borderRadius: 0,
+    shapeGradientDeg: 180,
     entryType: "fade",
     entryDurationMs: 250,
     delayMs: 0,
+    easing: "ease-out",
+    loopType: "none",
+    loopDurationMs: 2000,
   };
 }
 
@@ -286,9 +337,14 @@ export function legacyParamsToLayers(templateKey: string, params: StyleParams): 
       letterSpacing: num(params?.letterSpacing, 0, -4, 20),
       lineHeight: num(params?.lineHeight, 1.25, 1, 2.5),
       alignment: enumOf(params?.alignment, ALIGNMENTS, "center"),
+      outlineColor: color(params?.outlineColor, "#000000"),
+      outlineWidth: num(params?.outlineWidth, 0, 0, 12),
+      shadow: params?.shadow === true,
+      shadowIntensity: num(params?.shadowIntensity, 0.4, 0, 1),
       entryType: enumOf(params?.entryType, ENTRY_TYPES, "fade"),
       entryDurationMs: num(params?.entryDurationMs, 300, 0, 2000),
       delayMs: 0,
+      easing: enumOf(params?.easing, EASINGS, "ease-out"),
     },
   ];
 }

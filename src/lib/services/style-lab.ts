@@ -120,6 +120,7 @@ function decorateTemplateRow(row: any) {
       defaultParams: payload.defaultParams,
       layers: payload.layers,
       validation: payload.validation ?? null,
+      styleMatch: payload.styleMatch ?? null,
       previewUrl: previewUrlIfRendered(row.key),
     };
   }
@@ -132,6 +133,9 @@ function decorateTemplateRow(row: any) {
     previewUrl: previewUrlIfRendered(row.key),
   };
 }
+
+/** A StyleTemplate row enriched by decorateTemplateRow (family/params/layers). */
+export type DecoratedTemplate = ReturnType<typeof decorateTemplateRow>;
 
 /**
  * Gallery payload: all published template rows enriched with family,
@@ -899,12 +903,27 @@ export interface DraftValidation {
   errors: string[];
 }
 
+/** Style Match provenance note (see src/lib/services/style-match.ts). */
+export interface StyleMatchNote {
+  /** The font Gemini believes the reference clip actually uses. */
+  guessedFont: string;
+  /** True when the guess was found on Google Fonts and installed. */
+  fontInstalled: boolean;
+  /** Canonical family installed (present when fontInstalled). */
+  installedFont?: string;
+  /** Nearest bundled font kept when the guess was not installable. */
+  nearestFont?: string;
+  referenceName?: string;
+}
+
 export interface DraftTemplatePayload {
   fields: ParamField[];
   layers: StyleLayer[];
   defaultParams: StyleParams;
   family: StyleFamily;
   validation?: DraftValidation | null;
+  /** Present on drafts generated from a reference video (Style Match). */
+  styleMatch?: StyleMatchNote | null;
 }
 
 const HEX_COLOR_RE = /^#(?:[0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/;
@@ -931,6 +950,7 @@ export function parseDraftTemplatePayload(raw: unknown): DraftTemplatePayload | 
     defaultParams: v.defaultParams && typeof v.defaultParams === "object" ? v.defaultParams : {},
     family: v.family === "quote" ? "quote" : "lyric",
     validation: v.validation ?? null,
+    styleMatch: v.styleMatch ?? null,
   };
 }
 
@@ -985,6 +1005,10 @@ const LAYER_BINDS = new Set(["lyrics", "quote"]);
 const LAYER_ENTRY_TYPES = new Set(["fade", "slide-up", "pop", "none"]);
 const LAYER_TRANSFORMS = new Set(["none", "uppercase", "lowercase"]);
 const LAYER_ALIGNMENTS = new Set(["left", "center", "right"]);
+const LAYER_EASINGS = new Set(["spring", "ease-out", "ease-in-out", "linear"]);
+const LAYER_LOOP_TYPES = new Set(["none", "pulse", "float"]);
+/** Max layers an AI draft may propose (UI supports more, but drafts stay focused). */
+const AI_DRAFT_MAX_LAYERS = 8;
 
 function assertModelColor(value: unknown, label: string) {
   if (value === undefined) return;
@@ -994,7 +1018,15 @@ function assertModelColor(value: unknown, label: string) {
   }
 }
 
-function validateAiDraftJson(parsed: any, family: StyleFamily): {
+function assertModelRange(value: unknown, label: string, min: number, max: number) {
+  if (value === undefined) return;
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < min || n > max) {
+    throw new Error(`${label} must be a number between ${min} and ${max} (got ${JSON.stringify(value)})`);
+  }
+}
+
+export function validateAiDraftJson(parsed: any, family: StyleFamily): {
   name: string;
   tags: string[];
   defaultParams: StyleParams;
@@ -1031,7 +1063,9 @@ function validateAiDraftJson(parsed: any, family: StyleFamily): {
   if (!Array.isArray(rawLayers) || rawLayers.length === 0) {
     throw new Error('"layers" must be a non-empty array');
   }
-  if (rawLayers.length > 6) throw new Error('"layers" supports at most 6 entries');
+  if (rawLayers.length > AI_DRAFT_MAX_LAYERS) {
+    throw new Error(`"layers" supports at most ${AI_DRAFT_MAX_LAYERS} entries`);
+  }
   const fonts = listFonts();
   rawLayers.forEach((raw: any, i: number) => {
     const where = `layers[${i}]`;
@@ -1054,6 +1088,16 @@ function validateAiDraftJson(parsed: any, family: StyleFamily): {
     if (raw.alignment !== undefined && !LAYER_ALIGNMENTS.has(raw.alignment)) {
       throw new Error(`${where}.alignment must be one of left/center/right`);
     }
+    if (raw.easing !== undefined && !LAYER_EASINGS.has(raw.easing)) {
+      throw new Error(`${where}.easing must be one of spring/ease-out/ease-in-out/linear`);
+    }
+    if (raw.loopType !== undefined && !LAYER_LOOP_TYPES.has(raw.loopType)) {
+      throw new Error(`${where}.loopType must be one of none/pulse/float`);
+    }
+    assertModelRange(raw.outlineWidth, `${where}.outlineWidth`, 0, 12);
+    assertModelRange(raw.shadowIntensity, `${where}.shadowIntensity`, 0, 1);
+    assertModelRange(raw.shapeGradientDeg, `${where}.shapeGradientDeg`, 0, 360);
+    assertModelRange(raw.loopDurationMs, `${where}.loopDurationMs`, 400, 10000);
     if (type === "text" && raw.fontFamily !== undefined) {
       const ok = fonts.some((f) => f.family.toLowerCase() === String(raw.fontFamily).toLowerCase());
       if (!ok) throw new Error(`${where}.fontFamily "${raw.fontFamily}" is not an available font`);
@@ -1061,6 +1105,9 @@ function validateAiDraftJson(parsed: any, family: StyleFamily): {
     assertModelColor(raw.textColor, `${where}.textColor`);
     assertModelColor(raw.highlightColor, `${where}.highlightColor`);
     assertModelColor(raw.shapeColor, `${where}.shapeColor`);
+    assertModelColor(raw.outlineColor, `${where}.outlineColor`);
+    assertModelColor(raw.textGradientTo, `${where}.textGradientTo`);
+    assertModelColor(raw.shapeGradientTo, `${where}.shapeGradientTo`);
   });
   const layers = coerceLayers(rawLayers);
   if (layers.length !== rawLayers.length) {
@@ -1078,7 +1125,14 @@ function validateAiDraftJson(parsed: any, family: StyleFamily): {
   return { name: name.slice(0, 80), tags, defaultParams: mergedParams, layers };
 }
 
-function aiDraftPrompt(description: string, family: StyleFamily): string {
+/**
+ * The shared "how to design a draft" prompt body — response shape, base
+ * params, layer model (v2 fields), installed font list and design rules.
+ * Used verbatim by the describe-mode prompt (aiDraftPrompt) and by Style
+ * Match's vision prompt (src/lib/services/style-match.ts), so both modes
+ * produce the same draft JSON shape and hit the same validator.
+ */
+export function draftLayerModelPromptSection(family: StyleFamily): string {
   const baseFields = draftBaseSchema(family)
     .map((f) => {
       const bits = [`"${f.key}" (${f.type}`];
@@ -1096,15 +1150,12 @@ function aiDraftPrompt(description: string, family: StyleFamily): string {
       ? 'Bind the main text layer to "quote" (it renders the quote text). Attribution/secondary layers can be unbound static text.'
       : 'Bind the main text layer to "lyrics" (it renders the song lyrics with karaoke/word/line modes). Secondary layers can be unbound static text.';
 
-  return `Design a ${family === "quote" ? "quote card" : "lyric caption"} video text-overlay style matching this creative direction:
-"${description}"
-
-You are designing a LAYERED style: a stack of positioned layers on a transparent or solid canvas. Respond with a single raw JSON object (no markdown fences, no commentary) of this exact shape:
+  return `You are designing a LAYERED style: a stack of positioned layers on a transparent or solid canvas. Respond with a single raw JSON object (no markdown fences, no commentary) of this exact shape:
 {
   "name": string,              // short style name, <= 60 chars
   "tags": string[],            // <= 6 lowercase discovery tags (e.g. "trend", "karaoke", "bold")
   "baseParams": { ... },       // canvas-wide params, ONLY the keys listed below
-  "layers": [ ... ]            // 1–6 layers, bottom first
+  "layers": [ ... ]            // 1–8 layers, bottom first
 }
 
 BASE PARAMS (use ONLY these keys):
@@ -1125,9 +1176,19 @@ Text layers also have:
   textColor, highlightColor (karaoke/active-word color), textTransform
   ("none"|"uppercase"|"lowercase"), letterSpacing (-4–20), lineHeight (1–2.5),
   alignment ("left"|"center"|"right")
-Shape layers also have: shapeColor, shapeOpacity (0–1), heightPercent (1–100), borderRadius (0–200)
+- outlineColor + outlineWidth (0–12): text stroke — use a dark 1.5–3px stroke
+  for readability over busy video
+- shadow (boolean) + shadowIntensity (0–1): soft drop shadow
+- textGradientTo (hex): when set, the text fill becomes a vertical gradient
+  from textColor → textGradientTo
+Shape layers also have: shapeColor, shapeOpacity (0–1), heightPercent (1–100), borderRadius (0–200),
+  shapeGradientTo (hex; fills with a linear gradient shapeColor → shapeGradientTo),
+  shapeGradientDeg (0–360, gradient angle)
 Image layers also have: imageUrl (leave "" — admins upload later)
-All layers: entryType ("fade"|"slide-up"|"pop"|"none"), entryDurationMs (0–2000), delayMs (0–10000)
+All layers: entryType ("fade"|"slide-up"|"pop"|"none"), entryDurationMs (0–2000), delayMs (0–10000),
+  easing ("spring"|"ease-out"|"ease-in-out"|"linear"),
+  loopType ("none"|"pulse"|"float") + loopDurationMs (400–10000) — a continuous
+  post-entry animation (pulse = subtle scale, float = gentle vertical drift)
 
 Available fontFamily values: ${fonts}
 
@@ -1136,7 +1197,19 @@ Rules:
 - Colors are #RRGGBB hex; "transparent" is valid only for bgColor/text colors, not shapes.
 - bgColor MUST be set explicitly in baseParams: "transparent" for an overlay style, or a solid hex.
 - fontWeight must be one of the chosen family's available weights; respect all ranges and enums exactly.
-- At least one visible text layer is required.`;
+- At least one visible text layer is required.
+- Design for DEPTH: 2–4 layers usually beat one — e.g. a low-opacity shape strip
+  behind the main text, plus a small accent/attribution layer.
+- Stagger entries with delayMs (150–400ms steps) so layers cascade in.
+- For lyric styles, always set highlightColor — it drives the karaoke active word.
+- Use gradients and loopType sparingly: at most one looping accent layer.`;
+}
+
+function aiDraftPrompt(description: string, family: StyleFamily): string {
+  return `Design a ${family === "quote" ? "quote card" : "lyric caption"} video text-overlay style matching this creative direction:
+"${description}"
+
+${draftLayerModelPromptSection(family)}`;
 }
 
 async function callGeminiForDraft(apiKey: string, prompt: string): Promise<string> {
@@ -1195,13 +1268,37 @@ export async function generateAiDraftTemplate(opts: {
     throw new Error(`AI draft generation failed validation: ${lastError}`);
   }
 
+  return persistAiDraft(draft, opts.family, opts.createdBy);
+}
+
+/**
+ * Persist tail shared by every AI-draft generator (describe mode, Style
+ * Match): allocates a unique ai_<slug> key and creates the StyleTemplate row
+ * (source "ai_draft", status "draft") carrying the full draft payload.
+ * extraTags are merged into the draft's tags (e.g. "style-match");
+ * payloadExtra is merged into the paramSchema payload (e.g. the StyleMatchNote).
+ */
+export async function persistAiDraft(
+  draft: ReturnType<typeof validateAiDraftJson>,
+  family: StyleFamily,
+  createdBy?: string,
+  extraTags: string[] = [],
+  payloadExtra?: Partial<DraftTemplatePayload>,
+): Promise<DecoratedTemplate> {
   const key = await uniqueDraftKey(draft.name);
+  const tags = [
+    ...new Set([
+      ...draft.tags,
+      ...extraTags.map((t) => t.trim().toLowerCase()).filter(Boolean),
+    ]),
+  ].slice(0, 8);
   const payload: DraftTemplatePayload = {
-    fields: draftFullSchema(opts.family),
+    fields: draftFullSchema(family),
     layers: layersToJson(draft.layers),
     defaultParams: draft.defaultParams,
-    family: opts.family,
+    family,
     validation: null,
+    ...payloadExtra,
   };
   const row = await prisma.styleTemplate.create({
     data: {
@@ -1212,8 +1309,8 @@ export async function generateAiDraftTemplate(opts: {
       isBase: true, // gallery row (drafts shelf until published)
       source: "ai_draft",
       status: "draft",
-      tags: draft.tags,
-      createdBy: opts.createdBy,
+      tags,
+      createdBy,
     },
   });
   return decorateTemplateRow(row);

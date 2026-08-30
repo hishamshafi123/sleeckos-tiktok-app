@@ -3,7 +3,9 @@ import {
   AbsoluteFill,
   CalculateMetadataFunction,
   Img,
+  interpolate,
   staticFile,
+  useCurrentFrame,
   useVideoConfig,
 } from "remotion";
 import {
@@ -60,8 +62,10 @@ function layerTextParams(layer: StyleLayer): StyleParams {
     lineHeight: layer.lineHeight ?? 1.25,
     textTransform: layer.textTransform ?? "none",
     textColor: layer.textColor ?? "#FFFFFF",
-    shadow: false,
-    outlineWidth: 0,
+    outlineColor: layer.outlineColor ?? "#000000",
+    outlineWidth: layer.outlineWidth ?? 0,
+    shadow: layer.shadow ?? false,
+    shadowIntensity: layer.shadowIntensity ?? 0.4,
   };
 }
 
@@ -92,7 +96,15 @@ const TextContent: React.FC<{ layer: StyleLayer; props: LayeredStyleProps }> = (
       ? (props.quoteText || SAMPLE_QUOTE.quoteText)
       : (layer.text ?? "");
   if (!text) return null;
-  return <div style={{ ...buildTextStyle(typo), textAlign: alignment }}>{text}</div>;
+  const style = buildTextStyle(typo);
+  // textGradientTo: gradient text via background-clip (fill becomes transparent).
+  if (layer.textGradientTo) {
+    style.backgroundImage = `linear-gradient(180deg, ${typo.textColor}, ${layer.textGradientTo})`;
+    style.WebkitBackgroundClip = "text";
+    style.backgroundClip = "text";
+    style.color = "transparent";
+  }
+  return <div style={{ ...style, textAlign: alignment }}>{text}</div>;
 };
 
 const LayerView: React.FC<{ layer: StyleLayer; props: LayeredStyleProps }> = ({
@@ -100,9 +112,32 @@ const LayerView: React.FC<{ layer: StyleLayer; props: LayeredStyleProps }> = ({
   props,
 }) => {
   const { fps, height } = useVideoConfig();
+  const frame = useCurrentFrame();
 
   const startFrame = (Number(layer.delayMs ?? 0) / 1000) * fps;
+  // StyleLayer carries entryType/entryDurationMs/easing, which is all
+  // useEntry reads off the StyleParams shape.
   const entry = useEntry(layer as unknown as StyleParams, startFrame);
+
+  // Continuous post-entry loop ("pulse" scale / "float" y-drift), composed
+  // AFTER the entry transform. Triangle-wave over frame % loopFrames.
+  let loopTransform = "";
+  const loopType = layer.loopType ?? "none";
+  if (loopType === "pulse" || loopType === "float") {
+    const loopFrames = Math.max(1, Math.round((Number(layer.loopDurationMs ?? 2000) / 1000) * fps));
+    const t = frame % loopFrames;
+    if (loopType === "pulse") {
+      const s = interpolate(t, [0, loopFrames / 2, loopFrames], [1, 1.04, 1]);
+      loopTransform = ` scale(${s.toFixed(4)})`;
+    } else {
+      const y = interpolate(
+        t,
+        [0, loopFrames / 4, loopFrames / 2, (3 * loopFrames) / 4, loopFrames],
+        [0, -6, 0, 6, 0],
+      );
+      loopTransform = ` translateY(${y.toFixed(2)}px)`;
+    }
+  }
 
   const inner = (() => {
     switch (layer.type) {
@@ -114,18 +149,24 @@ const LayerView: React.FC<{ layer: StyleLayer; props: LayeredStyleProps }> = ({
         const src = url.startsWith("/") ? staticFile(url.slice(1)) : url;
         return <Img src={src} style={{ width: "100%", height: "auto", display: "block" }} />;
       }
-      case "shape":
+      case "shape": {
+        const from = layer.shapeColor ?? "#000000";
+        const to = layer.shapeGradientTo;
         return (
           <div
             style={{
               width: "100%",
               height: Math.max(1, ((layer.heightPercent ?? 12) / 100) * height),
-              backgroundColor: layer.shapeColor ?? "#000000",
+              backgroundColor: to ? undefined : from,
+              backgroundImage: to
+                ? `linear-gradient(${Number(layer.shapeGradientDeg ?? 180)}deg, ${from}, ${to})`
+                : undefined,
               opacity: Math.max(0, Math.min(1, layer.shapeOpacity ?? 0.6)),
               borderRadius: Number(layer.borderRadius ?? 0),
             }}
           />
         );
+      }
       default:
         return null;
     }
@@ -140,7 +181,7 @@ const LayerView: React.FC<{ layer: StyleLayer; props: LayeredStyleProps }> = ({
         left: `${layer.xPercent}%`,
         top: `${layer.yPercent}%`,
         width: `${layer.widthPercent}%`,
-        transform: `translate(-50%, -50%)${entry.transform ? ` ${entry.transform}` : ""}`,
+        transform: `translate(-50%, -50%)${entry.transform ? ` ${entry.transform}` : ""}${loopTransform}`,
         opacity: entry.opacity,
         zIndex: layer.zIndex,
       }}

@@ -10,11 +10,11 @@ import type { StyleLayer } from "@/lib/style-lab/layers";
 /**
  * Per-layer control panel: edits the selected StyleLayer via onChange(patch).
  *   text  — content (static) or binding note, font/weight/size/italic,
- *           colors, alignment, case, spacing
+ *           colors, stroke, shadow, gradient, alignment, case, spacing
  *   image — upload (→ /api/style-lab/upload) + width
- *   shape — color/opacity/height/radius + width
- *   all   — position (x/y/width, two-way with the canvas drag layer) and
- *           entry animation + delay
+ *   shape — color/opacity/height/radius/gradient + width
+ *   all   — position (x/y/width, two-way with the canvas drag layer),
+ *           entry animation + easing + delay, loop animation
  */
 
 interface FontInfo {
@@ -252,6 +252,40 @@ export function LayerEditor({ layer, fonts, onChange }: LayerEditorProps) {
             onChange={(v) => onChange({ highlightColor: v })}
           />
 
+          <SliderRow
+            label="Stroke Width (px)"
+            value={layer.outlineWidth ?? 0}
+            min={0}
+            max={12}
+            step={0.5}
+            onChange={(v) => onChange({ outlineWidth: v })}
+          />
+          {(layer.outlineWidth ?? 0) > 0 && (
+            <ColorRow
+              label="Stroke Color"
+              value={layer.outlineColor ?? "#000000"}
+              onChange={(v) => onChange({ outlineColor: v })}
+            />
+          )}
+
+          <ToggleRow label="Shadow" checked={layer.shadow === true} onChange={(v) => onChange({ shadow: v })} />
+          {layer.shadow === true && (
+            <SliderRow
+              label="Shadow Intensity"
+              value={layer.shadowIntensity ?? 0.4}
+              min={0}
+              max={1}
+              step={0.05}
+              onChange={(v) => onChange({ shadowIntensity: v })}
+            />
+          )}
+
+          <ColorRow
+            label="Gradient To (empty = off)"
+            value={layer.textGradientTo ?? ""}
+            onChange={(v) => onChange({ textGradientTo: v || undefined })}
+          />
+
           <SelectRow
             label="Alignment"
             value={layer.alignment ?? "center"}
@@ -358,6 +392,21 @@ export function LayerEditor({ layer, fonts, onChange }: LayerEditorProps) {
             step={1}
             onChange={(v) => onChange({ borderRadius: v })}
           />
+          <ColorRow
+            label="Gradient To (empty = off)"
+            value={layer.shapeGradientTo ?? ""}
+            onChange={(v) => onChange({ shapeGradientTo: v || undefined })}
+          />
+          {layer.shapeGradientTo && (
+            <SliderRow
+              label="Gradient Angle (°)"
+              value={layer.shapeGradientDeg ?? 180}
+              min={0}
+              max={360}
+              step={5}
+              onChange={(v) => onChange({ shapeGradientDeg: v })}
+            />
+          )}
         </>
       )}
 
@@ -404,6 +453,17 @@ export function LayerEditor({ layer, fonts, onChange }: LayerEditorProps) {
           ]}
           onChange={(v) => onChange({ entryType: v })}
         />
+        <SelectRow
+          label="Easing"
+          value={layer.easing ?? "ease-out"}
+          options={[
+            { value: "ease-out", label: "Ease Out" },
+            { value: "spring", label: "Spring" },
+            { value: "ease-in-out", label: "Ease In-Out" },
+            { value: "linear", label: "Linear" },
+          ]}
+          onChange={(v) => onChange({ easing: v })}
+        />
         <SliderRow
           label="Duration (ms)"
           value={layer.entryDurationMs ?? 300}
@@ -420,6 +480,31 @@ export function LayerEditor({ layer, fonts, onChange }: LayerEditorProps) {
           step={50}
           onChange={(v) => onChange({ delayMs: v })}
         />
+      </div>
+
+      {/* ── Loop animation (shared; continuous, post-entry) ── */}
+      <div className="space-y-3.5 border-t border-zinc-900 pt-3.5">
+        <h4 className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Loop Animation</h4>
+        <SelectRow
+          label="Loop"
+          value={layer.loopType ?? "none"}
+          options={[
+            { value: "none", label: "None" },
+            { value: "pulse", label: "Pulse (subtle scale)" },
+            { value: "float", label: "Float (gentle drift)" },
+          ]}
+          onChange={(v) => onChange({ loopType: v })}
+        />
+        {(layer.loopType ?? "none") !== "none" && (
+          <SliderRow
+            label="Loop Duration (ms)"
+            value={layer.loopDurationMs ?? 2000}
+            min={400}
+            max={6000}
+            step={100}
+            onChange={(v) => onChange({ loopDurationMs: v })}
+          />
+        )}
       </div>
     </div>
   );

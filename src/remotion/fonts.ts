@@ -16,6 +16,19 @@ import { FONT_MANIFEST } from "../lib/fonts";
 
 let registered = false;
 
+/** Mirrors CustomFontFileEntry in src/lib/services/custom-fonts.ts — the
+ * writer of public/fonts/custom/manifest.json. Declared locally so this
+ * module stays Prisma-free (it is bundled into the Remotion browser build). */
+interface CustomFontFileEntry {
+  family: string;
+  slug: string;
+  weights: number[];
+  italics: number[];
+  files: Record<string, string>;
+  license: string;
+  source: "custom";
+}
+
 function addFace(family: string, relPath: string, weight: number, italic: boolean): Promise<void> {
   const face = new FontFace(family, `url('${staticFile(relPath)}') format('truetype')`, {
     weight: String(weight),
@@ -25,6 +38,33 @@ function addFace(family: string, relPath: string, weight: number, italic: boolea
   return face.load().then((loaded) => {
     document.fonts.add(loaded);
   });
+}
+
+/**
+ * Loads runtime-installed custom fonts (uploads / Google Fonts auto-fetch —
+ * see src/lib/services/custom-fonts.ts) from the maintained JSON index.
+ * Served through staticFile like the bundled TTFs; a missing or unreadable
+ * index just means no custom fonts — never fatal.
+ */
+async function loadCustomFontFaces(): Promise<Promise<void>[]> {
+  try {
+    const res = await fetch(staticFile("fonts/custom/manifest.json"));
+    if (!res.ok) return [];
+    const entries = (await res.json()) as CustomFontFileEntry[];
+    if (!Array.isArray(entries)) return [];
+    const loaders: Promise<void>[] = [];
+    for (const entry of entries) {
+      for (const [key, relPath] of Object.entries(entry.files ?? {})) {
+        const italic = key.endsWith("i");
+        const weight = Number(italic ? key.slice(0, -1) : key);
+        if (!Number.isFinite(weight)) continue;
+        loaders.push(addFace(entry.family, relPath, weight, italic));
+      }
+    }
+    return loaders;
+  } catch {
+    return [];
+  }
 }
 
 export function registerBundledFonts(): void {
@@ -45,7 +85,8 @@ export function registerBundledFonts(): void {
     }
   }
 
-  Promise.all(loaders)
+  loadCustomFontFaces()
+    .then((customLoaders) => Promise.all([...loaders, ...customLoaders]))
     .then(() => continueRender(handle))
     .catch((err) => {
       // Never wedge the render on a font failure — fall back to system fonts.

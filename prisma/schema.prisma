@@ -1721,10 +1721,12 @@ model DeliveryConfirmation {
 model FontAsset {
   id        String  @id @default(uuid())
   family    String  @unique
+  slug      String? @unique // directory under public/fonts/ (bundled) or public/fonts/custom/ (custom)
   weights   Int[]   // weights actually on disk
   files     Json    // { "400": "fonts/inter/Inter-Regular.ttf", ... }
   license   String
   isDefault Boolean @default(false)
+  source    String  @default("bundled") // bundled|custom
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

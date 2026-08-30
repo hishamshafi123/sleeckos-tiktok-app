@@ -29,7 +29,7 @@ export interface FontManifestEntry {
 
 export const DEFAULT_FONT_FAMILY = "Inter";
 
-const WEIGHT_NAMES: Record<number, string> = {
+export const WEIGHT_NAMES: Record<number, string> = {
   100: "Thin",
   200: "ExtraLight",
   300: "Light",
@@ -73,7 +73,7 @@ function fileName(prefix: string, weight: number, italic: boolean): string {
 }
 
 /** Case/space/hyphen-insensitive family matching ("IBM Plex Sans" == "IBMPlexSans"). */
-function normalizeFamily(family: string): string {
+export function normalizeFamily(family: string): string {
   return family.toLowerCase().replace(/[\s_-]+/g, "");
 }
 

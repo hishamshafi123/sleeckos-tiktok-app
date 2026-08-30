@@ -21,3 +21,21 @@ export async function getRemotionBundle(): Promise<string> {
   cachedBundleLocation = await bundle(entryPoint, undefined, { symlinkPublicDir: true });
   return cachedBundleLocation;
 }
+
+/** Current cached bundle dir, or null when nothing is cached. Never bundles. */
+export function getCachedRemotionBundleLocation(): string | null {
+  return cachedBundleLocation && fs.existsSync(cachedBundleLocation)
+    ? cachedBundleLocation
+    : null;
+}
+
+/**
+ * Drops the cached bundle location so the next getRemotionBundle() re-bundles.
+ * Style Match calls this when a runtime-installed font is NOT visible inside
+ * the cached bundle (a safety net — with symlinkPublicDir the bundle serves
+ * public/ through a symlink, so freshly installed fonts are normally visible
+ * without a re-bundle).
+ */
+export function invalidateRemotionBundleCache(): void {
+  cachedBundleLocation = null;
+}
