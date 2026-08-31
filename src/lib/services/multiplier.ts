@@ -2,7 +2,8 @@ import prisma from "@/lib/db";
 import { getMultiplierDriveClient } from "@/app/api/managed/multiplier/google/drive-helper";
 import { GoogleGenAI } from "@google/genai";
 import crypto from "crypto";
-import { spawn, exec } from "child_process";
+import { spawn, execFile } from "child_process";
+import { promisify } from "util";
 import fs from "fs";
 import path from "path";
 import os from "os";
@@ -24,6 +25,45 @@ function ensureDirsExist() {
       fs.mkdirSync(dir, { recursive: true });
     }
   });
+}
+
+/**
+ * Make an uploaded variation playable in browsers and uniform for the render
+ * pipeline. HEVC/H.265 (common in iPhone screen recordings) does not play in
+ * Chrome/Edge <video> — the preview box stays black — so anything that isn't
+ * h264/yuv420p is transcoded; already-compatible files just get a faststart
+ * remux (moov atom first) so previews start instantly.
+ * Never fails the upload: on any error the original file is kept.
+ */
+async function normalizeVariationVideo(filePath: string): Promise<void> {
+  const execFileAsync = promisify(execFile);
+  const tmpOut = `${filePath}.norm.mp4`;
+  try {
+    const { stdout } = await execFileAsync("ffprobe", [
+      "-v", "error", "-select_streams", "v:0",
+      "-show_entries", "stream=codec_name,pix_fmt",
+      "-of", "csv=p=0", filePath,
+    ]);
+    const [codec, pixFmt] = stdout.trim().split(",").map((s) => s.trim());
+    const compatible = codec === "h264" && (!pixFmt || pixFmt === "yuv420p");
+
+    const args = compatible
+      ? ["-y", "-v", "error", "-i", filePath, "-c", "copy", "-movflags", "+faststart", tmpOut]
+      : [
+          "-y", "-v", "error", "-i", filePath,
+          "-map", "0:v:0", "-map", "0:a?",
+          "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
+          "-c:a", "aac", "-movflags", "+faststart", tmpOut,
+        ];
+    await execFileAsync("ffmpeg", args);
+    fs.renameSync(tmpOut, filePath);
+    if (!compatible) {
+      console.log(`[Multiplier] Transcoded ${codec || "unknown"}/${pixFmt || "?"} upload to h264: ${path.basename(filePath)}`);
+    }
+  } catch (err) {
+    try { if (fs.existsSync(tmpOut)) fs.unlinkSync(tmpOut); } catch {}
+    console.warn(`[Multiplier] Video normalization skipped for ${path.basename(filePath)}:`, err);
+  }
 }
 
 // ─── Service Functions ────────────────────────────────────────────────────────
@@ -58,6 +98,9 @@ export async function addVariation(groupId: string, tempFilePath: string, origin
 
   fs.copyFileSync(tempFilePath, targetPath);
   fs.unlinkSync(tempFilePath);
+
+  // Ensure browser-playable h264/yuv420p + faststart (HEVC uploads preview black).
+  await normalizeVariationVideo(targetPath);
 
   const relativeRef = `/uploads/multiplier/variations/${targetFileName}`;
 
