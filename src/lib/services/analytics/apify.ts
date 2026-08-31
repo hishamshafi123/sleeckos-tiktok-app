@@ -2,10 +2,13 @@
  * Apify analytics provider — clockworks/tiktok-scraper via Apify API v2.
  * Raw fetch, no npm deps.
  *
- * Invocation: POST /acts/{actor}/run-sync (returns the finished run object,
- * including pay-per-event spend metadata) followed by GET of the run's
- * default dataset items. run-sync-get-dataset-items is NOT used because it
- * returns items only — no run id, hence no actual-cost data for the ledger.
+ * Invocation: POST /acts/{actor}/runs (async — returns the run object
+ * immediately) then poll GET /actor-runs/{id} until a terminal status,
+ * then GET the run's default dataset items. run-sync is NOT used: when the
+ * actor outlasts Apify's sync window it answers HTTP 201 with an EMPTY body
+ * (no run id to poll), which silently discarded every scraped result while
+ * Apify still charged for the runs. run-sync-get-dataset-items is NOT used
+ * because it returns items only — no run id, hence no actual-cost data.
  *
  * Every actor call is written to the ApifyCallLog ledger (fire-and-forget).
  *
@@ -14,7 +17,9 @@
  *   APIFY_ACTOR_ID         actor id, default "clockworks~tiktok-scraper"
  *   APIFY_PROFILES_FIELD   input field for profile usernames, default "profiles"
  *   APIFY_POST_URLS_FIELD  input field for specific video URLs, default "postURLs"
- *   APIFY_TIMEOUT_MS       per-call timeout, default 120000
+ *   APIFY_TIMEOUT_MS       per-HTTP-call timeout, default 120000
+ *   APIFY_RUN_WAIT_MS      max time to poll a run to completion, default 300000
+ *   APIFY_POLL_INTERVAL_MS poll interval while a run is active, default 3000
  */
 
 import { ProviderError } from "./provider";
@@ -28,6 +33,16 @@ import { logApifyCall } from "./apify-log";
 
 const DEFAULT_ACTOR = "clockworks~tiktok-scraper";
 const DEFAULT_TIMEOUT_MS = 120_000;
+const DEFAULT_RUN_WAIT_MS = 300_000;
+const DEFAULT_POLL_INTERVAL_MS = 3_000;
+const TERMINAL_RUN_STATUSES = new Set([
+  "SUCCEEDED",
+  "FAILED",
+  "ABORTED",
+  "TIMED-OUT",
+]);
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 // Actor item errorCodes meaning the post/profile does not exist or is private.
 const NOT_FOUND_CODES = new Set([
@@ -92,6 +107,9 @@ async function runActor(input: Record<string, unknown>, log: ActorLogContext): P
   const token = getToken();
   const actor = process.env.APIFY_ACTOR_ID || DEFAULT_ACTOR;
   const timeoutMs = Number(process.env.APIFY_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS;
+  const runWaitMs = Number(process.env.APIFY_RUN_WAIT_MS) || DEFAULT_RUN_WAIT_MS;
+  const pollIntervalMs =
+    Number(process.env.APIFY_POLL_INTERVAL_MS) || DEFAULT_POLL_INTERVAL_MS;
   const startedAt = Date.now();
 
   let resultCount = 0;
@@ -135,43 +153,71 @@ async function runActor(input: Record<string, unknown>, log: ActorLogContext): P
     return { res, raw };
   };
 
-  try {
-    // Step 1: synchronous run — waits for the actor to finish (up to the API's
-    // 300s sync limit, bounded client-side by the abort timeout), returns the
-    // run object.
-    const runUrl = `https://api.apify.com/v2/acts/${encodeURIComponent(
-      actor
-    )}/run-sync?token=${encodeURIComponent(token)}`;
-    const { raw: runRaw } = await apifyFetch(runUrl, input);
-
+  /** Parse an Apify run object out of a raw response body. */
+  const parseRun = (raw: string, what: string): any => {
     let run: any;
     try {
-      run = JSON.parse(runRaw)?.data;
+      run = JSON.parse(raw)?.data;
     } catch {
-      console.error(`[Apify] Run-object JSON parse failed. Body: ${runRaw.slice(0, 500)}`);
-      throw new ProviderError("transient", "Apify returned an invalid run object");
+      console.error(`[Apify] ${what} JSON parse failed. Body: ${raw.slice(0, 500)}`);
+      throw new ProviderError("transient", `Apify returned an invalid ${what}`);
     }
-    if (!run || typeof run !== "object" || !run.defaultDatasetId) {
-      console.error(`[Apify] Run object missing defaultDatasetId. Body: ${runRaw.slice(0, 500)}`);
-      throw new ProviderError("transient", "Apify run object had no defaultDatasetId");
+    if (!run || typeof run !== "object") {
+      console.error(`[Apify] ${what} missing data object. Body: ${raw.slice(0, 500)}`);
+      throw new ProviderError("transient", `Apify ${what} had no data object`);
     }
+    return run;
+  };
+
+  try {
+    // Step 1: start the run asynchronously — returns the run object
+    // immediately (id + defaultDatasetId), no sync-window empty-body trap.
+    const startUrl = `https://api.apify.com/v2/acts/${encodeURIComponent(
+      actor
+    )}/runs?token=${encodeURIComponent(token)}`;
+    const { raw: startRaw } = await apifyFetch(startUrl, input);
+    let run = parseRun(startRaw, "run object");
 
     apifyRunId = run.id != null ? String(run.id) : null;
+    if (!apifyRunId || !run.defaultDatasetId) {
+      console.error(`[Apify] Run object missing id/defaultDatasetId. Body: ${startRaw.slice(0, 500)}`);
+      throw new ProviderError("transient", "Apify run object had no id/defaultDatasetId");
+    }
+    const datasetId = String(run.defaultDatasetId);
+
+    // Step 2: poll the run until a terminal status (bounded by runWaitMs).
+    const runUrl = `https://api.apify.com/v2/actor-runs/${encodeURIComponent(
+      apifyRunId
+    )}?token=${encodeURIComponent(token)}`;
+    const deadline = startedAt + runWaitMs;
+    while (!TERMINAL_RUN_STATUSES.has(String(run.status))) {
+      if (Date.now() >= deadline) {
+        console.error(`[Apify] Run ${apifyRunId} still ${run.status} after ${runWaitMs}ms`);
+        throw new ProviderError(
+          "transient",
+          `Apify run did not finish within ${runWaitMs}ms (status ${run.status})`
+        );
+      }
+      await sleep(pollIntervalMs);
+      const { raw: pollRaw } = await apifyFetch(runUrl);
+      run = parseRun(pollRaw, "run-status object");
+    }
+
     if (typeof run.usageTotalUsd === "number" && Number.isFinite(run.usageTotalUsd)) {
       usageUsd = run.usageTotalUsd;
     }
     if (run.chargedEventCounts && typeof run.chargedEventCounts === "object") {
       chargedEventCounts = run.chargedEventCounts as Record<string, number>;
     }
-    if (run.status && run.status !== "SUCCEEDED") {
+    if (run.status !== "SUCCEEDED") {
       // Partial results can still exist in the dataset — keep going (matches
       // the old endpoint, which returned whatever items were collected).
       console.warn(`[Apify] Run ${apifyRunId} finished with status ${run.status}`);
     }
 
-    // Step 2: the run's dataset items.
+    // Step 3: the run's dataset items.
     const itemsUrl = `https://api.apify.com/v2/datasets/${encodeURIComponent(
-      String(run.defaultDatasetId)
+      datasetId
     )}/items?token=${encodeURIComponent(token)}`;
     const { res, raw } = await apifyFetch(itemsUrl);
 
