@@ -230,6 +230,15 @@ interface CaptureRunPostDetail {
   url?: string;
 }
 
+interface CaptureRunAccountDetail {
+  account: string;
+  scraped: boolean;
+  depthUsed: number;
+  refreshed: number;
+}
+
+type CaptureRunDetailEntry = CaptureRunPostDetail | CaptureRunAccountDetail;
+
 // Captured videos of one IST day (GET daily-activity/day?date=…)
 interface DayCapturedVideo {
   id: string;
@@ -418,7 +427,7 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
   const capturePollRef = useRef<NodeJS.Timeout | null>(null);
   const [captureRuns, setCaptureRuns] = useState<CaptureRunSummary[]>([]);
   const [expandedRunId, setExpandedRunId] = useState<string | null>(null);
-  const [runDetails, setRunDetails] = useState<Record<string, CaptureRunPostDetail[]>>({});
+  const [runDetails, setRunDetails] = useState<Record<string, CaptureRunDetailEntry[]>>({});
 
   // Share codes ("Client access")
   const [shareCodes, setShareCodes] = useState<ShareCode[]>([]);
@@ -3163,7 +3172,8 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
                             ) : details.length === 0 ? (
                               <p className="text-[10px] text-zinc-600 italic">No posts processed in this run.</p>
                             ) : (
-                              details.map((d) => (
+                              details.map((d, i) =>
+                                "postJobId" in d ? (
                                 <div
                                   key={d.postJobId}
                                   className="flex items-center justify-between gap-2 text-[11px] border border-[#27272a]/60 rounded px-2.5 py-1"
@@ -3194,7 +3204,22 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
                                     </span>
                                   )}
                                 </div>
-                              ))
+                                ) : (
+                                <div
+                                  key={`account-${d.account}-${i}`}
+                                  className="flex items-center justify-between gap-2 text-[11px] border border-dashed border-[#27272a]/60 rounded px-2.5 py-1"
+                                >
+                                  <span className="text-zinc-400 font-semibold whitespace-nowrap">
+                                    @{d.account}
+                                  </span>
+                                  <span className="text-[9px] font-semibold uppercase px-1.5 py-0.5 rounded border bg-zinc-500/10 text-zinc-400 border-zinc-500/20">
+                                    {d.scraped
+                                      ? `Scraped latest ${d.depthUsed}${d.refreshed > 0 ? ` · ${d.refreshed} refreshed` : ""}`
+                                      : "Nothing left to capture"}
+                                  </span>
+                                </div>
+                                )
+                              )
                             )}
                           </div>
                         )}
@@ -3417,7 +3442,7 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
                   {infoContent.trim() ? (
                     infoContent
                   ) : (
-                    <span className="text-zinc-600 italic">No notes created yet. Toggle to 'Edit Markdown' to add details.</span>
+                    <span className="text-zinc-600 italic">No notes created yet. Toggle to &apos;Edit Markdown&apos; to add details.</span>
                   )}
                 </div>
               )}

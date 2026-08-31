@@ -21,7 +21,7 @@ import { can } from "@/lib/services/permissions";
 import { ForbiddenError } from "@/lib/services/analytics/account-performance";
 import { getOrgTimezone, getZonedDateString } from "@/lib/services/timezone";
 import { zonedDayBounds, zonedDayString, TERMINAL_PUBLISHED_STATES } from "@/lib/services/analytics/account-stats";
-import { captureVideoLink } from "@/lib/services/analytics/capture";
+import { captureAccountPosts, captureDepth } from "@/lib/services/analytics/capture";
 import { apifyProvider } from "@/lib/services/analytics/apify";
 import type { AnalyticsProvider } from "@/lib/services/analytics/provider";
 
@@ -84,6 +84,7 @@ export interface UncapturedPost {
 
 type UncapturedJobRow = {
   id: string;
+  accountId: string;
   publishedAt: Date;
   driveFileName: string | null;
   account: {
@@ -96,21 +97,26 @@ type UncapturedJobRow = {
 /**
  * Terminal-published PostJobs of the campaign inside [start, end) that have
  * no captured TrackedVideo (either never attempted, or only an unresolved
- * placeholder). Shared by the list endpoint and the capture action.
+ * placeholder). Shared by the list endpoint and the capture action. When
+ * `accountIds` is given, only jobs on those accounts are returned (used to
+ * expand a day-scoped capture run to the affected accounts' whole backlog).
  */
 async function findUncapturedJobs(
   campaignId: string,
   start: Date,
-  end: Date
+  end: Date,
+  accountIds?: string[]
 ): Promise<{ jobs: UncapturedJobRow[]; statusByJobId: Map<string, { attempts: number }> }> {
   const jobs = await prisma.postJob.findMany({
     where: {
       campaignId,
       state: { in: TERMINAL_PUBLISHED_STATES },
       publishedAt: { gte: start, lt: end },
+      ...(accountIds ? { accountId: { in: accountIds } } : {}),
     },
     select: {
       id: true,
+      accountId: true,
       publishedAt: true,
       driveFileName: true,
       account: {
@@ -349,6 +355,16 @@ export interface CaptureRunPostDetail {
   url?: string;
 }
 
+/** One entry per account scraped in the run (capture is per-account now). */
+export interface CaptureRunAccountDetail {
+  account: string;
+  scraped: boolean; // false when nothing was left to capture (raced) — no provider call made
+  depthUsed: number; // latest-videos fetch depth (CAPTURE_DEPTH)
+  refreshed: number; // already-captured videos stats-refreshed for free by the same fetch
+}
+
+export type CaptureRunDetailEntry = CaptureRunPostDetail | CaptureRunAccountDetail;
+
 export interface CaptureRunSummary {
   id: string;
   day: string | null; // org-tz day filter; null = whole range
@@ -365,7 +381,7 @@ export interface CaptureRunSummary {
 }
 
 export interface CaptureRunDetail extends CaptureRunSummary {
-  details: CaptureRunPostDetail[];
+  details: CaptureRunDetailEntry[];
 }
 
 /**
@@ -373,6 +389,14 @@ export interface CaptureRunDetail extends CaptureRunSummary {
  * the org-tz day filter, finds the uncaptured jobs, and creates the
  * CaptureRun row up front with `total` known. Returns null on a bad
  * campaign/date (callers map that to 404).
+ *
+ * Day-scoped runs EXPAND to whole accounts: capture is per-account (one
+ * scrape per account regardless of post count), so once a day brings an
+ * account into the run, ALL of that account's uncaptured posts in the
+ * campaign are targeted — clicking capture for a 4-day-old day also fixes
+ * that account's 3d/2d backlog at zero extra scrape cost. `total` therefore
+ * counts the uncaptured posts across all affected accounts, not just the
+ * selected day's.
  */
 async function prepareCaptureRun(
   userId: string,
@@ -397,7 +421,11 @@ async function prepareCaptureRun(
     end = new Date();
   }
 
-  const { jobs } = await findUncapturedJobs(campaignId, start, end);
+  let { jobs } = await findUncapturedJobs(campaignId, start, end);
+  if (opts?.date && jobs.length > 0) {
+    const accountIds = [...new Set(jobs.map((j) => j.accountId))];
+    jobs = (await findUncapturedJobs(campaignId, new Date(0), new Date(), accountIds)).jobs;
+  }
   const run = await prisma.captureRun.create({
     data: { campaignId, userId, day: opts?.date ?? null, total: jobs.length },
   });
@@ -405,15 +433,19 @@ async function prepareCaptureRun(
 }
 
 /**
- * Process a prepared run one post at a time via captureVideoLink, updating
- * the CaptureRun row (processed/attempted/captured/unresolved + details)
- * after every post so pollers see live progress. Marks the run done at the
- * end; throws are left to the caller (startCaptureRun records them as
- * failed). Never throws for per-post failures — captureVideoLink catches
- * its own errors and reports them as "unresolved"/"skipped".
+ * Process a prepared run grouped BY ACCOUNT: one captureAccountPosts call
+ * (= one provider scrape) per affected account, then each targeted post's
+ * TrackedVideo row is re-checked for its outcome. The CaptureRun row
+ * (processed/attempted/captured/unresolved + details) is updated after every
+ * post so pollers see live progress; details carry one account-level entry
+ * ({account, scraped, depthUsed, refreshed}) plus one per-post entry as
+ * before. Marks the run done at the end; throws are left to the caller
+ * (startCaptureRun records them as failed). Per-post failures never throw —
+ * captureAccountPosts catches its own errors and the affected posts simply
+ * re-check as unresolved.
  *
- * Idempotent: captureVideoLink early-returns for already-captured jobs and
- * upserts the unresolved placeholder otherwise, so re-running never
+ * Idempotent: already-captured jobs re-check as captured without a new
+ * scrape, and unresolved placeholders are upserted, so re-running never
  * double-captures (tiktokVideoId is globally unique).
  */
 export async function runCapturePass(
@@ -422,7 +454,7 @@ export async function runCapturePass(
   provider: AnalyticsProvider = apifyProvider
 ): Promise<CaptureUncapturedResult> {
   const counters = { attempted: 0, captured: 0, unresolved: 0, processed: 0 };
-  const details: CaptureRunPostDetail[] = [];
+  const details: CaptureRunDetailEntry[] = [];
   const saveProgress = async (status?: string, error?: string) => {
     await prisma.captureRun.update({
       where: { id: runId },
@@ -435,36 +467,48 @@ export async function runCapturePass(
     });
   };
 
+  const byAccount = new Map<string, UncapturedJobRow[]>();
   for (const job of jobs) {
-    counters.attempted++;
-    counters.processed++;
-    const res = await captureVideoLink(job.id, provider);
-    if (res.status === "captured") {
-      counters.captured++;
-      let url: string | undefined;
-      if (res.trackedVideoId) {
-        const tv = await prisma.trackedVideo.findUnique({
-          where: { id: res.trackedVideoId },
-          select: { url: true },
-        });
-        url = tv?.url || undefined;
-      }
-      details.push({
-        postJobId: job.id,
-        account: job.account.tiktokUsername,
-        result: "captured",
-        ...(url ? { url } : {}),
+    const list = byAccount.get(job.accountId) ?? [];
+    list.push(job);
+    byAccount.set(job.accountId, list);
+  }
+
+  for (const [accountId, accountJobs] of byAccount) {
+    const username = accountJobs[0].account.tiktokUsername;
+    const res = await captureAccountPosts(accountId, {}, provider);
+    details.push({
+      account: username,
+      scraped: res.attempted > 0,
+      depthUsed: res.attempted > 0 ? captureDepth() : 0,
+      refreshed: res.refreshed,
+    });
+    for (const job of accountJobs) {
+      counters.attempted++;
+      counters.processed++;
+      const tv = await prisma.trackedVideo.findFirst({
+        where: { postJobId: job.id, status: { not: "unresolved" } },
+        select: { url: true },
       });
-    } else {
-      counters.unresolved++;
-      details.push({ postJobId: job.id, account: job.account.tiktokUsername, result: "unresolved" });
+      if (tv) {
+        counters.captured++;
+        details.push({
+          postJobId: job.id,
+          account: username,
+          result: "captured",
+          ...(tv.url ? { url: tv.url } : {}),
+        });
+      } else {
+        counters.unresolved++;
+        details.push({ postJobId: job.id, account: username, result: "unresolved" });
+      }
+      await saveProgress();
     }
-    await saveProgress();
   }
 
   await saveProgress("done");
   console.log(
-    `[CampaignActivity] Capture run ${runId} done: attempted=${counters.attempted} captured=${counters.captured} unresolved=${counters.unresolved}`
+    `[CampaignActivity] Capture run ${runId} done: accounts=${byAccount.size} attempted=${counters.attempted} captured=${counters.captured} unresolved=${counters.unresolved}`
   );
   return { attempted: counters.attempted, captured: counters.captured, unresolved: counters.unresolved };
 }
@@ -603,6 +647,6 @@ export async function getCaptureRun(
   if (!run) return null;
 
   const labels = await resolveUserLabels([run.userId]);
-  const details = Array.isArray(run.details) ? (run.details as unknown as CaptureRunPostDetail[]) : [];
+  const details = Array.isArray(run.details) ? (run.details as unknown as CaptureRunDetailEntry[]) : [];
   return { ...toRunSummary(run, labels), details };
 }
