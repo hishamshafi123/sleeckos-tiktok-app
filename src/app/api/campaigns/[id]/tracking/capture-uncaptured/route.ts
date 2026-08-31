@@ -2,11 +2,12 @@ export const dynamic = "force-dynamic";
 import { NextRequest, NextResponse } from "next/server";
 import { getSession } from "@/lib/session";
 import { ForbiddenError } from "@/lib/services/analytics/account-performance";
-import { captureUncapturedPosts } from "@/lib/services/analytics/campaign-activity";
+import { startCaptureRun } from "@/lib/services/analytics/campaign-activity";
 
 // POST /api/campaigns/[id]/tracking/capture-uncaptured
-// Body: { date?: "YYYY-MM-DD" } — run the existing time-window capture for
-// every uncaptured post of the campaign (optionally one org-tz day).
+// Body: { date?: "YYYY-MM-DD" } — start a CaptureRun for every uncaptured
+// post of the campaign (optionally one org-tz day). Processing runs in the
+// background; the client polls GET tracking/capture-runs/[runId] for progress.
 export async function POST(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -18,9 +19,9 @@ export async function POST(
   try {
     const body = await req.json().catch(() => ({}));
     const date = typeof body?.date === "string" ? body.date : undefined;
-    const result = await captureUncapturedPosts(session.userId, id, { date });
-    if (!result) return NextResponse.json({ error: "Campaign not found" }, { status: 404 });
-    return NextResponse.json(result);
+    const run = await startCaptureRun(session.userId, id, { date });
+    if (!run) return NextResponse.json({ error: "Campaign not found" }, { status: 404 });
+    return NextResponse.json(run);
   } catch (err: any) {
     if (err instanceof ForbiddenError) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });

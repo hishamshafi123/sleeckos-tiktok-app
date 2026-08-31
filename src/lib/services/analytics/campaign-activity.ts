@@ -16,6 +16,7 @@
  */
 
 import prisma from "@/lib/db";
+import type { Prisma } from "@prisma/client";
 import { can } from "@/lib/services/permissions";
 import { ForbiddenError } from "@/lib/services/analytics/account-performance";
 import { getOrgTimezone, getZonedDateString } from "@/lib/services/timezone";
@@ -182,6 +183,7 @@ export interface CampaignDailyActivity {
   to: string;
   rows: CampaignDailyActivityRow[]; // newest first
   totals: { postsCount: number; capturedCount: number; refreshedCount: number; missingCount: number };
+  lastCapturedAt: string | null; // ISO — latest real capture across the campaign's tracked videos
 }
 
 export async function getCampaignDailyActivity(
@@ -195,7 +197,7 @@ export async function getCampaignDailyActivity(
   const campaign = await prisma.campaign.findUnique({ where: { id: campaignId }, select: { id: true } });
   if (!campaign) return null;
 
-  const [posts, captures, snapshots, uncaptured] = await Promise.all([
+  const [posts, captures, snapshots, uncaptured, lastCapture] = await Promise.all([
     prisma.postJob.findMany({
       where: {
         campaignId,
@@ -217,6 +219,13 @@ export async function getCampaignDailyActivity(
       select: { trackedVideoId: true, recordedAt: true },
     }),
     findUncapturedJobs(campaignId, range.start, range.end),
+    // Latest real capture across the whole campaign (not range-scoped) — powers
+    // the "Last capture: …" header line in the Daily Activity card.
+    prisma.trackedVideo.findFirst({
+      where: { campaignId, status: { not: "unresolved" } },
+      orderBy: { capturedAt: "desc" },
+      select: { capturedAt: true },
+    }),
   ]);
 
   const dayList = DAY_LIST(range.from, range.to);
@@ -262,10 +271,70 @@ export async function getCampaignDailyActivity(
     { postsCount: 0, capturedCount: 0, refreshedCount: 0, missingCount: 0 }
   );
 
-  return { timezone: range.timezone, from: range.from, to: range.to, rows, totals };
+  return {
+    timezone: range.timezone,
+    from: range.from,
+    to: range.to,
+    rows,
+    totals,
+    lastCapturedAt: lastCapture ? lastCapture.capturedAt.toISOString() : null,
+  };
 }
 
-// ── Capture action ──────────────────────────────────────────────────────────
+// ── Per-day captured videos (day expansion in the Daily Activity card) ──────
+
+export interface DayCapturedVideo {
+  id: string;
+  url: string;
+  accountUsername: string;
+  views: number;
+  capturedAt: string; // ISO
+}
+
+/**
+ * Captured (non-unresolved) TrackedVideos of the campaign whose capturedAt
+ * falls inside the given org-tz day — the "captured" group of a day
+ * expansion, mirroring the Captured column of the activity table.
+ */
+export async function getCampaignDayCaptured(
+  userId: string,
+  campaignId: string,
+  date: string
+): Promise<{ timezone: string; date: string; videos: DayCapturedVideo[] } | null> {
+  await assertCampaignAccess(userId);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
+  const timezone = await getOrgTimezone();
+  const campaign = await prisma.campaign.findUnique({ where: { id: campaignId }, select: { id: true } });
+  if (!campaign) return null;
+
+  const { start, end } = zonedDayBounds(date, timezone);
+  const videos = await prisma.trackedVideo.findMany({
+    where: { campaignId, status: { not: "unresolved" }, capturedAt: { gte: start, lt: end } },
+    orderBy: { capturedAt: "desc" },
+    take: 200,
+    select: { id: true, url: true, views: true, capturedAt: true, accountId: true },
+  });
+  const accountIds = [...new Set(videos.map((v) => v.accountId))];
+  const accounts = await prisma.managedAccount.findMany({
+    where: { id: { in: accountIds } },
+    select: { id: true, tiktokUsername: true },
+  });
+  const usernameById = new Map(accounts.map((a) => [a.id, a.tiktokUsername]));
+
+  return {
+    timezone,
+    date,
+    videos: videos.map((v) => ({
+      id: v.id,
+      url: v.url,
+      accountUsername: usernameById.get(v.accountId) ?? "",
+      views: Number(v.views),
+      capturedAt: v.capturedAt.toISOString(),
+    })),
+  };
+}
+
+// ── Capture action (CaptureRun-backed, live progress) ───────────────────────
 
 export interface CaptureUncapturedResult {
   attempted: number;
@@ -273,19 +342,43 @@ export interface CaptureUncapturedResult {
   unresolved: number; // still without a link after the run (includes skipped)
 }
 
+export interface CaptureRunPostDetail {
+  postJobId: string;
+  account: string;
+  result: "captured" | "unresolved";
+  url?: string;
+}
+
+export interface CaptureRunSummary {
+  id: string;
+  day: string | null; // org-tz day filter; null = whole range
+  status: string; // running | done | failed
+  attempted: number;
+  captured: number;
+  unresolved: number;
+  total: number;
+  processed: number;
+  error: string | null;
+  createdAt: string; // ISO
+  updatedAt: string; // ISO
+  triggeredBy: string | null; // display name or email of the triggering user
+}
+
+export interface CaptureRunDetail extends CaptureRunSummary {
+  details: CaptureRunPostDetail[];
+}
+
 /**
- * Manually run the existing time-window capture (captureVideoLink) for every
- * uncaptured post of the campaign, optionally limited to one org-tz day.
- * Idempotent: captureVideoLink early-returns for already-captured jobs and
- * upserts the unresolved placeholder otherwise, so re-running never
- * double-captures (tiktokVideoId is globally unique).
+ * Shared prep for both entry points: permission + campaign checks, resolves
+ * the org-tz day filter, finds the uncaptured jobs, and creates the
+ * CaptureRun row up front with `total` known. Returns null on a bad
+ * campaign/date (callers map that to 404).
  */
-export async function captureUncapturedPosts(
+async function prepareCaptureRun(
   userId: string,
   campaignId: string,
-  opts?: { date?: string },
-  provider: AnalyticsProvider = apifyProvider
-): Promise<CaptureUncapturedResult | null> {
+  opts?: { date?: string }
+): Promise<{ runId: string; jobs: UncapturedJobRow[]; date: string | null } | null> {
   await assertCampaignAccess(userId);
   const timezone = await getOrgTimezone();
   const campaign = await prisma.campaign.findUnique({ where: { id: campaignId }, select: { id: true } });
@@ -305,15 +398,211 @@ export async function captureUncapturedPosts(
   }
 
   const { jobs } = await findUncapturedJobs(campaignId, start, end);
-  const result: CaptureUncapturedResult = { attempted: 0, captured: 0, unresolved: 0 };
+  const run = await prisma.captureRun.create({
+    data: { campaignId, userId, day: opts?.date ?? null, total: jobs.length },
+  });
+  return { runId: run.id, jobs, date: opts?.date ?? null };
+}
+
+/**
+ * Process a prepared run one post at a time via captureVideoLink, updating
+ * the CaptureRun row (processed/attempted/captured/unresolved + details)
+ * after every post so pollers see live progress. Marks the run done at the
+ * end; throws are left to the caller (startCaptureRun records them as
+ * failed). Never throws for per-post failures — captureVideoLink catches
+ * its own errors and reports them as "unresolved"/"skipped".
+ *
+ * Idempotent: captureVideoLink early-returns for already-captured jobs and
+ * upserts the unresolved placeholder otherwise, so re-running never
+ * double-captures (tiktokVideoId is globally unique).
+ */
+export async function runCapturePass(
+  runId: string,
+  jobs: UncapturedJobRow[],
+  provider: AnalyticsProvider = apifyProvider
+): Promise<CaptureUncapturedResult> {
+  const counters = { attempted: 0, captured: 0, unresolved: 0, processed: 0 };
+  const details: CaptureRunPostDetail[] = [];
+  const saveProgress = async (status?: string, error?: string) => {
+    await prisma.captureRun.update({
+      where: { id: runId },
+      data: {
+        ...counters,
+        details: details as unknown as Prisma.InputJsonValue,
+        ...(status ? { status } : {}),
+        ...(error !== undefined ? { error } : {}),
+      },
+    });
+  };
+
   for (const job of jobs) {
-    result.attempted++;
+    counters.attempted++;
+    counters.processed++;
     const res = await captureVideoLink(job.id, provider);
-    if (res.status === "captured") result.captured++;
-    else result.unresolved++;
+    if (res.status === "captured") {
+      counters.captured++;
+      let url: string | undefined;
+      if (res.trackedVideoId) {
+        const tv = await prisma.trackedVideo.findUnique({
+          where: { id: res.trackedVideoId },
+          select: { url: true },
+        });
+        url = tv?.url || undefined;
+      }
+      details.push({
+        postJobId: job.id,
+        account: job.account.tiktokUsername,
+        result: "captured",
+        ...(url ? { url } : {}),
+      });
+    } else {
+      counters.unresolved++;
+      details.push({ postJobId: job.id, account: job.account.tiktokUsername, result: "unresolved" });
+    }
+    await saveProgress();
   }
+
+  await saveProgress("done");
   console.log(
-    `[CampaignActivity] Campaign ${campaignId} capture-uncaptured${opts?.date ? ` (${opts.date})` : ""}: attempted=${result.attempted} captured=${result.captured} unresolved=${result.unresolved}`
+    `[CampaignActivity] Capture run ${runId} done: attempted=${counters.attempted} captured=${counters.captured} unresolved=${counters.unresolved}`
   );
-  return result;
+  return { attempted: counters.attempted, captured: counters.captured, unresolved: counters.unresolved };
+}
+
+/**
+ * Start a capture run in the background: creates the CaptureRun row (total
+ * known up front) and kicks processing off in-process, returning the run id
+ * immediately. Same fire-and-forget pattern as recoverCampaignLinks — the
+ * client polls GET capture-runs/[runId] for progress.
+ */
+export async function startCaptureRun(
+  userId: string,
+  campaignId: string,
+  opts?: { date?: string },
+  provider: AnalyticsProvider = apifyProvider
+): Promise<{ runId: string; total: number } | null> {
+  const prepared = await prepareCaptureRun(userId, campaignId, opts);
+  if (!prepared) return null;
+
+  (async () => {
+    try {
+      await runCapturePass(prepared.runId, prepared.jobs, provider);
+    } catch (err: any) {
+      console.error(`[CampaignActivity] Capture run ${prepared.runId} crashed:`, err?.message || err);
+      await prisma.captureRun
+        .update({
+          where: { id: prepared.runId },
+          data: { status: "failed", error: err?.message || String(err) },
+        })
+        .catch(() => {});
+    }
+  })();
+
+  return { runId: prepared.runId, total: prepared.jobs.length };
+}
+
+/**
+ * Backward-compatible awaited form: runs the whole capture synchronously and
+ * returns the final counts (plus the run id). The API route uses
+ * startCaptureRun instead; this remains for tests/scratch callers.
+ */
+export async function captureUncapturedPosts(
+  userId: string,
+  campaignId: string,
+  opts?: { date?: string },
+  provider: AnalyticsProvider = apifyProvider
+): Promise<(CaptureUncapturedResult & { runId: string }) | null> {
+  const prepared = await prepareCaptureRun(userId, campaignId, opts);
+  if (!prepared) return null;
+  try {
+    const result = await runCapturePass(prepared.runId, prepared.jobs, provider);
+    console.log(
+      `[CampaignActivity] Campaign ${campaignId} capture-uncaptured${prepared.date ? ` (${prepared.date})` : ""}: attempted=${result.attempted} captured=${result.captured} unresolved=${result.unresolved}`
+    );
+    return { ...result, runId: prepared.runId };
+  } catch (err: any) {
+    await prisma.captureRun
+      .update({
+        where: { id: prepared.runId },
+        data: { status: "failed", error: err?.message || String(err) },
+      })
+      .catch(() => {});
+    throw err;
+  }
+}
+
+function toRunSummary(
+  run: {
+    id: string;
+    day: string | null;
+    status: string;
+    attempted: number;
+    captured: number;
+    unresolved: number;
+    total: number;
+    processed: number;
+    error: string | null;
+    userId: string | null;
+    createdAt: Date;
+    updatedAt: Date;
+  },
+  userLabelById: Map<string, string>
+): CaptureRunSummary {
+  return {
+    id: run.id,
+    day: run.day,
+    status: run.status,
+    attempted: run.attempted,
+    captured: run.captured,
+    unresolved: run.unresolved,
+    total: run.total,
+    processed: run.processed,
+    error: run.error,
+    createdAt: run.createdAt.toISOString(),
+    updatedAt: run.updatedAt.toISOString(),
+    triggeredBy: run.userId ? userLabelById.get(run.userId) ?? null : null,
+  };
+}
+
+async function resolveUserLabels(userIds: (string | null)[]): Promise<Map<string, string>> {
+  const ids = [...new Set(userIds.filter((x): x is string => !!x))];
+  if (ids.length === 0) return new Map();
+  const users = await prisma.user.findMany({
+    where: { id: { in: ids } },
+    select: { id: true, name: true, email: true },
+  });
+  return new Map(users.map((u) => [u.id, u.name || u.email]));
+}
+
+/** Last ~20 capture runs for the campaign, newest first (no per-post details). */
+export async function listCaptureRuns(
+  userId: string,
+  campaignId: string
+): Promise<CaptureRunSummary[] | null> {
+  await assertCampaignAccess(userId);
+  const campaign = await prisma.campaign.findUnique({ where: { id: campaignId }, select: { id: true } });
+  if (!campaign) return null;
+
+  const runs = await prisma.captureRun.findMany({
+    where: { campaignId },
+    orderBy: { createdAt: "desc" },
+    take: 20,
+  });
+  const labels = await resolveUserLabels(runs.map((r) => r.userId));
+  return runs.map((r) => toRunSummary(r, labels));
+}
+
+/** One capture run (with per-post details) — the polling endpoint. */
+export async function getCaptureRun(
+  userId: string,
+  campaignId: string,
+  runId: string
+): Promise<CaptureRunDetail | null> {
+  await assertCampaignAccess(userId);
+  const run = await prisma.captureRun.findFirst({ where: { id: runId, campaignId } });
+  if (!run) return null;
+
+  const labels = await resolveUserLabels([run.userId]);
+  const details = Array.isArray(run.details) ? (run.details as unknown as CaptureRunPostDetail[]) : [];
+  return { ...toRunSummary(run, labels), details };
 }

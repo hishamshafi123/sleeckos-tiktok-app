@@ -193,6 +193,7 @@ interface DailyActivity {
   to: string;
   rows: DailyActivityRow[];
   totals: { postsCount: number; capturedCount: number; refreshedCount: number; missingCount: number };
+  lastCapturedAt: string | null;
 }
 
 interface UncapturedPost {
@@ -205,6 +206,37 @@ interface UncapturedPost {
   driveFileName: string | null;
   captureStatus: "none" | "unresolved";
   captureAttempts: number;
+}
+
+// Capture runs (POST capture-uncaptured → GET capture-runs[/runId])
+interface CaptureRunSummary {
+  id: string;
+  day: string | null; // org-tz day filter; null = whole range
+  status: string; // running | done | failed
+  attempted: number;
+  captured: number;
+  unresolved: number;
+  total: number;
+  processed: number;
+  error: string | null;
+  createdAt: string; // ISO
+  triggeredBy: string | null;
+}
+
+interface CaptureRunPostDetail {
+  postJobId: string;
+  account: string;
+  result: "captured" | "unresolved";
+  url?: string;
+}
+
+// Captured videos of one IST day (GET daily-activity/day?date=…)
+interface DayCapturedVideo {
+  id: string;
+  url: string;
+  accountUsername: string;
+  views: number;
+  capturedAt: string; // ISO
 }
 
 type TrackSortKey = "views" | "likes" | "date" | "refreshed";
@@ -225,6 +257,11 @@ const formatRate = (rate: number) => (rate % 1 === 0 ? `${rate}` : rate.toFixed(
 const formatCompact = (n: number) =>
   n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1_000 ? `${(n / 1_000).toFixed(1)}k` : `${n}`;
 
+// Exact full figures with Indian digit grouping — the default for every
+// count/views/likes display in this page (compact notation only survives on
+// space-tight chart axis ticks).
+const formatExact = (n: number) => n.toLocaleString("en-IN");
+
 // Absolute timestamp in the org timezone (shown on hover next to relative times)
 const formatAbsoluteIST = (dateStr: string) =>
   `${new Date(dateStr).toLocaleString("en-IN", {
@@ -244,6 +281,17 @@ const formatDateIST = (dateStr: string) =>
     month: "short",
     year: "numeric",
   });
+
+// Compact IST datetime for capture-run rows ("31 Aug, 9:42 pm IST")
+const formatDateTimeIST = (dateStr: string) =>
+  `${new Date(dateStr).toLocaleString("en-IN", {
+    timeZone: "Asia/Kolkata",
+    day: "numeric",
+    month: "short",
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  })} IST`;
 
 export default function CampaignDetailClient({ campaign: initialCampaign, exportAnalytics }: CampaignDetailClientProps) {
   const router = useRouter();
@@ -358,7 +406,19 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
   const [activityError, setActivityError] = useState<string | null>(null);
   const [uncaptured, setUncaptured] = useState<UncapturedPost[]>([]);
   const [expandedDays, setExpandedDays] = useState<Set<string>>(new Set());
-  const [capturingKey, setCapturingKey] = useState<string | null>(null); // "all" or a YYYY-MM-DD
+  const [dayCaptured, setDayCaptured] = useState<Record<string, DayCapturedVideo[]>>({});
+  const [dayCapturedLoading, setDayCapturedLoading] = useState<Set<string>>(new Set());
+  // Active capture run (key: "all" or a YYYY-MM-DD) with live progress
+  const [activeCapture, setActiveCapture] = useState<{
+    key: string;
+    runId: string;
+    processed: number;
+    total: number;
+  } | null>(null);
+  const capturePollRef = useRef<NodeJS.Timeout | null>(null);
+  const [captureRuns, setCaptureRuns] = useState<CaptureRunSummary[]>([]);
+  const [expandedRunId, setExpandedRunId] = useState<string | null>(null);
+  const [runDetails, setRunDetails] = useState<Record<string, CaptureRunPostDetail[]>>({});
 
   // Share codes ("Client access")
   const [shareCodes, setShareCodes] = useState<ShareCode[]>([]);
@@ -612,9 +672,78 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
     }
   };
 
+  const fetchCaptureRuns = async () => {
+    try {
+      const res = await fetch(`/api/campaigns/${campaign.id}/tracking/capture-runs`);
+      if (res.ok) {
+        const data = await res.json();
+        setCaptureRuns(data.runs || []);
+      }
+    } catch {
+      /* history list is best-effort */
+    }
+  };
+
+  const fetchDayCaptured = async (day: string) => {
+    setDayCapturedLoading((prev) => new Set(prev).add(day));
+    try {
+      const res = await fetch(`/api/campaigns/${campaign.id}/tracking/daily-activity/day?date=${day}`);
+      if (res.ok) {
+        const data = await res.json();
+        setDayCaptured((prev) => ({ ...prev, [day]: data.videos || [] }));
+      }
+    } catch {
+      /* leave the group uncached — next expand retries */
+    } finally {
+      setDayCapturedLoading((prev) => {
+        const next = new Set(prev);
+        next.delete(day);
+        return next;
+      });
+    }
+  };
+
+  const stopCapturePoll = () => {
+    if (capturePollRef.current) {
+      clearInterval(capturePollRef.current);
+      capturePollRef.current = null;
+    }
+  };
+
+  // Poll one capture run until it leaves "running"; on finish, toast the
+  // outcome and refresh activity + tracking + run history.
+  const pollCaptureRun = async (runId: string, key: string) => {
+    try {
+      const res = await fetch(`/api/campaigns/${campaign.id}/tracking/capture-runs/${runId}`);
+      if (!res.ok) return;
+      const run = await res.json();
+      setActiveCapture({ key, runId, processed: run.processed, total: run.total });
+      if (run.status === "running") return;
+      stopCapturePoll();
+      setActiveCapture(null);
+      if (run.status === "done") {
+        toast.success(
+          run.attempted === 0
+            ? "Nothing to capture"
+            : `attempted ${run.attempted} · captured ${run.captured} · ${run.unresolved} unresolved`
+        );
+      } else {
+        toast.error(`Capture run failed: ${run.error || "unknown error"}`);
+      }
+      // Captured links changed — drop cached day expansions and refetch the
+      // ones currently open, then refresh the tables and history.
+      setDayCaptured({});
+      expandedDays.forEach((day) => fetchDayCaptured(day));
+      fetchActivity(true);
+      fetchTracking(true); // captured links change the tracking totals too
+      fetchCaptureRuns();
+    } catch {
+      /* transient poll failure — the next tick retries */
+    }
+  };
+
   const handleCaptureUncaptured = async (date?: string) => {
     const key = date ?? "all";
-    setCapturingKey(key);
     try {
       const res = await fetch(`/api/campaigns/${campaign.id}/tracking/capture-uncaptured`, {
         method: "POST",
@@ -623,29 +752,45 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error || `Request failed with status ${res.status}`);
-      if (data.attempted === 0) {
-        toast.success("Nothing to capture");
-      } else {
-        toast.success(
-          `attempted ${data.attempted} · captured ${data.captured} · ${data.unresolved} unresolved`
-        );
-      }
-      fetchActivity(true);
-      fetchTracking(true); // captured links change the tracking totals too
+      setActiveCapture({ key, runId: data.runId, processed: 0, total: data.total ?? 0 });
+      stopCapturePoll();
+      capturePollRef.current = setInterval(() => pollCaptureRun(data.runId, key), 2500);
+      pollCaptureRun(data.runId, key); // immediate first tick (total=0 runs finish at once)
+      fetchCaptureRuns();
     } catch (err: any) {
-      toast.error(err.message || "Failed to capture missing links");
-    } finally {
-      setCapturingKey(null);
+      toast.error(err.message || "Failed to start capture run");
     }
   };
 
-  const toggleDayExpanded = (day: string) => {
+  const toggleRunExpanded = async (runId: string) => {
+    if (expandedRunId === runId) {
+      setExpandedRunId(null);
+      return;
+    }
+    setExpandedRunId(runId);
+    if (runDetails[runId]) return;
+    try {
+      const res = await fetch(`/api/campaigns/${campaign.id}/tracking/capture-runs/${runId}`);
+      if (res.ok) {
+        const run = await res.json();
+        setRunDetails((prev) => ({ ...prev, [runId]: run.details || [] }));
+      }
+    } catch {
+      /* expansion stays empty — collapsing and reopening retries */
+    }
+  };
+
+  const toggleDayExpanded = (day: string, hasCaptured: boolean) => {
+    const willExpand = !expandedDays.has(day);
     setExpandedDays((prev) => {
       const next = new Set(prev);
       if (next.has(day)) next.delete(day);
       else next.add(day);
       return next;
     });
+    if (willExpand && hasCaptured && !(day in dayCaptured)) {
+      fetchDayCaptured(day);
+    }
   };
 
   useEffect(() => {
@@ -656,6 +801,7 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
   useEffect(() => {
     fetchTracking();
     fetchShareCodes();
+    fetchCaptureRuns();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [campaign.id]);
 
@@ -664,6 +810,7 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
     return () => {
       if (refreshPollRef.current) clearInterval(refreshPollRef.current);
       if (recoveryPollRef.current) clearInterval(recoveryPollRef.current);
+      if (capturePollRef.current) clearInterval(capturePollRef.current);
     };
   }, []);
 
@@ -1524,7 +1671,7 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
               <div
                 key={d.date}
                 className="flex-1 min-w-[10px] h-full flex items-end justify-center"
-                title={`${formatDay(d.date)} — ${d.views.toLocaleString()} views, ${d.likes.toLocaleString()} likes`}
+                title={`${formatDay(d.date)} — ${d.views.toLocaleString("en-IN")} views, ${d.likes.toLocaleString("en-IN")} likes`}
               >
                 <div
                   className="w-full max-w-[14px] rounded-sm bg-[#E11D48]/80 hover:bg-[#E11D48] transition-colors"
@@ -1644,11 +1791,11 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
 
     return (
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        {card("Videos Exported", stats ? stats.totals.exported.toLocaleString() : "—", "text-zinc-100")}
-        {card("Posts Successful", stats ? stats.totals.posted.toLocaleString() : "—", "text-emerald-400")}
+        {card("Videos Exported", stats ? stats.totals.exported.toLocaleString("en-IN") : "—", "text-zinc-100")}
+        {card("Posts Successful", stats ? stats.totals.posted.toLocaleString("en-IN") : "—", "text-emerald-400")}
         {card(
           "Posts Failed",
-          stats ? stats.totals.failed.toLocaleString() : "—",
+          stats ? stats.totals.failed.toLocaleString("en-IN") : "—",
           stats && stats.totals.failed > 0 ? "text-red-400" : "text-zinc-500"
         )}
         {card(
@@ -1788,16 +1935,16 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
                 <div className="flex items-start gap-2.5 bg-emerald-500/5 border border-emerald-500/20 text-emerald-400 rounded p-3">
                   <CheckCircle2 size={15} className="mt-0.5 flex-shrink-0" />
                   <div>
-                    <span className="font-semibold">Priority complete</span> — normal posting resumed. {priorityUsed.toLocaleString()}/{priorityQuota.toLocaleString()} priority posts delivered.
+                    <span className="font-semibold">Priority complete</span> — normal posting resumed. {priorityUsed.toLocaleString("en-IN")}/{priorityQuota.toLocaleString("en-IN")} priority posts delivered.
                   </div>
                 </div>
               ) : (
                 <div className="space-y-1.5">
                   <div className="flex items-center justify-between text-[11px]">
                     <span className="text-zinc-400">
-                      <span className="font-mono font-semibold text-zinc-100">{priorityUsed.toLocaleString()}</span>
+                      <span className="font-mono font-semibold text-zinc-100">{priorityUsed.toLocaleString("en-IN")}</span>
                       {" / "}
-                      <span className="font-mono text-zinc-300">{priorityQuota.toLocaleString()}</span> priority posts
+                      <span className="font-mono text-zinc-300">{priorityQuota.toLocaleString("en-IN")}</span> priority posts
                     </span>
                     <span className="text-zinc-500">auto-turns off when reached</span>
                   </div>
@@ -1860,7 +2007,7 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
               ) : pausedFiles && pausedFiles.totalFiles > 0 ? (
                 <>
                   <p className="text-[11px] text-zinc-400">
-                    <span className="font-mono font-semibold text-amber-400">{pausedFiles.totalFiles.toLocaleString()}</span>{" "}
+                    <span className="font-mono font-semibold text-amber-400">{pausedFiles.totalFiles.toLocaleString("en-IN")}</span>{" "}
                     files of this campaign are sitting in Drive folders and won&apos;t be posted:
                   </p>
                   <div className="space-y-1.5">
@@ -1875,7 +2022,7 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
                             {f.driveFolderName}
                           </span>
                           <span className="text-[10px] text-zinc-500 font-mono flex-shrink-0">
-                            {f.fileCount.toLocaleString()} files
+                            {f.fileCount.toLocaleString("en-IN")} files
                           </span>
                         </div>
                         <a
@@ -2009,23 +2156,23 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3 pt-3 border-t border-[#27272a] text-center">
               <div className="bg-[#18181b]/10 border border-[#27272a] rounded p-2.5 space-y-1.5">
                 <span className="text-[10px] text-zinc-500 font-medium uppercase tracking-wider block">Videos Needed</span>
-                <span className="text-sm font-bold text-zinc-100 font-mono">{totalVideosNeeded.toLocaleString()}</span>
+                <span className="text-sm font-bold text-zinc-100 font-mono">{totalVideosNeeded.toLocaleString("en-IN")}</span>
               </div>
               <div className="bg-[#18181b]/10 border border-[#27272a] rounded p-2.5 space-y-1.5">
                 <span className="text-[10px] text-zinc-500 font-medium uppercase tracking-wider block">Videos / Day</span>
-                <span className="text-sm font-bold text-zinc-100 font-mono">{videosPerDay.toLocaleString()}</span>
+                <span className="text-sm font-bold text-zinc-100 font-mono">{videosPerDay.toLocaleString("en-IN")}</span>
               </div>
               <div className="bg-[#18181b]/10 border border-[#27272a] rounded p-2.5 space-y-1.5">
                 <span className="text-[10px] text-zinc-500 font-medium uppercase tracking-wider block">Views / Day</span>
                 <span className="text-sm font-bold text-zinc-100 font-mono">
                   {viewsPerDay >= 1000000
                     ? `${(viewsPerDay / 1000000).toFixed(1)}M`
-                    : viewsPerDay.toLocaleString()}
+                    : viewsPerDay.toLocaleString("en-IN")}
                 </span>
               </div>
               <div className="bg-[#18181b]/10 border border-[#27272a] rounded p-2.5 space-y-1.5">
                 <span className="text-[10px] text-zinc-500 font-medium uppercase tracking-wider block">Days to Goal</span>
-                <span className="text-sm font-bold text-emerald-400 font-mono">{daysToGoal.toLocaleString()} days</span>
+                <span className="text-sm font-bold text-emerald-400 font-mono">{daysToGoal.toLocaleString("en-IN")} days</span>
               </div>
             </div>
 
@@ -2185,14 +2332,14 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
                 {/* Range totals strip */}
                 <p className="text-[11px] text-zinc-500">
                   In this range:{" "}
-                  <span className="text-zinc-300 font-mono">{stats.rangeTotals.exported.toLocaleString()}</span> exported
+                  <span className="text-zinc-300 font-mono">{stats.rangeTotals.exported.toLocaleString("en-IN")}</span> exported
                   <span className="text-zinc-700"> · </span>
-                  <span className="text-emerald-400 font-mono">{stats.rangeTotals.posted.toLocaleString()}</span> posted
+                  <span className="text-emerald-400 font-mono">{stats.rangeTotals.posted.toLocaleString("en-IN")}</span> posted
                   <span className="text-zinc-700"> · </span>
                   <span
                     className={`font-mono ${stats.rangeTotals.failed > 0 ? "text-red-400" : "text-zinc-500"}`}
                   >
-                    {stats.rangeTotals.failed.toLocaleString()}
+                    {stats.rangeTotals.failed.toLocaleString("en-IN")}
                   </span>{" "}
                   failed
                 </p>
@@ -2288,22 +2435,22 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                   {(
                     [
-                      { label: "Videos Exported", value: tracking.totals.exported.toLocaleString(), cls: "text-zinc-100" },
-                      { label: "Videos Posted", value: tracking.totals.posted.toLocaleString(), cls: "text-emerald-400" },
-                      { label: "Links Captured", value: tracking.totals.captured.toLocaleString(), cls: "text-zinc-100" },
-                      { label: "Total Views", value: formatCompact(tracking.totals.views), cls: "text-zinc-100", title: tracking.totals.views.toLocaleString() },
-                      { label: "Total Likes", value: formatCompact(tracking.totals.likes), cls: "text-zinc-100", title: tracking.totals.likes.toLocaleString() },
-                      { label: "Avg Views / Video", value: formatCompact(tracking.totals.avgViews), cls: "text-zinc-100", title: tracking.totals.avgViews.toLocaleString() },
+                      { label: "Videos Exported", value: formatExact(tracking.totals.exported), cls: "text-zinc-100" },
+                      { label: "Videos Posted", value: formatExact(tracking.totals.posted), cls: "text-emerald-400" },
+                      { label: "Links Captured", value: formatExact(tracking.totals.captured), cls: "text-zinc-100" },
+                      { label: "Total Views", value: formatExact(tracking.totals.views), cls: "text-zinc-100" },
+                      { label: "Total Likes", value: formatExact(tracking.totals.likes), cls: "text-zinc-100" },
+                      { label: "Avg Views / Video", value: formatExact(tracking.totals.avgViews), cls: "text-zinc-100" },
                       {
                         label: "Unresolved",
-                        value: tracking.totals.unresolved.toLocaleString(),
+                        value: formatExact(tracking.totals.unresolved),
                         cls: tracking.totals.unresolved > 0 ? "text-amber-400" : "text-zinc-500",
                       },
-                    ] as { label: string; value: string; cls: string; title?: string }[]
+                    ] as { label: string; value: string; cls: string }[]
                   ).map((c) => (
                     <div key={c.label} className="bg-[#18181b]/10 border border-[#27272a] rounded p-3 space-y-1 text-center">
                       <span className="text-[10px] text-zinc-500 font-medium uppercase tracking-wider block">{c.label}</span>
-                      <span className={`text-base font-bold font-mono ${c.cls}`} title={c.title}>
+                      <span className={`text-base font-bold font-mono ${c.cls}`}>
                         {c.value}
                       </span>
                     </div>
@@ -2461,14 +2608,14 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
                                   {v.publishedAt ? formatDateIST(v.publishedAt) : "—"}
                                 </td>
                                 <td className="px-3 py-2.5 text-right font-mono font-semibold text-zinc-100">
-                                  {v.views.toLocaleString()}
+                                  {v.views.toLocaleString("en-IN")}
                                 </td>
-                                <td className="px-3 py-2.5 text-right font-mono">{v.likes.toLocaleString()}</td>
+                                <td className="px-3 py-2.5 text-right font-mono">{v.likes.toLocaleString("en-IN")}</td>
                                 <td className="px-3 py-2.5 text-right font-mono text-zinc-400">
-                                  {v.comments.toLocaleString()}
+                                  {v.comments.toLocaleString("en-IN")}
                                 </td>
                                 <td className="px-3 py-2.5 text-right font-mono text-zinc-400">
-                                  {v.shares.toLocaleString()}
+                                  {v.shares.toLocaleString("en-IN")}
                                 </td>
                                 <td
                                   className="px-3 py-2.5 text-[10px] text-zinc-500 font-mono whitespace-nowrap"
@@ -2489,7 +2636,7 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
                             onClick={() => setTrackVisible((prev) => prev + TRACK_PAGE_SIZE)}
                             className="text-[11px] font-semibold text-zinc-300 hover:text-zinc-100 bg-zinc-900 border border-[#27272a] hover:border-zinc-600 rounded px-3 py-1 transition"
                           >
-                            Load more ({(trackedVideosView.length - trackVisible).toLocaleString()} remaining)
+                            Load more ({(trackedVideosView.length - trackVisible).toLocaleString("en-IN")} remaining)
                           </button>
                         </div>
                       )}
@@ -2651,6 +2798,14 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
                 <CalendarDays className="w-4 h-4 text-[#E11D48]" />
                 Daily Activity
                 <span className="text-[10px] font-normal text-zinc-500">IST days</span>
+                {activity?.lastCapturedAt && (
+                  <span
+                    className="text-[10px] font-normal text-zinc-500"
+                    title={formatAbsoluteIST(activity.lastCapturedAt)}
+                  >
+                    · Last capture: {timeAgo(activity.lastCapturedAt)}
+                  </span>
+                )}
               </h3>
 
               <div className="flex items-center gap-2 self-start sm:self-auto">
@@ -2672,17 +2827,17 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
                 {/* Capture all missing in range */}
                 <button
                   onClick={() => handleCaptureUncaptured()}
-                  disabled={capturingKey !== null || activityLoading || !activity || activity.totals.missingCount === 0}
+                  disabled={activeCapture !== null || activityLoading || !activity || activity.totals.missingCount === 0}
                   className="flex items-center gap-1.5 bg-zinc-100 hover:bg-zinc-200 text-zinc-950 text-[11px] font-semibold px-2.5 py-1 rounded transition disabled:opacity-50"
                   title="Run link capture for every uncaptured post in this range"
                 >
-                  {capturingKey === "all" ? (
+                  {activeCapture?.key === "all" ? (
                     <Loader2 size={11} className="animate-spin" />
                   ) : (
                     <Crosshair size={11} />
                   )}
-                  {capturingKey === "all"
-                    ? "Capturing..."
+                  {activeCapture?.key === "all"
+                    ? `Capturing… ${activeCapture.processed}/${activeCapture.total}`
                     : `Capture missing${activity && activity.totals.missingCount > 0 ? ` (${activity.totals.missingCount})` : ""}`}
                 </button>
               </div>
@@ -2708,7 +2863,7 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
             )}
 
             {activity && (
-              <div className={`transition ${capturingKey !== null ? "opacity-80" : ""}`}>
+              <div className={`transition ${activeCapture !== null ? "opacity-80" : ""}`}>
                 {activity.rows.every((r) => r.postsCount === 0 && r.capturedCount === 0 && r.refreshedCount === 0) ? (
                   <div className="bg-zinc-950/40 border border-[#27272a] rounded p-8 text-center select-none">
                     <CalendarDays className="w-5 h-5 text-zinc-600 mx-auto mb-2" />
@@ -2724,6 +2879,7 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
                           <th className="px-3 py-2 font-semibold">Date</th>
                           <th className="px-3 py-2 font-semibold text-right">Posted</th>
                           <th className="px-3 py-2 font-semibold text-right">Captured</th>
+                          <th className="px-3 py-2 font-semibold text-right">Capture rate</th>
                           <th className="px-3 py-2 font-semibold text-right">Refreshed</th>
                           <th className="px-3 py-2 font-semibold text-right">Missing</th>
                           <th className="px-3 py-2 font-semibold text-right w-px"></th>
@@ -2732,19 +2888,21 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
                       <tbody>
                         {activity.rows.map((row) => {
                           const dayUncaptured = uncaptured.filter((p) => p.day === row.date);
+                          const dayCapturedVideos = dayCaptured[row.date];
+                          const expandable = dayUncaptured.length > 0 || row.capturedCount > 0;
                           const expanded = expandedDays.has(row.date);
                           const empty = row.postsCount === 0 && row.capturedCount === 0 && row.refreshedCount === 0;
                           return [
                             <tr
                               key={row.date}
-                              onClick={() => dayUncaptured.length > 0 && toggleDayExpanded(row.date)}
+                              onClick={() => expandable && toggleDayExpanded(row.date, row.capturedCount > 0)}
                               className={`border-b border-[#27272a]/50 ${
-                                dayUncaptured.length > 0 ? "cursor-pointer hover:bg-zinc-900/40" : ""
+                                expandable ? "cursor-pointer hover:bg-zinc-900/40" : ""
                               } ${empty ? "text-zinc-600" : ""}`}
                             >
                               <td className="px-3 py-1.5 font-mono text-[11px] text-zinc-300 whitespace-nowrap">
                                 <span className="inline-flex items-center gap-1.5">
-                                  {dayUncaptured.length > 0 ? (
+                                  {expandable ? (
                                     expanded ? <ChevronDown size={11} className="text-zinc-500" /> : <ChevronRight size={11} className="text-zinc-500" />
                                   ) : (
                                     <span className="inline-block w-[11px]" />
@@ -2754,6 +2912,14 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
                               </td>
                               <td className="px-3 py-1.5 text-right font-mono text-[11px]">{row.postsCount}</td>
                               <td className="px-3 py-1.5 text-right font-mono text-[11px]">{row.capturedCount}</td>
+                              <td
+                                className={`px-3 py-1.5 text-right font-mono text-[11px] ${
+                                  row.postsCount === 0 ? "text-zinc-600" : ""
+                                }`}
+                                title={row.postsCount > 0 ? `${row.capturedCount} captured / ${row.postsCount} posted` : undefined}
+                              >
+                                {row.postsCount > 0 ? `${Math.round((row.capturedCount / row.postsCount) * 100)}%` : "—"}
+                              </td>
                               <td className="px-3 py-1.5 text-right font-mono text-[11px]">{row.refreshedCount}</td>
                               <td
                                 className={`px-3 py-1.5 text-right font-mono text-[11px] ${
@@ -2769,16 +2935,18 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
                                       e.stopPropagation();
                                       handleCaptureUncaptured(row.date);
                                     }}
-                                    disabled={capturingKey !== null}
+                                    disabled={activeCapture !== null}
                                     className="inline-flex items-center gap-1 bg-zinc-900 hover:bg-zinc-800 border border-[#27272a] text-zinc-300 text-[10px] font-semibold px-2 py-0.5 rounded transition disabled:opacity-50"
                                     title={`Run link capture for this day's ${row.missingCount} uncaptured post${row.missingCount !== 1 ? "s" : ""}`}
                                   >
-                                    {capturingKey === row.date ? (
+                                    {activeCapture?.key === row.date ? (
                                       <Loader2 size={10} className="animate-spin" />
                                     ) : (
                                       <Crosshair size={10} />
                                     )}
-                                    {capturingKey === row.date ? "Capturing..." : "Capture missing"}
+                                    {activeCapture?.key === row.date
+                                      ? `Capturing… ${activeCapture.processed}/${activeCapture.total}`
+                                      : "Capture missing"}
                                   </button>
                                 )}
                               </td>
@@ -2786,54 +2954,115 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
                             ...(expanded
                               ? [
                                   <tr key={`${row.date}-detail`} className="border-b border-[#27272a]/50 bg-zinc-950/30">
-                                    <td colSpan={6} className="px-3 py-2">
-                                      <div className="space-y-1">
-                                        {dayUncaptured.map((p) => (
-                                          <div
-                                            key={p.postJobId}
-                                            className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 text-[11px] border border-[#27272a]/60 rounded px-2.5 py-1.5"
-                                          >
-                                            <div className="flex items-center gap-2 min-w-0">
-                                              <span className="text-zinc-300 font-semibold whitespace-nowrap">
-                                                @{p.accountUsername}
-                                              </span>
-                                              {p.driveFolderName && (
-                                                <span className="text-zinc-500 truncate">{p.driveFolderName}</span>
-                                              )}
-                                            </div>
-                                            <div className="flex items-center gap-2 flex-shrink-0">
-                                              {p.driveFileName && (
-                                                <span className="text-zinc-500 font-mono text-[10px] truncate max-w-[220px]" title={p.driveFileName}>
-                                                  {p.driveFileName}
+                                    <td colSpan={7} className="px-3 py-2">
+                                      <div className="space-y-2.5">
+                                        {/* Missing — posted this day, link never captured */}
+                                        <div className="space-y-1">
+                                          <p className="text-[9px] font-semibold text-zinc-500 uppercase tracking-wider">
+                                            Missing ({dayUncaptured.length})
+                                          </p>
+                                          {dayUncaptured.map((p) => (
+                                            <div
+                                              key={p.postJobId}
+                                              className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 text-[11px] border border-[#27272a]/60 rounded px-2.5 py-1.5"
+                                            >
+                                              <div className="flex items-center gap-2 min-w-0">
+                                                <span className="text-zinc-300 font-semibold whitespace-nowrap">
+                                                  @{p.accountUsername}
                                                 </span>
-                                              )}
-                                              <span
-                                                className={`text-[9px] font-semibold uppercase px-1.5 py-0.5 rounded border ${
-                                                  p.captureStatus === "unresolved"
-                                                    ? "bg-amber-500/10 text-amber-400 border-amber-500/20"
-                                                    : "bg-zinc-800 text-zinc-400 border-zinc-700"
-                                                }`}
-                                                title={
-                                                  p.captureStatus === "unresolved"
-                                                    ? `Capture attempted ${p.captureAttempts}× — no matching TikTok video found`
-                                                    : "Capture never attempted for this post"
-                                                }
-                                              >
-                                                {p.captureStatus === "unresolved" ? "Unresolved" : "Never attempted"}
-                                              </span>
-                                              <span className="text-[10px] text-zinc-500 font-mono" title={formatAbsoluteIST(p.postedAt)}>
-                                                {new Date(p.postedAt).toLocaleString("en-IN", {
-                                                  timeZone: "Asia/Kolkata",
-                                                  hour: "numeric",
-                                                  minute: "2-digit",
-                                                  hour12: true,
-                                                })}
-                                              </span>
+                                                {p.driveFolderName && (
+                                                  <span className="text-zinc-500 truncate">{p.driveFolderName}</span>
+                                                )}
+                                              </div>
+                                              <div className="flex items-center gap-2 flex-shrink-0">
+                                                {p.driveFileName && (
+                                                  <span className="text-zinc-500 font-mono text-[10px] truncate max-w-[220px]" title={p.driveFileName}>
+                                                    {p.driveFileName}
+                                                  </span>
+                                                )}
+                                                <span
+                                                  className={`text-[9px] font-semibold uppercase px-1.5 py-0.5 rounded border ${
+                                                    p.captureStatus === "unresolved"
+                                                      ? "bg-amber-500/10 text-amber-400 border-amber-500/20"
+                                                      : "bg-zinc-800 text-zinc-400 border-zinc-700"
+                                                  }`}
+                                                  title={
+                                                    p.captureStatus === "unresolved"
+                                                      ? `Capture attempted ${p.captureAttempts}× — no matching TikTok video found`
+                                                      : "Capture never attempted for this post"
+                                                  }
+                                                >
+                                                  {p.captureStatus === "unresolved" ? "Unresolved" : "Never attempted"}
+                                                </span>
+                                                <span className="text-[10px] text-zinc-500 font-mono" title={formatAbsoluteIST(p.postedAt)}>
+                                                  {new Date(p.postedAt).toLocaleString("en-IN", {
+                                                    timeZone: "Asia/Kolkata",
+                                                    hour: "numeric",
+                                                    minute: "2-digit",
+                                                    hour12: true,
+                                                  })}
+                                                </span>
+                                              </div>
                                             </div>
+                                          ))}
+                                          {dayUncaptured.length === 0 && (
+                                            <p className="text-[10px] text-zinc-600 italic">No uncaptured posts this day.</p>
+                                          )}
+                                        </div>
+
+                                        {/* Captured — links captured this day */}
+                                        {row.capturedCount > 0 && (
+                                          <div className="space-y-1">
+                                            <p className="text-[9px] font-semibold text-zinc-500 uppercase tracking-wider">
+                                              Captured ({row.capturedCount})
+                                            </p>
+                                            {dayCapturedLoading.has(row.date) && !dayCapturedVideos ? (
+                                              <div className="flex items-center gap-1.5 text-[10px] text-zinc-500 py-1">
+                                                <Loader2 size={10} className="animate-spin" />
+                                                Loading captured videos…
+                                              </div>
+                                            ) : dayCapturedVideos && dayCapturedVideos.length > 0 ? (
+                                              dayCapturedVideos.map((v) => (
+                                                <div
+                                                  key={v.id}
+                                                  className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 text-[11px] border border-[#27272a]/60 rounded px-2.5 py-1.5"
+                                                >
+                                                  <div className="flex items-center gap-2 min-w-0">
+                                                    <a
+                                                      href={v.url}
+                                                      target="_blank"
+                                                      rel="noopener noreferrer"
+                                                      className="inline-flex items-center gap-1 text-blue-400 hover:text-blue-300 font-semibold hover:underline flex-shrink-0"
+                                                      title={v.url}
+                                                    >
+                                                      <ExternalLink size={11} />
+                                                      Open
+                                                    </a>
+                                                    {v.accountUsername && (
+                                                      <span className="text-zinc-300 font-semibold whitespace-nowrap">
+                                                        @{v.accountUsername}
+                                                      </span>
+                                                    )}
+                                                  </div>
+                                                  <div className="flex items-center gap-2 flex-shrink-0">
+                                                    <span className="text-zinc-300 font-mono text-[10px]">
+                                                      {formatExact(v.views)} views
+                                                    </span>
+                                                    <span className="text-[10px] text-zinc-500 font-mono" title={formatAbsoluteIST(v.capturedAt)}>
+                                                      {new Date(v.capturedAt).toLocaleString("en-IN", {
+                                                        timeZone: "Asia/Kolkata",
+                                                        hour: "numeric",
+                                                        minute: "2-digit",
+                                                        hour12: true,
+                                                      })}
+                                                    </span>
+                                                  </div>
+                                                </div>
+                                              ))
+                                            ) : (
+                                              <p className="text-[10px] text-zinc-600 italic">No captured videos found for this day.</p>
+                                            )}
                                           </div>
-                                        ))}
-                                        {dayUncaptured.length === 0 && (
-                                          <p className="text-[10px] text-zinc-600 italic">No uncaptured posts this day.</p>
                                         )}
                                       </div>
                                     </td>
@@ -2848,6 +3077,11 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
                           <td className="px-3 py-1.5 text-[11px]">Total</td>
                           <td className="px-3 py-1.5 text-right font-mono text-[11px]">{activity.totals.postsCount}</td>
                           <td className="px-3 py-1.5 text-right font-mono text-[11px]">{activity.totals.capturedCount}</td>
+                          <td className={`px-3 py-1.5 text-right font-mono text-[11px] ${activity.totals.postsCount === 0 ? "text-zinc-600" : ""}`}>
+                            {activity.totals.postsCount > 0
+                              ? `${Math.round((activity.totals.capturedCount / activity.totals.postsCount) * 100)}%`
+                              : "—"}
+                          </td>
                           <td className="px-3 py-1.5 text-right font-mono text-[11px]">{activity.totals.refreshedCount}</td>
                           <td className={`px-3 py-1.5 text-right font-mono text-[11px] ${activity.totals.missingCount > 0 ? "text-amber-400" : ""}`}>
                             {activity.totals.missingCount}
@@ -2858,6 +3092,116 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
                     </table>
                   </div>
                 )}
+              </div>
+            )}
+
+            {/* Capture runs — history of manual "capture missing" runs */}
+            {captureRuns.length > 0 && (
+              <div className="space-y-1.5 pt-2 border-t border-[#27272a]">
+                <h4 className="text-[11px] font-semibold text-zinc-400 uppercase tracking-wider">Capture runs</h4>
+                <div className="space-y-1">
+                  {captureRuns.map((run) => {
+                    const runExpanded = expandedRunId === run.id;
+                    const details = runDetails[run.id];
+                    const isActive = activeCapture?.runId === run.id;
+                    return (
+                      <div key={run.id} className="border border-[#27272a]/60 rounded">
+                        <div
+                          onClick={() => toggleRunExpanded(run.id)}
+                          className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 px-2.5 py-1.5 cursor-pointer hover:bg-zinc-900/40 text-[11px]"
+                        >
+                          <div className="flex items-center gap-2 min-w-0">
+                            {runExpanded ? (
+                              <ChevronDown size={11} className="text-zinc-500 flex-shrink-0" />
+                            ) : (
+                              <ChevronRight size={11} className="text-zinc-500 flex-shrink-0" />
+                            )}
+                            <span
+                              className="text-zinc-300 font-mono whitespace-nowrap"
+                              title={formatAbsoluteIST(run.createdAt)}
+                            >
+                              {formatDateTimeIST(run.createdAt)}
+                            </span>
+                            <span className="text-[9px] font-semibold uppercase px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-400 border border-zinc-700 whitespace-nowrap">
+                              {run.day ? formatDateIST(`${run.day}T00:00:00Z`) : "All"}
+                            </span>
+                            {run.triggeredBy && (
+                              <span className="text-zinc-500 truncate">{run.triggeredBy}</span>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-2 flex-shrink-0">
+                            <span className="text-[10px] text-zinc-400 font-mono whitespace-nowrap">
+                              {run.status === "running"
+                                ? `${isActive ? activeCapture.processed : run.processed}/${run.total} processed`
+                                : `${run.attempted} attempted · ${run.captured} captured · ${run.unresolved} unresolved`}
+                            </span>
+                            <span
+                              className={`inline-flex items-center gap-1 text-[9px] font-semibold uppercase px-1.5 py-0.5 rounded border ${
+                                run.status === "running"
+                                  ? "bg-amber-500/10 text-amber-400 border-amber-500/20"
+                                  : run.status === "done"
+                                  ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20"
+                                  : "bg-red-950/40 text-red-400 border-red-900/30"
+                              }`}
+                              title={run.status === "failed" ? run.error || "Run failed" : undefined}
+                            >
+                              {run.status === "running" && <Loader2 size={9} className="animate-spin" />}
+                              {run.status}
+                            </span>
+                          </div>
+                        </div>
+                        {runExpanded && (
+                          <div className="border-t border-[#27272a]/60 px-2.5 py-2 space-y-1 bg-zinc-950/30">
+                            {run.status === "failed" && run.error && (
+                              <p className="text-[10px] text-red-400">{run.error}</p>
+                            )}
+                            {!details ? (
+                              <div className="flex items-center gap-1.5 text-[10px] text-zinc-500 py-1">
+                                <Loader2 size={10} className="animate-spin" />
+                                Loading details…
+                              </div>
+                            ) : details.length === 0 ? (
+                              <p className="text-[10px] text-zinc-600 italic">No posts processed in this run.</p>
+                            ) : (
+                              details.map((d) => (
+                                <div
+                                  key={d.postJobId}
+                                  className="flex items-center justify-between gap-2 text-[11px] border border-[#27272a]/60 rounded px-2.5 py-1"
+                                >
+                                  <span className="text-zinc-300 font-semibold whitespace-nowrap">
+                                    @{d.account}
+                                  </span>
+                                  {d.result === "captured" ? (
+                                    d.url ? (
+                                      <a
+                                        href={d.url}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="inline-flex items-center gap-1 text-blue-400 hover:text-blue-300 font-semibold hover:underline"
+                                        title={d.url}
+                                      >
+                                        <ExternalLink size={11} />
+                                        Captured
+                                      </a>
+                                    ) : (
+                                      <span className="text-[9px] font-semibold uppercase px-1.5 py-0.5 rounded border bg-emerald-500/10 text-emerald-400 border-emerald-500/20">
+                                        Captured
+                                      </span>
+                                    )
+                                  ) : (
+                                    <span className="text-[9px] font-semibold uppercase px-1.5 py-0.5 rounded border bg-amber-500/10 text-amber-400 border-amber-500/20">
+                                      Unresolved
+                                    </span>
+                                  )}
+                                </div>
+                              ))
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
             )}
           </div>
@@ -2880,7 +3224,7 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
                 <div className="flex justify-between text-xs">
                   <span className="text-zinc-400 font-medium">Export Goal Progress</span>
                   <span className="text-zinc-300 font-bold font-mono">
-                    {exportAnalytics.totalExported.toLocaleString()} / {totalVideosNeeded.toLocaleString()} videos (
+                    {exportAnalytics.totalExported.toLocaleString("en-IN")} / {totalVideosNeeded.toLocaleString("en-IN")} videos (
                     {Math.min(100, Math.round((exportAnalytics.totalExported / totalVideosNeeded) * 100))}%
                     )
                   </span>
@@ -2901,7 +3245,7 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
               <div className="bg-[#18181b]/10 border border-[#27272a] rounded p-3 space-y-1">
                 <span className="text-[10px] text-zinc-500 font-medium uppercase tracking-wider block">Drive Exports</span>
                 <span className="text-base font-bold text-purple-400 font-mono">
-                  {exportAnalytics.totalExported.toLocaleString()}
+                  {exportAnalytics.totalExported.toLocaleString("en-IN")}
                 </span>
               </div>
               <div className="bg-[#18181b]/10 border border-[#27272a] rounded p-3 space-y-1">

@@ -190,6 +190,30 @@ model Campaign {
   multiplierGroups    MultiplierGroup[]
   activityEvents      ActivityEvent[]
   events              CampaignEvent[]
+  captureRuns         CaptureRun[]
+}
+
+/// One manual "capture missing links" run for a campaign (Daily Activity card).
+/// Created up front with `total` known, then updated after every processed post
+/// so the UI can poll live progress; `details` holds the per-post outcomes.
+model CaptureRun {
+  id         String   @id @default(uuid())
+  campaignId String
+  campaign   Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  userId     String?  // who triggered (plain column — display name resolved on read)
+  day        String?  // org-tz day filter (YYYY-MM-DD); null = whole range
+  status     String   @default("running") // running | done | failed
+  attempted  Int      @default(0)
+  captured   Int      @default(0)
+  unresolved Int      @default(0)
+  total      Int      @default(0) // posts targeted, known up front
+  processed  Int      @default(0) // posts processed so far (live progress)
+  details    Json?    // [{ postJobId, account, result: "captured"|"unresolved", url? }]
+  error      String?  @db.Text
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([campaignId, createdAt])
 }
 
 // Durable per-campaign event log (exports, post successes/failures).
