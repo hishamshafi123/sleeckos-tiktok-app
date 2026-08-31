@@ -173,6 +173,7 @@ export async function captureVideoLink(
           captureMethod: "recent_match",
           confidence,
           status: "captured",
+          capturedAt: now, // placeholder upgraded now — the capture happened today
           views: match.views,
           likes: match.likes,
           comments: match.comments,

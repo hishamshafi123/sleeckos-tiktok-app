@@ -37,7 +37,11 @@ import {
   Check,
   Pause,
   Play,
-  Zap
+  Zap,
+  ChevronDown,
+  ChevronRight,
+  CalendarDays,
+  Crosshair
 } from "lucide-react";
 import { toast } from "sonner";
 import { Campaign, CampaignResource, CampaignStatus } from "@prisma/client";
@@ -172,6 +176,35 @@ interface ShareCode {
   createdAt: string;
   expiresAt: string | null;
   revokedAt: string | null;
+}
+
+// Daily activity (GET /api/campaigns/[id]/tracking/daily-activity + /uncaptured)
+interface DailyActivityRow {
+  date: string; // YYYY-MM-DD in org tz
+  postsCount: number;
+  capturedCount: number;
+  refreshedCount: number;
+  missingCount: number;
+}
+
+interface DailyActivity {
+  timezone: string;
+  from: string;
+  to: string;
+  rows: DailyActivityRow[];
+  totals: { postsCount: number; capturedCount: number; refreshedCount: number; missingCount: number };
+}
+
+interface UncapturedPost {
+  postJobId: string;
+  postedAt: string; // ISO
+  day: string;
+  accountUsername: string;
+  accountDisplayName: string;
+  driveFolderName: string | null;
+  driveFileName: string | null;
+  captureStatus: "none" | "unresolved";
+  captureAttempts: number;
 }
 
 type TrackSortKey = "views" | "likes" | "date" | "refreshed";
@@ -317,6 +350,15 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
   const refreshPollRef = useRef<NodeJS.Timeout | null>(null);
   const [isRecovering, setIsRecovering] = useState(false);
   const recoveryPollRef = useRef<NodeJS.Timeout | null>(null);
+
+  // ── Daily activity (per-IST-day coverage + uncaptured posts) ────────────
+  const [activityDays, setActivityDays] = useState<7 | 30 | 90>(30);
+  const [activity, setActivity] = useState<DailyActivity | null>(null);
+  const [activityLoading, setActivityLoading] = useState(true);
+  const [activityError, setActivityError] = useState<string | null>(null);
+  const [uncaptured, setUncaptured] = useState<UncapturedPost[]>([]);
+  const [expandedDays, setExpandedDays] = useState<Set<string>>(new Set());
+  const [capturingKey, setCapturingKey] = useState<string | null>(null); // "all" or a YYYY-MM-DD
 
   // Share codes ("Client access")
   const [shareCodes, setShareCodes] = useState<ShareCode[]>([]);
@@ -530,6 +572,86 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
       setShareCodesLoading(false);
     }
   };
+
+  // YYYY-MM-DD in the org timezone (IST) for the activity range params
+  const istDateParam = (d: Date) =>
+    d.toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+
+  const activityRangeParams = () => {
+    const to = istDateParam(new Date());
+    const from = istDateParam(new Date(Date.now() - (activityDays - 1) * 24 * 60 * 60 * 1000));
+    return `from=${from}&to=${to}`;
+  };
+
+  const fetchActivity = async (silent = false) => {
+    if (!silent) {
+      setActivityLoading(true);
+      setActivityError(null);
+    }
+    try {
+      const params = activityRangeParams();
+      const [actRes, uncRes] = await Promise.all([
+        fetch(`/api/campaigns/${campaign.id}/tracking/daily-activity?${params}`),
+        fetch(`/api/campaigns/${campaign.id}/tracking/uncaptured?${params}`),
+      ]);
+      if (!actRes.ok) throw new Error(`Request failed with status ${actRes.status}`);
+      const actData: DailyActivity = await actRes.json();
+      setActivity(actData);
+      setActivityError(null);
+      if (uncRes.ok) {
+        const uncData = await uncRes.json();
+        setUncaptured(uncData.posts || []);
+      }
+    } catch (err) {
+      if (!silent) {
+        setActivity(null);
+        setActivityError(err instanceof Error ? err.message : "Failed to load daily activity");
+      }
+    } finally {
+      if (!silent) setActivityLoading(false);
+    }
+  };
+
+  const handleCaptureUncaptured = async (date?: string) => {
+    const key = date ?? "all";
+    setCapturingKey(key);
+    try {
+      const res = await fetch(`/api/campaigns/${campaign.id}/tracking/capture-uncaptured`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(date ? { date } : {}),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || `Request failed with status ${res.status}`);
+      if (data.attempted === 0) {
+        toast.success("Nothing to capture");
+      } else {
+        toast.success(
+          `attempted ${data.attempted} · captured ${data.captured} · ${data.unresolved} unresolved`
+        );
+      }
+      fetchActivity(true);
+      fetchTracking(true); // captured links change the tracking totals too
+    } catch (err: any) {
+      toast.error(err.message || "Failed to capture missing links");
+    } finally {
+      setCapturingKey(null);
+    }
+  };
+
+  const toggleDayExpanded = (day: string) => {
+    setExpandedDays((prev) => {
+      const next = new Set(prev);
+      if (next.has(day)) next.delete(day);
+      else next.add(day);
+      return next;
+    });
+  };
+
+  useEffect(() => {
+    fetchActivity();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [campaign.id, activityDays]);
 
   useEffect(() => {
     fetchTracking();
@@ -2518,6 +2640,224 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
                     </a>
                   </div>
                 </div>
+              </div>
+            )}
+          </div>
+
+          {/* Daily activity — per-IST-day posting/capture/refresh coverage */}
+          <div className="border border-[#27272a] rounded-md bg-[#09090b] p-5 space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-[#27272a] pb-3">
+              <h3 className="text-sm font-semibold text-zinc-200 flex items-center gap-2">
+                <CalendarDays className="w-4 h-4 text-[#E11D48]" />
+                Daily Activity
+                <span className="text-[10px] font-normal text-zinc-500">IST days</span>
+              </h3>
+
+              <div className="flex items-center gap-2 self-start sm:self-auto">
+                {/* Range toggle */}
+                <div className="flex items-center gap-1 bg-zinc-900 border border-[#27272a] rounded p-0.5">
+                  {([7, 30, 90] as const).map((d) => (
+                    <button
+                      key={d}
+                      onClick={() => setActivityDays(d)}
+                      className={`text-[10px] font-semibold px-2 py-0.5 rounded transition ${
+                        activityDays === d ? "bg-zinc-100 text-zinc-950" : "text-zinc-400 hover:text-zinc-200"
+                      }`}
+                    >
+                      {d}D
+                    </button>
+                  ))}
+                </div>
+
+                {/* Capture all missing in range */}
+                <button
+                  onClick={() => handleCaptureUncaptured()}
+                  disabled={capturingKey !== null || activityLoading || !activity || activity.totals.missingCount === 0}
+                  className="flex items-center gap-1.5 bg-zinc-100 hover:bg-zinc-200 text-zinc-950 text-[11px] font-semibold px-2.5 py-1 rounded transition disabled:opacity-50"
+                  title="Run link capture for every uncaptured post in this range"
+                >
+                  {capturingKey === "all" ? (
+                    <Loader2 size={11} className="animate-spin" />
+                  ) : (
+                    <Crosshair size={11} />
+                  )}
+                  {capturingKey === "all"
+                    ? "Capturing..."
+                    : `Capture missing${activity && activity.totals.missingCount > 0 ? ` (${activity.totals.missingCount})` : ""}`}
+                </button>
+              </div>
+            </div>
+
+            {/* Error state */}
+            {activityError && (
+              <div className="flex items-start gap-2.5 bg-red-950/20 border border-red-900/30 text-red-400 rounded p-3 text-xs">
+                <AlertTriangle size={15} className="mt-0.5 flex-shrink-0" />
+                <div>
+                  <span className="font-semibold">Failed to load daily activity:</span> {activityError}
+                </div>
+              </div>
+            )}
+
+            {/* Loading skeleton */}
+            {activityLoading && !activity && !activityError && (
+              <div className="space-y-2">
+                {[0, 1, 2, 3].map((i) => (
+                  <div key={i} className="h-8 bg-zinc-900/60 border border-[#27272a] rounded animate-pulse" />
+                ))}
+              </div>
+            )}
+
+            {activity && (
+              <div className={`transition ${capturingKey !== null ? "opacity-80" : ""}`}>
+                {activity.rows.every((r) => r.postsCount === 0 && r.capturedCount === 0 && r.refreshedCount === 0) ? (
+                  <div className="bg-zinc-950/40 border border-[#27272a] rounded p-8 text-center select-none">
+                    <CalendarDays className="w-5 h-5 text-zinc-600 mx-auto mb-2" />
+                    <p className="text-[11px] text-zinc-500 italic">
+                      No posting or capture activity in this range.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="border border-[#27272a] rounded overflow-x-auto">
+                    <table className="w-full text-xs text-left">
+                      <thead>
+                        <tr className="bg-zinc-950/40 border-b border-[#27272a] text-zinc-500 text-[10px] uppercase font-bold">
+                          <th className="px-3 py-2 font-semibold">Date</th>
+                          <th className="px-3 py-2 font-semibold text-right">Posted</th>
+                          <th className="px-3 py-2 font-semibold text-right">Captured</th>
+                          <th className="px-3 py-2 font-semibold text-right">Refreshed</th>
+                          <th className="px-3 py-2 font-semibold text-right">Missing</th>
+                          <th className="px-3 py-2 font-semibold text-right w-px"></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {activity.rows.map((row) => {
+                          const dayUncaptured = uncaptured.filter((p) => p.day === row.date);
+                          const expanded = expandedDays.has(row.date);
+                          const empty = row.postsCount === 0 && row.capturedCount === 0 && row.refreshedCount === 0;
+                          return [
+                            <tr
+                              key={row.date}
+                              onClick={() => dayUncaptured.length > 0 && toggleDayExpanded(row.date)}
+                              className={`border-b border-[#27272a]/50 ${
+                                dayUncaptured.length > 0 ? "cursor-pointer hover:bg-zinc-900/40" : ""
+                              } ${empty ? "text-zinc-600" : ""}`}
+                            >
+                              <td className="px-3 py-1.5 font-mono text-[11px] text-zinc-300 whitespace-nowrap">
+                                <span className="inline-flex items-center gap-1.5">
+                                  {dayUncaptured.length > 0 ? (
+                                    expanded ? <ChevronDown size={11} className="text-zinc-500" /> : <ChevronRight size={11} className="text-zinc-500" />
+                                  ) : (
+                                    <span className="inline-block w-[11px]" />
+                                  )}
+                                  {formatDateIST(`${row.date}T00:00:00Z`)}
+                                </span>
+                              </td>
+                              <td className="px-3 py-1.5 text-right font-mono text-[11px]">{row.postsCount}</td>
+                              <td className="px-3 py-1.5 text-right font-mono text-[11px]">{row.capturedCount}</td>
+                              <td className="px-3 py-1.5 text-right font-mono text-[11px]">{row.refreshedCount}</td>
+                              <td
+                                className={`px-3 py-1.5 text-right font-mono text-[11px] ${
+                                  row.missingCount > 0 ? "text-amber-400 font-semibold" : ""
+                                }`}
+                              >
+                                {row.missingCount}
+                              </td>
+                              <td className="px-3 py-1.5 text-right whitespace-nowrap">
+                                {row.missingCount > 0 && (
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleCaptureUncaptured(row.date);
+                                    }}
+                                    disabled={capturingKey !== null}
+                                    className="inline-flex items-center gap-1 bg-zinc-900 hover:bg-zinc-800 border border-[#27272a] text-zinc-300 text-[10px] font-semibold px-2 py-0.5 rounded transition disabled:opacity-50"
+                                    title={`Run link capture for this day's ${row.missingCount} uncaptured post${row.missingCount !== 1 ? "s" : ""}`}
+                                  >
+                                    {capturingKey === row.date ? (
+                                      <Loader2 size={10} className="animate-spin" />
+                                    ) : (
+                                      <Crosshair size={10} />
+                                    )}
+                                    {capturingKey === row.date ? "Capturing..." : "Capture missing"}
+                                  </button>
+                                )}
+                              </td>
+                            </tr>,
+                            ...(expanded
+                              ? [
+                                  <tr key={`${row.date}-detail`} className="border-b border-[#27272a]/50 bg-zinc-950/30">
+                                    <td colSpan={6} className="px-3 py-2">
+                                      <div className="space-y-1">
+                                        {dayUncaptured.map((p) => (
+                                          <div
+                                            key={p.postJobId}
+                                            className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 text-[11px] border border-[#27272a]/60 rounded px-2.5 py-1.5"
+                                          >
+                                            <div className="flex items-center gap-2 min-w-0">
+                                              <span className="text-zinc-300 font-semibold whitespace-nowrap">
+                                                @{p.accountUsername}
+                                              </span>
+                                              {p.driveFolderName && (
+                                                <span className="text-zinc-500 truncate">{p.driveFolderName}</span>
+                                              )}
+                                            </div>
+                                            <div className="flex items-center gap-2 flex-shrink-0">
+                                              {p.driveFileName && (
+                                                <span className="text-zinc-500 font-mono text-[10px] truncate max-w-[220px]" title={p.driveFileName}>
+                                                  {p.driveFileName}
+                                                </span>
+                                              )}
+                                              <span
+                                                className={`text-[9px] font-semibold uppercase px-1.5 py-0.5 rounded border ${
+                                                  p.captureStatus === "unresolved"
+                                                    ? "bg-amber-500/10 text-amber-400 border-amber-500/20"
+                                                    : "bg-zinc-800 text-zinc-400 border-zinc-700"
+                                                }`}
+                                                title={
+                                                  p.captureStatus === "unresolved"
+                                                    ? `Capture attempted ${p.captureAttempts}× — no matching TikTok video found`
+                                                    : "Capture never attempted for this post"
+                                                }
+                                              >
+                                                {p.captureStatus === "unresolved" ? "Unresolved" : "Never attempted"}
+                                              </span>
+                                              <span className="text-[10px] text-zinc-500 font-mono" title={formatAbsoluteIST(p.postedAt)}>
+                                                {new Date(p.postedAt).toLocaleString("en-IN", {
+                                                  timeZone: "Asia/Kolkata",
+                                                  hour: "numeric",
+                                                  minute: "2-digit",
+                                                  hour12: true,
+                                                })}
+                                              </span>
+                                            </div>
+                                          </div>
+                                        ))}
+                                        {dayUncaptured.length === 0 && (
+                                          <p className="text-[10px] text-zinc-600 italic">No uncaptured posts this day.</p>
+                                        )}
+                                      </div>
+                                    </td>
+                                  </tr>,
+                                ]
+                              : []),
+                          ];
+                        })}
+                      </tbody>
+                      <tfoot>
+                        <tr className="bg-zinc-950/40 border-t border-[#27272a] text-zinc-300 font-semibold">
+                          <td className="px-3 py-1.5 text-[11px]">Total</td>
+                          <td className="px-3 py-1.5 text-right font-mono text-[11px]">{activity.totals.postsCount}</td>
+                          <td className="px-3 py-1.5 text-right font-mono text-[11px]">{activity.totals.capturedCount}</td>
+                          <td className="px-3 py-1.5 text-right font-mono text-[11px]">{activity.totals.refreshedCount}</td>
+                          <td className={`px-3 py-1.5 text-right font-mono text-[11px] ${activity.totals.missingCount > 0 ? "text-amber-400" : ""}`}>
+                            {activity.totals.missingCount}
+                          </td>
+                          <td className="px-3 py-1.5"></td>
+                        </tr>
+                      </tfoot>
+                    </table>
+                  </div>
+                )}
               </div>
             )}
           </div>
