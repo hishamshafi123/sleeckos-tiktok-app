@@ -692,9 +692,10 @@ export async function getPostingCoverage(userId: string, days = 7): Promise<Post
 }
 
 export interface Trajectory {
-  days: { day: string; views: number }[]; // last 28 IST days
+  days: { day: string; views: number; noData: boolean }[]; // last 28 IST days
   last7Avg: number;
   prev7Avg: number;
+  dataDays7: number; // of the last 7 days, how many actually collected stats
   growthRate: number; // 7d-over-7d rate, e.g. 0.25 = +25%
   // Rate model (see computeActiveAccountViewRates): the projection "current"
   // rate is max(observed 7-day avg daily viewsGained, active-account baseline)
@@ -718,30 +719,50 @@ export async function getTrajectory(userId: string): Promise<Trajectory> {
   );
   const { start } = zonedDayBounds(dayList[0], tz);
 
-  const [rows, viewRates] = await Promise.all([
+  const [rows, viewRates, snapDays] = await Promise.all([
     prisma.accountDailyStat.groupBy({
       by: ["date"],
       where: { date: { gte: start } },
       _sum: { viewsGained: true },
     }),
     computeActiveAccountViewRates(tz),
+    // Days on which ANY stats were collected org-wide. Days with none are
+    // "no data" (collection outage), not "zero views" — they must not drag
+    // the averages down or render as empty bars indistinguishable from real 0s.
+    prisma.$queryRaw<{ day: string; n: bigint }[]>`
+      SELECT TO_CHAR(("recordedAt" AT TIME ZONE ${tz})::date, 'YYYY-MM-DD') AS day,
+             COUNT(*)::bigint AS n
+      FROM "VideoStatSnapshot"
+      WHERE "recordedAt" >= ${start}
+      GROUP BY 1
+    `,
   ]);
   const byDay = new Map(rows.map((r) => [zonedDayString(r.date, tz), r._sum.viewsGained ?? 0]));
-  const series = dayList.map((day) => ({ day, views: byDay.get(day) ?? 0 }));
+  const daysWithSnapshots = new Set(snapDays.map((r) => r.day));
+  const series = dayList.map((day) => ({
+    day,
+    views: byDay.get(day) ?? 0,
+    noData: !daysWithSnapshots.has(day),
+  }));
 
-  const values = series.map((s) => s.views);
-  const avg = (xs: number[]) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 0);
-  const last7Avg = avg(values.slice(-7));
-  const prev7Avg = avg(values.slice(-14, -7));
+  // Averages over days that actually collected data — outage days are excluded.
+  const dataAvg = (xs: { views: number; noData: boolean }[]) => {
+    const d = xs.filter((x) => !x.noData);
+    return d.length ? d.reduce((a, b) => a + b.views, 0) / d.length : 0;
+  };
+  const last7 = series.slice(-7);
+  const prev7 = series.slice(-14, -7);
+  const last7Avg = dataAvg(last7);
+  const prev7Avg = dataAvg(prev7);
   const growthRate = prev7Avg > 0 ? last7Avg / prev7Avg - 1 : 0;
 
   // Projection model: daily rate × horizon, with fixed uncertainty bands
   // (conservative ×0.7, optimistic ×1.3). The daily rate is the active-account
   // baseline (recent per-video views × posting rate), blended with the
-  // observed rollup once the rollup has ≥7 days of non-zero data — whichever
+  // observed rollup once the rollup has ≥7 collected-data days — whichever
   // is larger wins, and `source` records which side drove it.
   const baseline = viewRates.orgBaselinePerDay;
-  const daysWithData = values.filter((v) => v > 0).length;
+  const daysWithData = series.filter((s) => !s.noData).length;
   let currentRatePerDay: number;
   let source: Trajectory["source"];
   if (daysWithData >= 7 && last7Avg >= baseline) {
@@ -758,6 +779,7 @@ export async function getTrajectory(userId: string): Promise<Trajectory> {
     days: series,
     last7Avg: Math.round(last7Avg),
     prev7Avg: Math.round(prev7Avg),
+    dataDays7: last7.filter((d) => !d.noData).length,
     growthRate,
     baselinePerDay: baseline,
     activeAccounts: viewRates.rates.size,

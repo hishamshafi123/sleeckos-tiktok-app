@@ -97,9 +97,10 @@ const fedRightLabel = (r: QuietAccount) => {
 };
 
 type Trajectory = {
-  days: { day: string; views: number }[];
+  days: { day: string; views: number; noData: boolean }[];
   last7Avg: number;
   prev7Avg: number;
+  dataDays7: number;
   growthRate: number;
   baselinePerDay: number;
   activeAccounts: number;
@@ -269,23 +270,48 @@ function BarSeries({
   height = 96,
   color = "#60a5fa",
 }: {
-  data: { day: string; value: number }[];
+  data: { day: string; value: number; noData?: boolean }[];
   height?: number;
   color?: string;
 }) {
+  const [hovered, setHovered] = useState<number | null>(null);
   const max = Math.max(...data.map((d) => d.value), 1);
+  // Today's IST day string, to flag the still-accumulating bar in the tooltip.
+  const todayIst = new Intl.DateTimeFormat("en-CA", {
+    timeZone: IST,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date());
   return (
     <div className="flex items-end gap-[3px]" style={{ height }}>
-      {data.map((d) => (
+      {data.map((d, i) => (
         <div
           key={d.day}
-          title={`${dayLabel(d.day)} — ${full(d.value)}`}
-          className="flex-1 rounded-sm min-w-[3px]"
+          className="relative flex-1 rounded-sm min-w-[3px]"
+          onMouseEnter={() => setHovered(i)}
+          onMouseLeave={() => setHovered((h) => (h === i ? null : h))}
           style={{
             height: `${Math.max((d.value / max) * 100, d.value > 0 ? 4 : 1)}%`,
-            backgroundColor: d.value > 0 ? color : "#27272a",
+            backgroundColor: d.noData ? "transparent" : d.value > 0 ? color : "#27272a",
+            border: d.noData ? "1px dashed #3f3f46" : undefined,
           }}
-        />
+        >
+          {hovered === i && (
+            <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 z-20 pointer-events-none whitespace-nowrap rounded-md border border-[#27272a] bg-zinc-950 px-2 py-1 text-[11px] text-zinc-200 shadow-lg">
+              {d.noData ? (
+                <>
+                  {dayLabel(d.day)} — <span className="text-zinc-500">no data collected</span>
+                </>
+              ) : (
+                <>
+                  {dayLabel(d.day)} — <span className="font-medium">{full(d.value)}</span> views
+                  {d.day === todayIst && <span className="text-zinc-500"> (today, partial)</span>}
+                </>
+              )}
+            </div>
+          )}
+        </div>
       ))}
     </div>
   );
@@ -501,11 +527,17 @@ function TrajectoryPanel({ data }: { data: Trajectory }) {
         </span>
         <GrowthBadge rate={data.growthRate} />
       </div>
-      <BarSeries data={data.days.map((d) => ({ day: d.day, value: d.views }))} />
+      <BarSeries data={data.days.map((d) => ({ day: d.day, value: d.views, noData: d.noData }))} />
       <div className="flex justify-between text-[10px] text-zinc-600">
         <span>{dayLabel(data.days[0]?.day ?? "")}</span>
         <span>{dayLabel(data.days[data.days.length - 1]?.day ?? "")}</span>
       </div>
+      {data.dataDays7 < 7 && (
+        <div className="text-[11px] text-zinc-500">
+          {7 - data.dataDays7} of the last 7 days had no stats collection and were excluded from the averages
+          (dashed bars).
+        </div>
+      )}
       <div className="border-t border-[#1c1c21] pt-4 space-y-3">
         <div className="text-xs text-zinc-500">
           Projection rate:{" "}
