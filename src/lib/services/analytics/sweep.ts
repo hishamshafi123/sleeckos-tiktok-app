@@ -71,7 +71,7 @@ import { getOrgTimezone } from "@/lib/services/timezone";
 const TERMINAL_PUBLISHED_STATES = ["PUBLISHED", "PENDING_DELETION", "DELETED"];
 
 const LOOKBACK_DAYS = Number(process.env.SWEEP_LOOKBACK_DAYS) || 7;
-const MAX_VIDEOS = Number(process.env.SWEEP_MAX_VIDEOS) || 5;
+const MAX_VIDEOS = Number(process.env.SWEEP_MAX_VIDEOS) || 20;
 const SLEEP_MS = Number(process.env.SWEEP_SLEEP_MS) || 500;
 
 const WINDOW_BEFORE_MS = 20 * 60 * 1000;

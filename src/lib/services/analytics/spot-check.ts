@@ -55,10 +55,9 @@ export const MAX_ACCOUNT_LOOKUPS = 25;
 const BATCH_SIZE = 25;
 const HISTORY_LIMIT = 20;
 const SLEEP_BETWEEN_CALLS_MS = 500;
-// Profile-fetch depth per account: enough to cover the account's uncaptured
-// sample posts, min 5 (same as the sweep), capped at 15.
-const ACCOUNT_LOOKUP_MIN_DEPTH = 5;
-const ACCOUNT_LOOKUP_MAX_DEPTH = 15;
+// Profile-fetch depth per account: default 20 to cover recent posts.
+const ACCOUNT_LOOKUP_MIN_DEPTH = 20;
+const ACCOUNT_LOOKUP_MAX_DEPTH = 20;
 
 export class ForbiddenError extends Error {
   constructor() {
