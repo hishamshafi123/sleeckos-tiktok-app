@@ -53,7 +53,7 @@ const formatCompact = (n: number) =>
   n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1_000 ? `${(n / 1_000).toFixed(1)}k` : `${n}`;
 
 const formatDateIST = (iso: string) =>
-  new Date(iso).toLocaleDateString("en-IN", { timeZone: IST, day: "numeric", month: "short", year: "numeric" });
+  new Date(iso).toLocaleDateString("en-US", { timeZone: IST, day: "numeric", month: "short", year: "numeric" });
 
 const formatDayLabel = (dateStr: string) =>
   new Date(`${dateStr}T00:00:00`).toLocaleDateString(undefined, { month: "short", day: "numeric" });

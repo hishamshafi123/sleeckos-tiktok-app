@@ -68,7 +68,7 @@ const SOURCE_ORDER = ["sweep", "refresh", "spot_check", "recover", "capture"];
 
 // ── Formatting helpers (all display times IST) ──────────────────────────────
 const IST = "Asia/Kolkata";
-const full = (n: number) => n.toLocaleString("en-IN");
+const full = (n: number) => n.toLocaleString("en-US");
 // USD amounts are often fractions of a cent — show enough precision.
 const usd = (n: number) => (n >= 1 ? `$${n.toFixed(2)}` : `$${n.toFixed(4)}`);
 

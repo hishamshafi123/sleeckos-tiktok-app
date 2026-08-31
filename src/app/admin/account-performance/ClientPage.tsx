@@ -141,7 +141,7 @@ type AccountDetail = {
 const IST = "Asia/Kolkata";
 const compact = new Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 1 });
 const fmt = (n: number) => compact.format(n);
-const full = (n: number) => n.toLocaleString("en-IN");
+const full = (n: number) => n.toLocaleString("en-US");
 
 const istDateTimeFmt = new Intl.DateTimeFormat("en-GB", {
   timeZone: IST,

@@ -266,14 +266,13 @@ const formatRate = (rate: number) => (rate % 1 === 0 ? `${rate}` : rate.toFixed(
 const formatCompact = (n: number) =>
   n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1_000 ? `${(n / 1_000).toFixed(1)}k` : `${n}`;
 
-// Exact full figures with Indian digit grouping — the default for every
-// count/views/likes display in this page (compact notation only survives on
-// space-tight chart axis ticks).
-const formatExact = (n: number) => n.toLocaleString("en-IN");
+// Exact full figures with international standard digit grouping (thousands) —
+// the default for every count/views/likes display in this page.
+const formatExact = (n: number) => n.toLocaleString("en-US");
 
 // Absolute timestamp in the org timezone (shown on hover next to relative times)
 const formatAbsoluteIST = (dateStr: string) =>
-  `${new Date(dateStr).toLocaleString("en-IN", {
+  `${new Date(dateStr).toLocaleString("en-US", {
     timeZone: "Asia/Kolkata",
     day: "numeric",
     month: "short",
@@ -284,7 +283,7 @@ const formatAbsoluteIST = (dateStr: string) =>
   })} IST`;
 
 const formatDateIST = (dateStr: string) =>
-  new Date(dateStr).toLocaleDateString("en-IN", {
+  new Date(dateStr).toLocaleDateString("en-US", {
     timeZone: "Asia/Kolkata",
     day: "numeric",
     month: "short",
@@ -293,7 +292,7 @@ const formatDateIST = (dateStr: string) =>
 
 // Compact IST datetime for capture-run rows ("31 Aug, 9:42 pm IST")
 const formatDateTimeIST = (dateStr: string) =>
-  `${new Date(dateStr).toLocaleString("en-IN", {
+  `${new Date(dateStr).toLocaleString("en-US", {
     timeZone: "Asia/Kolkata",
     day: "numeric",
     month: "short",
@@ -1680,7 +1679,7 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
               <div
                 key={d.date}
                 className="flex-1 min-w-[10px] h-full flex items-end justify-center"
-                title={`${formatDay(d.date)} — ${d.views.toLocaleString("en-IN")} views, ${d.likes.toLocaleString("en-IN")} likes`}
+                title={`${formatDay(d.date)} — ${d.views.toLocaleString("en-US")} views, ${d.likes.toLocaleString("en-US")} likes`}
               >
                 <div
                   className="w-full max-w-[14px] rounded-sm bg-[#E11D48]/80 hover:bg-[#E11D48] transition-colors"
@@ -1800,11 +1799,11 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
 
     return (
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        {card("Videos Exported", stats ? stats.totals.exported.toLocaleString("en-IN") : "—", "text-zinc-100")}
-        {card("Posts Successful", stats ? stats.totals.posted.toLocaleString("en-IN") : "—", "text-emerald-400")}
+        {card("Videos Exported", stats ? stats.totals.exported.toLocaleString("en-US") : "—", "text-zinc-100")}
+        {card("Posts Successful", stats ? stats.totals.posted.toLocaleString("en-US") : "—", "text-emerald-400")}
         {card(
           "Posts Failed",
-          stats ? stats.totals.failed.toLocaleString("en-IN") : "—",
+          stats ? stats.totals.failed.toLocaleString("en-US") : "—",
           stats && stats.totals.failed > 0 ? "text-red-400" : "text-zinc-500"
         )}
         {card(
@@ -1944,16 +1943,16 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
                 <div className="flex items-start gap-2.5 bg-emerald-500/5 border border-emerald-500/20 text-emerald-400 rounded p-3">
                   <CheckCircle2 size={15} className="mt-0.5 flex-shrink-0" />
                   <div>
-                    <span className="font-semibold">Priority complete</span> — normal posting resumed. {priorityUsed.toLocaleString("en-IN")}/{priorityQuota.toLocaleString("en-IN")} priority posts delivered.
+                    <span className="font-semibold">Priority complete</span> — normal posting resumed. {priorityUsed.toLocaleString("en-US")}/{priorityQuota.toLocaleString("en-US")} priority posts delivered.
                   </div>
                 </div>
               ) : (
                 <div className="space-y-1.5">
                   <div className="flex items-center justify-between text-[11px]">
                     <span className="text-zinc-400">
-                      <span className="font-mono font-semibold text-zinc-100">{priorityUsed.toLocaleString("en-IN")}</span>
+                      <span className="font-mono font-semibold text-zinc-100">{priorityUsed.toLocaleString("en-US")}</span>
                       {" / "}
-                      <span className="font-mono text-zinc-300">{priorityQuota.toLocaleString("en-IN")}</span> priority posts
+                      <span className="font-mono text-zinc-300">{priorityQuota.toLocaleString("en-US")}</span> priority posts
                     </span>
                     <span className="text-zinc-500">auto-turns off when reached</span>
                   </div>
@@ -2016,7 +2015,7 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
               ) : pausedFiles && pausedFiles.totalFiles > 0 ? (
                 <>
                   <p className="text-[11px] text-zinc-400">
-                    <span className="font-mono font-semibold text-amber-400">{pausedFiles.totalFiles.toLocaleString("en-IN")}</span>{" "}
+                    <span className="font-mono font-semibold text-amber-400">{pausedFiles.totalFiles.toLocaleString("en-US")}</span>{" "}
                     files of this campaign are sitting in Drive folders and won&apos;t be posted:
                   </p>
                   <div className="space-y-1.5">
@@ -2031,7 +2030,7 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
                             {f.driveFolderName}
                           </span>
                           <span className="text-[10px] text-zinc-500 font-mono flex-shrink-0">
-                            {f.fileCount.toLocaleString("en-IN")} files
+                            {f.fileCount.toLocaleString("en-US")} files
                           </span>
                         </div>
                         <a
@@ -2165,23 +2164,23 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3 pt-3 border-t border-[#27272a] text-center">
               <div className="bg-[#18181b]/10 border border-[#27272a] rounded p-2.5 space-y-1.5">
                 <span className="text-[10px] text-zinc-500 font-medium uppercase tracking-wider block">Videos Needed</span>
-                <span className="text-sm font-bold text-zinc-100 font-mono">{totalVideosNeeded.toLocaleString("en-IN")}</span>
+                <span className="text-sm font-bold text-zinc-100 font-mono">{totalVideosNeeded.toLocaleString("en-US")}</span>
               </div>
               <div className="bg-[#18181b]/10 border border-[#27272a] rounded p-2.5 space-y-1.5">
                 <span className="text-[10px] text-zinc-500 font-medium uppercase tracking-wider block">Videos / Day</span>
-                <span className="text-sm font-bold text-zinc-100 font-mono">{videosPerDay.toLocaleString("en-IN")}</span>
+                <span className="text-sm font-bold text-zinc-100 font-mono">{videosPerDay.toLocaleString("en-US")}</span>
               </div>
               <div className="bg-[#18181b]/10 border border-[#27272a] rounded p-2.5 space-y-1.5">
                 <span className="text-[10px] text-zinc-500 font-medium uppercase tracking-wider block">Views / Day</span>
                 <span className="text-sm font-bold text-zinc-100 font-mono">
                   {viewsPerDay >= 1000000
                     ? `${(viewsPerDay / 1000000).toFixed(1)}M`
-                    : viewsPerDay.toLocaleString("en-IN")}
+                    : viewsPerDay.toLocaleString("en-US")}
                 </span>
               </div>
               <div className="bg-[#18181b]/10 border border-[#27272a] rounded p-2.5 space-y-1.5">
                 <span className="text-[10px] text-zinc-500 font-medium uppercase tracking-wider block">Days to Goal</span>
-                <span className="text-sm font-bold text-emerald-400 font-mono">{daysToGoal.toLocaleString("en-IN")} days</span>
+                <span className="text-sm font-bold text-emerald-400 font-mono">{daysToGoal.toLocaleString("en-US")} days</span>
               </div>
             </div>
 
@@ -2341,14 +2340,14 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
                 {/* Range totals strip */}
                 <p className="text-[11px] text-zinc-500">
                   In this range:{" "}
-                  <span className="text-zinc-300 font-mono">{stats.rangeTotals.exported.toLocaleString("en-IN")}</span> exported
+                  <span className="text-zinc-300 font-mono">{stats.rangeTotals.exported.toLocaleString("en-US")}</span> exported
                   <span className="text-zinc-700"> · </span>
-                  <span className="text-emerald-400 font-mono">{stats.rangeTotals.posted.toLocaleString("en-IN")}</span> posted
+                  <span className="text-emerald-400 font-mono">{stats.rangeTotals.posted.toLocaleString("en-US")}</span> posted
                   <span className="text-zinc-700"> · </span>
                   <span
                     className={`font-mono ${stats.rangeTotals.failed > 0 ? "text-red-400" : "text-zinc-500"}`}
                   >
-                    {stats.rangeTotals.failed.toLocaleString("en-IN")}
+                    {stats.rangeTotals.failed.toLocaleString("en-US")}
                   </span>{" "}
                   failed
                 </p>
@@ -2617,14 +2616,14 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
                                   {v.publishedAt ? formatDateIST(v.publishedAt) : "—"}
                                 </td>
                                 <td className="px-3 py-2.5 text-right font-mono font-semibold text-zinc-100">
-                                  {v.views.toLocaleString("en-IN")}
+                                  {v.views.toLocaleString("en-US")}
                                 </td>
-                                <td className="px-3 py-2.5 text-right font-mono">{v.likes.toLocaleString("en-IN")}</td>
+                                <td className="px-3 py-2.5 text-right font-mono">{v.likes.toLocaleString("en-US")}</td>
                                 <td className="px-3 py-2.5 text-right font-mono text-zinc-400">
-                                  {v.comments.toLocaleString("en-IN")}
+                                  {v.comments.toLocaleString("en-US")}
                                 </td>
                                 <td className="px-3 py-2.5 text-right font-mono text-zinc-400">
-                                  {v.shares.toLocaleString("en-IN")}
+                                  {v.shares.toLocaleString("en-US")}
                                 </td>
                                 <td
                                   className="px-3 py-2.5 text-[10px] text-zinc-500 font-mono whitespace-nowrap"
@@ -2645,7 +2644,7 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
                             onClick={() => setTrackVisible((prev) => prev + TRACK_PAGE_SIZE)}
                             className="text-[11px] font-semibold text-zinc-300 hover:text-zinc-100 bg-zinc-900 border border-[#27272a] hover:border-zinc-600 rounded px-3 py-1 transition"
                           >
-                            Load more ({(trackedVideosView.length - trackVisible).toLocaleString("en-IN")} remaining)
+                            Load more ({(trackedVideosView.length - trackVisible).toLocaleString("en-US")} remaining)
                           </button>
                         </div>
                       )}
@@ -3004,7 +3003,7 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
                                                   {p.captureStatus === "unresolved" ? "Unresolved" : "Never attempted"}
                                                 </span>
                                                 <span className="text-[10px] text-zinc-500 font-mono" title={formatAbsoluteIST(p.postedAt)}>
-                                                  {new Date(p.postedAt).toLocaleString("en-IN", {
+                                                  {new Date(p.postedAt).toLocaleString("en-US", {
                                                     timeZone: "Asia/Kolkata",
                                                     hour: "numeric",
                                                     minute: "2-digit",
@@ -3058,7 +3057,7 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
                                                       {formatExact(v.views)} views
                                                     </span>
                                                     <span className="text-[10px] text-zinc-500 font-mono" title={formatAbsoluteIST(v.capturedAt)}>
-                                                      {new Date(v.capturedAt).toLocaleString("en-IN", {
+                                                      {new Date(v.capturedAt).toLocaleString("en-US", {
                                                         timeZone: "Asia/Kolkata",
                                                         hour: "numeric",
                                                         minute: "2-digit",
@@ -3249,7 +3248,7 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
                 <div className="flex justify-between text-xs">
                   <span className="text-zinc-400 font-medium">Export Goal Progress</span>
                   <span className="text-zinc-300 font-bold font-mono">
-                    {exportAnalytics.totalExported.toLocaleString("en-IN")} / {totalVideosNeeded.toLocaleString("en-IN")} videos (
+                    {exportAnalytics.totalExported.toLocaleString("en-US")} / {totalVideosNeeded.toLocaleString("en-US")} videos (
                     {Math.min(100, Math.round((exportAnalytics.totalExported / totalVideosNeeded) * 100))}%
                     )
                   </span>
@@ -3270,7 +3269,7 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
               <div className="bg-[#18181b]/10 border border-[#27272a] rounded p-3 space-y-1">
                 <span className="text-[10px] text-zinc-500 font-medium uppercase tracking-wider block">Drive Exports</span>
                 <span className="text-base font-bold text-purple-400 font-mono">
-                  {exportAnalytics.totalExported.toLocaleString("en-IN")}
+                  {exportAnalytics.totalExported.toLocaleString("en-US")}
                 </span>
               </div>
               <div className="bg-[#18181b]/10 border border-[#27272a] rounded p-3 space-y-1">
