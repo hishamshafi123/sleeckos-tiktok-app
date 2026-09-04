@@ -15,8 +15,17 @@ likes, comments, shares) into an external platform.
 
 Every request needs two things:
 
-1. The **campaign ID** in the URL path (UUID — we include it in the handover message, and it's shown on your tracking page).
+1. The **campaign ID** in the URL path (a UUID like `85c0b48f-dee4-4de8-8eaa-94b65acb4961`).
+   **Where to find it:** on your tracking page, or ask us — internally it is on
+   the campaign page under **Client access → "Copy campaign ID"**. It is NOT
+   the 10-character share code and NOT the tracking-page URL slug.
 2. The **API key** in the `x-api-key` header.
+
+**Common gotcha:** the `x-api-key` header is required on every call. Pasting
+the endpoint URL into a browser address bar (which can't set headers) returns
+404 — test with curl, code, or a REST client instead. Browser-based platforms
+(fetch/XHR from a web page) are supported — the API sends permissive CORS
+headers and answers OPTIONS preflights.
 
 You receive **one API key from us that works for every campaign we run for
 you** — when a new campaign starts, we grant your key access to it and send
