@@ -41,7 +41,8 @@ import {
   ChevronDown,
   ChevronRight,
   CalendarDays,
-  Crosshair
+  Crosshair,
+  ArrowRightLeft
 } from "lucide-react";
 import { toast } from "sonner";
 import { Campaign, CampaignResource, CampaignStatus } from "@prisma/client";
@@ -403,6 +404,19 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
   } | null>(null);
   const [zeroViewPreviewLoading, setZeroViewPreviewLoading] = useState(false);
   const [zeroViewRemoving, setZeroViewRemoving] = useState(false);
+  // ── Transfer videos to another campaign ──
+  const [showTransferDialog, setShowTransferDialog] = useState(false);
+  const [transferFrom, setTransferFrom] = useState("");
+  const [transferTo, setTransferTo] = useState("");
+  const [transferTargetId, setTransferTargetId] = useState("");
+  const [transferCampaigns, setTransferCampaigns] = useState<{ id: string; title: string }[]>([]);
+  const [transferPreview, setTransferPreview] = useState<{
+    videos: number;
+    posts: number;
+    sample: { url: string; accountUsername: string; publishedAt: string; views: number }[];
+  } | null>(null);
+  const [transferPreviewLoading, setTransferPreviewLoading] = useState(false);
+  const [transferring, setTransferring] = useState(false);
   const refreshPollRef = useRef<NodeJS.Timeout | null>(null);
   const [isRecovering, setIsRecovering] = useState(false);
   const recoveryPollRef = useRef<NodeJS.Timeout | null>(null);
@@ -925,6 +939,88 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
       toast.error(err.message || "Failed to remove 0-view links");
     } finally {
       setZeroViewRemoving(false);
+    }
+  };
+
+  // Transfer videos → pick an IST posted-date range, preview, then move both
+  // the tracked links and their underlying posts to another campaign.
+  const istToday = () =>
+    new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Asia/Kolkata",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(new Date());
+
+  const loadTransferPreview = async (from: string, to: string) => {
+    if (!from || !to || from > to) {
+      setTransferPreview(null);
+      return;
+    }
+    setTransferPreviewLoading(true);
+    try {
+      const res = await fetch(`/api/campaigns/${campaign.id}/transfer?from=${from}&to=${to}`);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `Request failed with status ${res.status}`);
+      setTransferPreview(data);
+    } catch (err: any) {
+      toast.error(err.message || "Failed to preview transfer");
+      setTransferPreview(null);
+    } finally {
+      setTransferPreviewLoading(false);
+    }
+  };
+
+  const handleOpenTransfer = async () => {
+    // Default range: 1st of the current IST month → today (the common case:
+    // last month's campaign kept posting into this month).
+    const today = istToday();
+    const from = `${today.slice(0, 7)}-01`;
+    setTransferFrom(from);
+    setTransferTo(today);
+    setTransferTargetId("");
+    setTransferPreview(null);
+    setShowTransferDialog(true);
+    try {
+      const res = await fetch("/api/campaigns");
+      const data = await res.json().catch(() => []);
+      if (res.ok && Array.isArray(data)) {
+        setTransferCampaigns(
+          data
+            .filter((c: any) => c.id !== campaign.id)
+            .map((c: any) => ({ id: c.id, title: c.title }))
+        );
+      }
+    } catch {
+      // non-fatal — dropdown just stays empty
+    }
+    loadTransferPreview(from, today);
+  };
+
+  const handleConfirmTransfer = async () => {
+    if (!transferTargetId || !transferPreview || transferPreview.videos + transferPreview.posts === 0) return;
+    setTransferring(true);
+    try {
+      const res = await fetch(`/api/campaigns/${campaign.id}/transfer`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          targetCampaignId: transferTargetId,
+          from: transferFrom,
+          to: transferTo,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `Request failed with status ${res.status}`);
+      toast.success(
+        `Moved ${data.videosMoved} video${data.videosMoved !== 1 ? "s" : ""} (${data.postsMoved} post${data.postsMoved !== 1 ? "s" : ""}) to "${data.targetTitle}"`
+      );
+      setShowTransferDialog(false);
+      fetchTracking(true); // refresh list + totals
+    } catch (err: any) {
+      toast.error(err.message || "Transfer failed");
+    } finally {
+      setTransferring(false);
     }
   };
 
@@ -2536,6 +2632,14 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
                     <h4 className="text-[11px] font-semibold text-zinc-400 uppercase tracking-wider">Tracked Videos</h4>
                     <div className="flex items-center gap-2">
                       <button
+                        onClick={handleOpenTransfer}
+                        className="flex items-center gap-1.5 bg-zinc-900 hover:bg-zinc-800 border border-[#27272a] text-zinc-300 text-[11px] font-semibold px-2.5 py-1 rounded transition"
+                        title="Move tracked videos posted within a date range to another campaign"
+                      >
+                        <ArrowRightLeft size={11} />
+                        Transfer videos
+                      </button>
+                      <button
                         onClick={handleOpenZeroViewRemoval}
                         className="flex items-center gap-1.5 bg-red-950/20 hover:bg-red-950/40 border border-red-900/30 text-red-400 text-[11px] font-semibold px-2.5 py-1 rounded transition"
                         title="Remove links with 0 views, posted ≥2 days ago and checked at least once, from tracking"
@@ -3693,6 +3797,139 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
                   Confirm removal ({zeroViewPreview.count})
                 </button>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showTransferDialog && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-sm"
+          onClick={() => !transferring && setShowTransferDialog(false)}
+        >
+          <div
+            className="bg-[#18181b] border border-[#27272a] rounded-md p-5 max-w-md w-full mx-4 shadow-2xl space-y-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 className="text-sm font-semibold text-zinc-100 flex items-center gap-2">
+              <ArrowRightLeft size={14} className="text-zinc-400" /> Transfer videos to another campaign
+            </h3>
+
+            <p className="text-xs text-zinc-400 leading-relaxed">
+              Move every tracked video (and its post record) <span className="text-zinc-200 font-semibold">posted</span> within
+              an IST date range from this campaign into another. Totals, the video list, trend chart and posting
+              history all follow.
+            </p>
+
+            <div className="grid grid-cols-2 gap-2">
+              <label className="space-y-1">
+                <span className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider">Posted from (IST)</span>
+                <input
+                  type="date"
+                  value={transferFrom}
+                  onChange={(e) => {
+                    setTransferFrom(e.target.value);
+                    loadTransferPreview(e.target.value, transferTo);
+                  }}
+                  className="w-full bg-[#09090b] border border-[#27272a] rounded px-2.5 py-1.5 text-[11px] text-zinc-100 focus:outline-none focus:border-zinc-500 [color-scheme:dark]"
+                />
+              </label>
+              <label className="space-y-1">
+                <span className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider">Posted to (IST)</span>
+                <input
+                  type="date"
+                  value={transferTo}
+                  onChange={(e) => {
+                    setTransferTo(e.target.value);
+                    loadTransferPreview(transferFrom, e.target.value);
+                  }}
+                  className="w-full bg-[#09090b] border border-[#27272a] rounded px-2.5 py-1.5 text-[11px] text-zinc-100 focus:outline-none focus:border-zinc-500 [color-scheme:dark]"
+                />
+              </label>
+            </div>
+
+            <label className="space-y-1 block">
+              <span className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider">Move to campaign</span>
+              <select
+                value={transferTargetId}
+                onChange={(e) => setTransferTargetId(e.target.value)}
+                className="w-full bg-[#09090b] border border-[#27272a] rounded px-2.5 py-1.5 text-[11px] text-zinc-100 focus:outline-none focus:border-zinc-500"
+              >
+                <option value="">Select a campaign…</option>
+                {transferCampaigns.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.title}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            {transferPreviewLoading ? (
+              <div className="flex items-center justify-center gap-2 py-4 text-xs text-zinc-500">
+                <Loader2 size={14} className="animate-spin" /> Counting matching videos…
+              </div>
+            ) : transferPreview ? (
+              transferPreview.videos + transferPreview.posts === 0 ? (
+                <p className="text-xs text-zinc-400 leading-relaxed border border-[#27272a] rounded p-2.5 bg-[#09090b]">
+                  Nothing posted in this range — no tracked videos or posts to move.
+                </p>
+              ) : (
+                <div className="space-y-2 border border-[#27272a] rounded p-2.5 bg-[#09090b]">
+                  <p className="text-xs text-zinc-300 leading-relaxed">
+                    <span className="text-zinc-100 font-semibold">{transferPreview.videos} tracked video{transferPreview.videos !== 1 ? "s" : ""}</span>
+                    {" · "}
+                    <span className="text-zinc-100 font-semibold">{transferPreview.posts} post{transferPreview.posts !== 1 ? "s" : ""}</span>
+                    {" "}posted {transferFrom} → {transferTo} (IST)
+                  </p>
+                  {transferPreview.sample.length > 0 && (
+                    <div className="space-y-1.5 max-h-40 overflow-y-auto">
+                      {transferPreview.sample.map((r) => (
+                        <div key={r.url} className="text-[11px] flex items-center justify-between gap-2">
+                          <a
+                            href={r.url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-blue-400 hover:underline truncate"
+                          >
+                            {r.accountUsername ? `@${r.accountUsername}` : r.url}
+                          </a>
+                          <span className="text-zinc-500 flex-shrink-0 font-mono" title={formatAbsoluteIST(r.publishedAt)}>
+                            {r.views.toLocaleString("en-US")} views · {timeAgo(r.publishedAt)}
+                          </span>
+                        </div>
+                      ))}
+                      {transferPreview.videos > transferPreview.sample.length && (
+                        <p className="text-[10px] text-zinc-600 italic pt-0.5">
+                          …and {transferPreview.videos - transferPreview.sample.length} more
+                        </p>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )
+            ) : null}
+
+            <div className="flex justify-end gap-2 pt-1">
+              <button
+                onClick={() => setShowTransferDialog(false)}
+                disabled={transferring}
+                className="px-3 py-1.5 bg-zinc-900 hover:bg-zinc-800 border border-[#27272a] text-zinc-300 text-[11px] font-semibold rounded transition disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleConfirmTransfer}
+                disabled={
+                  transferring ||
+                  !transferTargetId ||
+                  !transferPreview ||
+                  transferPreview.videos + transferPreview.posts === 0
+                }
+                className="px-3 py-1.5 bg-zinc-100 hover:bg-white text-zinc-950 text-[11px] font-semibold rounded transition disabled:opacity-40 flex items-center gap-1.5"
+              >
+                {transferring && <Loader2 size={11} className="animate-spin" />}
+                Transfer{transferPreview && transferPreview.videos > 0 ? ` (${transferPreview.videos})` : ""}
+              </button>
             </div>
           </div>
         </div>
