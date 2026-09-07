@@ -89,7 +89,14 @@ Field notes:
 
 ```
 GET /api/public/v1/campaigns/{campaignId}/posts
+GET /api/public/v1/campaigns/{campaignId}/posts?from=2026-09-01&to=2026-09-05
 ```
+
+Optional query params `from` / `to` (both `YYYY-MM-DD`, inclusive, interpreted
+as days in the campaign timezone — IST) restrict the list to posts published
+in that date range. Either may be used alone (`?from=` only = everything since
+that day). The echoed `filter` field in the response confirms what was applied.
+A malformed range returns `400`.
 
 Sample response:
 
@@ -97,6 +104,7 @@ Sample response:
 {
   "campaign": { "id": "6f9c2c1e-…", "title": "Distill Campaign" },
   "dataUpdatedAt": "2026-08-13T03:41:00.000Z",
+  "filter": { "from": "2026-09-01", "to": "2026-09-05", "timezone": "Asia/Kolkata" },
   "count": 405,
   "posts": [
     {
@@ -111,9 +119,9 @@ Sample response:
 }
 ```
 
-Every tracked post, newest first. `publishedAt` is UTC ISO. This is the full
-list each time (no pagination) — pull it once a day and diff on `url` if you
-only want new posts.
+Tracked posts, newest first. `publishedAt` is UTC ISO. Without `from`/`to`
+this is the full list each time (no pagination) — pull it once a day and diff
+on `url`, or pass `?from=<yesterday>` to fetch only recent posts.
 
 ## Data freshness
 

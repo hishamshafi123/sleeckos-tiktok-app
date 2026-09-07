@@ -10,10 +10,14 @@ import { publicCorsPreflight, withPublicCors } from "@/lib/public-cors";
 
 // GET /api/public/v1/campaigns/[campaignId]/posts — PUBLIC client API.
 // Auth: `x-api-key: <share code>` header (scoped to the campaign). Returns
-// every tracked post with its TikTok link and current stats, newest first.
-// All failures return the same 404 (no oracle). Rate limited per IP.
+// tracked posts with TikTok links and current stats, newest first.
+// Optional query params: ?from=YYYY-MM-DD&to=YYYY-MM-DD — inclusive posted-
+// date range in the campaign timezone (IST). All failures return the same
+// 404 (no oracle). Rate limited per IP.
 // CORS is open (see src/lib/public-cors.ts) so client platforms can call
 // this from browser-side code as well as servers.
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
 export async function GET(
   req: NextRequest,
   { params }: { params: Promise<{ campaignId: string }> }
@@ -30,8 +34,19 @@ export async function GET(
     return withPublicCors(NextResponse.json({ error: "Not found" }, { status: 404 }));
   }
 
+  const from = req.nextUrl.searchParams.get("from") || undefined;
+  const to = req.nextUrl.searchParams.get("to") || undefined;
+  if ((from && !DATE_RE.test(from)) || (to && !DATE_RE.test(to)) || (from && to && from > to)) {
+    return withPublicCors(
+      NextResponse.json(
+        { error: "Invalid date range — use from/to as YYYY-MM-DD, from on or before to" },
+        { status: 400 }
+      )
+    );
+  }
+
   try {
-    const posts = await getPublicCampaignPosts(campaignId);
+    const posts = await getPublicCampaignPosts(campaignId, { from, to });
     if (!posts) {
       return withPublicCors(NextResponse.json({ error: "Not found" }, { status: 404 }));
     }

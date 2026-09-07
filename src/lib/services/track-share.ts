@@ -1,6 +1,7 @@
 import crypto from "crypto";
 import prisma from "@/lib/db";
 import type { CampaignShare } from "@prisma/client";
+import { fromZonedTime } from "date-fns-tz";
 import { getOrgTimezone, getZonedDateString, getZonedFutureStartOfDay } from "@/lib/services/timezone";
 import { validateClientApiKey } from "@/lib/services/api-clients";
 
@@ -285,16 +286,40 @@ export async function getPublicCampaignStats(campaignId: string) {
 }
 
 /**
- * GET /api/public/v1/campaigns/:id/posts payload — every tracked post with
- * its link and current stats, newest first.
+ * GET /api/public/v1/campaigns/:id/posts payload — tracked posts with links
+ * and current stats, newest first. Optional { from, to } = inclusive posted-
+ * date range as YYYY-MM-DD in the org timezone (IST); omitted = all posts.
  */
-export async function getPublicCampaignPosts(campaignId: string) {
+export async function getPublicCampaignPosts(
+  campaignId: string,
+  range?: { from?: string; to?: string }
+) {
   const payload = await getPublicTrackingPayload(campaignId);
   if (!payload) return null;
-  const posts = [...payload.videos].sort((a, b) => b.publishedAt.localeCompare(a.publishedAt));
+  let posts = [...payload.videos].sort((a, b) => b.publishedAt.localeCompare(a.publishedAt));
+
+  let from: string | null = null;
+  let to: string | null = null;
+  if (range?.from || range?.to) {
+    const tz = await getOrgTimezone();
+    const DAY_MS = 24 * 60 * 60 * 1000;
+    // Org tz (IST) has no DST, so inclusive-end = next day midnight (+24h).
+    const gte = range.from ? fromZonedTime(`${range.from}T00:00:00`, tz).getTime() : null;
+    const lt = range.to ? fromZonedTime(`${range.to}T00:00:00`, tz).getTime() + DAY_MS : null;
+    posts = posts.filter((p) => {
+      const t = Date.parse(p.publishedAt);
+      if (gte !== null && t < gte) return false;
+      if (lt !== null && t >= lt) return false;
+      return true;
+    });
+    from = range.from ?? null;
+    to = range.to ?? null;
+  }
+
   return {
     campaign: payload.campaign,
     dataUpdatedAt: payload.dataUpdatedAt,
+    filter: from || to ? { from, to, timezone: await getOrgTimezone() } : null,
     count: posts.length,
     posts,
   };
