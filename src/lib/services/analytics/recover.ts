@@ -43,6 +43,7 @@ export function normalizeCaption(text: string): string {
 }
 
 export interface LastRecoveryRun {
+  id: string;
   startedAt: string;
   status: string;
   attempted: number;
@@ -58,6 +59,7 @@ export async function getLastRecoveryRun(campaignId: string): Promise<LastRecove
     where: { type: "recovery", cursor: campaignId },
     orderBy: { startedAt: "desc" },
     select: {
+      id: true,
       startedAt: true,
       status: true,
       attempted: true,
@@ -69,6 +71,19 @@ export async function getLastRecoveryRun(campaignId: string): Promise<LastRecove
   });
   if (!run) return null;
   return { ...run, startedAt: run.startedAt.toISOString() };
+}
+
+/**
+ * Ask a running recovery to stop. Flips status to "aborted"; the pass loop
+ * checks it at the next account boundary and exits early (the in-flight
+ * provider call finishes first). Returns false when the run wasn't running.
+ */
+export async function abortRecoveryRun(runId: string, campaignId: string): Promise<boolean> {
+  const res = await prisma.analyticsRun.updateMany({
+    where: { id: runId, type: "recovery", cursor: campaignId, status: "running" },
+    data: { status: "aborted", error: "Aborted by user", finishedAt: new Date() },
+  });
+  return res.count > 0;
 }
 
 /**
@@ -202,6 +217,18 @@ export async function runRecoveryPass(
 
   // ── 4. Per-account caption matching ─────────────────────────────────────
   for (const [accountId, accountJobs] of byAccount) {
+    // Abort check at each account boundary — the in-flight provider call
+    // finishes, then we stop before scraping the next account.
+    const current = await prisma.analyticsRun.findUnique({
+      where: { id: runId },
+      select: { status: true },
+    });
+    if (current?.status === "aborted") {
+      console.warn(`[Recover] Run ${runId} aborted by user — stopping early`);
+      await saveProgress(); // persist counters; keep the "aborted" status
+      return;
+    }
+
     const username = accountJobs[0].account?.tiktokUsername;
     if (!username) {
       counters.skipped += accountJobs.length;

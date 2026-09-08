@@ -160,8 +160,9 @@ interface CampaignTracking {
   dormantCount: number;
   // Latest link-recovery run (POST /tracking/recover), if any
   lastRecovery: {
+    id: string;
     startedAt: string;
-    status: "running" | "done" | "failed";
+    status: "running" | "done" | "failed" | "aborted";
     attempted: number;
     succeeded: number;
     failed: number;
@@ -213,7 +214,7 @@ interface UncapturedPost {
 interface CaptureRunSummary {
   id: string;
   day: string | null; // org-tz day filter; null = whole range
-  status: string; // running | done | failed
+  status: string; // running | done | failed | aborted
   attempted: number;
   captured: number;
   unresolved: number;
@@ -419,6 +420,7 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
   const [transferring, setTransferring] = useState(false);
   const refreshPollRef = useRef<NodeJS.Timeout | null>(null);
   const [isRecovering, setIsRecovering] = useState(false);
+  const [isAbortingRecovery, setIsAbortingRecovery] = useState(false);
   const recoveryPollRef = useRef<NodeJS.Timeout | null>(null);
 
   // ── Daily activity (per-IST-day coverage + uncaptured posts) ────────────
@@ -749,6 +751,10 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
             ? "Nothing to capture"
             : `attempted ${run.attempted} · captured ${run.captured} · ${run.unresolved} unresolved`
         );
+      } else if (run.status === "aborted") {
+        toast.info(
+          `Capture aborted — captured ${run.captured} of ${run.attempted} attempted before stopping`
+        );
       } else {
         toast.error(`Capture run failed: ${run.error || "unknown error"}`);
       }
@@ -880,6 +886,8 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
         setIsRecovering(false);
         if (recovery.status === "done") {
           toast.success(`Recovery complete: ${recovery.succeeded} links recovered`);
+        } else if (recovery.status === "aborted") {
+          toast.info(`Recovery aborted — ${recovery.succeeded} links recovered before stopping`);
         } else {
           toast.error(recovery.error || "Recovery failed");
         }
@@ -905,6 +913,45 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
       pollRecoveryOnce();
     } catch (err: any) {
       toast.error(err.message || "Failed to start recovery");
+    }
+  };
+
+  // Abort a running recovery — the pass stops at the next account boundary
+  // (the in-flight provider call finishes first). Links already recovered
+  // are kept.
+  const handleAbortRecovery = async () => {
+    setIsAbortingRecovery(true);
+    try {
+      const res = await fetch(`/api/campaigns/${campaign.id}/tracking/recover/abort`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(tracking?.lastRecovery?.id ? { runId: tracking.lastRecovery.id } : {}),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `Request failed with status ${res.status}`);
+      toast.success("Aborting recovery — stops after the current account");
+      pollRecoveryOnce();
+    } catch (err: any) {
+      toast.error(err.message || "Failed to abort recovery");
+    } finally {
+      setIsAbortingRecovery(false);
+    }
+  };
+
+  // Abort the active capture run — same boundary semantics as recovery.
+  const handleAbortCapture = async () => {
+    if (!activeCapture) return;
+    try {
+      const res = await fetch(
+        `/api/campaigns/${campaign.id}/tracking/capture-runs/${activeCapture.runId}/abort`,
+        { method: "POST" }
+      );
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `Request failed with status ${res.status}`);
+      toast.success("Aborting capture — stops after the current account");
+      pollCaptureRun(activeCapture.runId, activeCapture.key);
+    } catch (err: any) {
+      toast.error(err.message || "Failed to abort capture");
     }
   };
 
@@ -2584,6 +2631,8 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
                           ? "border-amber-900/40 bg-amber-950/20 text-amber-400"
                           : recovery.status === "done"
                           ? "border-emerald-900/40 bg-emerald-950/20 text-emerald-400"
+                          : recovery.status === "aborted"
+                          ? "border-zinc-700/50 bg-zinc-900/40 text-zinc-400"
                           : "border-red-900/30 bg-red-950/20 text-red-400"
                       }`}
                     >
@@ -2604,6 +2653,10 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
                             <>
                               Recovery complete: {recovery.succeeded} links recovered · {recovery.skipped} skipped · {recovery.failed} failed
                             </>
+                          ) : recovery.status === "aborted" ? (
+                            <>
+                              Recovery aborted: {recovery.succeeded} links recovered · {recovery.skipped} skipped · {recovery.failed} failed before stopping
+                            </>
                           ) : (
                             <>Recovery failed: {recovery.error || "Unknown error"}</>
                           )}{" "}
@@ -2620,6 +2673,17 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
                           </p>
                         )}
                       </div>
+                      {recovery.status === "running" && (
+                        <button
+                          onClick={handleAbortRecovery}
+                          disabled={isAbortingRecovery}
+                          className="ml-auto self-center flex-shrink-0 flex items-center gap-1 bg-red-950/30 hover:bg-red-950/50 border border-red-900/40 text-red-400 text-[10px] font-semibold px-2 py-0.5 rounded transition disabled:opacity-50"
+                          title="Stop the recovery — it finishes the account it's on, then stops. Links already recovered are kept."
+                        >
+                          {isAbortingRecovery ? <Loader2 size={10} className="animate-spin" /> : null}
+                          Abort
+                        </button>
+                      )}
                     </div>
                   );
                 })()}
@@ -2952,6 +3016,16 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
                     ? `Capturing… ${activeCapture.processed}/${activeCapture.total}`
                     : `Capture missing${activity && activity.totals.missingCount > 0 ? ` (${activity.totals.missingCount})` : ""}`}
                 </button>
+
+                {activeCapture?.key === "all" && (
+                  <button
+                    onClick={handleAbortCapture}
+                    className="flex items-center gap-1 bg-red-950/30 hover:bg-red-950/50 border border-red-900/40 text-red-400 text-[11px] font-semibold px-2.5 py-1 rounded transition"
+                    title="Stop the capture — it finishes the account it's on, then stops. Links already captured are kept."
+                  >
+                    Abort
+                  </button>
+                )}
               </div>
             </div>
 
@@ -3059,6 +3133,18 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
                                     {activeCapture?.key === row.date
                                       ? `Capturing… ${activeCapture.processed}/${activeCapture.total}`
                                       : "Capture missing"}
+                                  </button>
+                                )}
+                                {activeCapture?.key === row.date && (
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleAbortCapture();
+                                    }}
+                                    className="inline-flex items-center gap-1 ml-1 bg-red-950/30 hover:bg-red-950/50 border border-red-900/40 text-red-400 text-[10px] font-semibold px-2 py-0.5 rounded transition"
+                                    title="Stop the capture — it finishes the account it's on, then stops."
+                                  >
+                                    Abort
                                   </button>
                                 )}
                               </td>
@@ -3253,9 +3339,15 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
                                   ? "bg-amber-500/10 text-amber-400 border-amber-500/20"
                                   : run.status === "done"
                                   ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20"
+                                  : run.status === "aborted"
+                                  ? "bg-zinc-800 text-zinc-400 border-zinc-700"
                                   : "bg-red-950/40 text-red-400 border-red-900/30"
                               }`}
-                              title={run.status === "failed" ? run.error || "Run failed" : undefined}
+                              title={
+                                run.status === "failed" || run.status === "aborted"
+                                  ? run.error || undefined
+                                  : undefined
+                              }
                             >
                               {run.status === "running" && <Loader2 size={9} className="animate-spin" />}
                               {run.status}

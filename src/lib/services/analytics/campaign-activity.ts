@@ -475,6 +475,18 @@ export async function runCapturePass(
   }
 
   for (const [accountId, accountJobs] of byAccount) {
+    // Abort check at each account boundary — the in-flight scrape finishes,
+    // then we stop before the next account (saves remaining Apify calls).
+    const current = await prisma.captureRun.findUnique({
+      where: { id: runId },
+      select: { status: true },
+    });
+    if (current?.status === "aborted") {
+      console.warn(`[CampaignActivity] Capture run ${runId} aborted by user — stopping early`);
+      await saveProgress(); // persist counters; keep the "aborted" status
+      return { attempted: counters.attempted, captured: counters.captured, unresolved: counters.unresolved };
+    }
+
     const username = accountJobs[0].account.tiktokUsername;
     const res = await captureAccountPosts(accountId, {}, provider);
     details.push({
@@ -634,6 +646,27 @@ export async function listCaptureRuns(
   });
   const labels = await resolveUserLabels(runs.map((r) => r.userId));
   return runs.map((r) => toRunSummary(r, labels));
+}
+
+/**
+ * Ask a running capture run to stop. Flips status to "aborted"; the pass
+ * loop checks it at the next account boundary and exits early (the in-flight
+ * scrape finishes first). Returns false when the run wasn't running.
+ */
+export async function abortCaptureRun(
+  userId: string,
+  campaignId: string,
+  runId: string
+): Promise<boolean | null> {
+  await assertCampaignAccess(userId);
+  const campaign = await prisma.campaign.findUnique({ where: { id: campaignId }, select: { id: true } });
+  if (!campaign) return null;
+
+  const res = await prisma.captureRun.updateMany({
+    where: { id: runId, campaignId, status: "running" },
+    data: { status: "aborted", error: "Aborted by user" },
+  });
+  return res.count > 0;
 }
 
 /** One capture run (with per-post details) — the polling endpoint. */
