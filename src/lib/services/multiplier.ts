@@ -486,6 +486,25 @@ export async function renderCaptionStill(
         ...customProps,
         ...savedParams
       };
+
+      // Legacy rows (pre-Style-Lab saves) sometimes stored a StyleTemplate
+      // UUID as templateKey instead of the composition key. Self-heal: resolve
+      // the id to its key; if the template is gone, fail with an actionable
+      // message instead of Remotion's cryptic "composition not found".
+      if (finalStyleId.length > 20 && !PILLOW_BUILTIN_STYLE_IDS.includes(finalStyleId)) {
+        const tpl = await prisma.styleTemplate.findUnique({
+          where: { id: finalStyleId },
+          select: { key: true },
+        });
+        if (tpl) {
+          finalStyleId = tpl.key;
+        } else {
+          throw new Error(
+            `[Multiplier] Saved style "${savedStyle.name}" (${styleId}) references template ${finalStyleId}, ` +
+            `which no longer exists. Re-save the style in Style Lab (or point it at a current template) and retry the batch.`
+          );
+        }
+      }
     }
   }
 
