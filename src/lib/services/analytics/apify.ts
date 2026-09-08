@@ -399,11 +399,15 @@ export class ApifyProvider implements AnalyticsProvider {
         continue;
       }
 
+      const createTimeISO = item?.createTimeISO || item?.createTime;
+      const createTime = createTimeISO ? new Date(createTimeISO) : undefined;
       result.set(videoId, {
         views: toBigInt(item.playCount),
         likes: toBigInt(item.diggCount),
         comments: toBigInt(item.commentCount),
         shares: toBigInt(item.shareCount),
+        ...(createTime && !isNaN(createTime.getTime()) ? { createTime } : {}),
+        ...(item?.text != null ? { text: String(item.text) } : {}),
       });
     }
 

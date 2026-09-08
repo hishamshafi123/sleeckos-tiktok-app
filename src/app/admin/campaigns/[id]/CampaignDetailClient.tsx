@@ -418,6 +418,17 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
   } | null>(null);
   const [transferPreviewLoading, setTransferPreviewLoading] = useState(false);
   const [transferring, setTransferring] = useState(false);
+  // ── Manual link add ──
+  const [showAddLinksDialog, setShowAddLinksDialog] = useState(false);
+  const [addLinksText, setAddLinksText] = useState("");
+  const [addLinksRunning, setAddLinksRunning] = useState(false);
+  const [addLinksResult, setAddLinksResult] = useState<{
+    added: number;
+    duplicates: number;
+    unavailable: number;
+    failed: number;
+    results: { input: string; status: string; url?: string; views?: number; reason?: string }[];
+  } | null>(null);
   const refreshPollRef = useRef<NodeJS.Timeout | null>(null);
   const [isRecovering, setIsRecovering] = useState(false);
   const [isAbortingRecovery, setIsAbortingRecovery] = useState(false);
@@ -1042,6 +1053,33 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
       // non-fatal — dropdown just stays empty
     }
     loadTransferPreview(from, today);
+  };
+
+  // Add links manually → paste TikTok URLs; the server creates tracked rows
+  // and pulls current stats immediately (one batched provider call).
+  const detectedLinkCount = (addLinksText.match(/tiktok\.com\/[@t]/gi) || []).length;
+
+  const handleAddLinks = async () => {
+    if (!addLinksText.trim()) return;
+    setAddLinksRunning(true);
+    try {
+      const res = await fetch(`/api/campaigns/${campaign.id}/tracking/links`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ links: addLinksText }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `Request failed with status ${res.status}`);
+      setAddLinksResult(data);
+      if (data.added > 0) {
+        toast.success(`Added ${data.added} link${data.added !== 1 ? "s" : ""} with current stats`);
+      }
+      fetchTracking(true); // new rows change list + totals
+    } catch (err: any) {
+      toast.error(err.message || "Failed to add links");
+    } finally {
+      setAddLinksRunning(false);
+    }
   };
 
   const handleConfirmTransfer = async () => {
@@ -2696,6 +2734,17 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
                     <h4 className="text-[11px] font-semibold text-zinc-400 uppercase tracking-wider">Tracked Videos</h4>
                     <div className="flex items-center gap-2">
                       <button
+                        onClick={() => {
+                          setShowAddLinksDialog(true);
+                          setAddLinksResult(null);
+                        }}
+                        className="flex items-center gap-1.5 bg-zinc-900 hover:bg-zinc-800 border border-[#27272a] text-zinc-300 text-[11px] font-semibold px-2.5 py-1 rounded transition"
+                        title="Paste TikTok video links to track them under this campaign — stats are pulled immediately"
+                      >
+                        <Link2 size={11} />
+                        Add links
+                      </button>
+                      <button
                         onClick={handleOpenTransfer}
                         className="flex items-center gap-1.5 bg-zinc-900 hover:bg-zinc-800 border border-[#27272a] text-zinc-300 text-[11px] font-semibold px-2.5 py-1 rounded transition"
                         title="Move tracked videos posted within a date range to another campaign"
@@ -4021,6 +4070,112 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
               >
                 {transferring && <Loader2 size={11} className="animate-spin" />}
                 Transfer{transferPreview && transferPreview.videos > 0 ? ` (${transferPreview.videos})` : ""}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showAddLinksDialog && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-sm"
+          onClick={() => !addLinksRunning && setShowAddLinksDialog(false)}
+        >
+          <div
+            className="bg-[#18181b] border border-[#27272a] rounded-md p-5 max-w-lg w-full mx-4 shadow-2xl space-y-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 className="text-sm font-semibold text-zinc-100 flex items-center gap-2">
+              <Link2 size={14} className="text-zinc-400" /> Add links to this campaign
+            </h3>
+
+            <p className="text-xs text-zinc-400 leading-relaxed">
+              Paste TikTok video links — one per line, or separated by spaces/commas. Each video is tracked
+              under this campaign and its current views/likes are pulled immediately, then it joins the
+              normal daily refresh. Short links (vm.tiktok.com) work too. Max 50 per run.
+            </p>
+
+            <textarea
+              value={addLinksText}
+              onChange={(e) => {
+                setAddLinksText(e.target.value);
+                setAddLinksResult(null);
+              }}
+              rows={6}
+              placeholder={"https://www.tiktok.com/@account/video/7682615319659023617\nhttps://vm.tiktok.com/ABC123/"}
+              disabled={addLinksRunning}
+              className="w-full bg-[#09090b] border border-[#27272a] rounded px-2.5 py-2 text-[11px] font-mono text-zinc-100 focus:outline-none focus:border-zinc-500 placeholder-zinc-700 resize-y"
+            />
+
+            {addLinksResult && (
+              <div className="space-y-2 border border-[#27272a] rounded p-2.5 bg-[#09090b]">
+                <p className="text-xs text-zinc-300">
+                  <span className="text-emerald-400 font-semibold">{addLinksResult.added} added</span>
+                  {" · "}
+                  <span className="text-zinc-400">{addLinksResult.duplicates} duplicate{addLinksResult.duplicates !== 1 ? "s" : ""}</span>
+                  {" · "}
+                  <span className={addLinksResult.unavailable > 0 ? "text-amber-400" : "text-zinc-400"}>
+                    {addLinksResult.unavailable} unavailable
+                  </span>
+                  {" · "}
+                  <span className={addLinksResult.failed > 0 ? "text-red-400" : "text-zinc-400"}>
+                    {addLinksResult.failed} failed
+                  </span>
+                </p>
+                <div className="space-y-1 max-h-44 overflow-y-auto">
+                  {addLinksResult.results.map((r, i) => (
+                    <div key={i} className="text-[11px] flex items-center justify-between gap-2">
+                      {r.url ? (
+                        <a
+                          href={r.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-blue-400 hover:underline truncate font-mono"
+                        >
+                          {r.url.replace("https://www.tiktok.com/", "")}
+                        </a>
+                      ) : (
+                        <span className="text-zinc-500 truncate font-mono">{r.input}</span>
+                      )}
+                      <span
+                        className={`flex-shrink-0 font-mono ${
+                          r.status === "added"
+                            ? "text-emerald-400"
+                            : r.status === "duplicate"
+                            ? "text-zinc-500"
+                            : r.status === "unavailable"
+                            ? "text-amber-400"
+                            : "text-red-400"
+                        }`}
+                        title={r.reason}
+                      >
+                        {r.status === "added" && r.views != null
+                          ? `${r.views.toLocaleString("en-US")} views`
+                          : r.reason || r.status}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div className="flex justify-end gap-2 pt-1">
+              <button
+                onClick={() => setShowAddLinksDialog(false)}
+                disabled={addLinksRunning}
+                className="px-3 py-1.5 bg-zinc-900 hover:bg-zinc-800 border border-[#27272a] text-zinc-300 text-[11px] font-semibold rounded transition disabled:opacity-50"
+              >
+                {addLinksResult ? "Close" : "Cancel"}
+              </button>
+              <button
+                onClick={handleAddLinks}
+                disabled={addLinksRunning || detectedLinkCount === 0}
+                className="px-3 py-1.5 bg-zinc-100 hover:bg-white text-zinc-950 text-[11px] font-semibold rounded transition disabled:opacity-40 flex items-center gap-1.5"
+              >
+                {addLinksRunning && <Loader2 size={11} className="animate-spin" />}
+                {addLinksRunning
+                  ? "Adding…"
+                  : `Add ${detectedLinkCount > 0 ? `${detectedLinkCount} link${detectedLinkCount !== 1 ? "s" : ""}` : "links"} & pull stats`}
               </button>
             </div>
           </div>

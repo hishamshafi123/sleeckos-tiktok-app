@@ -23,6 +23,10 @@ export type ProviderVideoStats =
       likes: bigint;
       comments: bigint;
       shares: bigint;
+      /** Video's real TikTok create time, when the provider returns it. */
+      createTime?: Date;
+      /** Video description/caption text, when returned. */
+      text?: string;
     }
   | { unavailable: true };
 
