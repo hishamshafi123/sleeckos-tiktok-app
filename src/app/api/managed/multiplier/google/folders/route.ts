@@ -25,8 +25,10 @@ export async function GET(req: NextRequest) {
     }
 
     // Search for folders. Drive's orderBy:"name" is lexicographic ("POL ACC
-    // 50" before "POL ACC 7") and pageSize 50 would also cut off matches, so
-    // paginate ALL matching folders, natural-sort numerically, then cap.
+    // 50" before "POL ACC 7") and Drive returns pages in no guaranteed order,
+    // so paginate the ENTIRE match set, natural-sort numerically, then cap —
+    // any earlier cutoff would silently drop low-numbered folders (sorting
+    // can't bring back folders that were never fetched).
     let queryStr = "mimeType='application/vnd.google-apps.folder' and trashed=false";
     if (q.trim()) {
       queryStr += ` and name contains '${q.replace(/'/g, "\\'")}'`;
@@ -38,7 +40,7 @@ export async function GET(req: NextRequest) {
       const res: any = await drive.files.list({
         q: queryStr,
         fields: "nextPageToken, files(id,name,parents)",
-        pageSize: 100,
+        pageSize: 1000,
         pageToken,
         supportsAllDrives: true,
         includeItemsFromAllDrives: true,
@@ -47,7 +49,7 @@ export async function GET(req: NextRequest) {
         allFolders.push(...res.data.files.map((f: any) => ({ id: f.id, name: f.name })));
       }
       pageToken = res.data.nextPageToken || undefined;
-    } while (pageToken && allFolders.length < 500);
+    } while (pageToken);
 
     allFolders.sort((a, b) => naturalCompare(a.name || "", b.name || ""));
     const folders = allFolders.slice(0, 50);

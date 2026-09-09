@@ -82,13 +82,14 @@ export async function searchDriveFolders(query: string) {
 
   const folders: any[] = [];
   let pageToken: string | undefined = undefined;
-  const maxFolders = 500;
 
+  // Paginate the ENTIRE match set — Drive returns pages unordered, so any
+  // cutoff would silently drop folders before the natural sort below runs.
   do {
     const res: any = await drive.files.list({
       q: queryStr,
       fields: "nextPageToken, files(id,name,parents)",
-      pageSize: 100,
+      pageSize: 1000,
       pageToken,
       supportsAllDrives: true,
       includeItemsFromAllDrives: true,
@@ -97,7 +98,7 @@ export async function searchDriveFolders(query: string) {
       folders.push(...res.data.files);
     }
     pageToken = res.data.nextPageToken || undefined;
-  } while (pageToken && folders.length < maxFolders);
+  } while (pageToken);
 
   // Natural sort the aggregated set
   folders.sort((a, b) => naturalCompare(a.name || "", b.name || ""));
