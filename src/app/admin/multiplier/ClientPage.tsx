@@ -250,6 +250,10 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
   const [driveFolders, setDriveFolders] = useState<{ id: string; name: string }[]>([]);
   const [folderSearch, setFolderSearch] = useState("");
   const [searchingFolders, setSearchingFolders] = useState(false);
+  // Sequence guard: only the latest folder search may write results — a slow
+  // unfiltered query (modal open) must not overwrite a newer filtered one.
+  const folderSearchSeqRef = useRef(0);
+  const exportSearchSeqRef = useRef(0);
   const [currentPickerEmail, setCurrentPickerEmail] = useState<string | null>(null);
   const [syncingOutputs, setSyncingOutputs] = useState<Set<string>>(new Set());
   const [selectedPickerFolders, setSelectedPickerFolders] = useState<{ id: string; name: string }[]>([]);
@@ -472,6 +476,7 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
 
   const handleSearchExportFolders = async (val: string, mode: "account" | "drive" = smartExportSearchMode) => {
     setSmartExportSearch(val);
+    const seq = ++exportSearchSeqRef.current;
     if (!val.trim()) {
       setSearchedExportFolders([]);
       return;
@@ -479,14 +484,16 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
     setSearchingExportFolders(true);
     try {
       const res = await fetch(`/api/accounts/search?q=${encodeURIComponent(val)}&mode=${mode}`);
-      if (res.ok) {
+      if (res.ok && seq === exportSearchSeqRef.current) {
         const data = await res.json();
         setSearchedExportFolders(((data.results || []) as AccountSearchRow[]).map((r) => mapAccountSearchResult(r, mode)));
       }
     } catch (err) {
       console.error("Folder search failed:", err);
     } finally {
-      setSearchingExportFolders(false);
+      if (seq === exportSearchSeqRef.current) {
+        setSearchingExportFolders(false);
+      }
     }
   };
 
@@ -1136,18 +1143,23 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
   };
 
   const searchDriveFolders = async (query: string) => {
+    const seq = ++folderSearchSeqRef.current;
     setSearchingFolders(true);
     try {
       const res = await fetch(`/api/managed/multiplier/google/folders?q=${encodeURIComponent(query)}`);
-      if (res.ok) {
+      if (res.ok && seq === folderSearchSeqRef.current) {
         const data = await res.json();
         setDriveFolders(data.folders || []);
         setCurrentPickerEmail(data.googleEmail || null);
       }
     } catch {
-      toast.error("Failed to query Google Drive folders");
+      if (seq === folderSearchSeqRef.current) {
+        toast.error("Failed to query Google Drive folders");
+      }
     } finally {
-      setSearchingFolders(false);
+      if (seq === folderSearchSeqRef.current) {
+        setSearchingFolders(false);
+      }
     }
   };
 
