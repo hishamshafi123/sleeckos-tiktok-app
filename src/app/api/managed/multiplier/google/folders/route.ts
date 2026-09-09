@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getSession } from "@/lib/session";
 import { can } from "@/lib/services/permissions";
 import { getMultiplierDriveClient } from "../drive-helper";
+import { naturalCompare } from "@/lib/utils/sorting";
 import prisma from "@/lib/db";
 
 // GET /api/managed/multiplier/google/folders?q=search — List/search Drive folders
@@ -23,25 +24,33 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: "Google Drive not connected. Connect Drive in the Manage section first." }, { status: 400 });
     }
 
-    // Search for folders
+    // Search for folders. Drive's orderBy:"name" is lexicographic ("POL ACC
+    // 50" before "POL ACC 7") and pageSize 50 would also cut off matches, so
+    // paginate ALL matching folders, natural-sort numerically, then cap.
     let queryStr = "mimeType='application/vnd.google-apps.folder' and trashed=false";
     if (q.trim()) {
       queryStr += ` and name contains '${q.replace(/'/g, "\\'")}'`;
     }
 
-    const res = await drive.files.list({
-      q: queryStr,
-      fields: "files(id,name,parents)",
-      orderBy: "name",
-      pageSize: 50,
-      supportsAllDrives: true,
-      includeItemsFromAllDrives: true,
-    });
+    const allFolders: { id: string; name: string }[] = [];
+    let pageToken: string | undefined = undefined;
+    do {
+      const res: any = await drive.files.list({
+        q: queryStr,
+        fields: "nextPageToken, files(id,name,parents)",
+        pageSize: 100,
+        pageToken,
+        supportsAllDrives: true,
+        includeItemsFromAllDrives: true,
+      });
+      if (res.data.files) {
+        allFolders.push(...res.data.files.map((f: any) => ({ id: f.id, name: f.name })));
+      }
+      pageToken = res.data.nextPageToken || undefined;
+    } while (pageToken && allFolders.length < 500);
 
-    const folders = (res.data.files || []).map((f) => ({
-      id: f.id,
-      name: f.name,
-    }));
+    allFolders.sort((a, b) => naturalCompare(a.name || "", b.name || ""));
+    const folders = allFolders.slice(0, 50);
 
     const account = await prisma.managedAccount.findFirst({
       where: { driveConnected: true, googleAccessToken: { not: null } },
