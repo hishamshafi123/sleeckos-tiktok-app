@@ -66,6 +66,7 @@ import { apifyProvider } from "./apify";
 import { normalizeCaption } from "./recover";
 import { unresolvedPlaceholderId } from "./capture";
 import { applyStatsUpdate, maybeMarkDormant, ZERO_VIEW_THRESHOLD } from "./refresh";
+import { rollupAccountsToday } from "./account-stats";
 import { getOrgTimezone } from "@/lib/services/timezone";
 
 const TERMINAL_PUBLISHED_STATES = ["PUBLISHED", "PENDING_DELETION", "DELETED"];
@@ -391,6 +392,9 @@ export async function runDailyAccountSweep(
   const counters = { attempted: 0, succeeded: 0, failed: 0, skipped: 0 };
   let accountsSwept = 0;
   let refreshed = 0;
+  // Accounts that captured or refreshed anything — rolled up at the end so
+  // the Account Performance bars reflect this sweep immediately.
+  const changedAccountIds = new Set<string>();
 
   const saveProgress = async (status?: string, error?: string) => {
     await prisma.analyticsRun.update({
@@ -449,6 +453,7 @@ export async function runDailyAccountSweep(
       continue;
     }
     accountsSwept++;
+    const refreshedBefore = refreshed;
 
     // Videos already attributed to ANY TrackedVideo row are untouchable for
     // matching — but they DO get a free stats refresh from this payload
@@ -520,6 +525,10 @@ export async function runDailyAccountSweep(
     counters.failed += cap.failed;
     counters.skipped += cap.skipped;
 
+    if (refreshed > refreshedBefore || cap.succeeded > 0) {
+      changedAccountIds.add(account.id);
+    }
+
     await saveProgress();
     if (accounts[accounts.length - 1] !== account) await sleep(SLEEP_MS);
   }
@@ -528,5 +537,11 @@ export async function runDailyAccountSweep(
   console.log(
     `[Sweep] Run ${run.id} done: accounts=${accountsSwept} attempted=${counters.attempted} captured=${counters.succeeded} failed=${counters.failed} skipped=${counters.skipped} refreshed=${refreshed}`
   );
+
+  // Move the Account Performance bars now — don't wait for the daily rollup cron.
+  if (changedAccountIds.size > 0) {
+    const rolled = await rollupAccountsToday(changedAccountIds);
+    console.log(`[Sweep] Rolled up ${rolled} account(s) after run ${run.id}`);
+  }
   return { runId: run.id, accountsSwept, ...counters, refreshed };
 }

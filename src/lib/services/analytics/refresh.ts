@@ -16,6 +16,7 @@ import prisma from "@/lib/db";
 import { ProviderError } from "./provider";
 import type { AnalyticsProvider } from "./provider";
 import { apifyProvider } from "./apify";
+import { rollupAccountsToday } from "./account-stats";
 import { getOrgTimezone, getZonedDateString } from "@/lib/services/timezone";
 
 // ── Tier config (env-overridable) ────────────────────────────────────────────
@@ -110,7 +111,10 @@ export async function applyStatsUpdate(
   return { unchangedViewsStreak: streak };
 }
 
-/** Write at most one snapshot per video per org-timezone (IST) day. */
+/** Write one snapshot per video per org-timezone (IST) day — and keep it
+ * current: a same-day refresh UPDATES today's row instead of skipping, so
+ * the Account Performance rollup (which computes daily gains from snapshots)
+ * reflects the latest numbers immediately, not tomorrow. */
 export async function ensureDailySnapshot(
   trackedVideoId: string,
   stats: { views: bigint; likes: bigint; comments: bigint; shares: bigint },
@@ -120,13 +124,14 @@ export async function ensureDailySnapshot(
   const latest = await prisma.videoStatSnapshot.findFirst({
     where: { trackedVideoId },
     orderBy: { recordedAt: "desc" },
-    select: { recordedAt: true },
+    select: { id: true, recordedAt: true },
   });
   if (
     latest &&
     getZonedDateString(latest.recordedAt, timezone) === getZonedDateString(now, timezone)
   ) {
-    return false;
+    await prisma.videoStatSnapshot.update({ where: { id: latest.id }, data: stats });
+    return true;
   }
   await prisma.videoStatSnapshot.create({ data: { trackedVideoId, ...stats } });
   return true;
@@ -248,7 +253,7 @@ export async function runAnalyticsRefresh(opts: RefreshOptions = {}): Promise<{ 
       // budget goes to campaign-attributed videos only).
       campaignId: campaignId ? campaignId : { not: null, notIn: pausedIds },
     },
-    select: { id: true, tiktokVideoId: true, url: true, publishedAt: true, lastRefreshedAt: true, unchangedViewsStreak: true },
+    select: { id: true, tiktokVideoId: true, url: true, accountId: true, publishedAt: true, lastRefreshedAt: true, unchangedViewsStreak: true },
   });
 
   // Oldest-refreshed-first (never refreshed first).
@@ -267,6 +272,10 @@ export async function runAnalyticsRefresh(opts: RefreshOptions = {}): Promise<{ 
   const slowCadenceDue = due.filter(
     (v) => v.unchangedViewsStreak >= STATIC_VIEW_STREAK_DAYS
   ).length;
+
+  // Accounts whose videos got fresh stats — rolled up at the end so the
+  // Account Performance bars reflect this run immediately.
+  const refreshedAccountIds = new Set<string>();
 
   const counters = {
     attempted: run.attempted,
@@ -335,6 +344,7 @@ export async function runAnalyticsRefresh(opts: RefreshOptions = {}): Promise<{ 
           await applyStatsUpdate(video.id, stats, timezone, now);
           // After the snapshot so today's check counts toward the streak.
           await maybeMarkDormant(video, stats, timezone, now);
+          refreshedAccountIds.add(video.accountId);
           counters.succeeded++;
         }
       } catch (err: any) {
@@ -356,6 +366,12 @@ export async function runAnalyticsRefresh(opts: RefreshOptions = {}): Promise<{ 
   console.log(
     `[Analytics] Run ${run.id} (${type}) done: attempted=${counters.attempted} succeeded=${counters.succeeded} failed=${counters.failed} skipped=${counters.skipped} cadence: slow=${slowCadenceDue} normal=${due.length - slowCadenceDue}`
   );
+
+  // Move the Account Performance bars now — don't wait for the daily rollup cron.
+  if (refreshedAccountIds.size > 0) {
+    const rolled = await rollupAccountsToday(refreshedAccountIds);
+    console.log(`[Analytics] Rolled up ${rolled} account(s) after refresh run ${run.id}`);
+  }
   return { runId: run.id };
 }
 

@@ -97,6 +97,32 @@ export async function upsertAccountDailyStat(
 }
 
 /**
+ * Recompute today's (and yesterday's) rollup for a specific set of accounts.
+ * Called at the end of refresh/sweep passes so the Account Performance bars
+ * move immediately after stats land — not only when the daily cron runs.
+ * Idempotent (same upsert the cron uses).
+ */
+export async function rollupAccountsToday(accountIds: Iterable<string>): Promise<number> {
+  const ids = [...new Set(accountIds)];
+  if (ids.length === 0) return 0;
+  const tz = await getOrgTimezone();
+  const today = zonedDayString(new Date(), tz);
+  const yesterday = new Date(Date.parse(`${today}T00:00:00Z`) - DAY_MS).toISOString().slice(0, 10);
+
+  let done = 0;
+  for (const id of ids) {
+    try {
+      await upsertAccountDailyStat(id, yesterday, tz);
+      await upsertAccountDailyStat(id, today, tz);
+      done++;
+    } catch (err: any) {
+      console.error(`[AccountStats] Rollup failed for account ${id}:`, err?.message || err);
+    }
+  }
+  return done;
+}
+
+/**
  * Daily cron entrypoint: upsert yesterday's rollup for every (non-revoked)
  * account, plus today's partial day so the "Today" period has live numbers.
  */
