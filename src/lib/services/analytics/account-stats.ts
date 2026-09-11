@@ -7,9 +7,11 @@
  *  - postsCount: PostJobs in a terminal-published state with publishedAt
  *    inside the IST day.
  *  - viewsGained / likesGained: summed per-video deltas of VideoStatSnapshot —
- *    max(0, last snapshot that day − snapshot before it). A video with no
- *    previous snapshot contributes 0 (its first snapshot is a baseline, not a
- *    gain). Snapshot counters are BigInt; deltas are clamped to Int32.
+ *    max(0, last snapshot that day − snapshot before it). Additionally, a
+ *    video's FIRST-ever snapshot counts in full on the video's POST day
+ *    (publishedAt): views a video already had when its link was first captured
+ *    are real views earned since the post went up, not a baseline to discard.
+ *    Snapshot counters are BigInt; deltas are clamped to Int32.
  *
  * Everything here is idempotent: rows are upserted from source data, so the
  * backfill and the daily cron can be re-run safely.
@@ -70,23 +72,48 @@ export async function upsertAccountDailyStat(
   // Per-video delta: last snapshot of the day minus the one before it.
   const videos = await prisma.trackedVideo.findMany({
     where: { accountId },
-    select: { id: true },
+    select: { id: true, publishedAt: true },
   });
 
   let viewsGained = 0;
   let likesGained = 0;
   for (const video of videos) {
-    const lastTwo = await prisma.videoStatSnapshot.findMany({
-      where: { trackedVideoId: video.id, recordedAt: { lt: end } },
+    // Sum EVERY consecutive-pair delta inside the day (baseline = last
+    // snapshot before the day). Taking just the last pair undercounts when
+    // a video is snapshotted more than once in a day (capture + refresh +
+    // sweep can all land on the same day).
+    const prevBefore = await prisma.videoStatSnapshot.findFirst({
+      where: { trackedVideoId: video.id, recordedAt: { lt: start } },
       orderBy: { recordedAt: "desc" },
-      take: 2,
-      select: { views: true, likes: true, recordedAt: true },
+      select: { views: true, likes: true },
     });
-    const latest = lastTwo[0];
-    const prev = lastTwo[1];
-    if (!latest || latest.recordedAt < start || !prev) continue;
-    viewsGained += clampInt(latest.views - prev.views);
-    likesGained += clampInt(latest.likes - prev.likes);
+    const inDay = await prisma.videoStatSnapshot.findMany({
+      where: { trackedVideoId: video.id, recordedAt: { gte: start, lt: end } },
+      orderBy: { recordedAt: "asc" },
+      select: { views: true, likes: true },
+    });
+    let prev = prevBefore;
+    for (const snap of inDay) {
+      if (prev) {
+        viewsGained += clampInt(snap.views - prev.views);
+        likesGained += clampInt(snap.likes - prev.likes);
+      }
+      prev = snap;
+    }
+    // First-snapshot rule: for videos POSTED this day, the first-ever
+    // snapshot counts in full — those views accrued between publishing and
+    // link capture and would otherwise vanish from every day's bar.
+    if (video.publishedAt >= start && video.publishedAt < end) {
+      const first = await prisma.videoStatSnapshot.findFirst({
+        where: { trackedVideoId: video.id },
+        orderBy: { recordedAt: "asc" },
+        select: { views: true, likes: true },
+      });
+      if (first) {
+        viewsGained += clampInt(first.views);
+        likesGained += clampInt(first.likes);
+      }
+    }
   }
 
   await prisma.accountDailyStat.upsert({
@@ -117,6 +144,34 @@ export async function rollupAccountsToday(accountIds: Iterable<string>): Promise
       done++;
     } catch (err: any) {
       console.error(`[AccountStats] Rollup failed for account ${id}:`, err?.message || err);
+    }
+  }
+  return done;
+}
+
+/**
+ * Recompute the rollup for specific accounts on specific org-tz days
+ * (YYYY-MM-DD). Used by capture paths: a newly captured video's
+ * first-snapshot views land on its POST day, which may be several days
+ * back — today/yesterday alone wouldn't pick that up.
+ */
+export async function rollupAccountsForDays(
+  accountIds: Iterable<string>,
+  days: Iterable<string>
+): Promise<number> {
+  const ids = [...new Set(accountIds)];
+  const dayList = [...new Set(days)];
+  if (ids.length === 0 || dayList.length === 0) return 0;
+  const tz = await getOrgTimezone();
+  let done = 0;
+  for (const id of ids) {
+    for (const day of dayList) {
+      try {
+        await upsertAccountDailyStat(id, day, tz);
+        done++;
+      } catch (err: any) {
+        console.error(`[AccountStats] Rollup failed for account ${id} day ${day}:`, err?.message || err);
+      }
     }
   }
   return done;
@@ -183,6 +238,7 @@ export async function backfillAccountDailyStats(): Promise<{
         where: { accountId: account.id },
         select: {
           id: true,
+          publishedAt: true,
           snapshots: {
             orderBy: { recordedAt: "asc" },
             select: { views: true, likes: true, recordedAt: true },
@@ -191,6 +247,16 @@ export async function backfillAccountDailyStats(): Promise<{
       });
       const gainsByDay = new Map<string, { views: number; likes: number }>();
       for (const video of videos) {
+        // First-ever snapshot counts in full on the video's POST day (same
+        // rule as upsertAccountDailyStat) — views earned between publishing
+        // and link capture.
+        if (video.snapshots.length > 0) {
+          const postDay = zonedDayString(video.publishedAt, tz);
+          const agg = gainsByDay.get(postDay) ?? { views: 0, likes: 0 };
+          agg.views += clampInt(video.snapshots[0].views);
+          agg.likes += clampInt(video.snapshots[0].likes);
+          gainsByDay.set(postDay, agg);
+        }
         for (let i = 1; i < video.snapshots.length; i++) {
           const prev = video.snapshots[i - 1];
           const curr = video.snapshots[i];

@@ -18,6 +18,31 @@
 import prisma from "@/lib/db";
 import type { AnalyticsProvider, ProviderVideo } from "./provider";
 import { apifyProvider } from "./apify";
+import { getOrgTimezone } from "@/lib/services/timezone";
+import { rollupAccountsForDays, zonedDayString } from "./account-stats";
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Recompute AccountDailyStat rows touched by a capture: today + yesterday
+ * (opportunistic stats refreshes move those bars) plus the POST day of each
+ * newly captured video (its first-snapshot views are attributed there).
+ * Never throws.
+ */
+async function rollupAfterCapture(accountId: string, capturedPostDates: Date[]): Promise<void> {
+  try {
+    const tz = await getOrgTimezone();
+    const now = Date.now();
+    const days = new Set<string>([
+      zonedDayString(new Date(now), tz),
+      zonedDayString(new Date(now - DAY_MS), tz),
+    ]);
+    for (const d of capturedPostDates) days.add(zonedDayString(d, tz));
+    await rollupAccountsForDays([accountId], days);
+  } catch (err: any) {
+    console.error(`[Capture] Post-capture rollup failed for account ${accountId}:`, err?.message || err);
+  }
+}
 
 // PostPeer's publish CONFIRMATION lags the actual TikTok upload by several
 // minutes (async publish + our poll interval), so a video's real createTime
@@ -330,11 +355,15 @@ export async function captureVideoLink(
       { source: "capture", refId: postJobId }
     );
 
-    return await matchAndPersistCapture(
+    const res = await matchAndPersistCapture(
       { ...job, publishedAt: job.publishedAt },
       latest,
       new Date()
     );
+    if (res.status === "captured") {
+      await rollupAfterCapture(job.accountId, [job.publishedAt]);
+    }
+    return res;
   } catch (err: any) {
     console.error(`[Capture] captureVideoLink(${postJobId}) failed:`, err?.message || err);
     return { status: "skipped", reason: err?.message || String(err) };
@@ -411,18 +440,23 @@ export async function captureAccountPosts(
     const now = new Date();
 
     const justCaptured = new Set<string>();
+    const capturedPostDates: Date[] = [];
     for (const job of uncaptured) {
       result.attempted++;
       const res = await matchAndPersistCapture(job, videos, now);
       if (res.status === "captured") {
         result.captured++;
         justCaptured.add(res.tiktokVideoId);
+        capturedPostDates.push(job.publishedAt);
       } else if (res.status === "unresolved") {
         result.unresolved++;
       }
     }
 
     result.refreshed = await refreshFetchedStats(videos, now, justCaptured);
+    if (result.captured > 0 || result.refreshed > 0) {
+      await rollupAfterCapture(accountId, capturedPostDates);
+    }
     console.log(
       `[Capture] Account @${account.tiktokUsername}: attempted=${result.attempted} captured=${result.captured} unresolved=${result.unresolved} refreshed=${result.refreshed} (depth ${depth})`
     );
