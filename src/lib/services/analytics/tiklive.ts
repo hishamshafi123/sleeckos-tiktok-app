@@ -20,6 +20,8 @@
  * Env:
  *   TIKLIVE_API_KEY      (required)
  *   TIKLIVE_TIMEOUT_MS   per-HTTP-call timeout, default 30000
+ *   TIKLIVE_MIN_INTERVAL_MS  min spacing between HTTP calls, default 350
+ *                            (keeps the process under the 200 req/min plan cap)
  *   TIKLIVE_COST_PER_CALL estimated USD per request, default 0.000099
  */
 
@@ -69,10 +71,29 @@ function toBigInt(v: unknown): bigint {
   return BigInt(0);
 }
 
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Global request pacer — every TikLiveAPI HTTP call starts at least
+ * TIKLIVE_MIN_INTERVAL_MS (default 350ms) after the previous one, keeping the
+ * whole process under ~170 requests/min against the plan's 200 req/min cap.
+ * Without this, a 25-URL stats batch at concurrency 5 bursts ~300 req/min
+ * and gets rate-limited mid-batch.
+ */
+let nextSlotAt = 0;
+async function pace(): Promise<void> {
+  const interval = Number(process.env.TIKLIVE_MIN_INTERVAL_MS) || 350;
+  const now = Date.now();
+  const wait = Math.max(0, nextSlotAt - now);
+  nextSlotAt = Math.max(now, nextSlotAt) + interval;
+  if (wait > 0) await sleep(wait);
+}
+
 /** GET a TikLiveAPI endpoint, returning parsed JSON. Throws ProviderError. */
 async function tikliveGet(path: string): Promise<any> {
   const apiKey = getApiKey();
   const timeoutMs = Number(process.env.TIKLIVE_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS;
+  await pace();
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   let res: Response;
