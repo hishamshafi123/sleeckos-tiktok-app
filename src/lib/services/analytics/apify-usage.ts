@@ -76,6 +76,21 @@ export async function setApifyRates(userId: string, rates: ApifyRates): Promise<
 const estCost = (calls: number, results: number, rates: ApifyRates) =>
   calls * rates.costPerCall + results * rates.costPerResult;
 
+// ── Providers ────────────────────────────────────────────────────────────────
+// The ledger mixes both analytics providers: actorId "tikliveapi" rows are
+// TikLiveAPI calls (estimated at their published $9.90/100k price — the
+// configured Apify rates below would wildly overstate them); everything else
+// is Apify.
+export const TIKLIVE_ACTOR_ID = "tikliveapi";
+const TIKLIVE_COST_PER_CALL = 0.000099;
+
+export function providerLabel(actorId: string | null): string {
+  return actorId === TIKLIVE_ACTOR_ID ? "TikLiveAPI" : "Apify";
+}
+
+const estCostFor = (actorId: string | null, calls: number, results: number, rates: ApifyRates) =>
+  actorId === TIKLIVE_ACTOR_ID ? calls * TIKLIVE_COST_PER_CALL : estCost(calls, results, rates);
+
 // ── Overview (today / 7d / 30d) ─────────────────────────────────────────────
 
 export interface ApifyUsageWindow {
@@ -96,23 +111,26 @@ export async function getApifyUsageOverview(
     zonedDayBounds(new Date(Date.parse(`${today}T00:00:00Z`) - daysAgo * DAY_MS).toISOString().slice(0, 10), tz).start;
 
   const window_ = async (gte: Date, rates: ApifyRates): Promise<ApifyUsageWindow> => {
-    const [agg, actualRows] = await Promise.all([
-      prisma.apifyCallLog.aggregate({
+    const [grouped, actualRows] = await Promise.all([
+      prisma.apifyCallLog.groupBy({
+        by: ["actorId"],
         where: { createdAt: { gte } },
         _count: { _all: true },
         _sum: { resultCount: true, usageUsd: true },
       }),
       prisma.apifyCallLog.count({ where: { createdAt: { gte }, usageUsd: { not: null } } }),
     ]);
-    const calls = agg._count._all;
-    const results = agg._sum.resultCount ?? 0;
-    return {
-      calls,
-      results,
-      estCostUsd: estCost(calls, results, rates),
-      actualUsd: agg._sum.usageUsd ?? 0,
-      actualRows,
-    };
+    let calls = 0;
+    let results = 0;
+    let estCostUsd = 0;
+    let actualUsd = 0;
+    for (const g of grouped) {
+      calls += g._count._all;
+      results += g._sum.resultCount ?? 0;
+      actualUsd += g._sum.usageUsd ?? 0;
+      estCostUsd += estCostFor(g.actorId, g._count._all, g._sum.resultCount ?? 0, rates);
+    }
+    return { calls, results, estCostUsd, actualUsd, actualRows };
   };
 
   const rates = await readRates();
@@ -149,23 +167,26 @@ export async function getApifyUsageBySource(
   const rates = await readRates();
 
   const grouped = await prisma.apifyCallLog.groupBy({
-    by: ["source"],
+    by: ["source", "actorId"],
     where: { createdAt: { gte: start } },
     _count: { _all: true },
     _sum: { resultCount: true, usageUsd: true },
   });
 
-  const rows: ApifyUsageSourceRow[] = grouped.map((g) => {
-    const est = estCost(g._count._all, g._sum.resultCount ?? 0, rates);
-    return {
-      source: g.source,
-      calls: g._count._all,
-      results: g._sum.resultCount ?? 0,
-      estCostUsd: est,
-      actualUsd: g._sum.usageUsd ?? 0,
-      sharePct: 0,
-    };
-  });
+  // Merge the per-provider groups into per-source rows (est is computed per
+  // group first so TikLive rows aren't estimated at Apify rates).
+  const bySource = new Map<string, ApifyUsageSourceRow>();
+  for (const g of grouped) {
+    const row =
+      bySource.get(g.source) ??
+      { source: g.source, calls: 0, results: 0, estCostUsd: 0, actualUsd: 0, sharePct: 0 };
+    row.calls += g._count._all;
+    row.results += g._sum.resultCount ?? 0;
+    row.actualUsd += g._sum.usageUsd ?? 0;
+    row.estCostUsd += estCostFor(g.actorId, g._count._all, g._sum.resultCount ?? 0, rates);
+    bySource.set(g.source, row);
+  }
+  const rows = [...bySource.values()];
   const totalEst = rows.reduce((a, r) => a + r.estCostUsd, 0);
   for (const r of rows) r.sharePct = totalEst > 0 ? (r.estCostUsd / totalEst) * 100 : 0;
   rows.sort((a, b) => b.estCostUsd - a.estCostUsd || a.source.localeCompare(b.source));
@@ -198,7 +219,7 @@ export async function getApifyUsageDaily(
 
   const rows = await prisma.apifyCallLog.findMany({
     where: { createdAt: { gte: start } },
-    select: { createdAt: true, source: true, resultCount: true, usageUsd: true },
+    select: { createdAt: true, source: true, actorId: true, resultCount: true, usageUsd: true },
   });
 
   const byDay = new Map<string, ApifyUsageDay>();
@@ -221,10 +242,8 @@ export async function getApifyUsageDaily(
     d.calls++;
     d.results += r.resultCount;
     d.actualUsd += r.usageUsd ?? 0;
+    d.estCostUsd += estCostFor(r.actorId, 1, r.resultCount, rates);
     d.bySource[r.source] = (d.bySource[r.source] ?? 0) + 1;
-  }
-  for (const d of byDay.values()) {
-    d.estCostUsd = estCost(d.calls, d.results, rates);
   }
 
   return {
@@ -258,23 +277,77 @@ export async function getTopFetchedAccounts(
   const rates = await readRates();
 
   const grouped = await prisma.apifyCallLog.groupBy({
-    by: ["inputSummary"],
+    by: ["inputSummary", "actorId"],
     where: { createdAt: { gte: start }, inputType: "account" },
     _count: { _all: true },
     _sum: { resultCount: true },
     orderBy: { _count: { inputSummary: "desc" } },
-    take: 20,
+    take: 40, // over-fetch: per-provider groups are merged by handle below
   });
 
-  return {
-    days,
-    rows: grouped.map((g) => ({
-      handle: g.inputSummary.replace(/^@/, ""),
-      calls: g._count._all,
-      results: g._sum.resultCount ?? 0,
-      estCostUsd: estCost(g._count._all, g._sum.resultCount ?? 0, rates),
-    })),
-  };
+  const byHandle = new Map<string, ApifyTopAccountRow>();
+  for (const g of grouped) {
+    const handle = g.inputSummary.replace(/^@/, "");
+    const row = byHandle.get(handle) ?? { handle, calls: 0, results: 0, estCostUsd: 0 };
+    row.calls += g._count._all;
+    row.results += g._sum.resultCount ?? 0;
+    row.estCostUsd += estCostFor(g.actorId, g._count._all, g._sum.resultCount ?? 0, rates);
+    byHandle.set(handle, row);
+  }
+  const rows = [...byHandle.values()]
+    .sort((a, b) => b.calls - a.calls || a.handle.localeCompare(b.handle))
+    .slice(0, 20);
+  return { days, rows };
+}
+
+// ── By provider (TikLiveAPI vs Apify) ───────────────────────────────────────
+
+export interface ApifyProviderRow {
+  provider: string; // "TikLiveAPI" | "Apify"
+  calls: number;
+  results: number;
+  errors: number;
+  estCostUsd: number;
+  actualUsd: number;
+}
+
+export async function getApifyUsageByProvider(
+  userId: string,
+  days = 30
+): Promise<{ days: number; rows: ApifyProviderRow[] }> {
+  await assertAccess(userId);
+  const tz = await getOrgTimezone();
+  const today = zonedDayString(new Date(), tz);
+  const { start } = zonedDayBounds(
+    new Date(Date.parse(`${today}T00:00:00Z`) - (days - 1) * DAY_MS).toISOString().slice(0, 10),
+    tz
+  );
+  const rates = await readRates();
+
+  const grouped = await prisma.apifyCallLog.groupBy({
+    by: ["actorId", "status"],
+    where: { createdAt: { gte: start } },
+    _count: { _all: true },
+    _sum: { resultCount: true, usageUsd: true },
+  });
+
+  const byProvider = new Map<string, ApifyProviderRow>();
+  for (const g of grouped) {
+    const provider = providerLabel(g.actorId);
+    const row =
+      byProvider.get(provider) ??
+      { provider, calls: 0, results: 0, errors: 0, estCostUsd: 0, actualUsd: 0 };
+    row.calls += g._count._all;
+    row.results += g._sum.resultCount ?? 0;
+    row.actualUsd += g._sum.usageUsd ?? 0;
+    if (g.status === "error") row.errors += g._count._all;
+    if (g.status !== "error") {
+      row.estCostUsd += estCostFor(g.actorId, g._count._all, g._sum.resultCount ?? 0, rates);
+    }
+    byProvider.set(provider, row);
+  }
+  const rows = [...byProvider.values()].sort((a, b) => b.calls - a.calls);
+  return { days, rows };
 }
 
 // ── Recent raw calls ────────────────────────────────────────────────────────
@@ -283,6 +356,7 @@ export interface ApifyRecentCall {
   id: string;
   createdAt: string; // ISO
   source: string;
+  provider: string; // "TikLiveAPI" | "Apify"
   inputType: string;
   inputSummary: string;
   inputCount: number;
@@ -309,6 +383,7 @@ export async function getRecentApifyCalls(
       id: r.id,
       createdAt: r.createdAt.toISOString(),
       source: r.source,
+      provider: providerLabel(r.actorId),
       inputType: r.inputType,
       inputSummary: r.inputSummary,
       inputCount: r.inputCount,

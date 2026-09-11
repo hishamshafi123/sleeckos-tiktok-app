@@ -1515,6 +1515,22 @@ model ApifyCallLog {
   @@index([source, createdAt])
 }
 
+// Operational alerts surfaced in the admin top-bar bell (provider failures,
+// fallback events, analytics run failures). Written by notifyAdmin with
+// dedupe; read state is global (readAt set when any staff member marks all
+// read) — these are org-level operational events, not per-user messages.
+model AdminNotification {
+  id        String    @id @default(uuid())
+  createdAt DateTime  @default(now())
+  level     String // info | warning | error
+  title     String
+  body      String
+  source    String // e.g. "analytics_provider"
+  readAt    DateTime?
+
+  @@index([createdAt])
+}
+
 model AppSetting {
   key   String @id
   value String

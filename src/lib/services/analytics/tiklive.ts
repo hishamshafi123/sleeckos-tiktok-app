@@ -20,6 +20,8 @@
  * Env:
  *   TIKLIVE_API_KEY      (required)
  *   TIKLIVE_TIMEOUT_MS   per-HTTP-call timeout, default 30000
+ *   TIKLIVE_RETRIES      retries on transient/rate-limit failures, default 2
+ *                        (3 attempts total) before the Apify fallback engages
  *   TIKLIVE_MIN_INTERVAL_MS  min spacing between HTTP calls, default 350
  *                            (keeps the process under the 200 req/min plan cap)
  *   TIKLIVE_COST_PER_CALL estimated USD per request, default 0.000099
@@ -91,6 +93,31 @@ async function pace(): Promise<void> {
 
 /** GET a TikLiveAPI endpoint, returning parsed JSON. Throws ProviderError. */
 async function tikliveGet(path: string): Promise<any> {
+  const maxRetries = Number(process.env.TIKLIVE_RETRIES) || 2;
+  let lastErr: unknown = null;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await tikliveGetOnce(path);
+    } catch (err) {
+      lastErr = err;
+      // Only transient (5xx, timeout, network) and rate_limited are worth
+      // retrying — auth and not_found will fail identically every time.
+      const kind = err instanceof ProviderError ? err.kind : "transient";
+      if (kind !== "transient" && kind !== "rate_limited") throw err;
+      if (attempt < maxRetries) {
+        const backoffMs = 1000 * Math.pow(4, attempt); // 1s, 4s
+        console.warn(
+          `[TikLive] ${kind} failure (attempt ${attempt + 1}/${maxRetries + 1}), retrying in ${backoffMs}ms`
+        );
+        await sleep(backoffMs);
+      }
+    }
+  }
+  throw lastErr;
+}
+
+/** Single TikLiveAPI GET attempt (paced, timed out, error-classified). */
+async function tikliveGetOnce(path: string): Promise<any> {
   const apiKey = getApiKey();
   const timeoutMs = Number(process.env.TIKLIVE_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS;
   await pace();

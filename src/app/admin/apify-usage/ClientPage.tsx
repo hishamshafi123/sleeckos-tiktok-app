@@ -39,10 +39,21 @@ type Daily = { days: UsageDay[] };
 type TopAccount = { handle: string; calls: number; results: number; estCostUsd: number };
 type TopAccounts = { days: number; rows: TopAccount[] };
 
+type ProviderRow = {
+  provider: string;
+  calls: number;
+  results: number;
+  errors: number;
+  estCostUsd: number;
+  actualUsd: number;
+};
+type ByProvider = { days: number; rows: ProviderRow[] };
+
 type RecentCall = {
   id: string;
   createdAt: string;
   source: string;
+  provider: string;
   inputType: string;
   inputSummary: string;
   inputCount: number;
@@ -65,6 +76,23 @@ const SOURCE_META: Record<string, { label: string; color: string }> = {
 const sourceMeta = (s: string) =>
   SOURCE_META[s] ?? { label: s, color: "#71717a" };
 const SOURCE_ORDER = ["sweep", "refresh", "spot_check", "recover", "capture"];
+
+// ── Provider presentation ───────────────────────────────────────────────────
+const PROVIDER_META: Record<string, { color: string; note: string }> = {
+  TikLiveAPI: { color: "#38bdf8", note: "primary · ~$0.0001/call" },
+  Apify: { color: "#fbbf24", note: "fallback · higher cost" },
+};
+const ProviderBadge = ({ provider }: { provider: string }) => {
+  const meta = PROVIDER_META[provider] ?? { color: "#71717a", note: "" };
+  return (
+    <span
+      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium border"
+      style={{ color: meta.color, borderColor: `${meta.color}40`, backgroundColor: `${meta.color}12` }}
+    >
+      {provider}
+    </span>
+  );
+};
 
 // ── Formatting helpers (all display times IST) ──────────────────────────────
 const IST = "Asia/Kolkata";
@@ -166,6 +194,7 @@ function KpiCard({
 // ── Main page ───────────────────────────────────────────────────────────────
 export default function ClientPage() {
   const overview = useResource<Overview>("/api/admin/apify-usage/overview");
+  const byProvider = useResource<ByProvider>("/api/admin/apify-usage/by-provider?days=30");
   const bySource = useResource<BySource>("/api/admin/apify-usage/by-source?days=30");
   const daily = useResource<Daily>("/api/admin/apify-usage/daily?days=30");
   const topAccounts = useResource<TopAccounts>("/api/admin/apify-usage/top-accounts?days=7");
@@ -181,9 +210,10 @@ export default function ClientPage() {
   return (
     <div className="space-y-8">
       <div>
-        <h1 className="text-xl font-semibold text-white">Apify Usage</h1>
+        <h1 className="text-xl font-semibold text-white">Scraper Usage</h1>
         <p className="text-xs text-zinc-500 mt-1">
-          Every Apify actor call, where the spend goes, and what it costs · all times IST
+          TikLiveAPI is the primary scraper, Apify the automatic fallback · every call, where the
+          spend goes, and what it costs · all times IST
         </p>
       </div>
 
@@ -225,6 +255,55 @@ export default function ClientPage() {
               }
               tone="text-green-400"
             />
+          </div>
+        )}
+      </section>
+
+      {/* ── By provider ────────────────────────────────────────────────── */}
+      <section className="space-y-3">
+        <h2 className="text-sm font-semibold text-zinc-200">
+          By provider (last {byProvider.data?.days ?? 30} days)
+        </h2>
+        {byProvider.error ? (
+          <SectionError message={byProvider.error} onRetry={byProvider.reload} />
+        ) : byProvider.loading || !byProvider.data ? (
+          <SkeletonBlock height="h-20" />
+        ) : byProvider.data.rows.length === 0 ? (
+          <EmptyNote>No scraper calls logged yet.</EmptyNote>
+        ) : (
+          <div className="border border-[#27272a] rounded-lg overflow-hidden">
+            {byProvider.data.rows.map((r) => {
+              const meta = PROVIDER_META[r.provider] ?? { color: "#71717a", note: "" };
+              return (
+                <div
+                  key={r.provider}
+                  className="flex items-center gap-4 px-4 py-2.5 text-xs border-b border-[#1c1c21] last:border-0"
+                >
+                  <span className="w-36 flex-shrink-0 flex items-center gap-2">
+                    <ProviderBadge provider={r.provider} />
+                    <span className="text-[10px] text-zinc-600">{meta.note}</span>
+                  </span>
+                  <span className="w-20 text-right text-zinc-300 tabular-nums flex-shrink-0">
+                    {full(r.calls)} calls
+                  </span>
+                  <span className="w-24 text-right text-zinc-500 tabular-nums flex-shrink-0">
+                    {full(r.results)} items
+                  </span>
+                  <span className="w-20 text-right text-zinc-500 tabular-nums flex-shrink-0">
+                    {r.errors > 0 ? <span className="text-red-400">{full(r.errors)} err</span> : "0 err"}
+                  </span>
+                  <span className="w-20 text-right text-zinc-100 tabular-nums font-medium flex-shrink-0">
+                    {usd(r.estCostUsd)}
+                  </span>
+                  <span className="w-20 text-right text-green-400/80 tabular-nums flex-shrink-0">
+                    {r.actualUsd > 0 ? usd(r.actualUsd) : "—"}
+                  </span>
+                </div>
+              );
+            })}
+            <div className="px-4 py-2 bg-[#0c0c10] text-[11px] text-zinc-600">
+              Est. cost uses each provider&apos;s own rate · actual $ reported where available.
+            </div>
           </div>
         )}
       </section>
@@ -375,6 +454,7 @@ export default function ClientPage() {
                   <tr className="border-b border-[#27272a]">
                     <th className="text-left px-4 py-2 text-zinc-500 font-medium">Time (IST)</th>
                     <th className="text-left px-3 py-2 text-zinc-500 font-medium">Source</th>
+                    <th className="text-left px-3 py-2 text-zinc-500 font-medium">Provider</th>
                     <th className="text-left px-3 py-2 text-zinc-500 font-medium">Input</th>
                     <th className="text-right px-3 py-2 text-zinc-500 font-medium">In</th>
                     <th className="text-right px-3 py-2 text-zinc-500 font-medium">Out</th>
@@ -399,6 +479,9 @@ export default function ClientPage() {
                             />
                             <span className="text-zinc-300">{meta.label}</span>
                           </span>
+                        </td>
+                        <td className="px-3 py-2 whitespace-nowrap">
+                          <ProviderBadge provider={r.provider} />
                         </td>
                         <td className="px-3 py-2 text-zinc-400 max-w-[260px] truncate" title={r.inputSummary}>
                           {r.inputSummary}

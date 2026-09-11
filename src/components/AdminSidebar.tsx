@@ -26,6 +26,7 @@ import {
   DollarSign
 } from "lucide-react";
 import { toast } from "sonner";
+import NotificationBell from "@/components/NotificationBell";
 
 const PRODUCTION_NAV = [
   { href: "/admin/style-lab", label: "Style Lab", icon: Palette, toolKey: "style_studio" },
@@ -38,7 +39,7 @@ const OPERATIONS_NAV = [
   { href: "/admin/accounts", label: "Managed Accounts", icon: MonitorPlay, exact: true, toolKey: "accounts" },
   { href: "/admin/accounts/dashboard", label: "Analytics", icon: BarChart3, toolKey: "analytics" },
   { href: "/admin/account-performance", label: "Account Performance", icon: TrendingUp, toolKey: "analytics" },
-  { href: "/admin/apify-usage", label: "Apify Usage", icon: DollarSign, toolKey: "analytics" },
+  { href: "/admin/apify-usage", label: "Scraper Usage", icon: DollarSign, toolKey: "analytics" },
   { href: "/admin/accounts/queue", label: "Post Queue", icon: Clock, toolKey: "post_queue" },
   { href: "/admin/accounts/history", label: "History", icon: History, toolKey: "history" },
   { href: "/admin/accounts/posting-history", label: "Posting Sheet", icon: Table, toolKey: "history" },
@@ -105,13 +106,16 @@ export default function AdminSidebar({ allowedTools = [] }: AdminSidebarProps) {
   return (
     <aside className="fixed left-0 top-0 h-screen w-60 border-r border-[#27272a] bg-[#09090b] flex flex-col z-30">
       <div className="p-4 border-b border-[#27272a]">
-        <Link href="/admin" className="flex items-center gap-2">
-          <img
-            src="/logo.png"
-            alt="Sleeckos"
-            className="h-6 w-auto object-contain brightness-110"
-          />
-        </Link>
+        <div className="flex items-center justify-between">
+          <Link href="/admin" className="flex items-center gap-2">
+            <img
+              src="/logo.png"
+              alt="Sleeckos"
+              className="h-6 w-auto object-contain brightness-110"
+            />
+          </Link>
+          <NotificationBell />
+        </div>
         <p className="text-[10px] text-zinc-500 mt-1 font-semibold uppercase tracking-wider">
           Internal Ops
         </p>
