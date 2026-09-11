@@ -46,7 +46,7 @@ import {
 } from "@/lib/services/analytics/sweep";
 import { ProviderError } from "./provider";
 import type { AnalyticsProvider } from "./provider";
-import { apifyProvider } from "./apify";
+import { analyticsProvider } from "./resilient";
 
 export const SPOT_CHECK_SAMPLE_SIZES = [10, 25, 50, 100] as const;
 export const MAX_SAMPLE_SIZE = 100;
@@ -470,7 +470,7 @@ export async function startSpotCheckRun(
  */
 export async function executeSpotCheck(
   runId: string,
-  provider: AnalyticsProvider = apifyProvider
+  provider: AnalyticsProvider = analyticsProvider
 ): Promise<void> {
   const run = await prisma.campaignSpotCheck.findUnique({ where: { id: runId } });
   if (!run) throw new Error(`CampaignSpotCheck ${runId} not found`);

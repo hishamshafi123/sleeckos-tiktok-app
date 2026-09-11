@@ -28,7 +28,7 @@
 import prisma from "@/lib/db";
 import { ProviderError } from "./provider";
 import type { AnalyticsProvider, ProviderVideo } from "./provider";
-import { apifyProvider } from "./apify";
+import { analyticsProvider } from "./resilient";
 import { unresolvedPlaceholderId } from "./capture";
 
 const TERMINAL_PUBLISHED_STATES = ["PUBLISHED", "PENDING_DELETION", "DELETED"];
@@ -92,7 +92,7 @@ export async function abortRecoveryRun(runId: string, campaignId: string): Promi
  */
 export async function recoverCampaignLinks(
   campaignId: string,
-  provider: AnalyticsProvider = apifyProvider
+  provider: AnalyticsProvider = analyticsProvider
 ): Promise<{ runId: string }> {
   const run = await prisma.analyticsRun.create({
     data: { type: "recovery", cursor: campaignId },
@@ -127,7 +127,7 @@ export async function recoverCampaignLinks(
 export async function runRecoveryPass(
   runId: string,
   campaignId: string,
-  provider: AnalyticsProvider = apifyProvider
+  provider: AnalyticsProvider = analyticsProvider
 ): Promise<void> {
   const counters = { attempted: 0, succeeded: 0, failed: 0, skipped: 0 };
   const saveProgress = async (status?: string, error?: string) => {

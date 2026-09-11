@@ -62,7 +62,7 @@
 import prisma from "@/lib/db";
 import { ProviderError } from "./provider";
 import type { AnalyticsProvider, ProviderVideo } from "./provider";
-import { apifyProvider } from "./apify";
+import { analyticsProvider } from "./resilient";
 import { normalizeCaption } from "./recover";
 import { unresolvedPlaceholderId } from "./capture";
 import { applyStatsUpdate, maybeMarkDormant, ZERO_VIEW_THRESHOLD } from "./refresh";
@@ -382,7 +382,7 @@ export interface SweepSummary {
  * block (cron route) should background the invocation.
  */
 export async function runDailyAccountSweep(
-  provider: AnalyticsProvider = apifyProvider
+  provider: AnalyticsProvider = analyticsProvider
 ): Promise<SweepSummary> {
   const now = new Date();
   const timezone = await getOrgTimezone();

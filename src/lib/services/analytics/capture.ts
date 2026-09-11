@@ -17,7 +17,7 @@
 
 import prisma from "@/lib/db";
 import type { AnalyticsProvider, ProviderVideo } from "./provider";
-import { apifyProvider } from "./apify";
+import { analyticsProvider } from "./resilient";
 import { getOrgTimezone } from "@/lib/services/timezone";
 import { rollupAccountsForDays, zonedDayString } from "./account-stats";
 
@@ -320,7 +320,7 @@ async function refreshFetchedStats(
  */
 export async function captureVideoLink(
   postJobId: string,
-  provider: AnalyticsProvider = apifyProvider
+  provider: AnalyticsProvider = analyticsProvider
 ): Promise<CaptureResult> {
   try {
     const job = await prisma.postJob.findUnique({
@@ -390,7 +390,7 @@ export interface CaptureAccountResult {
 export async function captureAccountPosts(
   accountId: string,
   opts?: { depth?: number },
-  provider: AnalyticsProvider = apifyProvider
+  provider: AnalyticsProvider = analyticsProvider
 ): Promise<CaptureAccountResult> {
   const result: CaptureAccountResult = { attempted: 0, captured: 0, unresolved: 0, refreshed: 0 };
   try {
@@ -476,7 +476,7 @@ export async function captureAccountPosts(
  */
 export async function retryUnresolvedCaptures(
   limit = 20,
-  provider: AnalyticsProvider = apifyProvider
+  provider: AnalyticsProvider = analyticsProvider
 ): Promise<{ retried: number; captured: number; stillUnresolved: number; skippedBackoff: number }> {
   const summary = { retried: 0, captured: 0, stillUnresolved: 0, skippedBackoff: 0 };
   let refreshed = 0;

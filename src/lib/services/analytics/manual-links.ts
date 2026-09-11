@@ -17,7 +17,7 @@
 
 import prisma from "@/lib/db";
 import type { AnalyticsProvider } from "./provider";
-import { apifyProvider } from "./apify";
+import { analyticsProvider } from "./resilient";
 import { applyStatsUpdate } from "./refresh";
 import { getOrgTimezone } from "@/lib/services/timezone";
 
@@ -78,7 +78,7 @@ async function resolveShortLink(url: string): Promise<string | null> {
 export async function addManualLinks(
   campaignId: string,
   rawText: string,
-  provider: AnalyticsProvider = apifyProvider
+  provider: AnalyticsProvider = analyticsProvider
 ): Promise<ManualLinkSummary> {
   const campaign = await prisma.campaign.findUnique({
     where: { id: campaignId },

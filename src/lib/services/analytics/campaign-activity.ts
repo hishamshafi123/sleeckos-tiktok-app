@@ -22,7 +22,7 @@ import { ForbiddenError } from "@/lib/services/analytics/account-performance";
 import { getOrgTimezone, getZonedDateString } from "@/lib/services/timezone";
 import { zonedDayBounds, zonedDayString, TERMINAL_PUBLISHED_STATES } from "@/lib/services/analytics/account-stats";
 import { captureAccountPosts, captureDepth } from "@/lib/services/analytics/capture";
-import { apifyProvider } from "@/lib/services/analytics/apify";
+import { analyticsProvider } from "@/lib/services/analytics/resilient";
 import type { AnalyticsProvider } from "@/lib/services/analytics/provider";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -451,7 +451,7 @@ async function prepareCaptureRun(
 export async function runCapturePass(
   runId: string,
   jobs: UncapturedJobRow[],
-  provider: AnalyticsProvider = apifyProvider
+  provider: AnalyticsProvider = analyticsProvider
 ): Promise<CaptureUncapturedResult> {
   const counters = { attempted: 0, captured: 0, unresolved: 0, processed: 0 };
   const details: CaptureRunDetailEntry[] = [];
@@ -535,7 +535,7 @@ export async function startCaptureRun(
   userId: string,
   campaignId: string,
   opts?: { date?: string },
-  provider: AnalyticsProvider = apifyProvider
+  provider: AnalyticsProvider = analyticsProvider
 ): Promise<{ runId: string; total: number } | null> {
   const prepared = await prepareCaptureRun(userId, campaignId, opts);
   if (!prepared) return null;
@@ -566,7 +566,7 @@ export async function captureUncapturedPosts(
   userId: string,
   campaignId: string,
   opts?: { date?: string },
-  provider: AnalyticsProvider = apifyProvider
+  provider: AnalyticsProvider = analyticsProvider
 ): Promise<(CaptureUncapturedResult & { runId: string }) | null> {
   const prepared = await prepareCaptureRun(userId, campaignId, opts);
   if (!prepared) return null;

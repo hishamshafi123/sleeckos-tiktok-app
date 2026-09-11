@@ -15,7 +15,7 @@
 import prisma from "@/lib/db";
 import { ProviderError } from "./provider";
 import type { AnalyticsProvider } from "./provider";
-import { apifyProvider } from "./apify";
+import { analyticsProvider } from "./resilient";
 import { rollupAccountsToday } from "./account-stats";
 import { getOrgTimezone, getZonedDateString } from "@/lib/services/timezone";
 
@@ -202,7 +202,7 @@ export interface RefreshOptions {
  *   on daily triggers; resumeRunId forces a specific resume.
  */
 export async function runAnalyticsRefresh(opts: RefreshOptions = {}): Promise<{ runId: string }> {
-  const { type = "daily", campaignId, provider = apifyProvider } = opts;
+  const { type = "daily", campaignId, provider = analyticsProvider } = opts;
   const now = new Date();
   const timezone = await getOrgTimezone();
 
