@@ -27,7 +27,7 @@
 
 import prisma from "@/lib/db";
 import { ProviderError } from "./provider";
-import type { AnalyticsProvider, ProviderVideo } from "./provider";
+import type { AnalyticsProvider, ProviderCallContext, ProviderVideo } from "./provider";
 import { analyticsProvider } from "./resilient";
 import { unresolvedPlaceholderId } from "./capture";
 
@@ -237,11 +237,9 @@ export async function runRecoveryPass(
     }
 
     let latest: ProviderVideo[];
+    const recoverCtx: ProviderCallContext = { source: "recover", refId: runId };
     try {
-      latest = await provider.fetchLatestVideosForAccount(username, RECOVERY_FETCH_MAX, {
-        source: "recover",
-        refId: runId,
-      });
+      latest = await provider.fetchLatestVideosForAccount(username, RECOVERY_FETCH_MAX, recoverCtx);
     } catch (err: any) {
       if (err instanceof ProviderError && (err.kind === "auth" || err.kind === "rate_limited")) {
         // Provider-wide problem — further accounts would fail the same way.
@@ -368,6 +366,7 @@ export async function runRecoveryPass(
             comments: match.comments,
             shares: match.shares,
             lastRefreshedAt: now,
+            ...(recoverCtx.usedProvider ? { statsProvider: recoverCtx.usedProvider } : {}),
           },
           update: {
             tiktokVideoId: match.videoId,
@@ -381,6 +380,7 @@ export async function runRecoveryPass(
             comments: match.comments,
             shares: match.shares,
             lastRefreshedAt: now,
+            ...(recoverCtx.usedProvider ? { statsProvider: recoverCtx.usedProvider } : {}),
             captureAttempts: { increment: 1 },
           },
         });

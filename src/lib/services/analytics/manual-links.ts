@@ -16,7 +16,7 @@
  */
 
 import prisma from "@/lib/db";
-import type { AnalyticsProvider } from "./provider";
+import type { AnalyticsProvider, ProviderCallContext } from "./provider";
 import { analyticsProvider } from "./resilient";
 import { applyStatsUpdate } from "./refresh";
 import { getOrgTimezone } from "@/lib/services/timezone";
@@ -202,9 +202,10 @@ export async function addManualLinks(
   const createdLinks = creatable.filter((p) => !raceLost.has(p.videoId));
 
   if (createdLinks.length > 0) {
+    const manualCtx: ProviderCallContext = { source: "manual_add", refId: campaignId };
     const stats = await provider.fetchStatsForVideoUrls(
       createdLinks.map((p) => p.canonicalUrl),
-      { source: "manual_add", refId: campaignId }
+      manualCtx
     );
 
     for (const p of createdLinks) {
@@ -241,7 +242,7 @@ export async function addManualLinks(
         continue;
       }
 
-      await applyStatsUpdate(row.id, s, timezone, now);
+      await applyStatsUpdate(row.id, s, timezone, now, manualCtx.usedProvider);
       if (s.createTime) {
         await prisma.trackedVideo.update({
           where: { id: row.id },

@@ -56,10 +56,14 @@ export interface AnalyticsProvider {
 }
 
 /**
- * Call attribution for the Apify spend ledger — every caller passes its
+ * Call attribution for the spend ledger — every caller passes its
  * source ("sweep" | "refresh" | "spot_check" | "recover" | "capture").
+ * The resilient provider writes `usedProvider` back onto this object after
+ * a successful call so callers can stamp DB rows with the serving provider.
  */
 export interface ProviderCallContext {
   source: string;
   refId?: string;
+  /** Set by the resilient provider after a call: "TikLiveAPI" | "Apify". */
+  usedProvider?: string;
 }

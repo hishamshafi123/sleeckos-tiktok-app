@@ -14,7 +14,7 @@
 
 import prisma from "@/lib/db";
 import { ProviderError } from "./provider";
-import type { AnalyticsProvider } from "./provider";
+import type { AnalyticsProvider, ProviderCallContext } from "./provider";
 import { analyticsProvider } from "./resilient";
 import { rollupAccountsToday } from "./account-stats";
 import { getOrgTimezone, getZonedDateString } from "@/lib/services/timezone";
@@ -95,7 +95,8 @@ export async function applyStatsUpdate(
   trackedVideoId: string,
   stats: { views: bigint; likes: bigint; comments: bigint; shares: bigint },
   timezone: string,
-  now: Date
+  now: Date,
+  provider?: string
 ): Promise<{ unchangedViewsStreak: number }> {
   const prev = await prisma.trackedVideo.findUnique({
     where: { id: trackedVideoId },
@@ -105,7 +106,12 @@ export async function applyStatsUpdate(
     prev && prev.views === stats.views ? prev.unchangedViewsStreak + 1 : 0;
   await prisma.trackedVideo.update({
     where: { id: trackedVideoId },
-    data: { ...stats, lastRefreshedAt: now, unchangedViewsStreak: streak },
+    data: {
+      ...stats,
+      lastRefreshedAt: now,
+      unchangedViewsStreak: streak,
+      ...(provider ? { statsProvider: provider } : {}),
+    },
   });
   await ensureDailySnapshot(trackedVideoId, stats, timezone, now);
   return { unchangedViewsStreak: streak };
@@ -308,10 +314,11 @@ export async function runAnalyticsRefresh(opts: RefreshOptions = {}): Promise<{ 
     counters.attempted += batch.length;
 
     let statsById: Awaited<ReturnType<AnalyticsProvider["fetchStatsForVideoUrls"]>>;
+    const batchCtx: ProviderCallContext = { source: "refresh", refId: run.id };
     try {
       statsById = await provider.fetchStatsForVideoUrls(
         batch.map((v) => v.url),
-        { source: "refresh", refId: run.id }
+        batchCtx
       );
     } catch (err: any) {
       if (err instanceof ProviderError && (err.kind === "rate_limited" || err.kind === "auth")) {
@@ -341,7 +348,7 @@ export async function runAnalyticsRefresh(opts: RefreshOptions = {}): Promise<{ 
           });
           counters.skipped++;
         } else {
-          await applyStatsUpdate(video.id, stats, timezone, now);
+          await applyStatsUpdate(video.id, stats, timezone, now, batchCtx.usedProvider);
           // After the snapshot so today's check counts toward the streak.
           await maybeMarkDormant(video, stats, timezone, now);
           refreshedAccountIds.add(video.accountId);

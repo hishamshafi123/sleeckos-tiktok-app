@@ -141,6 +141,7 @@ interface TrackedVideoRow {
   shares: number;
   lastRefreshedAt: string | null;
   status: string; // "captured" | "dormant" | "unresolved" | "unavailable"
+  statsProvider: string | null; // "TikLiveAPI" | "Apify"
 }
 
 interface CampaignTracking {
@@ -1894,6 +1895,23 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
     );
   };
 
+  // Which scraper last wrote this video's stats.
+  const scraperChip = (provider: string | null) => {
+    if (!provider) return <span className="text-zinc-700">—</span>;
+    const cls =
+      provider === "TikLiveAPI"
+        ? "bg-sky-500/10 text-sky-400 border-sky-500/20"
+        : "bg-amber-500/10 text-amber-400 border-amber-500/20";
+    return (
+      <span
+        className={`text-[9px] font-semibold px-1.5 py-0.5 rounded border ${cls}`}
+        title={`Stats last fetched via ${provider}`}
+      >
+        {provider === "TikLiveAPI" ? "TikLive" : "Apify"}
+      </span>
+    );
+  };
+
   const trackSortHeader = (label: string, sortKey: TrackSortKey, alignRight = false) => (
     <th
       onClick={() => toggleTrackSort(sortKey)}
@@ -2801,6 +2819,7 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
                               <th className="px-3 py-2 font-semibold text-right">Comments</th>
                               <th className="px-3 py-2 font-semibold text-right">Shares</th>
                               {trackSortHeader("Refreshed", "refreshed")}
+                              <th className="px-3 py-2 font-semibold text-center">Scraper</th>
                               <th className="px-3 py-2 font-semibold text-center">Status</th>
                             </tr>
                           </thead>
@@ -2848,6 +2867,7 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
                                 >
                                   {v.lastRefreshedAt ? timeAgo(v.lastRefreshedAt) : "—"}
                                 </td>
+                                <td className="px-3 py-2.5 text-center">{scraperChip(v.statsProvider)}</td>
                                 <td className="px-3 py-2.5 text-center">{trackStatusChip(v.status)}</td>
                               </tr>
                             ))}

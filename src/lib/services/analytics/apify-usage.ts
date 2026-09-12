@@ -396,3 +396,58 @@ export async function getRecentApifyCalls(
     })),
   };
 }
+
+// ── Failed profile fetches (by org-tz day) ──────────────────────────────────
+// Profiles whose latest-videos fetch failed — dead/renamed accounts (not_found)
+// or transient provider errors. Derived from the call ledger, so history goes
+// back as far as the ledger does. Powers the day-scroller on Scraper Usage.
+
+export interface FailedProfileRow {
+  id: string;
+  createdAt: string; // ISO
+  handle: string; // without @
+  provider: string; // "TikLiveAPI" | "Apify"
+  source: string;
+  errorKind: string | null;
+}
+
+export async function getFailedProfileCalls(
+  userId: string,
+  day?: string
+): Promise<{
+  day: string;
+  prevDay: string;
+  nextDay: string | null; // null when already at today
+  rows: FailedProfileRow[];
+  distinctHandles: number;
+}> {
+  await assertAccess(userId);
+  const tz = await getOrgTimezone();
+  const today = zonedDayString(new Date(), tz);
+  const target = day && /^\d{4}-\d{2}-\d{2}$/.test(day) && day <= today ? day : today;
+  const { start, end } = zonedDayBounds(target, tz);
+
+  const rows = await prisma.apifyCallLog.findMany({
+    where: { createdAt: { gte: start, lt: end }, inputType: "account", status: "error" },
+    orderBy: { createdAt: "desc" },
+    take: 500,
+  });
+
+  const shift = (d: string, n: number) =>
+    new Date(Date.parse(`${d}T00:00:00Z`) + n * DAY_MS).toISOString().slice(0, 10);
+
+  return {
+    day: target,
+    prevDay: shift(target, -1),
+    nextDay: target < today ? shift(target, 1) : null,
+    distinctHandles: new Set(rows.map((r) => r.inputSummary)).size,
+    rows: rows.map((r) => ({
+      id: r.id,
+      createdAt: r.createdAt.toISOString(),
+      handle: r.inputSummary.replace(/^@/, ""),
+      provider: providerLabel(r.actorId),
+      source: r.source,
+      errorKind: r.errorKind,
+    })),
+  };
+}

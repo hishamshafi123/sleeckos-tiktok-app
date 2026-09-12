@@ -61,7 +61,7 @@
 
 import prisma from "@/lib/db";
 import { ProviderError } from "./provider";
-import type { AnalyticsProvider, ProviderVideo } from "./provider";
+import type { AnalyticsProvider, ProviderCallContext, ProviderVideo } from "./provider";
 import { analyticsProvider } from "./resilient";
 import { normalizeCaption } from "./recover";
 import { unresolvedPlaceholderId } from "./capture";
@@ -189,6 +189,8 @@ export async function captureJobsFromAccountVideos(opts: {
   campaignCache?: CampaignInfoCache;
   trackedById?: ReadonlyMap<string, unknown>;
   logTag?: string;
+  /** Serving scraper — stamped onto captured rows as statsProvider. */
+  provider?: string;
 }): Promise<CaptureJobsResult> {
   const {
     account,
@@ -197,6 +199,7 @@ export async function captureJobsFromAccountVideos(opts: {
     now,
     captureMethod,
     logTag = "[Sweep]",
+    provider,
   } = opts;
   const campaignCache = opts.campaignCache ?? new Map<string, CampaignInfo | null>();
   const counters: CaptureJobsResult = { succeeded: 0, failed: 0, skipped: 0 };
@@ -314,6 +317,7 @@ export async function captureJobsFromAccountVideos(opts: {
           comments: match.comments,
           shares: match.shares,
           lastRefreshedAt: now,
+          ...(provider ? { statsProvider: provider } : {}),
         },
         update: {
           tiktokVideoId: match.videoId,
@@ -327,6 +331,7 @@ export async function captureJobsFromAccountVideos(opts: {
           comments: match.comments,
           shares: match.shares,
           lastRefreshedAt: now,
+          ...(provider ? { statsProvider: provider } : {}),
           captureAttempts: { increment: 1 },
         },
       });
@@ -435,11 +440,9 @@ export async function runDailyAccountSweep(
     }
 
     let latest: ProviderVideo[];
+    const fetchCtx: ProviderCallContext = { source: "sweep", refId: account.id };
     try {
-      latest = await provider.fetchLatestVideosForAccount(account.tiktokUsername, MAX_VIDEOS, {
-        source: "sweep",
-        refId: account.id,
-      });
+      latest = await provider.fetchLatestVideosForAccount(account.tiktokUsername, MAX_VIDEOS, fetchCtx);
     } catch (err: any) {
       if (err instanceof ProviderError && (err.kind === "auth" || err.kind === "rate_limited")) {
         console.error(`[Sweep] Run ${run.id} aborted (${err.kind}): ${err.message}`);
@@ -476,7 +479,7 @@ export async function runDailyAccountSweep(
         const wake = row.status === "dormant" && v.views > BigInt(ZERO_VIEW_THRESHOLD);
         // Stats + lastRefreshedAt + unchangedViewsStreak + snapshot (shared
         // path — a wake resets the streak because views moved).
-        await applyStatsUpdate(row.id, stats, timezone, now);
+        await applyStatsUpdate(row.id, stats, timezone, now, fetchCtx.usedProvider);
         if (wake) {
           await prisma.trackedVideo.update({
             where: { id: row.id },
@@ -520,6 +523,7 @@ export async function runDailyAccountSweep(
       campaignCache,
       trackedById,
       logTag: "[Sweep]",
+      provider: fetchCtx.usedProvider,
     });
     counters.succeeded += cap.succeeded;
     counters.failed += cap.failed;

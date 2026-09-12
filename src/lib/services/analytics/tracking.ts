@@ -28,6 +28,7 @@ export interface TrackingVideoRow {
   shares: number;
   lastRefreshedAt: string | null;
   status: string;
+  statsProvider: string | null; // "TikLiveAPI" | "Apify" — last scraper to write stats
 }
 
 /** Video list rows (captured + dormant + unavailable — unresolved surface via counts). */
@@ -56,6 +57,7 @@ export async function getCampaignTrackingVideos(campaignId: string): Promise<Tra
     shares: Number(v.shares),
     lastRefreshedAt: v.lastRefreshedAt ? v.lastRefreshedAt.toISOString() : null,
     status: v.status,
+    statsProvider: v.statsProvider,
   }));
 }
 

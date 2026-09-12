@@ -16,7 +16,7 @@
  */
 
 import prisma from "@/lib/db";
-import type { AnalyticsProvider, ProviderVideo } from "./provider";
+import type { AnalyticsProvider, ProviderCallContext, ProviderVideo } from "./provider";
 import { analyticsProvider } from "./resilient";
 import { getOrgTimezone } from "@/lib/services/timezone";
 import { rollupAccountsForDays, zonedDayString } from "./account-stats";
@@ -97,7 +97,8 @@ type CaptureJob = {
 async function matchAndPersistCapture(
   job: CaptureJob,
   videos: ProviderVideo[],
-  now: Date
+  now: Date,
+  provider?: string
 ): Promise<CaptureResult> {
   const publishedAt = job.publishedAt;
   const windowStart = new Date(publishedAt.getTime() - WINDOW_BEFORE_MS);
@@ -183,6 +184,7 @@ async function matchAndPersistCapture(
         comments: match.comments,
         shares: match.shares,
         lastRefreshedAt: now,
+        ...(provider ? { statsProvider: provider } : {}),
       },
       update: {
         tiktokVideoId: match.videoId,
@@ -197,6 +199,7 @@ async function matchAndPersistCapture(
         comments: match.comments,
         shares: match.shares,
         lastRefreshedAt: now,
+        ...(provider ? { statsProvider: provider } : {}),
         captureAttempts: { increment: 1 },
       },
     });
@@ -255,7 +258,8 @@ async function matchAndPersistCapture(
 async function refreshFetchedStats(
   videos: ProviderVideo[],
   now: Date,
-  skipVideoIds: Set<string>
+  skipVideoIds: Set<string>,
+  provider?: string
 ): Promise<number> {
   const candidates = videos.filter((v) => !skipVideoIds.has(v.videoId));
   if (candidates.length === 0) return 0;
@@ -295,6 +299,7 @@ async function refreshFetchedStats(
         shares: v.shares,
         lastRefreshedAt: now,
         unchangedViewsStreak: row.views === v.views ? row.unchangedViewsStreak + 1 : 0,
+        ...(provider ? { statsProvider: provider } : {}),
       },
     });
     if (changed) {
@@ -349,16 +354,18 @@ export async function captureVideoLink(
       };
     }
 
+    const latestCtx: ProviderCallContext = { source: "capture", refId: postJobId };
     const latest = await provider.fetchLatestVideosForAccount(
       job.account.tiktokUsername,
       captureDepth(),
-      { source: "capture", refId: postJobId }
+      latestCtx
     );
 
     const res = await matchAndPersistCapture(
       { ...job, publishedAt: job.publishedAt },
       latest,
-      new Date()
+      new Date(),
+      latestCtx.usedProvider
     );
     if (res.status === "captured") {
       await rollupAfterCapture(job.accountId, [job.publishedAt]);
@@ -433,17 +440,15 @@ export async function captureAccountPosts(
     if (uncaptured.length === 0) return result; // nothing to do — no provider call
 
     const depth = opts?.depth ?? captureDepth();
-    const videos = await provider.fetchLatestVideosForAccount(account.tiktokUsername, depth, {
-      source: "capture",
-      refId: accountId,
-    });
+    const fetchCtx: ProviderCallContext = { source: "capture", refId: accountId };
+    const videos = await provider.fetchLatestVideosForAccount(account.tiktokUsername, depth, fetchCtx);
     const now = new Date();
 
     const justCaptured = new Set<string>();
     const capturedPostDates: Date[] = [];
     for (const job of uncaptured) {
       result.attempted++;
-      const res = await matchAndPersistCapture(job, videos, now);
+      const res = await matchAndPersistCapture(job, videos, now, fetchCtx.usedProvider);
       if (res.status === "captured") {
         result.captured++;
         justCaptured.add(res.tiktokVideoId);
@@ -453,7 +458,7 @@ export async function captureAccountPosts(
       }
     }
 
-    result.refreshed = await refreshFetchedStats(videos, now, justCaptured);
+    result.refreshed = await refreshFetchedStats(videos, now, justCaptured, fetchCtx.usedProvider);
     if (result.captured > 0 || result.refreshed > 0) {
       await rollupAfterCapture(accountId, capturedPostDates);
     }

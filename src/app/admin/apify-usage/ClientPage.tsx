@@ -65,6 +65,22 @@ type RecentCall = {
   errorKind: string | null;
 };
 
+type FailedProfileRow = {
+  id: string;
+  createdAt: string;
+  handle: string;
+  provider: string;
+  source: string;
+  errorKind: string | null;
+};
+type FailedProfiles = {
+  day: string;
+  prevDay: string;
+  nextDay: string | null;
+  rows: FailedProfileRow[];
+  distinctHandles: number;
+};
+
 // ── Source presentation ─────────────────────────────────────────────────────
 const SOURCE_META: Record<string, { label: string; color: string }> = {
   sweep: { label: "Sweep", color: "#60a5fa" },
@@ -199,6 +215,13 @@ export default function ClientPage() {
   const daily = useResource<Daily>("/api/admin/apify-usage/daily?days=30");
   const topAccounts = useResource<TopAccounts>("/api/admin/apify-usage/top-accounts?days=7");
   const recent = useResource<{ rows: RecentCall[] }>("/api/admin/apify-usage/recent?limit=50");
+
+  // Failed profile fetches, one org-tz day at a time (null = today).
+  const [failedDay, setFailedDay] = useState<string | null>(null);
+  const failedProfiles = useResource<FailedProfiles>(
+    `/api/admin/apify-usage/failed-profiles${failedDay ? `?day=${failedDay}` : ""}`,
+    [failedDay]
+  );
 
   const reloadEstimates = () => {
     overview.reload();
@@ -511,6 +534,93 @@ export default function ClientPage() {
                 </tbody>
               </table>
             </div>
+          </div>
+        )}
+      </section>
+
+      {/* ── Failed profile fetches (day scroller) ─────────────────────── */}
+      <section className="space-y-3">
+        <div className="flex items-center justify-between">
+          <h2 className="text-sm font-semibold text-zinc-200">Failed profile fetches</h2>
+          <div className="flex items-center gap-2 text-xs">
+            <button
+              onClick={() => setFailedDay(failedProfiles.data?.prevDay ?? null)}
+              disabled={!failedProfiles.data}
+              className="px-2 py-1 rounded-md border border-[#27272a] text-zinc-400 hover:text-zinc-200 hover:border-zinc-600 disabled:opacity-40"
+            >
+              ← Prev day
+            </button>
+            <span className="text-zinc-400 tabular-nums min-w-[90px] text-center">
+              {failedProfiles.data ? dayLabel(failedProfiles.data.day) : "…"}
+            </span>
+            {failedProfiles.data?.nextDay ? (
+              <button
+                onClick={() => setFailedDay(failedProfiles.data!.nextDay)}
+                className="px-2 py-1 rounded-md border border-[#27272a] text-zinc-400 hover:text-zinc-200 hover:border-zinc-600"
+              >
+                Next day →
+              </button>
+            ) : (
+              <span className="px-2 py-1 text-zinc-700">Today</span>
+            )}
+          </div>
+        </div>
+        {failedProfiles.error ? (
+          <SectionError message={failedProfiles.error} onRetry={failedProfiles.reload} />
+        ) : failedProfiles.loading || !failedProfiles.data ? (
+          <SkeletonBlock height="h-24" />
+        ) : failedProfiles.data.rows.length === 0 ? (
+          <EmptyNote>No failed profile fetches on this day — every account scraped cleanly.</EmptyNote>
+        ) : (
+          <div className="border border-[#27272a] rounded-lg overflow-hidden">
+            <div className="px-4 py-2 bg-[#0c0c10] text-[11px] text-zinc-600 border-b border-[#27272a]">
+              {failedProfiles.data.distinctHandles} profile(s) failed ·{" "}
+              {full(failedProfiles.data.rows.length)} failed call(s) · accounts are retried on the
+              next sweep automatically
+            </div>
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="border-b border-[#27272a] bg-[#0c0c10]">
+                  <th className="text-left px-4 py-2 text-zinc-500 font-medium">Time (IST)</th>
+                  <th className="text-left px-3 py-2 text-zinc-500 font-medium">Profile</th>
+                  <th className="text-left px-3 py-2 text-zinc-500 font-medium">Source</th>
+                  <th className="text-left px-3 py-2 text-zinc-500 font-medium">Provider</th>
+                  <th className="text-left px-4 py-2 text-zinc-500 font-medium">Reason</th>
+                </tr>
+              </thead>
+              <tbody>
+                {failedProfiles.data.rows.map((r) => (
+                  <tr key={r.id} className="border-b border-[#1c1c21] last:border-0">
+                    <td className="px-4 py-2 text-zinc-500 whitespace-nowrap">
+                      {istDateTime(r.createdAt)}
+                    </td>
+                    <td className="px-3 py-2">
+                      <a
+                        href={`https://www.tiktok.com/@${r.handle}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-zinc-200 hover:text-blue-400 hover:underline"
+                      >
+                        @{r.handle}
+                      </a>
+                    </td>
+                    <td className="px-3 py-2 text-zinc-400">{sourceMeta(r.source).label}</td>
+                    <td className="px-3 py-2">
+                      <ProviderBadge provider={r.provider} />
+                    </td>
+                    <td className="px-4 py-2">
+                      {r.errorKind === "not_found" ? (
+                        <span className="text-amber-400">
+                          profile not found — dead or renamed account?
+                        </span>
+                      ) : (
+                        <span className="text-red-400">{r.errorKind ?? "error"}</span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         )}
       </section>

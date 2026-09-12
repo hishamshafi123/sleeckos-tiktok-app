@@ -1800,6 +1800,9 @@ model TrackedVideo {
   // spot-check). Does not affect dormant/unavailable/removed exclusions.
   unchangedViewsStreak Int  @default(0)
   lastRefreshedAt DateTime?
+  // Which scraper last wrote this row's stats ("TikLiveAPI" | "Apify") —
+  // shown as a badge in the campaign video list.
+  statsProvider   String?
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
   snapshots      VideoStatSnapshot[]

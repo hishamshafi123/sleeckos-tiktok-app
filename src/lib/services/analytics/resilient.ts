@@ -90,13 +90,18 @@ export class FallbackProvider implements AnalyticsProvider {
     } catch (err) {
       const kind = err instanceof ProviderError ? err.kind : "transient";
       const msg = err instanceof Error ? err.message : String(err);
-      void notifyAdmin({
-        level: "error",
-        title: "Analytics providers both failing",
-        body: `TikLiveAPI and the Apify fallback both failed for ${what} (fallback error: ${kind}: ${msg}). Campaign stats and link capture are stalled until a provider recovers.`,
-        source: NOTIFY_SOURCE,
-        dedupeMinutes: 30,
-      });
+      // not_found from the fallback too = the profile/video genuinely doesn't
+      // exist on TikTok (dead or renamed account) — a data problem to surface
+      // in the failed-profiles report, NOT a provider outage alert.
+      if (kind !== "not_found") {
+        void notifyAdmin({
+          level: "error",
+          title: "Analytics providers both failing",
+          body: `TikLiveAPI and the Apify fallback both failed for ${what} (fallback error: ${kind}: ${msg}). Campaign stats and link capture are stalled until a provider recovers.`,
+          source: NOTIFY_SOURCE,
+          dedupeMinutes: 30,
+        });
+      }
       throw err;
     }
   }
@@ -110,14 +115,21 @@ export class FallbackProvider implements AnalyticsProvider {
       try {
         const videos = await this.primary.fetchLatestVideosForAccount(username, max, ctx);
         this.onPrimarySuccess();
+        if (ctx) ctx.usedProvider = "TikLiveAPI";
         return videos;
       } catch (err) {
+        // A profile that doesn't exist on TikTok is a data problem, not a
+        // provider problem — no fallback (Apify would 404 too, at 100× the
+        // price), no circuit-breaker count, no alert.
+        if (err instanceof ProviderError && err.kind === "not_found") throw err;
         this.onPrimaryFailure(err);
       }
     }
-    return this.callFallback(`latest-videos @${username}`, (p) =>
+    const out = await this.callFallback(`latest-videos @${username}`, (p) =>
       p.fetchLatestVideosForAccount(username, max, ctx)
     );
+    if (ctx) ctx.usedProvider = "Apify";
+    return out;
   }
 
   async fetchStatsForVideoUrls(
@@ -128,14 +140,18 @@ export class FallbackProvider implements AnalyticsProvider {
       try {
         const stats = await this.primary.fetchStatsForVideoUrls(urls, ctx);
         this.onPrimarySuccess();
+        if (ctx) ctx.usedProvider = "TikLiveAPI";
         return stats;
       } catch (err) {
+        if (err instanceof ProviderError && err.kind === "not_found") throw err;
         this.onPrimaryFailure(err);
       }
     }
-    return this.callFallback(`stats for ${urls.length} video URL(s)`, (p) =>
+    const out = await this.callFallback(`stats for ${urls.length} video URL(s)`, (p) =>
       p.fetchStatsForVideoUrls(urls, ctx)
     );
+    if (ctx) ctx.usedProvider = "Apify";
+    return out;
   }
 }
 
