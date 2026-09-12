@@ -42,6 +42,7 @@ const BASE_URL = "https://api.tikliveapi.com";
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_COST_PER_CALL = 0.000099; // $9.90 / 100k requests
 const MAX_POSTS_PER_CALL = 35; // user-posts page size cap (docs)
+const MAX_PAGES = 6; // hard cap on pagination (6 × 35 = 210 videos back)
 const STATS_CONCURRENCY = 5; // parallel post-detail calls (limit: 200 req/min)
 
 function getApiKey(): string {
@@ -264,15 +265,27 @@ export class TikLiveProvider implements AnalyticsProvider {
       apiCalls++; // userinfo-by-username (served from local cache when warm)
       const userId = await resolveUserId(clean);
 
-      apiCalls++; // user-posts
-      const count = Math.min(Math.max(1, Math.floor(max)), MAX_POSTS_PER_CALL);
-      const data = await tikliveGet(
-        `/user-posts/?userid=${encodeURIComponent(userId)}&count=${count}`
-      );
-      if (isErrorEnvelope(data)) {
-        throw new ProviderError(envelopeKind(data), `TikLiveAPI user-posts @${clean}: ${data.message}`);
+      // user-posts pages at 35/call — paginate with the cursor when the
+      // caller asks for more (recovery fetches 50–150 deep).
+      const wanted = Math.max(1, Math.floor(max));
+      const items: any[] = [];
+      let cursor: string | null = null;
+      for (let page = 0; page < MAX_PAGES && items.length < wanted; page++) {
+        apiCalls++;
+        const count = Math.min(wanted - items.length, MAX_POSTS_PER_CALL);
+        const data = await tikliveGet(
+          `/user-posts/?userid=${encodeURIComponent(userId)}&count=${count}` +
+            (cursor ? `&cursor=${encodeURIComponent(cursor)}` : "")
+        );
+        if (isErrorEnvelope(data)) {
+          throw new ProviderError(envelopeKind(data), `TikLiveAPI user-posts @${clean}: ${data.message}`);
+        }
+        const batch: any[] = Array.isArray(data?.videos) ? data.videos : [];
+        items.push(...batch);
+        if (!data?.hasMore || batch.length === 0) break;
+        cursor = data?.cursor != null ? String(data.cursor) : null;
+        if (!cursor) break;
       }
-      const items: any[] = Array.isArray(data?.videos) ? data.videos : [];
 
       const videos: ProviderVideo[] = [];
       for (const item of items) {

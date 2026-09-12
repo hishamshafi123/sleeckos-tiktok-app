@@ -433,6 +433,7 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
   const refreshPollRef = useRef<NodeJS.Timeout | null>(null);
   const [isRecovering, setIsRecovering] = useState(false);
   const [isAbortingRecovery, setIsAbortingRecovery] = useState(false);
+  const [isDeepRecovering, setIsDeepRecovering] = useState(false);
   const recoveryPollRef = useRef<NodeJS.Timeout | null>(null);
 
   // ── Daily activity (per-IST-day coverage + uncaptured posts) ────────────
@@ -925,6 +926,29 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
       pollRecoveryOnce();
     } catch (err: any) {
       toast.error(err.message || "Failed to start recovery");
+    }
+  };
+
+  // Deep recovery — paginated fetch (~150 videos back) over every account
+  // holding unresolved links, then retires long-unmatched links as
+  // unavailable. Takes minutes; the result lands via the notification bell.
+  const handleDeepRecover = async () => {
+    setIsDeepRecovering(true);
+    try {
+      const res = await fetch(`/api/campaigns/${campaign.id}/tracking/deep-recover`, { method: "POST" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `Request failed with status ${res.status}`);
+      toast.success("Deep recovery started — this takes a few minutes; results appear in the notification bell");
+      setTimeout(() => {
+        fetch(`/api/campaigns/${campaign.id}/tracking`)
+          .then((r) => (r.ok ? r.json() : null))
+          .then((d) => d && setTracking(d))
+          .catch(() => {});
+      }, 60_000);
+    } catch (err: any) {
+      toast.error(err.message || "Failed to start deep recovery");
+    } finally {
+      setIsDeepRecovering(false);
     }
   };
 
@@ -2610,6 +2634,17 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
                 >
                   <Link2 size={11} className={isRecovering ? "animate-pulse" : ""} />
                   {isRecovering ? "Recovering..." : "Recover links"}
+                </button>
+
+                {/* Deep recovery for long-unresolved links */}
+                <button
+                  onClick={handleDeepRecover}
+                  disabled={isDeepRecovering || trackingLoading}
+                  className="flex items-center gap-1.5 bg-zinc-900 hover:bg-zinc-800 border border-[#27272a] text-zinc-300 text-[11px] font-semibold px-2.5 py-1 rounded transition disabled:opacity-50"
+                  title="One deep pass (~150 videos back per account) over all unresolved links, then retires links that are not publicly visible (suppressed accounts). Takes a few minutes."
+                >
+                  <Link2 size={11} className={isDeepRecovering ? "animate-pulse" : ""} />
+                  {isDeepRecovering ? "Starting..." : "Deep recovery"}
                 </button>
               </div>
             </div>
