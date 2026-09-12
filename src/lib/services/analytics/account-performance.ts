@@ -729,8 +729,12 @@ export async function getTrajectory(userId: string): Promise<Trajectory> {
     // Days on which ANY stats were collected org-wide. Days with none are
     // "no data" (collection outage), not "zero views" — they must not drag
     // the averages down or render as empty bars indistinguishable from real 0s.
+    // recordedAt is a timestamp-without-tz holding UTC: mark it as a UTC
+    // instant first, THEN convert to the org tz wall clock before dating.
+    // (A bare `AT TIME ZONE $tz` would misread UTC as already-local and shift
+    // every snapshot ~5.5h into the previous IST day.)
     prisma.$queryRaw<{ day: string; n: bigint }[]>`
-      SELECT TO_CHAR(("recordedAt" AT TIME ZONE ${tz})::date, 'YYYY-MM-DD') AS day,
+      SELECT TO_CHAR((("recordedAt" AT TIME ZONE 'UTC') AT TIME ZONE ${tz})::date, 'YYYY-MM-DD') AS day,
              COUNT(*)::bigint AS n
       FROM "VideoStatSnapshot"
       WHERE "recordedAt" >= ${start}
