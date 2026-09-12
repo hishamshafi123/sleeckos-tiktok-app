@@ -98,22 +98,32 @@ export async function applyStatsUpdate(
   now: Date,
   provider?: string
 ): Promise<{ unchangedViewsStreak: number }> {
+  // Strip to the four counter columns — provider stats objects may carry
+  // extra fields (createTime, text) that are NOT TrackedVideo columns and
+  // crash Prisma validation when spread through (in production's minimal
+  // error format this surfaces as an empty-message failure per video).
+  const countersOnly = {
+    views: stats.views,
+    likes: stats.likes,
+    comments: stats.comments,
+    shares: stats.shares,
+  };
   const prev = await prisma.trackedVideo.findUnique({
     where: { id: trackedVideoId },
     select: { views: true, unchangedViewsStreak: true },
   });
   const streak =
-    prev && prev.views === stats.views ? prev.unchangedViewsStreak + 1 : 0;
+    prev && prev.views === countersOnly.views ? prev.unchangedViewsStreak + 1 : 0;
   await prisma.trackedVideo.update({
     where: { id: trackedVideoId },
     data: {
-      ...stats,
+      ...countersOnly,
       lastRefreshedAt: now,
       unchangedViewsStreak: streak,
       ...(provider ? { statsProvider: provider } : {}),
     },
   });
-  await ensureDailySnapshot(trackedVideoId, stats, timezone, now);
+  await ensureDailySnapshot(trackedVideoId, countersOnly, timezone, now);
   return { unchangedViewsStreak: streak };
 }
 
@@ -360,7 +370,10 @@ export async function runAnalyticsRefresh(opts: RefreshOptions = {}): Promise<{ 
           await abortRun(err.kind, err.message);
           return { runId: run.id };
         }
-        console.error(`[Analytics] Refresh failed for video ${video.tiktokVideoId}:`, err?.message || err);
+        console.error(
+          `[Analytics] Refresh failed for video ${video.tiktokVideoId} (${err?.name || "Error"}):`,
+          err?.message || err
+        );
         counters.failed++;
       }
       await saveProgress(video.id);
