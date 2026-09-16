@@ -23,7 +23,8 @@ import {
   Table,
   Link2,
   TrendingUp,
-  DollarSign
+  DollarSign,
+  UserPlus
 } from "lucide-react";
 import { toast } from "sonner";
 import NotificationBell from "@/components/NotificationBell";
@@ -37,6 +38,7 @@ const PRODUCTION_NAV = [
 const OPERATIONS_NAV = [
   { href: "/admin", label: "Overview", icon: LayoutDashboard, exact: true, toolKey: "overview" },
   { href: "/admin/accounts", label: "Managed Accounts", icon: MonitorPlay, exact: true, toolKey: "accounts" },
+  { href: "/admin/accounts/new", label: "New Accounts", icon: UserPlus, toolKey: "accounts" },
   { href: "/admin/accounts/dashboard", label: "Analytics", icon: BarChart3, toolKey: "analytics" },
   { href: "/admin/account-performance", label: "Account Performance", icon: TrendingUp, toolKey: "analytics" },
   { href: "/admin/apify-usage", label: "Scraper Usage", icon: DollarSign, toolKey: "analytics" },
