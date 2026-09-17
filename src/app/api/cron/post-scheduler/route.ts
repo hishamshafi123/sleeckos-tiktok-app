@@ -175,7 +175,12 @@ async function runScheduler() {
         where: {
           accountId: account.id,
           scheduledFor: { gte: slotWindowStart, lte: slotWindowEnd },
-          status: { in: ["PUBLISHED", "UPLOADING", "PROCESSING", "QUEUED", "DOWNLOADING", "CLAIMED"] },
+          // QUEUED rows are created at Drive-ingest time (scheduledFor =
+          // ingest timestamp) and must NOT count — reconciliation ingests
+          // around the clock, so counting QUEUED would phantom-block any slot
+          // whose window overlaps an ingest. Claimed/uploaded/published rows
+          // plus the 15-min PostJob activity guard cover real double-posts.
+          status: { in: ["PUBLISHED", "UPLOADING", "PROCESSING", "DOWNLOADING", "CLAIMED"] },
         },
       });
 

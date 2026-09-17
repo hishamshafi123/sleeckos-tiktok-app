@@ -429,7 +429,18 @@ export async function pollJobStatus(jobId: string) {
 
       await confirmPublished(jobId, extractedVideoId || undefined, finalUrl || undefined);
     } else if (status === "failed") {
-      const errorMsg = postData.errorMessage || postData.error || "PostPeer reported failure";
+      // PostPeer nests the real failure under platforms[] (e.g. "TikTok publish
+      // failed: spam_risk", token invalid_grant). Surface that, not a generic
+      // message, so failures are actionable in the UI.
+      const platforms = Array.isArray(postData.platforms) ? postData.platforms : [];
+      const failedPlatform =
+        platforms.find((p: any) => (p.status || "").toLowerCase() === "failed") || platforms[0];
+      const errorMsg =
+        failedPlatform?.errorMessage ||
+        failedPlatform?.warningMessage ||
+        postData.errorMessage ||
+        postData.error ||
+        "PostPeer reported failure";
       await handleFailure(jobId, errorMsg);
     } else {
       console.log(`[Posting Pipeline] Job ${jobId} status is ${status}, still processing...`);
