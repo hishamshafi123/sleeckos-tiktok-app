@@ -318,28 +318,34 @@ export async function runSmartExport(
   });
 
   // Create the SmartExportAssignments and set video statuses to exporting
-  // (per-folder updates so each video also records its destination folder name)
-  await prisma.$transaction([
-    prisma.smartExportAssignment.createMany({
-      data: flatAssignments.map((a) => ({
-        jobId: job.id,
-        videoId: a.videoId,
-        sourceGroupId: a.sourceGroupId,
-        driveFolderId: a.driveFolderId,
-        status: "pending",
-      })),
-    }),
-    ...plan.map((p) =>
-      prisma.multiplierOutput.updateMany({
-        where: { id: { in: p.videoIds } },
-        data: {
-          exportStatus: "exporting",
-          exportDestinationFolderId: p.driveFolderId,
-          exportDestinationFolderName: p.driveFolderName,
-        },
-      })
-    ),
-  ]);
+  // (per-folder updates so each video also records its destination folder name).
+  // Big exports (hundreds of accounts × hundreds of videos) put thousands of
+  // rows + hundreds of updateMany statements in this one transaction — the
+  // default 5s interactive timeout is not enough, so raise it.
+  await prisma.$transaction(
+    [
+      prisma.smartExportAssignment.createMany({
+        data: flatAssignments.map((a) => ({
+          jobId: job.id,
+          videoId: a.videoId,
+          sourceGroupId: a.sourceGroupId,
+          driveFolderId: a.driveFolderId,
+          status: "pending",
+        })),
+      }),
+      ...plan.map((p) =>
+        prisma.multiplierOutput.updateMany({
+          where: { id: { in: p.videoIds } },
+          data: {
+            exportStatus: "exporting",
+            exportDestinationFolderId: p.driveFolderId,
+            exportDestinationFolderName: p.driveFolderName,
+          },
+        })
+      ),
+    ],
+    { maxWait: 15_000, timeout: 60_000 }
+  );
 
   // Trigger worker asynchronously
   triggerSmartExportWorker().catch((err) => {
