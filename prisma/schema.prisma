@@ -66,6 +66,8 @@ model User {
   kpiGoals            KpiGoal[]
   activityEvents      ActivityEvent[]          @relation("UserActivityEvent")
   warmupEnrollments   WarmupEnrollment[]       @relation("WarmerEnrollment")
+  createdAccounts     ManagedAccount[]         @relation("AccountCreatedBy")
+  accountLifecycleEvents AccountLifecycleEvent[]
 }
 
 model Session {
@@ -326,6 +328,10 @@ model ManagedAccount {
   createdAt             DateTime     @default(now())
   updatedAt             DateTime     @updatedAt
 
+  // Who added this account in Managed Accounts (null for legacy/OAuth-era rows)
+  createdByUserId       String?
+  createdBy             User?        @relation("AccountCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+
   scheduledPosts        ScheduledPost[]
   postJobs              PostJob[]
   dailyAnalytics        AccountDailyAnalytics[]
@@ -341,6 +347,24 @@ model ManagedAccount {
   labelAssignments      AccountLabelAssignment[]
 
   @@index([sectionId])
+  @@index([createdByUserId])
+  @@index([createdAt])
+}
+
+// Lifecycle audit for managed accounts — survives hard deletion (username is
+// snapshotted). Powers created/deleted/banned rate reporting.
+model AccountLifecycleEvent {
+  id        String   @id @default(uuid())
+  accountId String? // null-safe: the account row may be hard-deleted later
+  username  String   // snapshot
+  type      String   // created | deleted | marked_banned | marked_unbanned
+  actorId   String?
+  actor     User?    @relation(fields: [actorId], references: [id], onDelete: SetNull)
+  meta      Json?
+  createdAt DateTime @default(now())
+
+  @@index([type, createdAt])
+  @@index([username])
 }
 
 model AccountColor {
