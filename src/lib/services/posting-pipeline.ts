@@ -390,6 +390,7 @@ export async function pollJobStatus(jobId: string) {
   try {
     const res = await fetch(`${POSTPEER_API}/posts/${job.tiktokPublishId}`, {
       headers: { "x-access-key": getAccessKey() },
+      signal: AbortSignal.timeout(30_000),
     });
 
     if (!res.ok) {

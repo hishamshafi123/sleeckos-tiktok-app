@@ -95,6 +95,9 @@ export async function postViaPostPeer(
       "x-access-key": getAccessKey(),
     },
     body: JSON.stringify(body),
+    // Hard timeout: the post-scheduler loop is sequential, so a hung PostPeer
+    // call would stall every account behind it in the run.
+    signal: AbortSignal.timeout(60_000),
   });
 
   const data = await res.json();

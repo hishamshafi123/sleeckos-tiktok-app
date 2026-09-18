@@ -84,6 +84,24 @@ export async function PATCH(
     data,
   });
 
+  // Ban-state transitions (red = Banned in the account palette) are lifecycle
+  // events so ban rates can be reported over time.
+  if (body.color !== undefined && body.color !== currentAccount.color) {
+    const becameBanned = body.color === "red" && currentAccount.color !== "red";
+    const becameUnbanned = currentAccount.color === "red" && body.color !== "red";
+    if (becameBanned || becameUnbanned) {
+      await prisma.accountLifecycleEvent.create({
+        data: {
+          accountId: id,
+          username: account.tiktokUsername,
+          type: becameBanned ? "marked_banned" : "marked_unbanned",
+          actorId: session.userId,
+          meta: { from: currentAccount.color, to: body.color },
+        },
+      });
+    }
+  }
+
   // If username changed, clear all existing TikTok URLs for this account
   // so "Refresh Links" will reconstruct them with the new username
   if (body.tiktokUsername !== undefined) {
@@ -122,6 +140,18 @@ export async function DELETE(
   }
 
   await prisma.managedAccount.delete({ where: { id } });
+
+  // Lifecycle audit — username snapshotted so deletion reporting survives
+  // the hard delete.
+  await prisma.accountLifecycleEvent.create({
+    data: {
+      accountId: null,
+      username: account.tiktokUsername,
+      type: "deleted",
+      actorId: session.userId,
+      meta: { deletedAccountId: id, sectionId: account.sectionId },
+    },
+  });
 
   return NextResponse.json({ ok: true });
 }

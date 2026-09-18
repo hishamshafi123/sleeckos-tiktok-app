@@ -10,52 +10,14 @@ import {
 } from "@/lib/services/posting-pipeline";
 import { resumeSmartExportQueue } from "@/lib/services/multiplier-export";
 import { resumeRenderQueueIfWorkPending } from "@/lib/services/multiplier";
-import { toZonedTime } from "date-fns-tz";
+import { toZonedTime, fromZonedTime } from "date-fns-tz";
+import { dayNumber, accountSlots, dueSlotsFor } from "@/lib/services/posting-schedule";
 
 function verifyCronSecret(req: NextRequest) {
   const secret =
     req.headers.get("x-cron-secret") ||
     req.nextUrl.searchParams.get("secret");
   return secret === process.env.CRON_SECRET;
-}
-
-function dayNumber(date: Date): string {
-  const d = date.getDay();
-  return d === 0 ? "7" : d.toString();
-}
-
-function parseSlot(slot: string): number {
-  const [h, m] = slot.split(":").map(Number);
-  return (h || 0) * 60 + (m || 0);
-}
-
-function getDeterministicJitter(accountId: string, slot: string, dateStr: string): number {
-  const seedStr = `${accountId}-${slot}-${dateStr}`;
-  let hash = 0;
-  for (let i = 0; i < seedStr.length; i++) {
-    const char = seedStr.charCodeAt(i);
-    hash = (hash << 5) - hash + char;
-    hash |= 0;
-  }
-  const val = Math.abs(hash) % 61; // 0 to 60
-  return val - 30; // -30 to +30
-}
-
-function matchesAnySlotWithJitter(
-  slots: string[],
-  currentMinutes: number,
-  accountId: string,
-  dateStr: string
-): { slot: string; jitteredMinutes: number; jitter: number } | null {
-  for (const slot of slots) {
-    const slotMinutes = parseSlot(slot);
-    const jitter = getDeterministicJitter(accountId, slot, dateStr);
-    const jitteredMinutes = slotMinutes + jitter;
-    if (Math.abs(currentMinutes - jitteredMinutes) <= 5) {
-      return { slot, jitteredMinutes, jitter };
-    }
-  }
-  return null;
 }
 
 // Single app container — a module-level lock is sufficient to prevent
@@ -138,54 +100,65 @@ async function runScheduler() {
         continue;
       }
 
-      const rawSlots = account.postTimeSlots || "";
-      const slots =
-        rawSlots.trim().length > 0
-          ? rawSlots.split(",").map((s) => s.trim())
-          : [
-              `${account.postTimeHour.toString().padStart(2, "0")}:${account.postTimeMinute.toString().padStart(2, "0")}`,
-            ];
+      const slots = accountSlots(account);
 
       const year = zonedNow.getFullYear();
       const month = String(zonedNow.getMonth() + 1).padStart(2, "0");
       const day = String(zonedNow.getDate()).padStart(2, "0");
       const dateStr = `${year}-${month}-${day}`;
 
-      const matched = matchesAnySlotWithJitter(slots, currentMinutes, account.id, dateStr);
-      if (!matched) {
-        results[accountKey] = `not_scheduled_time`;
+      // ── Quota reconciliation ─────────────────────────────────────────────
+      // A slot is DUE once its jittered time has passed today (account tz).
+      // If the account has fewer fulfilled posts today than due slots, post
+      // now — on schedule in the normal case, or as CATCH-UP when a slot was
+      // missed (deploy, downtime, slow run). The 15-min and 3h activity
+      // guards below still prevent doubles and rate-limit bursts.
+      const dueSlots = dueSlotsFor(account.id, slots, dateStr, currentMinutes);
+
+      if (dueSlots.length === 0) {
+        results[accountKey] = "no_slots_due_yet";
         continue;
       }
 
-      const { slot: matchedSlot, jitteredMinutes, jitter } = matched;
+      const dayStartUtc = fromZonedTime(`${dateStr}T00:00:00`, account.postTimezone);
 
-      // Check slot already posted
-      const todayStart = new Date(
-        zonedNow.getFullYear(),
-        zonedNow.getMonth(),
-        zonedNow.getDate()
-      );
-      const slotMinutes = parseSlot(matchedSlot);
-      const slotWindowStart = new Date(todayStart);
-      slotWindowStart.setMinutes(jitteredMinutes - 10);
-      const slotWindowEnd = new Date(todayStart);
-      slotWindowEnd.setMinutes(jitteredMinutes + 10);
-
-      const postedForSlot = await prisma.scheduledPost.count({
+      const fulfilledToday = await prisma.postJob.count({
         where: {
           accountId: account.id,
-          scheduledFor: { gte: slotWindowStart, lte: slotWindowEnd },
-          // QUEUED rows are created at Drive-ingest time (scheduledFor =
-          // ingest timestamp) and must NOT count — reconciliation ingests
-          // around the clock, so counting QUEUED would phantom-block any slot
-          // whose window overlaps an ingest. Claimed/uploaded/published rows
-          // plus the 15-min PostJob activity guard cover real double-posts.
-          status: { in: ["PUBLISHED", "UPLOADING", "PROCESSING", "DOWNLOADING", "CLAIMED"] },
+          OR: [
+            { publishedAt: { gte: dayStartUtc } },
+            { state: { in: ["CLAIMED", "UPLOADING"] }, updatedAt: { gte: dayStartUtc } },
+          ],
         },
       });
 
-      if (postedForSlot > 0) {
-        results[accountKey] = `slot_${matchedSlot}_already_posted`;
+      if (fulfilledToday >= dueSlots.length) {
+        results[accountKey] = "quota_met";
+        continue;
+      }
+
+      // Burn protection: an AVAILABLE job with a FUTURE lockedAt is in
+      // handleFailure's 30-min retry backoff — the last attempt just failed,
+      // so wait it out instead of burning another file.
+      const backingOff = await prisma.postJob.count({
+        where: { accountId: account.id, state: "AVAILABLE", lockedAt: { gt: now } },
+      });
+      if (backingOff > 0) {
+        results[accountKey] = "retry_backoff";
+        continue;
+      }
+
+      // Cap distinct files attempted per day at dueSlots + 2, so an account
+      // TikTok keeps rejecting can't burn its whole backlog in one day.
+      const attemptedToday = await prisma.postJob.count({
+        where: {
+          accountId: account.id,
+          updatedAt: { gte: dayStartUtc },
+          OR: [{ attempts: { gt: 0 } }, { state: "FAILED" }],
+        },
+      });
+      if (attemptedToday >= dueSlots.length + 2) {
+        results[accountKey] = "daily_attempt_cap";
         continue;
       }
 
@@ -262,11 +235,7 @@ async function runScheduler() {
       try {
         await uploadAndPublish(job.id, caption);
 
-        const jitterSign = jitter >= 0 ? `+${jitter}` : `${jitter}`;
-        const jitterHour = Math.floor(jitteredMinutes / 60);
-        const jitterMin = jitteredMinutes % 60;
-        const jitteredTimeStr = `${jitterHour.toString().padStart(2, "0")}:${jitterMin.toString().padStart(2, "0")}`;
-        results[accountKey] = `upload_started (slot ${matchedSlot}, jittered ${jitterSign}m to ${jitteredTimeStr})`;
+        results[accountKey] = `upload_started (${fulfilledToday + 1}/${dueSlots.length} due today)`;
       } catch (err) {
         results[accountKey] = `upload_failed: ${err instanceof Error ? err.message : String(err)}`;
       }

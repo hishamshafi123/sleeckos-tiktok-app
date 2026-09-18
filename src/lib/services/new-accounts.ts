@@ -40,6 +40,18 @@ export type NewAccountRow = {
   firstPostLatencyDays: number | null;
   labels: { id: string; name: string; color: string }[];
   warnings: ("no_drive" | "no_postpeer" | "never_posted")[];
+  createdByName: string | null;
+};
+
+export type DailyCreatedPoint = { date: string; count: number };
+
+export type AccountLifecycleSummary = {
+  created7d: number;
+  created30d: number;
+  deleted7d: number;
+  deleted30d: number;
+  banned7d: number;
+  banned30d: number;
 };
 
 export type NewAccountCohort = {
@@ -60,6 +72,16 @@ export type NewAccountsResult = {
   totalPosts: number;
   neverPostedCount: number;
   cohorts: NewAccountCohort[];
+  /** Global (unfiltered) accounts-created-per-day for the last 30 days, org tz. */
+  dailyCreated: DailyCreatedPoint[];
+  lifecycle: AccountLifecycleSummary;
+  projection: {
+    avgPerDay7d: number;
+    avgPerDay30d: number;
+    createdLast7d: number;
+    createdPrev7d: number;
+    projectedNextWeek: number;
+  };
 };
 
 /** Monday (YYYY-MM-DD) of the week containing the given YYYY-MM-DD, via UTC date math. */
@@ -138,6 +160,7 @@ export async function getNewAccountsOverview(query: NewAccountsQuery = {}): Prom
       section: { select: { id: true, name: true, slug: true } },
       colorRef: { select: { color: true, meaning: true } },
       labelAssignments: { select: { label: { select: { id: true, name: true, color: true } } } },
+      createdBy: { select: { name: true, email: true } },
     },
   });
 
@@ -204,6 +227,7 @@ export async function getNewAccountsOverview(query: NewAccountsQuery = {}): Prom
       firstPostLatencyDays,
       labels: a.labelAssignments.map((la) => la.label),
       warnings,
+      createdByName: a.createdBy?.name || a.createdBy?.email || null,
     };
   });
 
@@ -248,6 +272,66 @@ export async function getNewAccountsOverview(query: NewAccountsQuery = {}): Prom
       };
     });
 
+  // ── Creation rate / lifecycle / projection (global, unfiltered) ─────────
+  const thirtyDaysAgo = new Date(now.getTime() - 30 * DAY_MS);
+  const sevenDaysAgo = new Date(now.getTime() - 7 * DAY_MS);
+
+  const [recentCreates, lifecycle30, lifecycle7] = await Promise.all([
+    prisma.managedAccount.findMany({
+      where: { createdAt: { gte: thirtyDaysAgo } },
+      select: { createdAt: true },
+    }),
+    prisma.accountLifecycleEvent.groupBy({
+      by: ["type"],
+      where: { createdAt: { gte: thirtyDaysAgo } },
+      _count: { _all: true },
+    }),
+    prisma.accountLifecycleEvent.groupBy({
+      by: ["type"],
+      where: { createdAt: { gte: sevenDaysAgo } },
+      _count: { _all: true },
+    }),
+  ]);
+
+  // Daily buckets for the last 30 org-tz days (oldest → newest for the chart).
+  const todayStr = getZonedDateString(now, tz);
+  const createdBucket = new Map<string, number>();
+  for (const a of recentCreates) {
+    const d = getZonedDateString(a.createdAt, tz);
+    createdBucket.set(d, (createdBucket.get(d) || 0) + 1);
+  }
+  const dailyCreated: DailyCreatedPoint[] = [];
+  for (let i = 29; i >= 0; i--) {
+    const d = addDays(todayStr, -i);
+    dailyCreated.push({ date: d, count: createdBucket.get(d) || 0 });
+  }
+
+  const countType = (groups: { type: string; _count: { _all: number } }[], t: string) =>
+    groups.find((g) => g.type === t)?._count._all ?? 0;
+
+  const lifecycle: AccountLifecycleSummary = {
+    created7d: countType(lifecycle7, "created"),
+    created30d: countType(lifecycle30, "created"),
+    deleted7d: countType(lifecycle7, "deleted"),
+    deleted30d: countType(lifecycle30, "deleted"),
+    banned7d: countType(lifecycle7, "marked_banned"),
+    banned30d: countType(lifecycle30, "marked_banned"),
+  };
+
+  const createdLast7d = dailyCreated.slice(-7).reduce((s, p) => s + p.count, 0);
+  const createdPrev7d = dailyCreated.slice(-14, -7).reduce((s, p) => s + p.count, 0);
+  const created30dTotal = dailyCreated.reduce((s, p) => s + p.count, 0);
+  const avgPerDay7d = Math.round((createdLast7d / 7) * 10) / 10;
+  const avgPerDay30d = Math.round((created30dTotal / 30) * 10) / 10;
+
+  const projection = {
+    avgPerDay7d,
+    avgPerDay30d,
+    createdLast7d,
+    createdPrev7d,
+    projectedNextWeek: Math.round(avgPerDay7d * 7),
+  };
+
   return {
     timezone: tz,
     generatedAt: now.toISOString(),
@@ -255,5 +339,8 @@ export async function getNewAccountsOverview(query: NewAccountsQuery = {}): Prom
     totalPosts: rows.reduce((s, r) => s + r.totalPosts, 0),
     neverPostedCount: rows.filter((r) => r.totalPosts === 0).length,
     cohorts,
+    dailyCreated,
+    lifecycle,
+    projection,
   };
 }

@@ -67,8 +67,34 @@ export async function POST(req: NextRequest) {
       tiktokUsername: username,
       tiktokDisplayName: username,
       postpeerAccountId: postpeerAccountId?.trim() || null,
+      createdByUserId: session.userId,
     },
   });
+
+  // Lifecycle audit + KPI credit: adding an account counts as generator output
+  // for the employee who added it (feeds the existing Employee KPI views).
+  await prisma.$transaction([
+    prisma.accountLifecycleEvent.create({
+      data: {
+        accountId: account.id,
+        username: account.tiktokUsername,
+        type: "created",
+        actorId: session.userId,
+        meta: { source: "add-manual", sectionId },
+      },
+    }),
+    prisma.activityEvent.create({
+      data: {
+        userId: session.userId,
+        functionType: "generator",
+        count: 1,
+        source: "manual",
+        meta: { managedAccountId: account.id, username: account.tiktokUsername, via: "add-manual" },
+        createdBy: session.userId,
+        approved: true,
+      },
+    }),
+  ]);
 
   return NextResponse.json({
     ok: true,

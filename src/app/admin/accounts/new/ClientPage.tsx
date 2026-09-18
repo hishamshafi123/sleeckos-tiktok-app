@@ -37,6 +37,7 @@ type NewAccountRow = {
   firstPostLatencyDays: number | null;
   labels: { id: string; name: string; color: string }[];
   warnings: ("no_drive" | "no_postpeer" | "never_posted")[];
+  createdByName: string | null;
 };
 
 type NewAccountCohort = {
@@ -57,6 +58,22 @@ type NewAccountsData = {
   totalPosts: number;
   neverPostedCount: number;
   cohorts: NewAccountCohort[];
+  dailyCreated: { date: string; count: number }[];
+  lifecycle: {
+    created7d: number;
+    created30d: number;
+    deleted7d: number;
+    deleted30d: number;
+    banned7d: number;
+    banned30d: number;
+  };
+  projection: {
+    avgPerDay7d: number;
+    avgPerDay30d: number;
+    createdLast7d: number;
+    createdPrev7d: number;
+    projectedNextWeek: number;
+  };
 };
 
 type SectionOption = { id: string; name: string; slug: string };
@@ -196,6 +213,65 @@ export default function ClientPage({ sections }: { sections: SectionOption[] }) 
             Times in {data.timezone}
           </span>
         </div>
+      )}
+
+      {/* Creation rate chart + lifecycle stats */}
+      {data && data.dailyCreated.length > 0 && (
+        <section className="border border-white/5 rounded-2xl p-5 space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <h2 className="text-sm font-semibold text-white">Accounts added per day — last 30 days</h2>
+            <div className="flex flex-wrap gap-2 text-xs">
+              <span className="px-2.5 py-1 rounded-md border border-white/10 bg-white/5 text-gray-300">
+                7d: <span className="text-white font-medium">+{data.lifecycle.created7d}</span> created
+              </span>
+              <span
+                className={`px-2.5 py-1 rounded-md border ${
+                  data.lifecycle.deleted7d > 0
+                    ? "border-amber-500/30 bg-amber-500/10 text-amber-300"
+                    : "border-white/10 bg-white/5 text-gray-400"
+                }`}
+              >
+                −{data.lifecycle.deleted7d} deleted
+              </span>
+              <span
+                className={`px-2.5 py-1 rounded-md border ${
+                  data.lifecycle.banned7d > 0
+                    ? "border-red-500/30 bg-red-500/10 text-red-400"
+                    : "border-white/10 bg-white/5 text-gray-400"
+                }`}
+              >
+                {data.lifecycle.banned7d} banned
+              </span>
+              <span className="px-2.5 py-1 rounded-md border border-white/10 bg-white/5 text-gray-400">
+                30d: +{data.lifecycle.created30d} / −{data.lifecycle.deleted30d} / {data.lifecycle.banned30d} banned
+              </span>
+              <span className="px-2.5 py-1 rounded-md border border-sky-500/30 bg-sky-500/10 text-sky-300">
+                Pace {data.projection.avgPerDay7d}/day → ~{data.projection.projectedNextWeek} next week
+                <span className="text-sky-400/60"> (prior 7d: {data.projection.createdPrev7d})</span>
+              </span>
+            </div>
+          </div>
+          <div className="flex items-end gap-[3px] h-28">
+            {data.dailyCreated.map((p, i) => {
+              const max = Math.max(...data.dailyCreated.map((q) => q.count), 1);
+              const isToday = i === data.dailyCreated.length - 1;
+              return (
+                <div
+                  key={p.date}
+                  title={`${p.date}: ${p.count} account${p.count !== 1 ? "s" : ""} added`}
+                  className={`flex-1 rounded-sm transition-colors ${
+                    isToday ? "bg-sky-400" : p.count > 0 ? "bg-white/25 hover:bg-white/40" : "bg-white/5"
+                  }`}
+                  style={{ height: `${Math.max((p.count / max) * 100, p.count > 0 ? 4 : 2)}%` }}
+                />
+              );
+            })}
+          </div>
+          <div className="flex justify-between text-[10px] text-gray-600">
+            <span>{data.dailyCreated[0].date}</span>
+            <span>{data.dailyCreated[data.dailyCreated.length - 1].date} (today)</span>
+          </div>
+        </section>
       )}
 
       {/* Filters */}
@@ -398,6 +474,9 @@ export default function ClientPage({ sections }: { sections: SectionOption[] }) 
                         title={formatDateTime(a.addedAt, data.timezone)}
                       >
                         {relativeAge(a.ageDays, a.addedDate)}
+                        {a.createdByName && (
+                          <div className="text-xs text-gray-600">by {a.createdByName}</div>
+                        )}
                       </td>
 
                       {/* First post latency */}
