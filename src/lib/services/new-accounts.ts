@@ -45,6 +45,18 @@ export type NewAccountRow = {
 
 export type DailyCreatedPoint = { date: string; count: number };
 
+export type CreatorStat = {
+  userId: string;
+  name: string;
+  totalTracked: number; // all tracked adds (tracking began Sep 18, 2026)
+  last7d: number;
+  prev7d: number;
+  last30d: number;
+  avgPerDay7d: number;
+  wowDelta: number; // last7d − prev7d
+  daily: DailyCreatedPoint[]; // last 7 days, oldest → newest
+};
+
 export type AccountLifecycleSummary = {
   created7d: number;
   created30d: number;
@@ -74,6 +86,8 @@ export type NewAccountsResult = {
   cohorts: NewAccountCohort[];
   /** Global (unfiltered) accounts-created-per-day for the last 30 days, org tz. */
   dailyCreated: DailyCreatedPoint[];
+  /** Per-creator leaderboard (accounts added via Managed Accounts), 7d-ranked. */
+  creators: CreatorStat[];
   lifecycle: AccountLifecycleSummary;
   projection: {
     avgPerDay7d: number;
@@ -279,7 +293,7 @@ export async function getNewAccountsOverview(query: NewAccountsQuery = {}): Prom
   const [recentCreates, lifecycle30, lifecycle7] = await Promise.all([
     prisma.managedAccount.findMany({
       where: { createdAt: { gte: thirtyDaysAgo } },
-      select: { createdAt: true },
+      select: { createdAt: true, createdByUserId: true },
     }),
     prisma.accountLifecycleEvent.groupBy({
       by: ["type"],
@@ -332,6 +346,46 @@ export async function getNewAccountsOverview(query: NewAccountsQuery = {}): Prom
     projectedNextWeek: Math.round(avgPerDay7d * 7),
   };
 
+  // ── Per-creator leaderboard (tracked adds only) ──────────────────────────
+  const last7Dates = new Set(dailyCreated.slice(-7).map((p) => p.date));
+  const prev7Dates = new Set(dailyCreated.slice(-14, -7).map((p) => p.date));
+  const byCreator = new Map<string, Map<string, number>>(); // userId → date → count
+  const creatorTotals = new Map<string, number>();
+  for (const a of recentCreates) {
+    if (!a.createdByUserId) continue;
+    const d = getZonedDateString(a.createdAt, tz);
+    const m = byCreator.get(a.createdByUserId) || new Map<string, number>();
+    m.set(d, (m.get(d) || 0) + 1);
+    byCreator.set(a.createdByUserId, m);
+    creatorTotals.set(a.createdByUserId, (creatorTotals.get(a.createdByUserId) || 0) + 1);
+  }
+
+  const creatorUsers = byCreator.size
+    ? await prisma.user.findMany({
+        where: { id: { in: [...byCreator.keys()] } },
+        select: { id: true, name: true, email: true },
+      })
+    : [];
+  const nameById = new Map(creatorUsers.map((u) => [u.id, u.name || u.email]));
+
+  const creators: CreatorStat[] = [...byCreator.entries()]
+    .map(([userId, days]) => {
+      const last7d = [...days.entries()].filter(([d]) => last7Dates.has(d)).reduce((s, [, c]) => s + c, 0);
+      const prev7d = [...days.entries()].filter(([d]) => prev7Dates.has(d)).reduce((s, [, c]) => s + c, 0);
+      return {
+        userId,
+        name: nameById.get(userId) || "Unknown user",
+        totalTracked: creatorTotals.get(userId) || 0,
+        last7d,
+        prev7d,
+        last30d: [...days.values()].reduce((s, c) => s + c, 0),
+        avgPerDay7d: Math.round((last7d / 7) * 10) / 10,
+        wowDelta: last7d - prev7d,
+        daily: dailyCreated.slice(-7).map((p) => ({ date: p.date, count: days.get(p.date) || 0 })),
+      };
+    })
+    .sort((a, b) => b.last7d - a.last7d || b.totalTracked - a.totalTracked);
+
   return {
     timezone: tz,
     generatedAt: now.toISOString(),
@@ -340,6 +394,7 @@ export async function getNewAccountsOverview(query: NewAccountsQuery = {}): Prom
     neverPostedCount: rows.filter((r) => r.totalPosts === 0).length,
     cohorts,
     dailyCreated,
+    creators,
     lifecycle,
     projection,
   };

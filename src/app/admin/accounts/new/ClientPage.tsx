@@ -59,6 +59,17 @@ type NewAccountsData = {
   neverPostedCount: number;
   cohorts: NewAccountCohort[];
   dailyCreated: { date: string; count: number }[];
+  creators: {
+    userId: string;
+    name: string;
+    totalTracked: number;
+    last7d: number;
+    prev7d: number;
+    last30d: number;
+    avgPerDay7d: number;
+    wowDelta: number;
+    daily: { date: string; count: number }[];
+  }[];
   lifecycle: {
     created7d: number;
     created30d: number;
@@ -136,6 +147,7 @@ export default function ClientPage({ sections }: { sections: SectionOption[] }) 
   const [data, setData] = useState<NewAccountsData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [hoveredBar, setHoveredBar] = useState<number | null>(null);
 
   useEffect(() => {
     const t = setTimeout(() => setDebouncedSearch(search.trim()), 300);
@@ -251,6 +263,17 @@ export default function ClientPage({ sections }: { sections: SectionOption[] }) 
               </span>
             </div>
           </div>
+          <div className="h-5 text-xs text-gray-400">
+            {hoveredBar !== null && data.dailyCreated[hoveredBar] ? (
+              <span>
+                <span className="text-white font-medium">{data.dailyCreated[hoveredBar].date}</span> —{" "}
+                <span className="text-sky-300 font-semibold">{data.dailyCreated[hoveredBar].count}</span> account
+                {data.dailyCreated[hoveredBar].count !== 1 ? "s" : ""} added
+              </span>
+            ) : (
+              <span className="text-gray-600">Hover a bar to see the exact count</span>
+            )}
+          </div>
           <div className="flex items-end gap-[3px] h-28">
             {data.dailyCreated.map((p, i) => {
               const max = Math.max(...data.dailyCreated.map((q) => q.count), 1);
@@ -258,9 +281,16 @@ export default function ClientPage({ sections }: { sections: SectionOption[] }) 
               return (
                 <div
                   key={p.date}
-                  title={`${p.date}: ${p.count} account${p.count !== 1 ? "s" : ""} added`}
-                  className={`flex-1 rounded-sm transition-colors ${
-                    isToday ? "bg-sky-400" : p.count > 0 ? "bg-white/25 hover:bg-white/40" : "bg-white/5"
+                  onMouseEnter={() => setHoveredBar(i)}
+                  onMouseLeave={() => setHoveredBar(null)}
+                  className={`flex-1 rounded-sm transition-colors cursor-pointer ${
+                    hoveredBar === i
+                      ? "bg-sky-300"
+                      : isToday
+                        ? "bg-sky-400"
+                        : p.count > 0
+                          ? "bg-white/25 hover:bg-white/40"
+                          : "bg-white/5"
                   }`}
                   style={{ height: `${Math.max((p.count / max) * 100, p.count > 0 ? 4 : 2)}%` }}
                 />
@@ -270,6 +300,66 @@ export default function ClientPage({ sections }: { sections: SectionOption[] }) 
           <div className="flex justify-between text-[10px] text-gray-600">
             <span>{data.dailyCreated[0].date}</span>
             <span>{data.dailyCreated[data.dailyCreated.length - 1].date} (today)</span>
+          </div>
+        </section>
+      )}
+
+      {/* Who's adding accounts — per-creator leaderboard */}
+      {data && data.creators.length > 0 && (
+        <section className="border border-white/5 rounded-2xl overflow-hidden">
+          <header className="px-5 py-3.5 bg-white/[0.03] border-b border-white/5 flex items-center justify-between">
+            <h2 className="text-sm font-semibold text-white">Who's adding accounts</h2>
+            <span className="text-xs text-gray-600">Tracked adds only — tracking started Sep 18, 2026</span>
+          </header>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-left text-xs text-gray-500 border-b border-white/5">
+                  <th className="px-5 py-2.5 font-medium w-10">#</th>
+                  <th className="px-3 py-2.5 font-medium">Added by</th>
+                  <th className="px-3 py-2.5 font-medium">Last 7 days</th>
+                  <th className="px-3 py-2.5 font-medium text-right">7d total</th>
+                  <th className="px-3 py-2.5 font-medium text-right">Per day</th>
+                  <th className="px-3 py-2.5 font-medium text-right">Prior 7d</th>
+                  <th className="px-3 py-2.5 font-medium text-right">WoW</th>
+                  <th className="px-3 py-2.5 font-medium text-right">30d total</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.creators.map((c, i) => {
+                  const sparkMax = Math.max(...c.daily.map((d) => d.count), 1);
+                  return (
+                    <tr key={c.userId} className="border-b border-white/[0.03] hover:bg-white/[0.02]">
+                      <td className="px-5 py-2.5 text-gray-600">{i + 1}</td>
+                      <td className="px-3 py-2.5 text-white font-medium">{c.name}</td>
+                      <td className="px-3 py-2.5">
+                        <div className="flex items-end gap-[2px] h-6 w-24">
+                          {c.daily.map((d) => (
+                            <div
+                              key={d.date}
+                              title={`${d.date}: ${d.count}`}
+                              className={`flex-1 rounded-[2px] ${d.count > 0 ? "bg-sky-500/60" : "bg-white/5"}`}
+                              style={{ height: `${Math.max((d.count / sparkMax) * 100, d.count > 0 ? 15 : 6)}%` }}
+                            />
+                          ))}
+                        </div>
+                      </td>
+                      <td className="px-3 py-2.5 text-right font-semibold text-white tabular-nums">{c.last7d}</td>
+                      <td className="px-3 py-2.5 text-right text-gray-300 tabular-nums">{c.avgPerDay7d}</td>
+                      <td className="px-3 py-2.5 text-right text-gray-500 tabular-nums">{c.prev7d}</td>
+                      <td
+                        className={`px-3 py-2.5 text-right tabular-nums font-medium ${
+                          c.wowDelta > 0 ? "text-green-400" : c.wowDelta < 0 ? "text-red-400" : "text-gray-500"
+                        }`}
+                      >
+                        {c.wowDelta > 0 ? `+${c.wowDelta}` : c.wowDelta}
+                      </td>
+                      <td className="px-3 py-2.5 text-right text-gray-400 tabular-nums">{c.last30d}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
           </div>
         </section>
       )}
