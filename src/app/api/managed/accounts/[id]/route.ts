@@ -139,6 +139,24 @@ export async function DELETE(
     return NextResponse.json({ error: "Account not found" }, { status: 404 });
   }
 
+  // Guard: this account holds the shared Google Drive OAuth tokens used by
+  // Multiplier folder search and Smart Export uploads. Deleting it silently
+  // kills Drive access for the whole system (this happened once already).
+  if (account.googleRefreshToken) {
+    const force = new URL(_req.url).searchParams.get("force") === "true";
+    if (!force) {
+      return NextResponse.json(
+        {
+          error:
+            "This account holds the Google Drive OAuth connection used by Multiplier/Smart Export. Deleting it breaks Drive folder search and uploads. Reconnect Drive on another account first, or retry with ?force=true.",
+          requiresForce: true,
+        },
+        { status: 409 }
+      );
+    }
+    console.warn(`[Accounts] Force-deleting @${account.tiktokUsername} which held Google OAuth tokens`);
+  }
+
   await prisma.managedAccount.delete({ where: { id } });
 
   // Lifecycle audit — username snapshotted so deletion reporting survives

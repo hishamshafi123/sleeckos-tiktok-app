@@ -1,5 +1,6 @@
 import prisma from "@/lib/db";
 import { google } from "googleapis";
+import { getServiceAccountDriveClient } from "@/lib/google";
 
 async function getConnectedAccount() {
   return prisma.managedAccount.findFirst({
@@ -24,8 +25,11 @@ export async function getMultiplierDriveClient() {
   const account = await getConnectedAccount();
 
   if (!account || !account.googleAccessToken) {
-    console.error("[Multiplier Drive] No connected account with access token found");
-    return null;
+    // No OAuth-connected account (e.g. the token-holding account was deleted).
+    // The service account can still read/search every folder — only uploads
+    // truly need OAuth. Fall back so search keeps working.
+    console.warn("[Multiplier Drive] No OAuth account found — falling back to service account (read/search only)");
+    return getServiceAccountDriveClient();
   }
 
   const oauth2Client = new google.auth.OAuth2(
@@ -72,8 +76,8 @@ export async function getMultiplierDriveClient() {
 
     const credentials = await refreshPromise;
     if (!credentials) {
-      console.error("[Multiplier Drive] Cannot proceed — token refresh failed and token is expired");
-      return null; // Don't return a client with an expired token
+      console.warn("[Multiplier Drive] OAuth refresh failed — falling back to service account (read/search only)");
+      return getServiceAccountDriveClient();
     }
 
     oauth2Client.setCredentials({
@@ -81,8 +85,8 @@ export async function getMultiplierDriveClient() {
       refresh_token: credentials.refresh_token || account.googleRefreshToken || undefined,
     });
   } else if (isExpired && !account.googleRefreshToken) {
-    console.error("[Multiplier Drive] Token expired but no refresh token available — reconnect Drive");
-    return null;
+    console.warn("[Multiplier Drive] Token expired with no refresh token — falling back to service account (read/search only)");
+    return getServiceAccountDriveClient();
   }
 
   return google.drive({ version: "v3", auth: oauth2Client });

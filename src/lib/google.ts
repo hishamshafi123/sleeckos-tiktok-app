@@ -98,7 +98,7 @@ export async function getDriveClient(accountId?: string, useServiceAccount = fal
   return getServiceAccountDriveClient();
 }
 
-async function getServiceAccountDriveClient() {
+export async function getServiceAccountDriveClient() {
   const b64 = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
   if (!b64) {
     throw new Error("Google Drive credentials not set (Service Account GOOGLE_SERVICE_ACCOUNT_JSON not set)");
