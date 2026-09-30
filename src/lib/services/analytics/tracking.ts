@@ -10,6 +10,7 @@
  */
 
 import prisma from "@/lib/db";
+import { Prisma } from "@prisma/client";
 import { getOrgTimezone, getZonedDateString } from "@/lib/services/timezone";
 import { getLastRecoveryRun } from "./recover";
 import { ZERO_VIEW_MIN_AGE_DAYS } from "./refresh";
@@ -31,21 +32,38 @@ export interface TrackingVideoRow {
   statsProvider: string | null; // "TikLiveAPI" | "Apify" — last scraper to write stats
 }
 
-/** Video list rows (captured + dormant + unavailable — unresolved surface via counts). */
-export async function getCampaignTrackingVideos(campaignId: string): Promise<TrackingVideoRow[]> {
-  const videos = await prisma.trackedVideo.findMany({
-    where: { campaignId, status: { in: ["captured", "dormant", "unavailable"] } },
-    orderBy: { publishedAt: "desc" },
-  });
+const VIDEO_SELECT = {
+  id: true,
+  tiktokVideoId: true,
+  url: true,
+  accountId: true,
+  publishedAt: true,
+  views: true,
+  likes: true,
+  comments: true,
+  shares: true,
+  lastRefreshedAt: true,
+  status: true,
+  statsProvider: true,
+} as const;
 
-  const accountIds = [...new Set(videos.map((v) => v.accountId))];
-  const accounts = await prisma.managedAccount.findMany({
-    where: { id: { in: accountIds } },
-    select: { id: true, tiktokUsername: true },
-  });
-  const usernameById = new Map(accounts.map((a) => [a.id, a.tiktokUsername]));
+type TrackedVideoRecord = {
+  id: string;
+  tiktokVideoId: string;
+  url: string;
+  accountId: string;
+  publishedAt: Date;
+  views: bigint;
+  likes: bigint;
+  comments: bigint;
+  shares: bigint;
+  lastRefreshedAt: Date | null;
+  status: string;
+  statsProvider: string | null;
+};
 
-  return videos.map((v) => ({
+function toTrackingRow(v: TrackedVideoRecord, usernameById: Map<string, string>): TrackingVideoRow {
+  return {
     id: v.id,
     tiktokVideoId: v.tiktokVideoId,
     url: v.url,
@@ -58,7 +76,84 @@ export async function getCampaignTrackingVideos(campaignId: string): Promise<Tra
     lastRefreshedAt: v.lastRefreshedAt ? v.lastRefreshedAt.toISOString() : null,
     status: v.status,
     statsProvider: v.statsProvider,
-  }));
+  };
+}
+
+async function loadUsernames(accountIds: string[]): Promise<Map<string, string>> {
+  const accounts = await prisma.managedAccount.findMany({
+    where: { id: { in: accountIds } },
+    select: { id: true, tiktokUsername: true },
+  });
+  return new Map(accounts.map((a) => [a.id, a.tiktokUsername]));
+}
+
+/** Full video list (captured + dormant + unavailable) — used by the CSV export only. */
+export async function getCampaignTrackingVideos(campaignId: string): Promise<TrackingVideoRow[]> {
+  const videos = await prisma.trackedVideo.findMany({
+    where: { campaignId, status: { in: ["captured", "dormant", "unavailable"] } },
+    orderBy: { publishedAt: "desc" },
+    select: VIDEO_SELECT,
+  });
+  const usernameById = await loadUsernames([...new Set(videos.map((v) => v.accountId))]);
+  return videos.map((v) => toTrackingRow(v, usernameById));
+}
+
+export interface TrackingVideosPage {
+  rows: TrackingVideoRow[];
+  total: number;
+  page: number;
+  pageSize: number;
+}
+
+/**
+ * Paginated video list for the tracking table — sorting and account search
+ * happen in SQL so the payload stays small no matter how large the campaign
+ * gets (the old all-rows payload reached 20k+ rows / ~8 MB per load).
+ */
+export async function getCampaignTrackingVideosPage(
+  campaignId: string,
+  opts: { page?: number; pageSize?: number; sort?: string; dir?: string; q?: string } = {}
+): Promise<TrackingVideosPage> {
+  const page = Math.max(1, Math.floor(opts.page ?? 1) || 1);
+  const pageSize = Math.min(200, Math.max(1, Math.floor(opts.pageSize ?? 50) || 50));
+  const dir = opts.dir === "asc" ? ("asc" as const) : ("desc" as const);
+
+  const where: Prisma.TrackedVideoWhereInput = {
+    campaignId,
+    status: { in: ["captured", "dormant", "unavailable"] },
+  };
+
+  const q = (opts.q ?? "").trim();
+  if (q) {
+    const matching = await prisma.managedAccount.findMany({
+      where: { tiktokUsername: { contains: q, mode: "insensitive" } },
+      select: { id: true },
+    });
+    where.accountId = { in: matching.map((a) => a.id) };
+  }
+
+  const orderBy: Prisma.TrackedVideoOrderByWithRelationInput =
+    opts.sort === "views"
+      ? { views: dir }
+      : opts.sort === "likes"
+        ? { likes: dir }
+        : opts.sort === "refreshed"
+          ? { lastRefreshedAt: { sort: dir, nulls: "last" } }
+          : { publishedAt: dir };
+
+  const [total, videos] = await Promise.all([
+    prisma.trackedVideo.count({ where }),
+    prisma.trackedVideo.findMany({
+      where,
+      orderBy,
+      skip: (page - 1) * pageSize,
+      take: pageSize,
+      select: VIDEO_SELECT,
+    }),
+  ]);
+
+  const usernameById = await loadUsernames([...new Set(videos.map((v) => v.accountId))]);
+  return { rows: videos.map((v) => toTrackingRow(v, usernameById)), total, page, pageSize };
 }
 
 export async function getCampaignTracking(campaignId: string) {
@@ -68,61 +163,64 @@ export async function getCampaignTracking(campaignId: string) {
   });
   if (!campaign) return null;
 
-  const [videos, unresolvedCount, dormantCount, lastRecovery] = await Promise.all([
-    getCampaignTrackingVideos(campaignId),
+  const listedWhere = { campaignId, status: { in: ["captured", "dormant", "unavailable"] } };
+
+  // Totals via SQL aggregation — the video rows themselves are served by the
+  // paginated /tracking/videos endpoint, never shipped wholesale here.
+  const [agg, capturedCount, unresolvedCount, dormantCount, lastRecovery] = await Promise.all([
+    prisma.trackedVideo.aggregate({
+      where: listedWhere,
+      _sum: { views: true, likes: true },
+      _count: { _all: true },
+    }),
+    prisma.trackedVideo.count({ where: { campaignId, status: "captured" } }),
     prisma.trackedVideo.count({ where: { campaignId, status: "unresolved" } }),
     prisma.trackedVideo.count({ where: { campaignId, status: "dormant" } }),
     getLastRecoveryRun(campaignId),
   ]);
 
-  const views = videos.reduce((s, v) => s + v.views, 0);
-  const likes = videos.reduce((s, v) => s + v.likes, 0);
+  const views = Number(agg._sum.views ?? 0);
+  const likes = Number(agg._sum.likes ?? 0);
+  const listedCount = agg._count._all;
 
-  // Per-IST-day trend, summed from snapshots, last 30 days (zero-filled).
+  // Per-IST-day trend, aggregated in SQL (used to pull every snapshot row
+  // into JS — 160k+ rows for large campaigns).
   const timezone = await getOrgTimezone();
   const now = new Date();
   const windowStart = new Date(now.getTime() - (TREND_DAYS - 1) * 24 * 60 * 60 * 1000);
 
-  const snapshots = await prisma.videoStatSnapshot.findMany({
-    where: {
-      trackedVideo: { campaignId },
-      recordedAt: { gte: windowStart },
-    },
-    select: { views: true, likes: true, recordedAt: true },
-  });
+  const trendRows = await prisma.$queryRaw<{ day: string; views: bigint; likes: bigint }[]>`
+    SELECT to_char(date_trunc('day', s."recordedAt" AT TIME ZONE ${timezone}), 'YYYY-MM-DD') AS day,
+           SUM(s."views")::bigint AS views,
+           SUM(s."likes")::bigint AS likes
+    FROM "VideoStatSnapshot" s
+    JOIN "TrackedVideo" t ON t.id = s."trackedVideoId"
+    WHERE t."campaignId" = ${campaignId}
+      AND s."recordedAt" >= ${windowStart}
+    GROUP BY 1
+  `;
+  const byDay = new Map(
+    trendRows.map((r) => [r.day, { views: Number(r.views), likes: Number(r.likes) }])
+  );
 
-  const dayBuckets = new Map<string, { views: number; likes: number }>();
+  const trend: { date: string; views: number; likes: number }[] = [];
   for (let i = TREND_DAYS - 1; i >= 0; i--) {
     const day = getZonedDateString(now.getTime() - i * 24 * 60 * 60 * 1000, timezone);
-    dayBuckets.set(day, { views: 0, likes: 0 });
+    const b = byDay.get(day);
+    trend.push({ date: day, views: b?.views ?? 0, likes: b?.likes ?? 0 });
   }
-  for (const snap of snapshots) {
-    const day = getZonedDateString(snap.recordedAt, timezone);
-    const bucket = dayBuckets.get(day);
-    if (bucket) {
-      bucket.views += Number(snap.views);
-      bucket.likes += Number(snap.likes);
-    }
-  }
-
-  const trend = [...dayBuckets.entries()].map(([date, b]) => ({
-    date,
-    views: b.views,
-    likes: b.likes,
-  }));
 
   return {
     totals: {
       exported: campaign.exportedCount,
       posted: campaign.postedCount,
-      captured: videos.filter((v) => v.status === "captured").length,
+      captured: capturedCount,
       unresolved: unresolvedCount,
       dormant: dormantCount,
       views,
       likes,
-      avgViews: videos.length > 0 ? Math.round(views / videos.length) : 0,
+      avgViews: listedCount > 0 ? Math.round(views / listedCount) : 0,
     },
-    videos,
     trend,
     unresolvedCount,
     dormantCount,

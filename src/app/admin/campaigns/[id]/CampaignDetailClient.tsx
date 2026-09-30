@@ -155,7 +155,6 @@ interface CampaignTracking {
     likes: number;
     avgViews: number;
   };
-  videos: TrackedVideoRow[];
   trend: { date: string; views: number; likes: number }[];
   unresolvedCount: number;
   dormantCount: number;
@@ -170,6 +169,14 @@ interface CampaignTracking {
     skipped: number;
     error: string | null;
   } | null;
+}
+
+// One page of the tracked-videos table (GET /tracking/videos)
+interface TrackingVideosPage {
+  rows: TrackedVideoRow[];
+  total: number;
+  page: number;
+  pageSize: number;
 }
 
 interface ShareCode {
@@ -252,8 +259,6 @@ interface DayCapturedVideo {
 }
 
 type TrackSortKey = "views" | "likes" | "date" | "refreshed";
-
-const TRACK_PAGE_SIZE = 50;
 
 const timeAgo = (dateStr: string) => {
   const mins = Math.floor((Date.now() - new Date(dateStr).getTime()) / 60000);
@@ -397,7 +402,13 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
     dir: "desc",
   });
   const [trackSearch, setTrackSearch] = useState("");
-  const [trackVisible, setTrackVisible] = useState(TRACK_PAGE_SIZE);
+  // Paginated video table (server-side sort/search/page — the full list used
+  // to ship as one multi-MB payload and choked both server and browser).
+  const [trackVideos, setTrackVideos] = useState<TrackedVideoRow[]>([]);
+  const [trackVideosTotal, setTrackVideosTotal] = useState(0);
+  const [trackPage, setTrackPage] = useState(1);
+  const [trackPageSize, setTrackPageSize] = useState(50);
+  const [trackVideosLoading, setTrackVideosLoading] = useState(true);
   // ── Remove 0-view links ──
   const [showZeroViewDialog, setShowZeroViewDialog] = useState(false);
   const [zeroViewPreview, setZeroViewPreview] = useState<{
@@ -777,6 +788,7 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
       expandedDays.forEach((day) => fetchDayCaptured(day));
       fetchActivity(true);
       fetchTracking(true); // captured links change the tracking totals too
+      fetchTrackVideos(trackPage);
       fetchCaptureRuns();
     } catch {
       /* transient poll failure — the next tick retries */
@@ -876,6 +888,7 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
           if (refreshPollRef.current) clearInterval(refreshPollRef.current);
           refreshPollRef.current = null;
           setIsRefreshing(false);
+          fetchTrackVideos(trackPage);
         }
       }, 15000);
     } catch (err: any) {
@@ -897,6 +910,7 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
         if (recoveryPollRef.current) clearInterval(recoveryPollRef.current);
         recoveryPollRef.current = null;
         setIsRecovering(false);
+        fetchTrackVideos(trackPage);
         if (recovery.status === "done") {
           toast.success(`Recovery complete: ${recovery.succeeded} links recovered`);
         } else if (recovery.status === "aborted") {
@@ -944,6 +958,7 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
           .then((r) => (r.ok ? r.json() : null))
           .then((d) => d && setTracking(d))
           .catch(() => {});
+        fetchTrackVideos(trackPage);
       }, 60_000);
     } catch (err: any) {
       toast.error(err.message || "Failed to start deep recovery");
@@ -1017,7 +1032,8 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
       if (!res.ok) throw new Error(data.error || `Request failed with status ${res.status}`);
       toast.success(`Removed ${data.removed} 0-view link${data.removed !== 1 ? "s" : ""} from tracking`);
       setShowZeroViewDialog(false);
-      fetchTracking(true); // refresh list + totals
+      fetchTracking(true); // refresh totals
+      fetchTrackVideos(trackPage); // refresh the paginated table
     } catch (err: any) {
       toast.error(err.message || "Failed to remove 0-view links");
     } finally {
@@ -1100,6 +1116,7 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
         toast.success(`Added ${data.added} link${data.added !== 1 ? "s" : ""} with current stats`);
       }
       fetchTracking(true); // new rows change list + totals
+      fetchTrackVideos(trackPage);
     } catch (err: any) {
       toast.error(err.message || "Failed to add links");
     } finally {
@@ -1126,7 +1143,8 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
         `Moved ${data.videosMoved} video${data.videosMoved !== 1 ? "s" : ""} (${data.postsMoved} post${data.postsMoved !== 1 ? "s" : ""}) to "${data.targetTitle}"`
       );
       setShowTransferDialog(false);
-      fetchTracking(true); // refresh list + totals
+      fetchTracking(true); // refresh totals
+      fetchTrackVideos(1); // rows moved out — reload the table
     } catch (err: any) {
       toast.error(err.message || "Transfer failed");
     } finally {
@@ -1196,29 +1214,38 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
     );
   };
 
-  // Filtered + sorted view of the tracked videos table
-  const trackedVideosView = (() => {
-    if (!tracking) return [];
-    const query = trackSearch.trim().toLowerCase();
-    const filtered = query
-      ? tracking.videos.filter((v) => (v.accountUsername || "").toLowerCase().includes(query))
-      : tracking.videos;
-    const dir = trackSort.dir === "desc" ? -1 : 1;
-    return [...filtered].sort((a, b) => {
-      if (trackSort.key === "views") return (a.views - b.views) * dir;
-      if (trackSort.key === "likes") return (a.likes - b.likes) * dir;
-      if (trackSort.key === "refreshed") {
-        // Never-refreshed rows always sink to the bottom.
-        if (!a.lastRefreshedAt && !b.lastRefreshedAt) return 0;
-        if (!a.lastRefreshedAt) return 1;
-        if (!b.lastRefreshedAt) return -1;
-        return (new Date(a.lastRefreshedAt).getTime() - new Date(b.lastRefreshedAt).getTime()) * dir;
-      }
-      const at = a.publishedAt ? new Date(a.publishedAt).getTime() : 0;
-      const bt = b.publishedAt ? new Date(b.publishedAt).getTime() : 0;
-      return (at - bt) * dir;
-    });
-  })();
+  // Paginated tracked-videos table — sort/search/pagination all run in SQL.
+  const fetchTrackVideos = async (page: number) => {
+    setTrackVideosLoading(true);
+    try {
+      const params = new URLSearchParams({
+        page: String(page),
+        pageSize: String(trackPageSize),
+        sort: trackSort.key,
+        dir: trackSort.dir,
+      });
+      if (trackSearch.trim()) params.set("q", trackSearch.trim());
+      const res = await fetch(`/api/campaigns/${campaign.id}/tracking/videos?${params}`);
+      if (!res.ok) throw new Error(`Request failed with status ${res.status}`);
+      const data: TrackingVideosPage = await res.json();
+      setTrackVideos(data.rows);
+      setTrackVideosTotal(data.total);
+      setTrackPage(data.page);
+    } catch (err) {
+      console.error("Failed to fetch tracked videos:", err);
+    } finally {
+      setTrackVideosLoading(false);
+    }
+  };
+
+  // Initial load + refetch on sort/page-size/search change (search debounced).
+  const trackSearchRef = useRef(trackSearch);
+  trackSearchRef.current = trackSearch;
+  useEffect(() => {
+    const t = setTimeout(() => fetchTrackVideos(1), trackSearchRef.current ? 300 : 0);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [trackSort, trackPageSize, trackSearch, campaign.id]);
 
   useEffect(() => {
     // Fetch sections
@@ -2818,10 +2845,7 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
                         <input
                           type="text"
                           value={trackSearch}
-                          onChange={(e) => {
-                            setTrackSearch(e.target.value);
-                            setTrackVisible(TRACK_PAGE_SIZE);
-                          }}
+                          onChange={(e) => setTrackSearch(e.target.value)}
                           placeholder="Search by account..."
                           className="bg-[#09090b] border border-[#27272a] rounded pl-7 pr-2.5 py-1 text-[11px] text-zinc-100 focus:outline-none focus:border-zinc-500 placeholder-zinc-600 w-full sm:w-48"
                         />
@@ -2829,14 +2853,14 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
                     </div>
                   </div>
 
-                  {tracking.videos.length === 0 ? (
+                  {!trackVideosLoading && trackVideosTotal === 0 && !trackSearch.trim() ? (
                     <div className="bg-zinc-950/40 border border-[#27272a] rounded p-8 text-center select-none">
                       <Eye className="w-5 h-5 text-zinc-600 mx-auto mb-2" />
                       <p className="text-[11px] text-zinc-500 italic">
                         No tracked videos yet — links are captured automatically after posts publish.
                       </p>
                     </div>
-                  ) : trackedVideosView.length === 0 ? (
+                  ) : !trackVideosLoading && trackVideos.length === 0 ? (
                     <p className="text-[11px] text-zinc-500 italic text-center py-4">
                       No videos match &quot;{trackSearch}&quot;.
                     </p>
@@ -2859,7 +2883,7 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-[#27272a] text-zinc-300">
-                            {trackedVideosView.slice(0, trackVisible).map((v) => (
+                            {trackVideos.map((v) => (
                               <tr key={v.id} className="hover:bg-zinc-950/20">
                                 <td className="px-3 py-2.5">
                                   {v.url ? (
@@ -2910,14 +2934,40 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
                         </table>
                       </div>
 
-                      {trackedVideosView.length > trackVisible && (
-                        <div className="flex justify-center pt-1">
-                          <button
-                            onClick={() => setTrackVisible((prev) => prev + TRACK_PAGE_SIZE)}
-                            className="text-[11px] font-semibold text-zinc-300 hover:text-zinc-100 bg-zinc-900 border border-[#27272a] hover:border-zinc-600 rounded px-3 py-1 transition"
-                          >
-                            Load more ({(trackedVideosView.length - trackVisible).toLocaleString("en-US")} remaining)
-                          </button>
+                      {trackVideosTotal > 0 && (
+                        <div className="flex flex-wrap items-center justify-between gap-2 pt-1 text-[11px] text-zinc-500">
+                          <span className="flex items-center gap-2">
+                            {trackVideosLoading && <Loader2 size={11} className="animate-spin text-zinc-500" />}
+                            {formatExact(trackVideosTotal)} videos · page {trackPage} of{" "}
+                            {Math.max(1, Math.ceil(trackVideosTotal / trackPageSize))}
+                          </span>
+                          <div className="flex items-center gap-1.5">
+                            <select
+                              value={trackPageSize}
+                              onChange={(e) => setTrackPageSize(Number(e.target.value))}
+                              className="bg-[#09090b] border border-[#27272a] rounded px-1.5 py-1 text-[11px] text-zinc-300 focus:outline-none focus:border-zinc-500"
+                            >
+                              <option value={50}>50 / page</option>
+                              <option value={100}>100 / page</option>
+                              <option value={200}>200 / page</option>
+                            </select>
+                            <button
+                              onClick={() => fetchTrackVideos(trackPage - 1)}
+                              disabled={trackPage <= 1 || trackVideosLoading}
+                              className="text-[11px] font-semibold text-zinc-300 hover:text-zinc-100 bg-zinc-900 border border-[#27272a] hover:border-zinc-600 rounded px-2.5 py-1 transition disabled:opacity-40"
+                            >
+                              Prev
+                            </button>
+                            <button
+                              onClick={() => fetchTrackVideos(trackPage + 1)}
+                              disabled={
+                                trackPage >= Math.ceil(trackVideosTotal / trackPageSize) || trackVideosLoading
+                              }
+                              className="text-[11px] font-semibold text-zinc-300 hover:text-zinc-100 bg-zinc-900 border border-[#27272a] hover:border-zinc-600 rounded px-2.5 py-1 transition disabled:opacity-40"
+                            >
+                              Next
+                            </button>
+                          </div>
                         </div>
                       )}
                     </>
