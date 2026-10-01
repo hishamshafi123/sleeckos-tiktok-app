@@ -51,6 +51,10 @@ model User {
   curatorSubmissions CuratorSubmission[]
   activityLogs       ActivityLog[]
 
+  // Tickets relations
+  ticketsCreated     Ticket[] @relation("TicketCreator")
+  ticketsAssigned    Ticket[] @relation("TicketAssignee")
+
   // LMS relations
   lessonProgress     LessonProgress[]
   courseEnrollments  CourseEnrollment[]
@@ -1235,6 +1239,27 @@ model Task {
   updatedAt        DateTime        @updatedAt
 
   chatMessages     ChatMessage[]
+}
+
+// Team tickets — members raise tickets / assign tasks to each other.
+model Ticket {
+  id          String    @id @default(uuid())
+  title       String
+  description String?   @db.Text
+  status      String    @default("OPEN") // OPEN | IN_PROGRESS | DONE | CANCELLED
+  priority    String    @default("MEDIUM") // LOW | MEDIUM | HIGH | URGENT
+  creatorId   String
+  creator     User      @relation("TicketCreator", fields: [creatorId], references: [id], onDelete: Cascade)
+  assigneeId  String?
+  assignee    User?     @relation("TicketAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
+  dueDate     DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  completedAt DateTime?
+
+  @@index([assigneeId, status])
+  @@index([creatorId])
+  @@index([status, priority])
 }
 
 model ChatMessage {

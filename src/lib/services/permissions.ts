@@ -17,6 +17,7 @@ export const ALL_TOOLS = [
   "users_access",
   "lms",
   "agent",
+  "tickets",
 ];
 
 export const DEFAULT_ROLES = [
@@ -28,17 +29,17 @@ export const DEFAULT_ROLES = [
   {
     key: "team_lead",
     label: "Team Lead",
-    tools: ["lms"],
+    tools: ["lms", "tickets"],
   },
   {
     key: "editor",
     label: "Editor",
-    tools: ["lms"],
+    tools: ["lms", "tickets"],
   },
   {
     key: "curator",
     label: "Curator",
-    tools: ["lms"],
+    tools: ["lms", "tickets"],
   },
 ];
 

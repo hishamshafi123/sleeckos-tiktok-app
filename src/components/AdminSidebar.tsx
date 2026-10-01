@@ -24,7 +24,8 @@ import {
   Link2,
   TrendingUp,
   DollarSign,
-  UserPlus
+  UserPlus,
+  TicketCheck
 } from "lucide-react";
 import { toast } from "sonner";
 import NotificationBell from "@/components/NotificationBell";
@@ -61,6 +62,7 @@ const PEOPLE_NAV = [
   { href: "/admin/activity", label: "Activity", icon: Activity, toolKey: "users_access" },
   { href: "/admin/lms", label: "LMS", icon: GraduationCap, toolKey: "lms" },
   { href: "/admin/team", label: "Team", icon: UserCog, toolKey: "users_access" },
+  { href: "/admin/tickets", label: "Tickets", icon: TicketCheck, toolKey: "tickets" },
 ];
 
 interface AdminSidebarProps {

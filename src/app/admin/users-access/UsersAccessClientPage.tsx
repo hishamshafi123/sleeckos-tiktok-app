@@ -65,13 +65,14 @@ const TOOLS = [
   { key: "users_access", label: "Users & Access", desc: "Edit system roles, statuses, and specific tool overrides." },
   { key: "lms", label: "LMS Academy", desc: "Access onboarding and editor training lessons." },
   { key: "agent", label: "AI Agent", desc: "Voice/text assistant that can run actions across the platform." },
+  { key: "tickets", label: "Tickets", desc: "Raise tickets and assign tasks to other team members." },
 ];
 
 const ROLE_DEFAULTS: Record<string, string[]> = {
-  admin: ["overview", "accounts", "analytics", "post_queue", "history", "clip_mixer", "style_studio", "composer", "multiplier", "campaigns", "projects", "data_vault", "sourcing", "users_access", "lms", "agent"],
-  team_lead: ["lms"],
-  editor: ["lms"],
-  curator: ["lms"],
+  admin: ["overview", "accounts", "analytics", "post_queue", "history", "clip_mixer", "style_studio", "composer", "multiplier", "campaigns", "projects", "data_vault", "sourcing", "users_access", "lms", "agent", "tickets"],
+  team_lead: ["lms", "tickets"],
+  editor: ["lms", "tickets"],
+  curator: ["lms", "tickets"],
 };
 
 export default function UsersAccessClientPage() {
