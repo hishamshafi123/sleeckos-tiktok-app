@@ -352,6 +352,19 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
   const [retryingBatchId, setRetryingBatchId] = useState<string | null>(null);
   const bulkFileInputRef = useRef<HTMLInputElement>(null);
 
+  // Drive import (Bulk Intake) state
+  const [driveFolderUrl, setDriveFolderUrl] = useState("");
+  const [driveFolderName, setDriveFolderName] = useState("");
+  const [driveFiles, setDriveFiles] = useState<{ id: string; name: string; size: number }[]>([]);
+  const [driveFetching, setDriveFetching] = useState(false);
+  const [driveImporting, setDriveImporting] = useState(false);
+  const [driveImportProgress, setDriveImportProgress] = useState<{ processed: number; total: number } | null>(null);
+  const driveImportPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Recent Batches: checked batch job ids (render all READY groups across them)
+  const [selectedBatchIds, setSelectedBatchIds] = useState<Set<string>>(new Set());
+  const [batchRenderStarting, setBatchRenderStarting] = useState(false);
+
   // Bulk render state
   const [bulkRendering, setBulkRendering] = useState(false);
 
@@ -1070,6 +1083,23 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
     return () => clearInterval(intervalId);
   }, [batchJobs]);
 
+  // Prune batch selections that no longer exist whenever the batch list changes
+  useEffect(() => {
+    setSelectedBatchIds((prev) => {
+      if (prev.size === 0) return prev;
+      const ids = new Set(batchJobs.map((j) => j.id));
+      const next = new Set(Array.from(prev).filter((id) => ids.has(id)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [batchJobs]);
+
+  // Stop the Drive-import status poll on unmount
+  useEffect(() => {
+    return () => {
+      if (driveImportPollRef.current) clearInterval(driveImportPollRef.current);
+    };
+  }, []);
+
   // Retry failed items: the endpoint resets FAILED items and flips the job back to
   // PROCESSING — refetch the job once so the card reflects it and the poll effect above resumes watching it.
   const handleRetryFailedItems = async (jobId: string) => {
@@ -1099,6 +1129,187 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
       toast.error(err.message || "Failed to retry failed items");
     } finally {
       setRetryingBatchId(null);
+    }
+  };
+
+  // ── Drive import (Bulk Intake) ────────────────────────────────────────────
+  const formatDriveSize = (bytes: number): string => {
+    if (!bytes || bytes <= 0) return "—";
+    const units = ["B", "KB", "MB", "GB"];
+    let value = bytes;
+    let unit = 0;
+    while (value >= 1024 && unit < units.length - 1) {
+      value /= 1024;
+      unit++;
+    }
+    return `${value >= 100 ? Math.round(value) : value.toFixed(1)} ${units[unit]}`;
+  };
+
+  const handleDrivePreview = async () => {
+    const folderUrl = driveFolderUrl.trim();
+    if (!folderUrl) {
+      toast.error("Paste a Google Drive folder link first.");
+      return;
+    }
+    setDriveFetching(true);
+    try {
+      const res = await fetch("/api/multiplier/drive-import/preview", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ folderUrl }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "Failed to fetch Drive folder");
+      const files = data.files || [];
+      setDriveFiles(files);
+      setDriveFolderName(data.folderName || "");
+      if (files.length === 0) {
+        toast.warning("No videos found in that folder.");
+      } else {
+        toast.success(`Found ${files.length} video${files.length !== 1 ? "s" : ""}${data.folderName ? ` in “${data.folderName}”` : ""}.`);
+      }
+    } catch (err: any) {
+      toast.error(err.message || "Failed to fetch Drive folder");
+    } finally {
+      setDriveFetching(false);
+    }
+  };
+
+  const clearDriveImport = () => {
+    setDriveFiles([]);
+    setDriveFolderName("");
+  };
+
+  const handleDriveImportStart = async () => {
+    if (driveFiles.length === 0) {
+      toast.error("Fetch a Drive folder and keep at least one video selected.");
+      return;
+    }
+    if (bulkStyleIds.length === 0) {
+      toast.error("Select at least one style preset — videos are split evenly across the selected presets.");
+      return;
+    }
+    setDriveImporting(true);
+    setDriveImportProgress({ processed: 0, total: driveFiles.length });
+    try {
+      const res = await fetch("/api/multiplier/drive-import/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          files: driveFiles.map((f) => ({ id: f.id, name: f.name })),
+          campaignId: bulkCampaignId,
+          styleIds: bulkStyleIds,
+          namePrefix: bulkNamePrefix,
+          hooksEnabled: bulkHooksEnabled,
+          hookCount: bulkHookCount,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "Failed to start Drive import");
+      const batchId: string = data.batchId;
+      const total: number = data.total ?? driveFiles.length;
+      toast.success(`Drive import started — downloading ${total} video${total !== 1 ? "s" : ""}…`);
+
+      const finish = async (status: any) => {
+        if (driveImportPollRef.current) {
+          clearInterval(driveImportPollRef.current);
+          driveImportPollRef.current = null;
+        }
+        setDriveImporting(false);
+        setDriveImportProgress(null);
+        const downloaded = status.downloaded ?? 0;
+        const failures: { name: string; error: string }[] = status.failures || [];
+        const failed = status.failed ?? failures.length;
+        if (failed > 0) {
+          toast.warning(
+            `Drive import finished: ${downloaded}/${status.total ?? total} downloaded, ${failed} failed — ${failures
+              .map((f) => `${f.name} (${f.error})`)
+              .join("; ")}`
+          );
+        } else {
+          toast.success(`Drive import complete — ${downloaded} video${downloaded !== 1 ? "s" : ""} downloaded, processing started.`);
+        }
+        clearDriveImport();
+        // Seed Recent Batches with the new job (same shape as the upload flow)
+        try {
+          const jobRes = await fetch(`/api/multiplier/batch-jobs/${batchId}`);
+          if (jobRes.ok) {
+            const job = await jobRes.json();
+            setBatchJobs((prev) => [{ id: job.id, status: job.status, items: job.items || [] }, ...prev]);
+          }
+        } catch {}
+        fetchData();
+      };
+
+      driveImportPollRef.current = setInterval(async () => {
+        try {
+          const res = await fetch(`/api/multiplier/drive-import/status?batchId=${encodeURIComponent(batchId)}`);
+          if (!res.ok) return;
+          const status = await res.json();
+          setDriveImportProgress({ processed: status.processed ?? 0, total: status.total ?? total });
+          // Backend statuses are lowercase ("running" | "done" | "failed")
+          const s = String(status.status || "").toUpperCase();
+          if (s === "COMPLETED" || s === "FAILED" || s === "DONE") {
+            await finish(status);
+          }
+        } catch {}
+      }, 4000);
+    } catch (err: any) {
+      setDriveImporting(false);
+      setDriveImportProgress(null);
+      toast.error(err.message || "Failed to start Drive import");
+    }
+  };
+
+  // ── Recent Batches: bulk-select + render READY groups ─────────────────────
+  const readyGroupIdsForJob = (job: BulkBatchJob): string[] =>
+    job.items.filter((i) => i.status === "READY" && i.groupId).map((i) => i.groupId!);
+
+  const selectedReadyGroupIds = batchJobs
+    .filter((j) => selectedBatchIds.has(j.id))
+    .flatMap(readyGroupIdsForJob);
+
+  const toggleBatchSelected = (jobId: string) => {
+    setSelectedBatchIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(jobId)) next.delete(jobId);
+      else next.add(jobId);
+      return next;
+    });
+  };
+
+  const allBatchesSelected = batchJobs.length > 0 && batchJobs.every((j) => selectedBatchIds.has(j.id));
+
+  const toggleSelectAllBatches = () => {
+    setSelectedBatchIds(allBatchesSelected ? new Set() : new Set(batchJobs.map((j) => j.id)));
+  };
+
+  const handleRenderSelectedBatches = async () => {
+    if (selectedReadyGroupIds.length === 0) {
+      toast.error("No READY groups in the selected batches yet.");
+      return;
+    }
+    setBatchRenderStarting(true);
+    try {
+      const res = await fetch("/api/multiplier/render", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ groupIds: selectedReadyGroupIds }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to queue renders");
+      toast.success(`Queued ${data.queued?.length ?? 0} group${(data.queued?.length ?? 0) !== 1 ? "s" : ""} for rendering.`);
+      if (data.skipped?.length > 0) {
+        toast.warning(
+          `Skipped ${data.skipped.length}: ${data.skipped.map((s: any) => s.reason).join("; ")}`
+        );
+      }
+      setSelectedBatchIds(new Set());
+      await fetchData();
+    } catch (err: any) {
+      toast.error(err.message || "Failed to queue renders");
+    } finally {
+      setBatchRenderStarting(false);
     }
   };
 
@@ -3697,9 +3908,132 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
             </button>
           </div>
 
+          {/* Drive import card */}
+          <div className="bg-[#18181b] rounded-xl border border-[#27272a] p-6 space-y-4">
+            <div>
+              <h3 className="font-bold text-sm text-[#a1a1aa] uppercase tracking-wider flex items-center gap-2">
+                <FolderOpen className="w-4 h-4 text-[#E11D48]" /> Import from Google Drive folder
+              </h3>
+              <p className="text-xs text-[#71717a] mt-1">
+                Paste a shared Drive folder link — videos are downloaded server-side and processed like an upload,
+                using the campaign, style presets and hook settings above.
+              </p>
+            </div>
+
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={driveFolderUrl}
+                disabled={driveFetching || driveImporting}
+                onChange={(e) => setDriveFolderUrl(e.target.value)}
+                placeholder="https://drive.google.com/drive/folders/…"
+                className="flex-1 bg-[#09090b] border border-[#27272a] rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:border-[#E11D48] text-[#fafafa] placeholder:text-[#52525b] disabled:opacity-50"
+              />
+              <button
+                onClick={handleDrivePreview}
+                disabled={driveFetching || driveImporting || !driveFolderUrl.trim()}
+                className="px-4 py-2.5 bg-[#27272a] hover:bg-[#3f3f46] disabled:opacity-40 disabled:cursor-not-allowed text-white font-semibold rounded-lg text-sm transition-all flex items-center gap-2 flex-shrink-0 cursor-pointer"
+              >
+                {driveFetching ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
+                {driveFetching ? "Fetching…" : "Fetch videos"}
+              </button>
+            </div>
+
+            {driveFiles.length > 0 && (
+              <>
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-xs text-[#a1a1aa]">
+                    <span className="font-semibold text-[#e4e4e7]">
+                      {driveFiles.length} video{driveFiles.length !== 1 ? "s" : ""} selected
+                    </span>
+                    {driveFolderName && <span className="text-[#71717a]"> — {driveFolderName}</span>}
+                  </p>
+                  <button
+                    onClick={clearDriveImport}
+                    disabled={driveImporting}
+                    className="text-xs text-[#71717a] hover:text-red-500 transition-colors cursor-pointer disabled:opacity-40"
+                  >
+                    Clear
+                  </button>
+                </div>
+                <div className="bg-[#09090b] border border-[#27272a] rounded-xl divide-y divide-[#27272a] max-h-48 overflow-y-auto custom-scrollbar">
+                  {driveFiles.map((f) => (
+                    <div key={f.id} className="flex items-center justify-between gap-2 px-3 py-2">
+                      <p className="text-xs text-[#e4e4e7] truncate" title={f.name}>{f.name}</p>
+                      <div className="flex items-center gap-2 flex-shrink-0">
+                        <span className="text-[10px] text-[#71717a] font-mono">{formatDriveSize(f.size)}</span>
+                        <button
+                          onClick={() => setDriveFiles((prev) => prev.filter((x) => x.id !== f.id))}
+                          disabled={driveImporting}
+                          className="text-[#71717a] hover:text-red-500 transition-colors p-1 cursor-pointer disabled:opacity-40"
+                          title="Remove file"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
+
+            <div className="space-y-3">
+              <button
+                onClick={handleDriveImportStart}
+                disabled={driveImporting || driveFetching || driveFiles.length === 0}
+                className="px-5 py-2.5 bg-[#E11D48] hover:bg-rose-700 disabled:opacity-40 disabled:cursor-not-allowed text-white font-semibold rounded-lg text-sm transition-all flex items-center gap-2"
+              >
+                {driveImporting ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    {driveImportProgress
+                      ? `Importing ${driveImportProgress.processed}/${driveImportProgress.total}…`
+                      : "Importing…"}
+                  </>
+                ) : (
+                  <>
+                    <Download className="w-4 h-4" /> Import {driveFiles.length > 0 ? `${driveFiles.length} ` : ""}video{driveFiles.length !== 1 ? "s" : ""}
+                  </>
+                )}
+              </button>
+              {driveImporting && driveImportProgress && driveImportProgress.total > 0 && (
+                <div className="w-full max-w-xs h-1.5 bg-zinc-800 rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-[#E11D48] rounded-full transition-all"
+                    style={{ width: `${Math.round((driveImportProgress.processed / driveImportProgress.total) * 100)}%` }}
+                  />
+                </div>
+              )}
+            </div>
+          </div>
+
           {/* Batch history */}
           <div className="bg-[#18181b] rounded-xl border border-[#27272a] p-6 space-y-4">
-            <h3 className="font-bold text-sm text-[#a1a1aa] uppercase tracking-wider">Recent Batches</h3>
+            <div className="flex items-center justify-between gap-3 flex-wrap">
+              <h3 className="font-bold text-sm text-[#a1a1aa] uppercase tracking-wider">Recent Batches</h3>
+              {batchJobs.length > 0 && (
+                <div className="flex items-center gap-3">
+                  <label className="flex items-center gap-2 text-xs text-[#e4e4e7] font-medium cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={allBatchesSelected}
+                      onChange={toggleSelectAllBatches}
+                      className="rounded border-[#27272a] bg-[#09090b] text-[#E11D48] focus:ring-[#E11D48]/30 w-3.5 h-3.5 cursor-pointer"
+                    />
+                    Select all
+                  </label>
+                  <button
+                    onClick={handleRenderSelectedBatches}
+                    disabled={selectedReadyGroupIds.length === 0 || batchRenderStarting}
+                    className="px-3 py-1.5 bg-[#E11D48] hover:bg-rose-700 disabled:opacity-40 disabled:cursor-not-allowed text-white text-xs font-semibold rounded-lg transition-all flex items-center gap-1.5"
+                    title="Queue renders for every READY group in the selected batches"
+                  >
+                    {batchRenderStarting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5" />}
+                    Render selected ({selectedReadyGroupIds.length} video{selectedReadyGroupIds.length !== 1 ? "s" : ""})
+                  </button>
+                </div>
+              )}
+            </div>
             {batchJobs.length === 0 ? (
               <div className="text-center p-10 text-[#71717a]">
                 <Video className="w-10 h-10 mx-auto mb-2 opacity-30" />
@@ -3713,7 +4047,16 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
                   return (
                     <div key={job.id} className="bg-[#09090b] border border-[#27272a] rounded-xl p-4 space-y-3">
                       <div className="flex items-center justify-between gap-3">
-                        <p className="text-xs font-semibold text-[#71717a] font-mono truncate">Batch {job.id.slice(0, 8)}</p>
+                        <div className="flex items-center gap-2 min-w-0">
+                          <input
+                            type="checkbox"
+                            checked={selectedBatchIds.has(job.id)}
+                            onChange={() => toggleBatchSelected(job.id)}
+                            className="rounded border-[#27272a] bg-[#18181b] text-[#E11D48] focus:ring-[#E11D48]/30 w-3.5 h-3.5 cursor-pointer flex-shrink-0"
+                            title="Select batch for rendering"
+                          />
+                          <p className="text-xs font-semibold text-[#71717a] font-mono truncate">Batch {job.id.slice(0, 8)}</p>
+                        </div>
                         <div className="flex items-center gap-2 flex-shrink-0">
                           {failedCount > 0 && (
                             <button
