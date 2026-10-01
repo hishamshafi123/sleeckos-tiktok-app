@@ -1034,6 +1034,22 @@ model SmartExportAssignment {
   @@index([status])
 }
 
+// Durable "account received videos" evidence for the Account Performance
+// "Receiving but not posting" panel. Written when an export/upload lands in an
+// account's Drive folder. Unlike SmartExportAssignment (cascade-deleted when
+// multiplier groups/outputs are cleaned up), these rows survive content
+// deletion — plain scalar ids, no relations, nothing cascades here.
+model AccountFeedEvent {
+  id            String    @id @default(uuid())
+  accountId     String? // resolved at write time; null if the folder isn't mapped to an account
+  driveFolderId String?
+  source        String // "smart_export" | "sourcing" | "delivery"
+  count         Int       @default(1)
+  createdAt     DateTime  @default(now())
+
+  @@index([accountId, createdAt])
+}
+
 // ─── Multiplier Bulk Intake (batch upload of many videos) ────────────────────
 
 model MultiplierBatchJob {

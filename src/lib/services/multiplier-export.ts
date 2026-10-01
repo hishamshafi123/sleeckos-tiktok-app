@@ -639,10 +639,24 @@ async function processExportQueue() {
 
       // 4. Mark success
       const groupCampaignId: string | null = (video as any).group?.campaignId || null;
+      // Durable feed event for the "Receiving but not posting" panel — the
+      // assignment row itself cascade-deletes if the group/output is later
+      // cleaned up, so the evidence must live in AccountFeedEvent.
+      const feedAccount = await prisma.managedAccount.findFirst({
+        where: { driveFolderId: assignment.driveFolderId },
+        select: { id: true },
+      });
       await prisma.$transaction([
         prisma.smartExportAssignment.update({
           where: { id: assignment.id },
           data: { status: "done", error: null },
+        }),
+        prisma.accountFeedEvent.create({
+          data: {
+            accountId: feedAccount?.id ?? null,
+            driveFolderId: assignment.driveFolderId,
+            source: "smart_export",
+          },
         }),
         prisma.multiplierOutput.update({
           where: { id: video.id },

@@ -25,18 +25,30 @@ export async function createDelivery(input: CreateDeliveryInput) {
   const status =
     postingMode === "auto_post" ? "posted" : postingMode === "auto_schedule" ? "scheduled" : "delivered";
 
-  return prisma.delivery.create({
-    data: {
-      accountId: input.accountId,
-      campaignId: input.campaignId ?? null,
-      batchId: input.batchId ?? null,
-      videoCount: input.videoCount,
-      fileList: (input.fileList ?? []) as any,
-      outputFolderId: input.outputFolderId ?? null,
-      status,
-      postingMode,
-    },
-  });
+  const [delivery] = await prisma.$transaction([
+    prisma.delivery.create({
+      data: {
+        accountId: input.accountId,
+        campaignId: input.campaignId ?? null,
+        batchId: input.batchId ?? null,
+        videoCount: input.videoCount,
+        fileList: (input.fileList ?? []) as any,
+        outputFolderId: input.outputFolderId ?? null,
+        status,
+        postingMode,
+      },
+    }),
+    // Durable feed evidence for the "Receiving but not posting" panel.
+    prisma.accountFeedEvent.create({
+      data: {
+        accountId: input.accountId,
+        driveFolderId: input.outputFolderId ?? null,
+        source: "delivery",
+        count: input.videoCount,
+      },
+    }),
+  ]);
+  return delivery;
 }
 
 // ── Tracker ──────────────────────────────────────────────────────────────────

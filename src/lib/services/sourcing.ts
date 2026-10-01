@@ -433,10 +433,20 @@ async function uploadOneAssignment(assignmentId: string) {
       );
     }
 
-    await prisma.sourcedVideoAssignment.update({
-      where: { id: assignment.id },
-      data: { status: "uploaded", driveFileId, uploadedAt: new Date(), error: null },
-    });
+    await prisma.$transaction([
+      prisma.sourcedVideoAssignment.update({
+        where: { id: assignment.id },
+        data: { status: "uploaded", driveFileId, uploadedAt: new Date(), error: null },
+      }),
+      // Durable feed evidence for the "Receiving but not posting" panel.
+      prisma.accountFeedEvent.create({
+        data: {
+          accountId: assignment.accountId,
+          driveFolderId: assignment.driveFolderId,
+          source: "sourcing",
+        },
+      }),
+    ]);
 
     // Video is fully uploaded once no queued/uploading assignments remain.
     const remaining = await prisma.sourcedVideoAssignment.count({

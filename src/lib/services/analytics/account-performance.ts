@@ -457,49 +457,22 @@ async function computeFedButSilent(tz: string): Promise<FedSilentRow[]> {
   const receivedSince = new Date(now.getTime() - FED_WINDOW_DAYS * DAY_MS);
   const postedSince = new Date(now.getTime() - FED_SILENT_DAYS * DAY_MS);
 
-  const [sourced, smartExport, deliveries] = await Promise.all([
-    prisma.sourcedVideoAssignment.groupBy({
-      by: ["accountId"],
-      where: { status: "uploaded", uploadedAt: { gte: receivedSince } },
-      _count: { _all: true },
-      _max: { uploadedAt: true },
-    }),
-    prisma.smartExportAssignment.groupBy({
-      by: ["driveFolderId"],
-      where: { status: "done", updatedAt: { gte: receivedSince } },
-      _count: { _all: true },
-      _max: { updatedAt: true },
-    }),
-    prisma.delivery.groupBy({
-      by: ["accountId"],
-      where: { deliveredAt: { gte: receivedSince } },
-      _sum: { videoCount: true },
-      _max: { deliveredAt: true },
-    }),
-  ]);
-
-  // Smart Export rows address a Drive folder, not an account — map it.
-  const folderIds = smartExport.map((r) => r.driveFolderId);
-  const folderAccounts = folderIds.length
-    ? await prisma.managedAccount.findMany({
-        where: { driveFolderId: { in: folderIds } },
-        select: { id: true, driveFolderId: true },
-      })
-    : [];
-  const accountByFolder = new Map(folderAccounts.map((a) => [a.driveFolderId!, a.id]));
+  // Durable feed events — written on every successful export/upload into an
+  // account's Drive folder. These survive multiplier group/output cleanup
+  // (SmartExportAssignment rows cascade-delete with them, which used to wipe
+  // this panel's evidence whenever old content was purged).
+  const feed = await prisma.accountFeedEvent.groupBy({
+    by: ["accountId"],
+    where: { createdAt: { gte: receivedSince }, accountId: { not: null } },
+    _sum: { count: true },
+    _max: { createdAt: true },
+  });
 
   const received = new Map<string, { count: number; last: Date | null }>();
-  const bump = (accountId: string, count: number, at: Date | null) => {
-    const cur = received.get(accountId);
-    const last = cur?.last && at ? (cur.last > at ? cur.last : at) : cur?.last ?? at;
-    received.set(accountId, { count: (cur?.count ?? 0) + count, last });
-  };
-  for (const r of sourced) bump(r.accountId, r._count._all, r._max.uploadedAt);
-  for (const r of smartExport) {
-    const accountId = accountByFolder.get(r.driveFolderId);
-    if (accountId) bump(accountId, r._count._all, r._max.updatedAt);
+  for (const r of feed) {
+    if (!r.accountId) continue;
+    received.set(r.accountId, { count: r._sum.count ?? 0, last: r._max.createdAt });
   }
-  for (const r of deliveries) bump(r.accountId, r._sum.videoCount ?? 0, r._max.deliveredAt);
 
   if (received.size === 0) return [];
 
