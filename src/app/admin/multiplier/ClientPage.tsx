@@ -327,6 +327,12 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
   // Group Builder preset split — carries over from the bulk intake selection.
   const [builderStyleIds, setBuilderStyleIds] = useState<string[]>([]);
   const [bulkNamePrefix, setBulkNamePrefix] = useState("");
+  const [bulkHookCount, setBulkHookCount] = useState(15);
+  const [bulkHooksEnabled, setBulkHooksEnabled] = useState(true);
+  const [bulkCaptionsEnabled, setBulkCaptionsEnabled] = useState(false);
+  // Per-file caption overrides, keyed by `${file.name}:${file.size}`.
+  const [bulkCaptions, setBulkCaptions] = useState<Record<string, string>>({});
+  const bulkFileKey = (f: File) => `${f.name}:${f.size}`;
 
   // Bulk-intake preset selection carries over to the Group Builder.
   useEffect(() => {
@@ -970,14 +976,24 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
           if (bulkNamePrefix.trim()) formData.append("namePrefix", bulkNamePrefix.trim());
         }
         if (isLast) formData.append("finalize", "true");
+        formData.append("hooksEnabled", String(bulkHooksEnabled));
+        formData.append("hookCount", String(bulkHookCount));
+        const caption = bulkCaptionsEnabled ? (bulkCaptions[bulkFileKey(file)] || "").trim() : "";
+        if (caption) formData.append("caption", caption);
 
         try {
           const res = await fetch("/api/multiplier/bulk-upload", { method: "POST", body: formData });
           const data = await res.json();
+          if (res.status === 409) {
+            // Caption conflict with another campaign — show the server's message and abort the batch.
+            toast.error(data.error || "Caption conflict with another campaign.");
+            throw Object.assign(new Error(data.error || "Caption conflict"), { abortBatch: true });
+          }
           if (!res.ok) throw new Error(data.error || "Upload failed");
           jobId = data.jobId;
           if (isLast) finalized = true;
         } catch (err: any) {
+          if (err?.abortBatch) throw err;
           failedUploads.push(`${file.name}: ${err.message || "upload failed"}`);
           // If the very first file failed there is no batch to append to — stop.
           if (!jobId) throw new Error(failedUploads[0]);
@@ -1008,6 +1024,7 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
         setBatchJobs((prev) => [{ id: jobId!, status: "PROCESSING", items: [] }, ...prev]);
       }
       setBulkFiles([]);
+      setBulkCaptions({});
       if (failedUploads.length > 0) {
         toast.warning(`Uploaded ${total - failedUploads.length}/${total} videos. Failed: ${failedUploads.join("; ")}`);
       } else {
@@ -3497,6 +3514,56 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
               <p className="text-[10px] text-[#71717a] mt-1.5">Leave empty to name groups after their file names.</p>
             </div>
 
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div>
+                <label className="block text-xs font-semibold uppercase tracking-wider text-[#a1a1aa] mb-2">Variations per video</label>
+                <input
+                  type="number"
+                  min={1}
+                  max={50}
+                  value={bulkHookCount}
+                  disabled={bulkUploading}
+                  onChange={(e) => setBulkHookCount(Math.max(1, Math.min(50, Number(e.target.value) || 1)))}
+                  className="w-full bg-[#09090b] border border-[#27272a] rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:border-[#E11D48] text-[#fafafa] disabled:opacity-50"
+                />
+                <p className="text-[10px] text-[#71717a] mt-1.5">
+                  {bulkHooksEnabled ? "Each variation gets its own text hook." : "Identical copies, no text overlay."}
+                </p>
+              </div>
+              <div>
+                <label className="block text-xs font-semibold uppercase tracking-wider text-[#a1a1aa] mb-2">Text hooks</label>
+                <label className="flex items-center gap-2 text-xs text-[#e4e4e7] font-medium cursor-pointer py-2.5">
+                  <input
+                    type="checkbox"
+                    checked={bulkHooksEnabled}
+                    disabled={bulkUploading}
+                    onChange={(e) => setBulkHooksEnabled(e.target.checked)}
+                    className="rounded border-[#27272a] bg-[#09090b] text-[#E11D48] focus:ring-[#E11D48]/30 w-3.5 h-3.5 cursor-pointer"
+                  />
+                  <span>Generate a text hook per variation</span>
+                </label>
+                {!bulkHooksEnabled && (
+                  <p className="text-[10px] text-[#71717a] mt-1.5">Videos render with no text overlay.</p>
+                )}
+              </div>
+              <div>
+                <label className="block text-xs font-semibold uppercase tracking-wider text-[#a1a1aa] mb-2">Custom caption per video</label>
+                <label className="flex items-center gap-2 text-xs text-[#e4e4e7] font-medium cursor-pointer py-2.5">
+                  <input
+                    type="checkbox"
+                    checked={bulkCaptionsEnabled}
+                    disabled={bulkUploading}
+                    onChange={(e) => setBulkCaptionsEnabled(e.target.checked)}
+                    className="rounded border-[#27272a] bg-[#09090b] text-[#E11D48] focus:ring-[#E11D48]/30 w-3.5 h-3.5 cursor-pointer"
+                  />
+                  <span>Set a caption for each file</span>
+                </label>
+                {bulkCaptionsEnabled && (
+                  <p className="text-[10px] text-[#71717a] mt-1.5">Empty caption falls back to a random campaign caption at posting.</p>
+                )}
+              </div>
+            </div>
+
             {/* Dropzone */}
             <div
               onClick={() => !bulkUploading && bulkFileInputRef.current?.click()}
@@ -3563,15 +3630,44 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
             {bulkFiles.length > 0 && !bulkUploading && (
               <div className="bg-[#09090b] border border-[#27272a] rounded-xl divide-y divide-[#27272a] max-h-48 overflow-y-auto custom-scrollbar">
                 {bulkFiles.map((f, idx) => (
-                  <div key={`${f.name}-${idx}`} className="flex items-center justify-between px-3 py-2">
+                  <div key={`${f.name}-${idx}`} className="flex items-center justify-between gap-2 px-3 py-2">
                     <p className="text-xs text-[#e4e4e7] truncate" title={f.name}>{f.name}</p>
-                    <button
-                      onClick={() => setBulkFiles((prev) => prev.filter((_, i) => i !== idx))}
-                      className="text-[#71717a] hover:text-red-500 transition-colors p-1 cursor-pointer"
-                      title="Remove file"
-                    >
-                      <X className="w-3.5 h-3.5" />
-                    </button>
+                    <div className="flex items-center gap-2 flex-shrink-0">
+                      {bulkCaptionsEnabled && (
+                        <input
+                          type="text"
+                          value={bulkCaptions[bulkFileKey(f)] ?? ""}
+                          onChange={(e) => {
+                            const key = bulkFileKey(f);
+                            const value = e.target.value;
+                            setBulkCaptions((prev) => {
+                              const next = { ...prev };
+                              if (value) next[key] = value;
+                              else delete next[key];
+                              return next;
+                            });
+                          }}
+                          placeholder="Caption for all variations of this video"
+                          className="w-56 bg-[#18181b] border border-[#27272a] rounded-lg px-2.5 py-1 text-[11px] focus:outline-none focus:border-[#E11D48] text-[#fafafa] placeholder:text-[#52525b]"
+                        />
+                      )}
+                      <button
+                        onClick={() => {
+                          const key = bulkFileKey(f);
+                          setBulkFiles((prev) => prev.filter((_, i) => i !== idx));
+                          setBulkCaptions((prev) => {
+                            if (!(key in prev)) return prev;
+                            const next = { ...prev };
+                            delete next[key];
+                            return next;
+                          });
+                        }}
+                        className="text-[#71717a] hover:text-red-500 transition-colors p-1 cursor-pointer"
+                        title="Remove file"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
                   </div>
                 ))}
               </div>

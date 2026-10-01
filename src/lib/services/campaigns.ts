@@ -40,6 +40,39 @@ async function assertFixedTextsUnique(
   }
 }
 
+/**
+ * Bulk-intake per-video captions (MultiplierGroup.caption) become the TikTok
+ * caption at posting time, so they share the fixedTexts uniqueness rule: the
+ * caption-match recovery signal must stay unambiguous across campaigns.
+ * Rejects when the normalized caption is used by (a) another campaign's
+ * fixedTexts or (b) a custom caption on a group of another campaign.
+ * Same-campaign reuse is fine — it still attributes to the same campaign.
+ */
+export async function assertVideoCaptionUnique(caption: string, campaignId: string): Promise<void> {
+  const normalized = normalizeCaption(caption);
+  if (!normalized) return;
+
+  const others = await prisma.campaign.findMany({
+    where: { id: { not: campaignId } },
+    select: { title: true, fixedTexts: true },
+  });
+  for (const other of others) {
+    if (other.fixedTexts.some((t) => normalizeCaption(t) === normalized)) {
+      throw new FixedTextConflictError(other.title);
+    }
+  }
+
+  const otherGroups = await prisma.multiplierGroup.findMany({
+    where: { caption: { not: null }, campaignId: { not: campaignId } },
+    select: { caption: true, campaign: { select: { title: true } } },
+  });
+  for (const group of otherGroups) {
+    if (group.caption && normalizeCaption(group.caption) === normalized) {
+      throw new FixedTextConflictError(group.campaign?.title || "another campaign");
+    }
+  }
+}
+
 export interface CalculatorInputs {
   targetViews: number;
   accountsCount: number;

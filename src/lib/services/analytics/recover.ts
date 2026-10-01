@@ -148,10 +148,18 @@ export async function runRecoveryPass(
     where: { id: campaignId },
     select: { id: true, title: true, fixedTexts: true },
   });
+  // Per-video custom captions from the Multiplier bulk intake are the actual
+  // posted caption for those outputs — attribution signals, same as fixedTexts.
+  const fixedCaptions = await prisma.multiplierOutput.findMany({
+    where: { fixedCaption: { not: null }, group: { campaignId } },
+    select: { fixedCaption: true },
+    distinct: ["fixedCaption"],
+  });
   const allCaptions = [
     ...new Set(
       [
         ...(campaign?.fixedTexts ?? []),
+        ...fixedCaptions.map((c) => c.fixedCaption!),
         // Legacy misattribution: before the Copy-of parser fix, files whose
         // campaign bracket failed to parse posted with the RAW FILENAME as
         // caption — "(Title) slug_..." or "Copy of (Title) slug_...". Add

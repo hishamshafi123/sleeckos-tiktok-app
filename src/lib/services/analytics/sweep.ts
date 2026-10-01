@@ -111,10 +111,18 @@ async function getCampaignInfo(
     cache.set(campaignId, null);
     return null;
   }
+  // Per-video custom captions from the Multiplier bulk intake are the actual
+  // posted caption for those outputs — attribution signals, same as fixedTexts.
+  const fixedCaptions = await prisma.multiplierOutput.findMany({
+    where: { fixedCaption: { not: null }, group: { campaignId } },
+    select: { fixedCaption: true },
+    distinct: ["fixedCaption"],
+  });
   const all = [
     ...new Set(
       [
         ...(campaign.fixedTexts ?? []),
+        ...fixedCaptions.map((c) => c.fixedCaption!),
         // Legacy misattribution (same as recover.ts): unparsed files posted
         // with the raw filename as caption — "(Title) ..." / "Copy of (Title) ...".
         ...(campaign.title ? [`(${campaign.title})`, `Copy of (${campaign.title})`] : []),

@@ -12,6 +12,7 @@ import { getRemotionBundle } from "../remotion-bundle";
 import { enqueueRender } from "./style-lab";
 import { LAYERED_TEMPLATE_KEY, coerceLayers } from "../style-lab/layers";
 import { SAMPLE_LYRIC_LINES } from "../style-lab/schema";
+import { assertVideoCaptionUnique } from "./campaigns";
 
 // Directory constants
 const UPLOADS_DIR = path.join(process.cwd(), "public", "uploads", "multiplier");
@@ -417,6 +418,24 @@ export async function addManualHook(groupId: string, text: string) {
   });
 }
 
+// Hooks-off bulk mode: `count` placeholder hook rows with EMPTY text (no
+// Gemini call). startGroupRender still maps one output per hook, and the
+// render worker skips the caption still/overlay for empty hook text, so the
+// group yields N identical overlay-free outputs.
+export async function createEmptyHooks(groupId: string, count: number): Promise<void> {
+  await prisma.multiplierHook.deleteMany({ where: { groupId } });
+  for (let i = 0; i < count; i++) {
+    await prisma.multiplierHook.create({
+      data: {
+        groupId,
+        text: "",
+        source: "manual",
+        order: i,
+      },
+    });
+  }
+}
+
 export async function updateHook(hookId: string, text: string) {
   return prisma.multiplierHook.update({
     where: { id: hookId },
@@ -738,6 +757,63 @@ export async function composeOutput(
   });
 }
 
+// Hooks-off bulk mode: no caption still exists, so there is nothing to
+// overlay. Re-encode the source video on the same 720x1280 canvas and with
+// the same encode settings as composeOutput so downstream export/upload
+// handling stays uniform.
+export async function composeOutputPlain(
+  variationRef: string,
+  outputId: string
+): Promise<string> {
+  ensureDirsExist();
+  const inputVideoPath = path.join(process.cwd(), "public", variationRef);
+  if (!fs.existsSync(inputVideoPath)) throw new Error(`Source video not found: ${variationRef}`);
+
+  const outputFileName = `multi_${outputId}.mp4`;
+  const localOutputPath = path.join(OUTPUTS_DIR, outputFileName);
+
+  const canvasFilter = `scale='if(gte(iw/ih,720/1280),-1,720)':'if(gte(iw/ih,720/1280),1280,-1)',crop=720:1280`;
+
+  const ffmpegArgs = [
+    "-y",
+    "-i", inputVideoPath,
+    "-filter_complex", `[0:v]${canvasFilter}[v]`,
+    "-map", "[v]",
+    "-map", "0:a?",
+    "-c:v", "libx264",
+    "-preset", "veryfast",
+    "-threads", "2",
+    "-crf", "26",
+    "-maxrate", "8M",
+    "-bufsize", "16M",
+    "-r", "30",
+    "-pix_fmt", "yuv420p",
+    "-c:a", "aac",
+    "-b:a", "128k",
+    "-movflags", "+faststart",
+    "-shortest",
+    localOutputPath,
+  ];
+
+  return new Promise<string>((resolve, reject) => {
+    const proc = spawn("ffmpeg", ffmpegArgs);
+
+    let stderr = "";
+    proc.stderr.on("data", (data) => {
+      stderr += data.toString();
+    });
+
+    proc.on("close", (code) => {
+      if (code === 0) {
+        resolve(`/uploads/multiplier/outputs/${outputFileName}`);
+      } else {
+        console.error("[Multiplier Composer FFmpeg error]:", stderr);
+        reject(new Error(`FFmpeg processing failed with code ${code}. Stderr: ${stderr}`));
+      }
+    });
+  });
+}
+
 // ─── Background Queue Rendering orchestrator ───────────────────────────────
 
 let isQueueProcessing = false;
@@ -876,20 +952,29 @@ async function renderWorkerLoop(workerId: number) {
         ? JSON.parse(output.group.settings) 
         : (output.group.settings || {});
 
-      // 1. Render transparent PNG still in Remotion
-      // Per-variation preset (multi-preset split) wins over the group style.
-      const outputStyleId = output.variation.styleId || output.group.styleId;
-      console.log(`[Multiplier Worker] Rendering still for Hook: "${output.hook.text.substring(0, 30)}..."`);
-      stillPath = await renderCaptionStill(outputStyleId, output.hook.text, settings, output.id);
+      const hookText = output.hook.text.trim();
+      let relativeVideoUrl: string;
+      if (hookText) {
+        // 1. Render transparent PNG still in Remotion
+        // Per-variation preset (multi-preset split) wins over the group style.
+        const outputStyleId = output.variation.styleId || output.group.styleId;
+        console.log(`[Multiplier Worker] Rendering still for Hook: "${output.hook.text.substring(0, 30)}..."`);
+        stillPath = await renderCaptionStill(outputStyleId, output.hook.text, settings, output.id);
 
-      // 2. Composite variation with still overlay in FFmpeg
-      console.log(`[Multiplier Worker] Compositing still on video: ${output.variation.videoRef}`);
-      const relativeVideoUrl = await composeOutput(output.variation.videoRef, stillPath, output.id, settings);
+        // 2. Composite variation with still overlay in FFmpeg
+        console.log(`[Multiplier Worker] Compositing still on video: ${output.variation.videoRef}`);
+        relativeVideoUrl = await composeOutput(output.variation.videoRef, stillPath, output.id, settings);
 
-      // Delete the still PNG after success
-      try {
-        fs.unlinkSync(stillPath);
-      } catch {}
+        // Delete the still PNG after success
+        try {
+          fs.unlinkSync(stillPath);
+        } catch {}
+      } else {
+        // Hooks-off bulk mode: empty hook text means NO caption overlay —
+        // re-encode the source video as-is.
+        console.log(`[Multiplier Worker] No hook text — rendering plain output for: ${output.variation.videoRef}`);
+        relativeVideoUrl = await composeOutputPlain(output.variation.videoRef, output.id);
+      }
 
       // 3. Auto-upload to Google Drive if connected
       let driveFolderId: string | null = null;
@@ -905,7 +990,7 @@ async function renderWorkerLoop(workerId: number) {
         if (drive && finalFolderId) {
           const localFilePath = path.join(process.cwd(), "public", relativeVideoUrl);
           const cleanHookSlug = output.hook.text.replace(/[^a-zA-Z0-9 ]/g, "").trim().replace(/\s+/g, "_").substring(0, 40);
-          const fileName = `multi_${output.id}_${cleanHookSlug}.mp4`;
+          const fileName = `multi_${output.id}_${cleanHookSlug || "plain"}.mp4`;
 
           console.log(`[Multiplier Worker] Uploading output ${output.id} to Drive Folder ${finalFolderId}`);
           const fileStream = fs.createReadStream(localFilePath);
@@ -1008,7 +1093,9 @@ export async function startGroupRender(groupId: string, opts?: { fresh?: boolean
     completedCombos = new Set(completed.map((o) => `${o.hookId}:${o.variationId}`));
   }
 
-  // Map outputs
+  // Map outputs. fixedCaption snapshots the group's custom caption (bulk
+  // intake) so the posting pipeline can key the TikTok caption off the output.
+  const fixedCaption = group.caption || null;
   if (group.mappingMode === "distribute") {
     // round-robin hooks across variations
     for (let i = 0; i < group.hooks.length; i++) {
@@ -1021,6 +1108,7 @@ export async function startGroupRender(groupId: string, opts?: { fresh?: boolean
           groupId,
           hookId: hook.id,
           variationId: variation.id,
+          fixedCaption,
           status: "PENDING",
         },
       });
@@ -1035,6 +1123,7 @@ export async function startGroupRender(groupId: string, opts?: { fresh?: boolean
             groupId,
             hookId: hook.id,
             variationId: variation.id,
+            fixedCaption,
             status: "PENDING",
           },
         });
@@ -1113,7 +1202,7 @@ export async function applyStyleSplitToGroup(groupId: string, styleIds: string[]
 
 async function addFileToBulkBatch(input: {
   jobId: string;
-  file: { tempPath: string; fileName: string };
+  file: { tempPath: string; fileName: string; caption?: string | null };
   campaignId?: string | null;
   styleId?: string | null;
   styleIds?: string[]; // multi-preset selection — takes precedence over styleId
@@ -1134,6 +1223,7 @@ async function addFileToBulkBatch(input: {
       data: {
         name,
         campaignId: input.campaignId || null,
+        caption: input.file.caption?.trim() || null,
         styleId: assignedStyle,
         mappingMode: "distribute",
         settings: {},
@@ -1169,23 +1259,42 @@ async function addFileToBulkBatch(input: {
   }
 }
 
+// Variations (outputs) per video in a bulk batch — operator-editable, clamped.
+export function clampBulkHookCount(count?: number | null): number {
+  if (count == null || !Number.isFinite(count)) return 15;
+  return Math.min(50, Math.max(1, Math.round(count)));
+}
+
 // Creates the batch shell in RECEIVING state. Files may arrive across several
 // requests (see appendToBulkBatch) — processing starts only on finalizeBulkBatch.
 // namePrefix enables a "PREFIX 01, 02, …" group naming sequence; the sequence
 // follows arrival order (files normally arrive one request at a time, in the
 // order the operator picked them).
 export async function createBulkBatch(input: {
-  files: { tempPath: string; fileName: string }[];
+  files: { tempPath: string; fileName: string; caption?: string | null }[];
   campaignId?: string | null;
   styleId?: string | null;
   styleIds?: string[]; // multi-preset selection — persisted on the job
   namePrefix?: string | null;
+  hooksEnabled?: boolean | null; // false = identical outputs with NO hook overlay
+  hookCount?: number | null;     // variations per video (clamped 1..50, default 15)
   createdBy?: string | null;
 }): Promise<{ jobId: string; groupIds: string[] }> {
   ensureDirsExist();
 
   const namePrefix = input.namePrefix?.trim() || null;
   const styleIds = (input.styleIds ?? []).filter((s) => typeof s === "string");
+
+  // Custom captions become the TikTok caption at posting time, so they must
+  // be attributable — reject captions another campaign already uses.
+  if (input.campaignId) {
+    for (const file of input.files) {
+      if (file.caption?.trim()) {
+        await assertVideoCaptionUnique(file.caption.trim(), input.campaignId);
+      }
+    }
+  }
+
   const job = await prisma.multiplierBatchJob.create({
     data: {
       status: "RECEIVING",
@@ -1194,6 +1303,8 @@ export async function createBulkBatch(input: {
       styleId: styleIds[0] || input.styleId || null,
       styleIds,
       namePrefix,
+      hooksEnabled: input.hooksEnabled ?? true,
+      hookCount: clampBulkHookCount(input.hookCount),
       createdBy: input.createdBy || null,
     },
   });
@@ -1218,9 +1329,12 @@ export async function createBulkBatch(input: {
 
 // Appends files to an existing RECEIVING batch (one request per file keeps
 // each request under proxy body-size limits, e.g. nginx client_max_body_size).
+// hooksEnabled/hookCount, when sent on an append, update the job row so the
+// operator can change them any time before finalize.
 export async function appendToBulkBatch(
   jobId: string,
-  files: { tempPath: string; fileName: string }[]
+  files: { tempPath: string; fileName: string; caption?: string | null }[],
+  opts?: { hooksEnabled?: boolean | null; hookCount?: number | null }
 ): Promise<string[]> {
   ensureDirsExist();
 
@@ -1230,6 +1344,24 @@ export async function appendToBulkBatch(
   });
   if (!job) throw new Error("Batch job not found");
   if (job.status !== "RECEIVING") throw new Error("Batch job is already being processed");
+
+  if (job.campaignId) {
+    for (const file of files) {
+      if (file.caption?.trim()) {
+        await assertVideoCaptionUnique(file.caption.trim(), job.campaignId);
+      }
+    }
+  }
+
+  if (opts && (opts.hooksEnabled != null || opts.hookCount != null)) {
+    await prisma.multiplierBatchJob.update({
+      where: { id: jobId },
+      data: {
+        ...(opts.hooksEnabled != null ? { hooksEnabled: opts.hooksEnabled } : {}),
+        ...(opts.hookCount != null ? { hookCount: clampBulkHookCount(opts.hookCount) } : {}),
+      },
+    });
+  }
 
   const groupIds: string[] = [];
   for (let i = 0; i < files.length; i++) {
@@ -1309,7 +1441,13 @@ export async function processBulkBatch(jobId: string) {
             where: { id: task.itemId },
             data: { status: "GENERATING_HOOKS" },
           });
-          await generateHooks(task.groupId, 15, !!job.campaignId);
+          if (job.hooksEnabled) {
+            await generateHooks(task.groupId, job.hookCount, !!job.campaignId);
+          } else {
+            // Hooks-off: skip Gemini — placeholder rows with empty text yield
+            // identical overlay-free outputs (see renderWorkerLoop).
+            await createEmptyHooks(task.groupId, job.hookCount);
+          }
           await prisma.multiplierBatchJobItem.update({
             where: { id: task.itemId },
             data: { status: "READY" },

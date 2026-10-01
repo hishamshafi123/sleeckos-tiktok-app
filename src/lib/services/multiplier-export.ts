@@ -625,7 +625,9 @@ async function processExportQueue() {
         .trim()
         .replace(/\s+/g, "_")
         .substring(0, 40);
-      const fileName = `${campaignPrefix}${cleanCampaignSlug}_${cleanHookSlug || "video"}_${video.id}.mp4`;
+      // Hooks-off bulk mode leaves the hook text empty — "plain" keeps the
+      // <campaign>_<slug>_<outputId>.mp4 shape the posting pipeline parses.
+      const fileName = `${campaignPrefix}${cleanCampaignSlug}_${cleanHookSlug || "plain"}_${video.id}.mp4`;
 
       console.log(`[Smart Export Worker] Uploading ${fileName} to folder ${assignment.driveFolderId}`);
       

@@ -20,7 +20,7 @@ All error responses follow the shape `{ "error": string }`.
 ### `POST /api/multiplier/bulk-upload`
 
 Upload videos for bulk intake. Creates one `MultiplierGroup` per file (named after the
-file, `mappingMode: "distribute"`). Processing (transcribe → 15 hooks per group,
+file, `mappingMode: "distribute"`). Processing (transcribe → hooks per group,
 sequential — one video at a time) starts when the batch is **finalized**.
 
 Files may be sent across multiple requests (recommended: one file per request —
@@ -37,6 +37,9 @@ later requests append to it via `jobId`; the last request sets `finalize`.
 | `styleId` | `string?` | caption style; defaults to `news-lower-third` (first request only) |
 | `jobId` | `string?` | append to an existing batch instead of creating one |
 | `namePrefix` | `string?` | group naming sequence — groups become `"PREFIX 01", "PREFIX 02", …` in arrival order (first request only; omit to name groups after their files) |
+| `hooksEnabled` | `"true"\|"false"?` | `"false"` = skip AI hook generation — outputs are identical with NO hook overlay. Persisted on the batch; may be resent on any append request before finalize (default `"true"`) |
+| `hookCount` | `string?` | variations (outputs) per video — integer string, clamped to 1–50 (default `15`). Persisted on the batch; same resend rule as `hooksEnabled` |
+| `caption` | `string?` | per-file custom TikTok caption, stored on the created group and used verbatim as the post caption base at posting time (hashtags still appended). Empty/absent = random pick from the campaign's fixedTexts pool. One file per request ⇒ a single `caption` field describes that request's file |
 | `finalize` | `"true"?` | start background processing; send on the last request (or alone with just `jobId`) |
 
 **Response `200`:**
@@ -45,7 +48,7 @@ later requests append to it via `jobId`; the last request sets `finalize`.
 { jobId: string; groupIds: string[] }
 ```
 
-Errors: `400` no files uploaded (and not a finalize-only request); `400` finalize without `jobId`; `500` batch not found / already processing.
+Errors: `400` no files uploaded (and not a finalize-only request); `400` finalize without `jobId`; `400` non-integer `hookCount`; `409` custom `caption` already used by another campaign's fixedTexts or per-video captions; `500` batch not found / already processing.
 
 ### `GET /api/multiplier/batch-jobs/[id]`
 

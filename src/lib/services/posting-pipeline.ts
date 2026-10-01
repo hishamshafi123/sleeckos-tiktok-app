@@ -473,6 +473,58 @@ export async function resolveCampaignCaptionConfig(campaignId: string | null): P
 }
 
 /**
+ * Resolve a per-video fixed caption from the Multiplier bulk intake. Smart
+ * export names files `..._<outputId>.mp4`; when the trailing id matches a
+ * MultiplierOutput carrying a fixedCaption, that caption MUST be used as the
+ * post caption base (instead of a random fixedTexts pick).
+ */
+export async function resolveFixedCaptionForJob(job: { driveFileName: string | null }): Promise<string | null> {
+  const name = job.driveFileName;
+  if (!name) return null;
+  const match = name.match(/_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.mp4$/i);
+  if (!match) return null;
+  const output = await prisma.multiplierOutput.findUnique({
+    where: { id: match[1] },
+    select: { fixedCaption: true },
+  });
+  const caption = output?.fixedCaption?.trim();
+  return caption || null;
+}
+
+/** Hashtag tail shared by buildPostCaption and buildPostCaptionForJob. */
+function appendPostHashtags(
+  caption: string,
+  account: {
+    section: { descTags: string | null; descTagCount: number };
+  },
+  campaign?: CampaignCaptionConfig | null
+): string {
+  // Campaign hashtag pool overrides the section pool when set
+  const sec = account.section;
+  let descTags = sec.descTags;
+  let descTagCount = sec.descTagCount;
+  if (campaign?.descTags?.trim()) {
+    descTags = campaign.descTags;
+    descTagCount = campaign.descTagCount;
+  }
+
+  if (descTags && descTagCount > 0) {
+    const allTags = descTags
+      .split(",")
+      .map((t: string) => t.trim())
+      .filter((t: string) => t.length > 0);
+    if (allTags.length > 0) {
+      const shuffled = [...allTags].sort(() => Math.random() - 0.5);
+      const picked = shuffled.slice(0, Math.min(descTagCount, allTags.length));
+      const tagLine = picked.join(" ");
+      caption = caption ? `${caption}\n\n${tagLine}` : tagLine;
+    }
+  }
+
+  return caption;
+}
+
+/**
  * Build the post caption. Shared by the cron post-scheduler and the manual
  * "post now" flow so both produce identical captions.
  *
@@ -504,29 +556,29 @@ export function buildPostCaption(
   }
   // No fallback to the Drive file name — ever.
 
-  // Campaign hashtag pool overrides the section pool when set
-  const sec = account.section;
-  let descTags = sec.descTags;
-  let descTagCount = sec.descTagCount;
-  if (campaign?.descTags?.trim()) {
-    descTags = campaign.descTags;
-    descTagCount = campaign.descTagCount;
-  }
+  return appendPostHashtags(caption, account, campaign);
+}
 
-  if (descTags && descTagCount > 0) {
-    const allTags = descTags
-      .split(",")
-      .map((t: string) => t.trim())
-      .filter((t: string) => t.length > 0);
-    if (allTags.length > 0) {
-      const shuffled = [...allTags].sort(() => Math.random() - 0.5);
-      const picked = shuffled.slice(0, Math.min(descTagCount, allTags.length));
-      const tagLine = picked.join(" ");
-      caption = caption ? `${caption}\n\n${tagLine}` : tagLine;
-    }
+/**
+ * buildPostCaption wrapper that honors per-video fixed captions from the
+ * Multiplier bulk intake: when the job's Drive file traces back to a
+ * MultiplierOutput with a fixedCaption, that caption is the base (hashtags
+ * still appended exactly like buildPostCaption); otherwise it falls back to
+ * the random fixedTexts pool. Rebuilding on retry deterministically yields
+ * the same fixed caption.
+ */
+export async function buildPostCaptionForJob(
+  account: {
+    section: { descTags: string | null; descTagCount: number };
+  },
+  job: { driveFileName: string | null },
+  campaign?: CampaignCaptionConfig | null
+): Promise<string> {
+  const fixedCaption = await resolveFixedCaptionForJob(job);
+  if (fixedCaption) {
+    return appendPostHashtags(fixedCaption, account, campaign);
   }
-
-  return caption;
+  return buildPostCaption(account, job, campaign);
 }
 
 /**
@@ -563,9 +615,9 @@ export async function postNowForAccount(accountId: string): Promise<{ jobId: str
     throw new Error("No unposted video files in the linked Drive folder.");
   }
 
-  // 3. Compute caption (campaign fixedTexts pool overrides the filename fallback)
+  // 3. Compute caption (per-video fixed caption wins; else campaign pool + hashtags)
   const campaignConfig = await resolveCampaignCaptionConfig(job.campaignId);
-  const caption = buildPostCaption(account, job, campaignConfig);
+  const caption = await buildPostCaptionForJob(account, job, campaignConfig);
 
   // 4. Asynchronously start the upload & publish process (handled by pipeline)
   (async () => {

@@ -3,7 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/db";
 import { getSession } from "@/lib/session";
 import { can } from "@/lib/services/permissions";
-import { uploadAndPublish, pollJobStatus, buildPostCaption, resolveCampaignCaptionConfig } from "@/lib/services/posting-pipeline";
+import { uploadAndPublish, pollJobStatus, buildPostCaptionForJob, resolveCampaignCaptionConfig } from "@/lib/services/posting-pipeline";
 
 // POST /api/managed/posts/[id]/retry — retry a FAILED post via PostPeer
 export async function POST(
@@ -99,9 +99,10 @@ export async function POST(
         await pollJobStatus(job!.id);
       } else {
         // Rebuild the caption from the campaign pool + hashtags — never reuse
-        // the stored caption (legacy rows may hold a raw file name).
+        // the stored caption (legacy rows may hold a raw file name). A
+        // per-video fixed caption deterministically resolves to itself again.
         const campaignConfig = await resolveCampaignCaptionConfig(job!.campaignId);
-        const caption = buildPostCaption(account, job!, campaignConfig);
+        const caption = await buildPostCaptionForJob(account, job!, campaignConfig);
         await uploadAndPublish(job!.id, caption);
         // Wait a few seconds and poll immediately
         await new Promise((resolve) => setTimeout(resolve, 5000));

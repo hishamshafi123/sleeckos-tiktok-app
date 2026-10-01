@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getSession } from "@/lib/session";
 import { can } from "@/lib/services/permissions";
 import { createBulkBatch, appendToBulkBatch, finalizeBulkBatch } from "@/lib/services/multiplier";
+import { FixedTextConflictError } from "@/lib/services/campaigns";
 import fs from "fs";
 import path from "path";
 import os from "os";
@@ -9,7 +10,9 @@ import { Readable } from "stream";
 import { pipeline } from "stream/promises";
 
 // POST /api/multiplier/bulk-upload — upload many videos, one MultiplierGroup per file
-// multipart/form-data: files (multiple), campaignId?, styleId?
+// multipart/form-data: files (multiple), campaignId?, styleId?, hooksEnabled?,
+// hookCount?, caption? (per-file custom TikTok caption; clients upload one file
+// per request, so a single caption field applies to that request's file)
 export async function POST(req: NextRequest) {
   const session = await getSession();
   if (!session) {
@@ -40,6 +43,21 @@ export async function POST(req: NextRequest) {
     const finalize = formData.get("finalize") === "true";
     const namePrefix = (formData.get("namePrefix") as string) || null;
 
+    // Hooks toggle + variations-per-video count (persisted on the batch job).
+    const hooksEnabledRaw = formData.get("hooksEnabled") as string | null;
+    const hooksEnabled = hooksEnabledRaw == null ? undefined : hooksEnabledRaw === "true";
+    const hookCountRaw = (formData.get("hookCount") as string) || "";
+    let hookCount: number | undefined;
+    if (hookCountRaw) {
+      const parsed = Number(hookCountRaw);
+      if (!Number.isInteger(parsed)) {
+        return NextResponse.json({ error: "hookCount must be an integer" }, { status: 400 });
+      }
+      hookCount = parsed;
+    }
+    // Per-file custom caption (empty string = no custom caption).
+    const caption = (formData.get("caption") as string) || "";
+
     if ((!files || files.length === 0) && !finalize) {
       return NextResponse.json({ error: "No files uploaded" }, { status: 400 });
     }
@@ -54,7 +72,7 @@ export async function POST(req: NextRequest) {
     }
 
     const tempDir = os.tmpdir();
-    const staged: { tempPath: string; fileName: string }[] = [];
+    const staged: { tempPath: string; fileName: string; caption: string }[] = [];
 
     for (const file of files) {
       const tempPath = path.join(tempDir, `bulk_${Date.now()}_${Math.random().toString(36).slice(2)}_${file.name}`);
@@ -62,13 +80,13 @@ export async function POST(req: NextRequest) {
       const readableWebStream = file.stream();
       const nodeReadable = Readable.fromWeb(readableWebStream as any);
       await pipeline(nodeReadable, writeStream);
-      staged.push({ tempPath, fileName: file.name });
+      staged.push({ tempPath, fileName: file.name, caption });
     }
 
     let jobId: string;
     let groupIds: string[];
     if (existingJobId) {
-      groupIds = await appendToBulkBatch(existingJobId, staged);
+      groupIds = await appendToBulkBatch(existingJobId, staged, { hooksEnabled, hookCount });
       jobId = existingJobId;
     } else {
       const created = await createBulkBatch({
@@ -77,6 +95,8 @@ export async function POST(req: NextRequest) {
         styleId,
         styleIds,
         namePrefix,
+        hooksEnabled,
+        hookCount,
         createdBy: session.userId,
       });
       jobId = created.jobId;
@@ -89,6 +109,9 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ jobId, groupIds });
   } catch (err: any) {
+    if (err instanceof FixedTextConflictError) {
+      return NextResponse.json({ error: err.message }, { status: 409 });
+    }
     console.error("[Multiplier Bulk Upload API] Error:", err);
     return NextResponse.json({ error: err.message || "Failed to create bulk batch" }, { status: 500 });
   }

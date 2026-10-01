@@ -944,6 +944,7 @@ model MultiplierGroup {
   campaign        Campaign?                 @relation(fields: [campaignId], references: [id], onDelete: Cascade)
   transcript      String?                   @db.Text
   transcriptStatus String                    @default("PENDING") // PENDING | TRANSCRIBING | TRANSCRIBED | FAILED
+  caption         String?                   // per-video custom caption (bulk intake) — used as the TikTok caption at posting time
   styleId         String                    // template preset key or ID
   mappingMode     String                    @default("each")    // each | distribute
   settings        Json                      @default("{}")      // holds custom visual overrides
@@ -987,6 +988,7 @@ model MultiplierOutput {
   variation     MultiplierGroupVariation  @relation(fields: [variationId], references: [id], onDelete: Cascade)
   hookId        String
   hook          MultiplierHook            @relation(fields: [hookId], references: [id], onDelete: Cascade)
+  fixedCaption  String?                   // snapshot of group.caption at render time — posting pipeline keys off this
   status        String                    @default("PENDING") // PENDING | RENDERING | COMPLETED | FAILED
   outputRef     String?                   // path to completed MP4 in public/uploads/
   driveFolderId String?
@@ -1037,6 +1039,8 @@ model MultiplierBatchJob {
   campaignId String?
   styleId    String?
   styleIds   String[]                 @default([]) // multi-preset selection — files/groups round-robin across these
+  hookCount    Int                    @default(15) // variations (outputs) per video
+  hooksEnabled Boolean                @default(true) // false = identical outputs with NO hook overlay
   createdBy  String?
   items      MultiplierBatchJobItem[]
   createdAt  DateTime                 @default(now())

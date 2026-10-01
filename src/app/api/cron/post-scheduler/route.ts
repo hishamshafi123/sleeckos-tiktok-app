@@ -5,7 +5,7 @@ import {
   ingestDriveFiles,
   claimNextVideo,
   uploadAndPublish,
-  buildPostCaption,
+  buildPostCaptionForJob,
   resolveCampaignCaptionConfig,
 } from "@/lib/services/posting-pipeline";
 import { resumeSmartExportQueue } from "@/lib/services/multiplier-export";
@@ -221,13 +221,13 @@ async function runScheduler() {
         continue;
       }
 
-      // ── Caption (campaign fixedTexts pool is STRONGEST, then filename) ──
+      // ── Caption (per-video fixed caption wins; else campaign pool) ──
       const campaignConfig = await resolveCampaignCaptionConfig(job.campaignId);
       const sec = account.section;
 
       console.log(`[PostScheduler] Caption build for ${accountKey}: campaign.fixedTexts=${campaignConfig?.fixedTexts.length ?? 0} entries, campaign.descTags=${campaignConfig?.descTags ? `"${campaignConfig.descTags}"` : "null"}, section.descTags=${sec.descTags ? `"${sec.descTags}"` : "null"}, section.descTagCount=${sec.descTagCount}`);
 
-      const caption = buildPostCaption(account, job, campaignConfig);
+      const caption = await buildPostCaptionForJob(account, job, campaignConfig);
 
       console.log(`[PostScheduler] Final caption for ${accountKey}: "${caption.substring(0, 200)}"`);
 
