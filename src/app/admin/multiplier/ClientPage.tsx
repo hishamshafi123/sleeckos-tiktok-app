@@ -963,7 +963,7 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
       toast.error("Please select at least one video file.");
       return;
     }
-    if (bulkStyleIds.length === 0) {
+    if (bulkHooksEnabled && bulkStyleIds.length === 0) {
       toast.error("Select at least one style preset — videos are split evenly across the selected presets.");
       return;
     }
@@ -1185,7 +1185,7 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
       toast.error("Fetch a Drive folder and keep at least one video selected.");
       return;
     }
-    if (bulkStyleIds.length === 0) {
+    if (bulkHooksEnabled && bulkStyleIds.length === 0) {
       toast.error("Select at least one style preset — videos are split evenly across the selected presets.");
       return;
     }
@@ -3680,9 +3680,14 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
               </div>
               <div>
                 <label className="block text-xs font-semibold uppercase tracking-wider text-[#a1a1aa] mb-2">
-                  Style Presets <span className="normal-case font-normal text-[#71717a]">(videos split evenly across selected)</span>
+                  Style Presets{" "}
+                  <span className="normal-case font-normal text-[#71717a]">
+                    {bulkHooksEnabled
+                      ? "(videos split evenly across selected)"
+                      : "(presets only apply to text hooks — hooks are off)"}
+                  </span>
                 </label>
-                <div className="flex flex-wrap gap-1.5">
+                <div className={`flex flex-wrap gap-1.5 ${bulkHooksEnabled ? "" : "opacity-40 pointer-events-none"}`}>
                   {[{ id: "", name: "Default style" }, ...savedStyles].map((s: any) => {
                     const active = bulkStyleIds.includes(s.id);
                     return (
@@ -3701,7 +3706,7 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
                     );
                   })}
                 </div>
-                {bulkStyleIds.length > 0 && bulkFiles.length > 0 && (
+                {bulkHooksEnabled && bulkStyleIds.length > 0 && bulkFiles.length > 0 && (
                   <p className="text-[10px] text-[#71717a] mt-1.5">
                     {bulkFiles.length} video{bulkFiles.length !== 1 ? "s" : ""} × {bulkStyleIds.length} preset
                     {bulkStyleIds.length !== 1 ? "s" : ""} → ~
