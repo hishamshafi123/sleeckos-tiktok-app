@@ -492,6 +492,10 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
   const [pausedFilesLoading, setPausedFilesLoading] = useState(false);
   const [pausedFilesError, setPausedFilesError] = useState<string | null>(null);
   const [isDeletingPausedFiles, setIsDeletingPausedFiles] = useState(false);
+  const [pausedDeleteProgress, setPausedDeleteProgress] = useState<{
+    processed: number;
+    total: number;
+  } | null>(null);
 
   const fetchPausedFiles = async () => {
     setPausedFilesLoading(true);
@@ -613,7 +617,10 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
     }
   };
 
-  // Delete the paused campaign's parked Drive files and mark them skipped
+  // Delete the paused campaign's parked Drive files and mark them skipped.
+  // Deletion runs in the background on the server (1,000+ files take minutes
+  // — nginx cuts synchronous requests at 60s), so this starts it and polls
+  // the progress endpoint until done.
   const handleDeletePausedFiles = async () => {
     const total = pausedFiles?.totalFiles ?? 0;
     if (!confirm(`Delete ${total} files from Drive and mark them skipped? This cannot be undone.`)) {
@@ -621,6 +628,7 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
     }
 
     setIsDeletingPausedFiles(true);
+    setPausedDeleteProgress(null);
     try {
       const res = await fetch(`/api/campaigns/${campaign.id}/paused-files/delete`, {
         method: "POST",
@@ -631,16 +639,33 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
         throw new Error(err.error || "Failed to delete paused-campaign files");
       }
 
-      const data = await res.json();
-      toast.success(
-        `Deleted ${data.deleted} files, ${data.jobsMarked} jobs marked skipped` +
-          (data.failedToDelete > 0 ? ` (${data.failedToDelete} failed to delete)` : "")
-      );
+      // Poll until the background run finishes
+      for (;;) {
+        await new Promise((r) => setTimeout(r, 4000));
+        const poll = await fetch(`/api/campaigns/${campaign.id}/paused-files/delete`);
+        if (!poll.ok) continue; // transient — keep polling
+        const data = await poll.json();
+        if (data.status === "running") {
+          setPausedDeleteProgress({ processed: data.processed, total: data.total });
+          continue;
+        }
+        if (data.status === "failed") {
+          throw new Error(data.error || "Deletion failed on the server");
+        }
+        if (data.status === "done") {
+          toast.success(
+            `Deleted ${data.deleted} files, ${data.total} jobs marked skipped` +
+              (data.failedToDelete > 0 ? ` (${data.failedToDelete} failed to delete)` : "")
+          );
+          break;
+        }
+      }
       await fetchPausedFiles();
     } catch (err: any) {
       toast.error(err.message);
     } finally {
       setIsDeletingPausedFiles(false);
+      setPausedDeleteProgress(null);
     }
   };
 
@@ -2304,7 +2329,9 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
                       {isDeletingPausedFiles ? (
                         <>
                           <Loader2 size={12} className="animate-spin" />
-                          Deleting...
+                          {pausedDeleteProgress
+                            ? `Deleting ${pausedDeleteProgress.processed.toLocaleString("en-US")} / ${pausedDeleteProgress.total.toLocaleString("en-US")}...`
+                            : "Starting deletion..."}
                         </>
                       ) : (
                         <>
