@@ -1,5 +1,5 @@
 import prisma from "@/lib/db";
-import { deleteDriveFile } from "@/lib/google";
+import { deleteDriveFile, listVideoFilesInFolder } from "@/lib/google";
 import { CampaignStatus } from "@prisma/client";
 
 export const PAUSED_REMOVAL_NOTE = "Campaign paused — file removed from Drive";
@@ -170,5 +170,105 @@ export async function startPausedFilesDeletion(campaignId: string): Promise<Paus
   };
   deletionRuns.set(campaignId, progress);
   void runPausedFilesDeletion(campaignId, progress);
+  return progress;
+}
+
+// ── Rescan: resurrect paused-removal jobs whose Drive file still exists ─────
+// If a paused-files deletion ran while Drive credentials were broken, the
+// jobs were retired (FAILED + removal note) but the FILES were never deleted.
+// The section then shows "no files" while Drive still holds them. This scans
+// the affected accounts' folders and moves jobs whose file is still live back
+// to AVAILABLE so the operator can delete them for real.
+
+export interface PausedFilesRescanProgress {
+  status: "running" | "done" | "failed";
+  totalAccounts: number;
+  accountsScanned: number;
+  resurrected: number;
+  startedAt: string;
+  finishedAt: string | null;
+  error: string | null;
+}
+
+const rescanRuns = new Map<string, PausedFilesRescanProgress>();
+
+export function getPausedFilesRescanProgress(campaignId: string): PausedFilesRescanProgress | null {
+  return rescanRuns.get(campaignId) ?? null;
+}
+
+async function runPausedFilesRescan(campaignId: string, progress: PausedFilesRescanProgress) {
+  try {
+    const rows = await prisma.postJob.findMany({
+      where: { campaignId, state: "FAILED", failureReason: PAUSED_REMOVAL_NOTE },
+      select: { accountId: true },
+      distinct: ["accountId"],
+    });
+    progress.totalAccounts = rows.length;
+
+    for (const { accountId } of rows) {
+      try {
+        const account = await prisma.managedAccount.findUnique({
+          where: { id: accountId },
+          select: { driveFolderId: true },
+        });
+        if (account?.driveFolderId) {
+          const files = await listVideoFilesInFolder(account.driveFolderId, accountId);
+          const liveIds = files.map((f) => f.id).filter(Boolean) as string[];
+          if (liveIds.length > 0) {
+            const res = await prisma.postJob.updateMany({
+              where: {
+                campaignId,
+                accountId,
+                state: "FAILED",
+                failureReason: PAUSED_REMOVAL_NOTE,
+                driveFileId: { in: liveIds },
+              },
+              data: { state: "AVAILABLE", failureReason: null, lockedAt: null, lockedBy: null },
+            });
+            if (res.count > 0) {
+              await prisma.scheduledPost.updateMany({
+                where: {
+                  accountId,
+                  driveFileId: { in: liveIds },
+                  status: "SKIPPED",
+                  errorMessage: PAUSED_REMOVAL_NOTE,
+                },
+                data: { status: "QUEUED", errorMessage: null },
+              });
+              progress.resurrected += res.count;
+            }
+          }
+        }
+      } catch (err: any) {
+        console.warn(`[Campaign Priority] Rescan failed for account ${accountId}:`, err?.message || err);
+      }
+      progress.accountsScanned++;
+    }
+    progress.status = "done";
+  } catch (err: any) {
+    progress.status = "failed";
+    progress.error = err?.message || String(err);
+    console.error(`[Campaign Priority] Paused-files rescan failed for campaign ${campaignId}:`, err);
+  } finally {
+    progress.finishedAt = new Date().toISOString();
+  }
+}
+
+/** Start (or return the in-flight) rescan for a campaign. Idempotent. */
+export async function startPausedFilesRescan(campaignId: string): Promise<PausedFilesRescanProgress> {
+  const existing = rescanRuns.get(campaignId);
+  if (existing && existing.status === "running") return existing;
+
+  const progress: PausedFilesRescanProgress = {
+    status: "running",
+    totalAccounts: 0,
+    accountsScanned: 0,
+    resurrected: 0,
+    startedAt: new Date().toISOString(),
+    finishedAt: null,
+    error: null,
+  };
+  rescanRuns.set(campaignId, progress);
+  void runPausedFilesRescan(campaignId, progress);
   return progress;
 }

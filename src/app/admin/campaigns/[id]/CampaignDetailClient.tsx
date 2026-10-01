@@ -496,6 +496,11 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
     processed: number;
     total: number;
   } | null>(null);
+  const [isRescanningPausedFiles, setIsRescanningPausedFiles] = useState(false);
+  const [pausedRescanProgress, setPausedRescanProgress] = useState<{
+    accountsScanned: number;
+    totalAccounts: number;
+  } | null>(null);
 
   const fetchPausedFiles = async () => {
     setPausedFilesLoading(true);
@@ -666,6 +671,55 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
     } finally {
       setIsDeletingPausedFiles(false);
       setPausedDeleteProgress(null);
+    }
+  };
+
+  // Rescan Drive folders: if a deletion ran while Drive credentials were
+  // broken, jobs were retired but the files were never deleted — the section
+  // then shows "no files" while Drive still holds them. This brings those
+  // jobs back so they can be deleted for real.
+  const handleRescanPausedFiles = async () => {
+    setIsRescanningPausedFiles(true);
+    setPausedRescanProgress(null);
+    try {
+      const res = await fetch(`/api/campaigns/${campaign.id}/paused-files/rescan`, {
+        method: "POST",
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || "Failed to start rescan");
+      }
+
+      for (;;) {
+        await new Promise((r) => setTimeout(r, 4000));
+        const poll = await fetch(`/api/campaigns/${campaign.id}/paused-files/rescan`);
+        if (!poll.ok) continue;
+        const data = await poll.json();
+        if (data.status === "running") {
+          setPausedRescanProgress({
+            accountsScanned: data.accountsScanned,
+            totalAccounts: data.totalAccounts,
+          });
+          continue;
+        }
+        if (data.status === "failed") {
+          throw new Error(data.error || "Rescan failed on the server");
+        }
+        if (data.status === "done") {
+          toast.success(
+            data.resurrected > 0
+              ? `Rescan complete — found ${data.resurrected} file${data.resurrected !== 1 ? "s" : ""} still in Drive. You can delete them now.`
+              : "Rescan complete — no leftover files found in Drive."
+          );
+          break;
+        }
+      }
+      await fetchPausedFiles();
+    } catch (err: any) {
+      toast.error(err.message);
+    } finally {
+      setIsRescanningPausedFiles(false);
+      setPausedRescanProgress(null);
     }
   };
 
@@ -2276,6 +2330,31 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
 
           {status === "PAUSED" && (
             <div className="space-y-2.5">
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-[11px] font-semibold text-zinc-400 uppercase tracking-wider">
+                  Parked Drive files
+                </p>
+                <button
+                  onClick={handleRescanPausedFiles}
+                  disabled={isRescanningPausedFiles || isDeletingPausedFiles}
+                  title="Re-check the Drive folders — brings back files whose earlier deletion didn't actually remove them"
+                  className="flex items-center gap-1.5 bg-zinc-900 hover:bg-zinc-800 border border-[#27272a] text-zinc-300 text-[11px] font-semibold px-2.5 py-1 rounded transition disabled:opacity-50"
+                >
+                  {isRescanningPausedFiles ? (
+                    <>
+                      <Loader2 size={11} className="animate-spin" />
+                      {pausedRescanProgress
+                        ? `Scanning ${pausedRescanProgress.accountsScanned} / ${pausedRescanProgress.totalAccounts} folders...`
+                        : "Starting rescan..."}
+                    </>
+                  ) : (
+                    <>
+                      <RefreshCw size={11} />
+                      Rescan Drive folders
+                    </>
+                  )}
+                </button>
+              </div>
               {pausedFilesLoading ? (
                 <div className="space-y-2">
                   {[0, 1].map((i) => (
