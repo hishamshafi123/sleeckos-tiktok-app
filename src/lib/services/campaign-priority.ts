@@ -1,6 +1,6 @@
 import prisma from "@/lib/db";
-import { deleteDriveFile, listVideoFilesInFolder } from "@/lib/google";
-import { ingestDriveFiles } from "@/lib/services/posting-pipeline";
+import { deleteDriveFile, getServiceAccountDriveClient } from "@/lib/google";
+import { parseCampaignBracket, canonicalDriveFileName } from "@/lib/services/posting-pipeline";
 import { CampaignStatus } from "@prisma/client";
 
 export const PAUSED_REMOVAL_NOTE = "Campaign paused — file removed from Drive";
@@ -174,23 +174,27 @@ export async function startPausedFilesDeletion(campaignId: string): Promise<Paus
   return progress;
 }
 
-// ── Rescan: bring back campaign files that are still sitting in Drive ───────
-// Two cases after a paused-files deletion went wrong (or files landed while
-// the campaign's accounts were in posting backoff):
-//  1. Jobs were retired (FAILED + removal note) but the FILES were never
-//     deleted (e.g. Drive credentials were broken) — resurrect by file id.
-//  2. Fresh copies of the same videos were re-exported later (new Drive file
-//     ids) and never ingested, because the old non-FAILED job blocked the
-//     dedupe at the time — re-ingest picks them up now that the old jobs are
-//     FAILED (ingest's canonical-name dedupe allows FAILED-only histories).
-// Both end as AVAILABLE jobs so the operator can delete them for real.
+// ── Rescan: find every Drive file carrying this campaign's bracket ──────────
+// The parked-files list is built from AVAILABLE PostJobs, but files can be
+// sitting in Drive with no live job: a deletion ran while Drive credentials
+// were broken (jobs retired, files kept), fresh copies were re-exported with
+// new file ids and never ingested (dedupe blocked them at landing time, and
+// backed-off accounts were never re-ingested), or the per-folder listing cap
+// hid them. Rather than reverse-engineering those paths, this searches Drive
+// directly for "(Campaign Title)" files across all account folders (fully
+// paginated) and reconciles each one:
+//   - no job for the file        → create AVAILABLE job (+ QUEUED post)
+//   - job retired by removal     → resurrect to AVAILABLE
+//   - live job already exists    → leave it (it shows in the list already)
+// Everything found ends up deletable via the normal "Delete these files" run.
 
 export interface PausedFilesRescanProgress {
   status: "running" | "done" | "failed";
-  totalAccounts: number;
-  accountsScanned: number;
+  totalFiles: number;
+  processed: number;
   resurrected: number;
   ingested: number;
+  skipped: number;
   startedAt: string;
   finishedAt: string | null;
   error: string | null;
@@ -202,61 +206,124 @@ export function getPausedFilesRescanProgress(campaignId: string): PausedFilesRes
   return rescanRuns.get(campaignId) ?? null;
 }
 
+const LIVE_JOB_STATES = ["AVAILABLE", "CLAIMED", "UPLOADING", "PENDING_DELETION"];
+
 async function runPausedFilesRescan(campaignId: string, progress: PausedFilesRescanProgress) {
   try {
-    const rows = await prisma.postJob.findMany({
-      where: { campaignId, state: "FAILED", failureReason: PAUSED_REMOVAL_NOTE },
-      select: { accountId: true },
-      distinct: ["accountId"],
+    const campaign = await prisma.campaign.findUnique({
+      where: { id: campaignId },
+      select: { title: true },
     });
-    progress.totalAccounts = rows.length;
+    if (!campaign?.title) throw new Error("Campaign not found");
 
-    for (const { accountId } of rows) {
+    // Full Drive search for "(Title)" video files (paginates the entire
+    // match set — per-folder listings cap at 100 and miss files).
+    const drive = await getServiceAccountDriveClient();
+    const q = `name contains '(${campaign.title.replace(/'/g, "\\'")}' and mimeType contains 'video/' and trashed=false`;
+    const found: { id: string; name: string; parent: string }[] = [];
+    let pageToken: string | undefined;
+    do {
+      const res: any = await drive.files.list({
+        q,
+        fields: "nextPageToken, files(id,name,parents)",
+        pageSize: 1000,
+        pageToken,
+        supportsAllDrives: true,
+        includeItemsFromAllDrives: true,
+      });
+      for (const f of res.data.files || []) {
+        if (!f.id || !f.name) continue;
+        // Drive "contains" is substring-based — verify the exact bracket.
+        const bracket = parseCampaignBracket(f.name);
+        if (bracket && bracket.toLowerCase() === campaign.title.toLowerCase()) {
+          found.push({ id: f.id, name: f.name, parent: f.parents?.[0] ?? "" });
+        }
+      }
+      pageToken = res.data.nextPageToken || undefined;
+    } while (pageToken);
+
+    // Scope: only files parked in a managed account's Drive folder.
+    const accounts = await prisma.managedAccount.findMany({
+      where: { driveFolderId: { not: null } },
+      select: { id: true, driveFolderId: true },
+    });
+    const accountByFolder = new Map(accounts.map((a) => [a.driveFolderId as string, a.id]));
+    const inScope = found.filter((f) => f.parent && accountByFolder.has(f.parent));
+    progress.totalFiles = inScope.length;
+
+    // Existing jobs for these files, keyed by driveFileId:accountId.
+    const existingJobs = await prisma.postJob.findMany({
+      where: { driveFileId: { in: inScope.map((f) => f.id) } },
+      select: { id: true, driveFileId: true, accountId: true, state: true, failureReason: true },
+    });
+    const jobByFile = new Map(existingJobs.map((j) => [`${j.driveFileId}:${j.accountId}`, j]));
+
+    // Canonical names of LIVE jobs per account (same duplicate protection as
+    // ingest: a live twin must not be queued twice).
+    const liveJobs = await prisma.postJob.findMany({
+      where: { campaignId, state: { in: LIVE_JOB_STATES } },
+      select: { accountId: true, driveFileName: true },
+    });
+    const liveNamesByAccount = new Map<string, Set<string>>();
+    for (const j of liveJobs) {
+      const set = liveNamesByAccount.get(j.accountId) ?? new Set<string>();
+      set.add(canonicalDriveFileName(j.driveFileName));
+      liveNamesByAccount.set(j.accountId, set);
+    }
+
+    for (const file of inScope) {
+      const accountId = accountByFolder.get(file.parent)!;
+      const job = jobByFile.get(`${file.id}:${accountId}`);
       try {
-        const account = await prisma.managedAccount.findUnique({
-          where: { id: accountId },
-          select: { driveFolderId: true },
-        });
-        if (account?.driveFolderId) {
-          const files = await listVideoFilesInFolder(account.driveFolderId, accountId);
-          const liveIds = files.map((f) => f.id).filter(Boolean) as string[];
-          if (liveIds.length > 0) {
-            const res = await prisma.postJob.updateMany({
-              where: {
-                campaignId,
-                accountId,
-                state: "FAILED",
-                failureReason: PAUSED_REMOVAL_NOTE,
-                driveFileId: { in: liveIds },
-              },
-              data: { state: "AVAILABLE", failureReason: null, lockedAt: null, lockedBy: null },
-            });
-            if (res.count > 0) {
-              await prisma.scheduledPost.updateMany({
-                where: {
+        if (!job) {
+          if (liveNamesByAccount.get(accountId)?.has(canonicalDriveFileName(file.name))) {
+            progress.skipped++; // a live twin is already queued for this video
+          } else {
+            await prisma.$transaction(async (tx) => {
+              await tx.postJob.create({
+                data: {
+                  driveFileId: file.id,
+                  driveFileName: file.name,
                   accountId,
-                  driveFileId: { in: liveIds },
-                  status: "SKIPPED",
-                  errorMessage: PAUSED_REMOVAL_NOTE,
+                  state: "AVAILABLE",
+                  campaignId,
                 },
-                data: { status: "QUEUED", errorMessage: null },
               });
-              progress.resurrected += res.count;
-            }
+              await tx.scheduledPost.create({
+                data: {
+                  accountId,
+                  driveFileId: file.id,
+                  driveFileName: file.name,
+                  caption: "",
+                  scheduledFor: new Date(),
+                  status: "QUEUED",
+                },
+              });
+            });
+            progress.ingested++;
           }
-
-          // Case 2: fresh copies never tracked as jobs (old jobs were
-          // non-FAILED when they landed, so the scheduler's dedupe skipped
-          // them; and accounts in posting backoff haven't been re-ingested
-          // since). ingestDriveFiles is dedupe-safe — existing live jobs and
-          // canonical-name duplicates are skipped.
-          const ing = await ingestDriveFiles(accountId);
-          if (ing.success && ing.ingested) progress.ingested += ing.ingested;
+        } else if (job.state === "FAILED" && job.failureReason === PAUSED_REMOVAL_NOTE) {
+          await prisma.postJob.update({
+            where: { id: job.id },
+            data: { state: "AVAILABLE", failureReason: null, lockedAt: null, lockedBy: null },
+          });
+          await prisma.scheduledPost.updateMany({
+            where: {
+              accountId,
+              driveFileId: file.id,
+              status: "SKIPPED",
+              errorMessage: PAUSED_REMOVAL_NOTE,
+            },
+            data: { status: "QUEUED", errorMessage: null },
+          });
+          progress.resurrected++;
+        } else {
+          progress.skipped++;
         }
       } catch (err: any) {
-        console.warn(`[Campaign Priority] Rescan failed for account ${accountId}:`, err?.message || err);
+        console.warn(`[Campaign Priority] Rescan failed for file ${file.id}:`, err?.message || err);
       }
-      progress.accountsScanned++;
+      progress.processed++;
     }
     progress.status = "done";
   } catch (err: any) {
@@ -275,10 +342,11 @@ export async function startPausedFilesRescan(campaignId: string): Promise<Paused
 
   const progress: PausedFilesRescanProgress = {
     status: "running",
-    totalAccounts: 0,
-    accountsScanned: 0,
+    totalFiles: 0,
+    processed: 0,
     resurrected: 0,
     ingested: 0,
+    skipped: 0,
     startedAt: new Date().toISOString(),
     finishedAt: null,
     error: null,

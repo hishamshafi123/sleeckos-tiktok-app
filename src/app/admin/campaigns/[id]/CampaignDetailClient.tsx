@@ -498,8 +498,8 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
   } | null>(null);
   const [isRescanningPausedFiles, setIsRescanningPausedFiles] = useState(false);
   const [pausedRescanProgress, setPausedRescanProgress] = useState<{
-    accountsScanned: number;
-    totalAccounts: number;
+    processed: number;
+    totalFiles: number;
   } | null>(null);
 
   const fetchPausedFiles = async () => {
@@ -697,8 +697,8 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
         const data = await poll.json();
         if (data.status === "running") {
           setPausedRescanProgress({
-            accountsScanned: data.accountsScanned,
-            totalAccounts: data.totalAccounts,
+            processed: data.processed ?? 0,
+            totalFiles: data.totalFiles ?? 0,
           });
           continue;
         }
@@ -2345,7 +2345,9 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
                     <>
                       <Loader2 size={11} className="animate-spin" />
                       {pausedRescanProgress
-                        ? `Scanning ${pausedRescanProgress.accountsScanned} / ${pausedRescanProgress.totalAccounts} folders...`
+                        ? pausedRescanProgress.totalFiles > 0
+                          ? `Tracking ${pausedRescanProgress.processed} / ${pausedRescanProgress.totalFiles} files...`
+                          : "Searching Drive..."
                         : "Starting rescan..."}
                     </>
                   ) : (
