@@ -706,9 +706,10 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
           throw new Error(data.error || "Rescan failed on the server");
         }
         if (data.status === "done") {
+          const found = (data.resurrected ?? 0) + (data.ingested ?? 0);
           toast.success(
-            data.resurrected > 0
-              ? `Rescan complete — found ${data.resurrected} file${data.resurrected !== 1 ? "s" : ""} still in Drive. You can delete them now.`
+            found > 0
+              ? `Rescan complete — found ${found} file${found !== 1 ? "s" : ""} in Drive (${data.resurrected ?? 0} restored, ${data.ingested ?? 0} newly tracked). You can delete them now.`
               : "Rescan complete — no leftover files found in Drive."
           );
           break;

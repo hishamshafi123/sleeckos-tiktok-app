@@ -1,5 +1,6 @@
 import prisma from "@/lib/db";
 import { deleteDriveFile, listVideoFilesInFolder } from "@/lib/google";
+import { ingestDriveFiles } from "@/lib/services/posting-pipeline";
 import { CampaignStatus } from "@prisma/client";
 
 export const PAUSED_REMOVAL_NOTE = "Campaign paused — file removed from Drive";
@@ -173,18 +174,23 @@ export async function startPausedFilesDeletion(campaignId: string): Promise<Paus
   return progress;
 }
 
-// ── Rescan: resurrect paused-removal jobs whose Drive file still exists ─────
-// If a paused-files deletion ran while Drive credentials were broken, the
-// jobs were retired (FAILED + removal note) but the FILES were never deleted.
-// The section then shows "no files" while Drive still holds them. This scans
-// the affected accounts' folders and moves jobs whose file is still live back
-// to AVAILABLE so the operator can delete them for real.
+// ── Rescan: bring back campaign files that are still sitting in Drive ───────
+// Two cases after a paused-files deletion went wrong (or files landed while
+// the campaign's accounts were in posting backoff):
+//  1. Jobs were retired (FAILED + removal note) but the FILES were never
+//     deleted (e.g. Drive credentials were broken) — resurrect by file id.
+//  2. Fresh copies of the same videos were re-exported later (new Drive file
+//     ids) and never ingested, because the old non-FAILED job blocked the
+//     dedupe at the time — re-ingest picks them up now that the old jobs are
+//     FAILED (ingest's canonical-name dedupe allows FAILED-only histories).
+// Both end as AVAILABLE jobs so the operator can delete them for real.
 
 export interface PausedFilesRescanProgress {
   status: "running" | "done" | "failed";
   totalAccounts: number;
   accountsScanned: number;
   resurrected: number;
+  ingested: number;
   startedAt: string;
   finishedAt: string | null;
   error: string | null;
@@ -238,6 +244,14 @@ async function runPausedFilesRescan(campaignId: string, progress: PausedFilesRes
               progress.resurrected += res.count;
             }
           }
+
+          // Case 2: fresh copies never tracked as jobs (old jobs were
+          // non-FAILED when they landed, so the scheduler's dedupe skipped
+          // them; and accounts in posting backoff haven't been re-ingested
+          // since). ingestDriveFiles is dedupe-safe — existing live jobs and
+          // canonical-name duplicates are skipped.
+          const ing = await ingestDriveFiles(accountId);
+          if (ing.success && ing.ingested) progress.ingested += ing.ingested;
         }
       } catch (err: any) {
         console.warn(`[Campaign Priority] Rescan failed for account ${accountId}:`, err?.message || err);
@@ -264,6 +278,7 @@ export async function startPausedFilesRescan(campaignId: string): Promise<Paused
     totalAccounts: 0,
     accountsScanned: 0,
     resurrected: 0,
+    ingested: 0,
     startedAt: new Date().toISOString(),
     finishedAt: null,
     error: null,
