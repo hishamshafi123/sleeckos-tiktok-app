@@ -2216,6 +2216,11 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
         toast.success(`Cleared ${data.deletedOutputs ?? 0} rendered video(s) across ${data.clearedGroups ?? groupIds.length} group(s). The groups stay in the builder as drafts.`);
       } else {
         toast.success(`Permanently deleted ${data.deletedGroups ?? groupIds.length} group(s).`);
+        if (data.skippedBusy > 0) {
+          toast.warning(
+            `${data.skippedBusy} group(s) were skipped because they are being transcribed or rendered right now. Wait for them to finish before deleting.`
+          );
+        }
       }
 
       // Drop the affected ids from both selection sets
