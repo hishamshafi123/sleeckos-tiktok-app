@@ -1,5 +1,5 @@
 "use client";
-import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef, Fragment } from "react";
 import {
   Loader2,
   AlertCircle,
@@ -16,6 +16,8 @@ import {
   Tag,
   Check,
   Plus,
+  Settings,
+  Play,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -413,6 +415,9 @@ export default function ClientPage() {
           </div>
         )}
       </section>
+
+      {/* ── Account health scan ────────────────────────────────────────── */}
+      <HealthScanSection />
 
       {/* ── Trajectory ─────────────────────────────────────────────────── */}
       <section className="space-y-3">
@@ -883,6 +888,647 @@ function CoverageSection({
         )}
       </div>
     </div>
+  );
+}
+
+// ── Account health scan (shadowban detection) ───────────────────────────────
+const HEALTH_API = "/api/admin/account-performance/health-scan";
+const HEALTH_PAGE_SIZE = 50;
+
+type HealthScanVerdict = "HEALTHY" | "SUSPECT" | "SHADOWBANNED" | "NOT_POSTING" | "NO_DATA";
+
+type HealthScanThresholds = {
+  viewFloor: number;
+  sampleSize: number;
+  matureAgeHours: number;
+  staleDays: number;
+  notPostingDays: number;
+};
+
+const HEALTH_DEFAULT_THRESHOLDS: HealthScanThresholds = {
+  viewFloor: 100,
+  sampleSize: 3,
+  matureAgeHours: 24,
+  staleDays: 3,
+  notPostingDays: 3,
+};
+
+const HEALTH_THRESHOLD_FIELDS: { key: keyof HealthScanThresholds; label: string }[] = [
+  { key: "viewFloor", label: "View floor" },
+  { key: "sampleSize", label: "Sample posts" },
+  { key: "matureAgeHours", label: "Min post age (h)" },
+  { key: "staleDays", label: "Stats stale after (d)" },
+  { key: "notPostingDays", label: "Not posting after (d)" },
+];
+
+type HealthScanMeta = {
+  id: string;
+  createdAt: string;
+  finishedAt: string | null;
+  status: string;
+  thresholds: HealthScanThresholds;
+};
+
+type HealthScanEntry = {
+  id: string;
+  accountId: string;
+  accountName: string;
+  driveFolderName: string | null;
+  sectionName: string | null;
+  verdict: HealthScanVerdict;
+  reason: string;
+  lastPostAt: string | null;
+  recentPosts: { url: string | null; publishedAt: string; views: number }[];
+  baselineViews: number | null;
+  assignee: { id: string; name: string | null; email: string } | null;
+  replacementStatus: "OPEN" | "ASSIGNED" | "REPLACED" | "DISMISSED";
+};
+
+type HealthScanLatest = {
+  scan: HealthScanMeta | null;
+  counts: Record<HealthScanVerdict, number>;
+  page: number;
+  pageSize: number;
+  total: number;
+  entries: HealthScanEntry[];
+};
+
+type HealthScanStatus = {
+  running: boolean;
+  processed: number;
+  total: number;
+  scanId: string | null;
+  error: string | null;
+};
+
+type HealthScanAssignee = { id: string; name: string | null; email: string };
+
+type HealthScanNotice = { kind: "ok" | "warn" | "err"; text: string } | null;
+
+const HEALTH_VERDICTS: { key: HealthScanVerdict; label: string; badge: string }[] = [
+  { key: "HEALTHY", label: "Healthy", badge: "border-green-500/30 bg-green-500/10 text-green-400" },
+  { key: "SUSPECT", label: "Suspect", badge: "border-amber-500/30 bg-amber-500/10 text-amber-400" },
+  { key: "SHADOWBANNED", label: "Shadowbanned", badge: "border-red-500/30 bg-red-500/10 text-red-400" },
+  { key: "NOT_POSTING", label: "Not posting", badge: "border-orange-500/30 bg-orange-500/10 text-orange-400" },
+  { key: "NO_DATA", label: "No data", badge: "border-zinc-700 bg-zinc-800/50 text-zinc-400" },
+];
+
+const REPLACEMENT_BADGE: Record<HealthScanEntry["replacementStatus"], string> = {
+  OPEN: "border-[#27272a] text-zinc-500",
+  ASSIGNED: "border-blue-500/20 bg-blue-500/5 text-blue-300/80",
+  REPLACED: "border-green-500/20 bg-green-500/5 text-green-400/80",
+  DISMISSED: "border-[#27272a] text-zinc-600",
+};
+
+function HealthScanSection() {
+  // Filter chips; empty set = show all. Defaults to the actionable verdicts.
+  const [verdicts, setVerdicts] = useState<Set<HealthScanVerdict>>(
+    () => new Set<HealthScanVerdict>(["SHADOWBANNED", "SUSPECT", "NOT_POSTING"])
+  );
+  const [page, setPage] = useState(1);
+  const verdictKey = [...verdicts].sort().join(",");
+
+  const latest = useResource<HealthScanLatest>(
+    `${HEALTH_API}/latest?${verdictKey ? `verdict=${verdictKey}&` : ""}page=${page}&pageSize=${HEALTH_PAGE_SIZE}`,
+    [verdictKey, page]
+  );
+  const reloadRef = useRef(latest.reload);
+  reloadRef.current = latest.reload;
+
+  // ── Run / poll state ──────────────────────────────────────────────────
+  const [polling, setPolling] = useState(false);
+  const [status, setStatus] = useState<HealthScanStatus | null>(null);
+  const [runBusy, setRunBusy] = useState(false);
+  const [notice, setNotice] = useState<HealthScanNotice>(null);
+
+  // ── Threshold settings (local only, sent on next run if edited) ───────
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [thresholds, setThresholds] = useState<HealthScanThresholds>(HEALTH_DEFAULT_THRESHOLDS);
+  const [settingsDirty, setSettingsDirty] = useState(false);
+  const thresholdsInit = useRef(false);
+
+  // ── Selection & bulk assign ───────────────────────────────────────────
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [assignees, setAssignees] = useState<HealthScanAssignee[] | null>(null);
+  const [assigneesDenied, setAssigneesDenied] = useState(false);
+  const [assigneesLoading, setAssigneesLoading] = useState(false);
+  const [assigneeId, setAssigneeId] = useState("");
+  const [assignBusy, setAssignBusy] = useState(false);
+  const [actionBusy, setActionBusy] = useState<string | null>(null);
+
+  const data = latest.data;
+  const scan = data?.scan ?? null;
+
+  // Seed the settings inputs from the thresholds used by the latest scan.
+  useEffect(() => {
+    const t = latest.data?.scan?.thresholds;
+    if (!thresholdsInit.current && t) {
+      thresholdsInit.current = true;
+      setThresholds(t);
+    }
+  }, [latest.data]);
+
+  // Poll the scan status every 2s while a scan is running; reload results
+  // when it flips to done. Surfaces a terminal scan error as an inline note.
+  useEffect(() => {
+    if (!polling) return;
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const s: HealthScanStatus = await fetchJson(`${HEALTH_API}/status`);
+        if (cancelled) return;
+        setStatus(s);
+        if (!s.running) {
+          setPolling(false);
+          if (s.error) setNotice({ kind: "err", text: s.error });
+          reloadRef.current();
+        }
+      } catch (err: any) {
+        if (!cancelled) {
+          setPolling(false);
+          setNotice({ kind: "err", text: err?.message || "Lost track of the scan status" });
+        }
+      }
+    };
+    void tick();
+    const t = setInterval(tick, 2000);
+    return () => {
+      cancelled = true;
+      clearInterval(t);
+    };
+  }, [polling]);
+
+  // Success notes auto-hide after ~4s; warnings/errors stay until dismissed.
+  useEffect(() => {
+    if (notice?.kind !== "ok") return;
+    const t = setTimeout(() => setNotice(null), 4000);
+    return () => clearTimeout(t);
+  }, [notice]);
+
+  // Lazy-load the assignee list the first time the bulk-assign bar appears.
+  // A 403 means the user lacks the "tickets" tool — hide the assign controls.
+  useEffect(() => {
+    if (selected.size === 0 || assignees !== null || assigneesDenied || assigneesLoading) return;
+    let cancelled = false;
+    setAssigneesLoading(true);
+    fetch("/api/tickets/assignees")
+      .then(async (res) => {
+        if (res.status === 403) {
+          if (!cancelled) setAssigneesDenied(true);
+          return null;
+        }
+        if (!res.ok)
+          throw new Error((await res.json().catch(() => ({})))?.error || `HTTP ${res.status}`);
+        return res.json();
+      })
+      .then((d) => {
+        if (d && !cancelled) setAssignees(d.users ?? []);
+      })
+      .catch((err) => {
+        if (!cancelled)
+          setNotice({ kind: "err", text: `Failed to load assignees: ${err?.message || "unknown error"}` });
+      })
+      .finally(() => {
+        if (!cancelled) setAssigneesLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selected.size, assignees, assigneesDenied, assigneesLoading]);
+
+  const toggleVerdict = (v: HealthScanVerdict) => {
+    setVerdicts((s) => {
+      const next = new Set(s);
+      if (next.has(v)) next.delete(v);
+      else next.add(v);
+      return next;
+    });
+    setPage(1);
+  };
+
+  const startRun = async () => {
+    if (polling || runBusy) return;
+    setRunBusy(true);
+    setNotice(null);
+    try {
+      const res = await fetch(`${HEALTH_API}/run`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(settingsDirty ? thresholds : {}),
+      });
+      if (res.status === 409) {
+        setNotice({ kind: "warn", text: "A scan is already running" });
+        setStatus(null);
+        setPolling(true);
+        return;
+      }
+      if (!res.ok)
+        throw new Error((await res.json().catch(() => ({})))?.error || `HTTP ${res.status}`);
+      setStatus(null);
+      setPolling(true);
+      setSettingsDirty(false);
+    } catch (err: any) {
+      setNotice({ kind: "err", text: err?.message || "Failed to start the scan" });
+    } finally {
+      setRunBusy(false);
+    }
+  };
+
+  const doAssign = async () => {
+    if (!assigneeId || selected.size === 0 || assignBusy) return;
+    setAssignBusy(true);
+    try {
+      const d = await fetchJson(`${HEALTH_API}/assign`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ entryIds: [...selected], assigneeId }),
+      });
+      setNotice({ kind: "ok", text: `Assigned ${d.assigned} accounts · ticket created` });
+      setSelected(new Set());
+      setAssigneeId("");
+      reloadRef.current();
+    } catch (err: any) {
+      setNotice({ kind: "err", text: err?.message || "Failed to assign accounts" });
+    } finally {
+      setAssignBusy(false);
+    }
+  };
+
+  const doEntryAction = async (entryId: string, action: "dismiss" | "reopen" | "mark-replaced") => {
+    if (actionBusy) return;
+    setActionBusy(`${entryId}:${action}`);
+    try {
+      await fetchJson(`${HEALTH_API}/entry-action`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ entryId, action }),
+      });
+      reloadRef.current(); // keeps the current page
+    } catch (err: any) {
+      setNotice({ kind: "err", text: err?.message || "Action failed" });
+    } finally {
+      setActionBusy(null);
+    }
+  };
+
+  const entries = data?.entries ?? [];
+  const allVisibleSelected = entries.length > 0 && entries.every((e) => selected.has(e.id));
+  const toggleAllVisible = () =>
+    setSelected((s) => {
+      const next = new Set(s);
+      if (allVisibleSelected) entries.forEach((e) => next.delete(e.id));
+      else entries.forEach((e) => next.add(e.id));
+      return next;
+    });
+
+  const pageCount = Math.max(1, Math.ceil((data?.total ?? 0) / HEALTH_PAGE_SIZE));
+  const safePage = Math.min(page, pageCount);
+  const lastScanAt = scan ? istDateTime(scan.finishedAt ?? scan.createdAt) : null;
+
+  const runLabel = polling
+    ? status && status.total > 0
+      ? `Scanning ${status.processed}/${status.total}…`
+      : "Scanning…"
+    : "Run health scan";
+
+  return (
+    <section className="space-y-3">
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div>
+          <h2 className="text-sm font-semibold text-zinc-200">Account health scan</h2>
+          <p className="text-[11px] text-zinc-500 mt-0.5">
+            Shadowban detection from existing stats — last 3 posts per account
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          {lastScanAt && <span className="text-[11px] text-zinc-500">Last scan {lastScanAt}</span>}
+          <button
+            onClick={() => setSettingsOpen((o) => !o)}
+            className={`flex items-center gap-1.5 text-xs border rounded-md px-2.5 py-1.5 transition-colors ${
+              settingsOpen
+                ? "border-zinc-600 text-zinc-200 bg-zinc-800"
+                : "border-[#27272a] text-zinc-400 hover:text-zinc-200"
+            }`}
+          >
+            <Settings className="w-3.5 h-3.5" /> Settings
+          </button>
+          <button
+            onClick={startRun}
+            disabled={polling || runBusy}
+            className="flex items-center gap-1.5 text-xs border border-zinc-700 bg-zinc-800 text-zinc-100 hover:bg-zinc-700 hover:border-zinc-600 rounded-md px-3 py-1.5 transition-colors disabled:opacity-50 disabled:hover:bg-zinc-800"
+          >
+            {polling || runBusy ? (
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+            ) : (
+              <Play className="w-3.5 h-3.5" />
+            )}
+            {runLabel}
+          </button>
+        </div>
+      </div>
+
+      {settingsOpen && (
+        <div className="flex items-end gap-3 flex-wrap border border-[#27272a] rounded-lg bg-[#0c0c10] px-4 py-3">
+          {HEALTH_THRESHOLD_FIELDS.map((f) => (
+            <label key={f.key} className="space-y-1">
+              <span className="block text-[10px] text-zinc-500">{f.label}</span>
+              <input
+                type="number"
+                min={1}
+                value={thresholds[f.key]}
+                onChange={(e) => {
+                  const n = Math.max(1, Number(e.target.value) || 1);
+                  setThresholds((t) => ({ ...t, [f.key]: n }));
+                  setSettingsDirty(true);
+                }}
+                className="bg-[#09090b] border border-[#27272a] rounded-md px-2 py-1 text-xs text-zinc-200 w-24 tabular-nums focus:outline-none focus:border-zinc-600"
+              />
+            </label>
+          ))}
+          <span className="text-[10px] text-zinc-600 pb-1.5">Applied on next run</span>
+        </div>
+      )}
+
+      {notice && (
+        <div
+          className={`flex items-center justify-between gap-2 rounded-md border px-3 py-2 text-xs ${
+            notice.kind === "ok"
+              ? "border-green-500/20 bg-green-500/5 text-green-400"
+              : notice.kind === "warn"
+                ? "border-amber-500/20 bg-amber-500/5 text-amber-400"
+                : "border-red-500/20 bg-red-500/5 text-red-400"
+          }`}
+        >
+          <span className="flex items-center gap-2">
+            <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+            {notice.text}
+          </span>
+          <button
+            onClick={() => setNotice(null)}
+            className="opacity-60 hover:opacity-100 transition-opacity"
+            aria-label="Dismiss"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
+
+      {latest.error && !data ? (
+        <SectionError message={latest.error} onRetry={latest.reload} />
+      ) : !data ? (
+        <SkeletonRows rows={6} />
+      ) : scan === null ? (
+        <div className="border border-[#27272a] rounded-lg px-4 py-10 text-center text-xs text-zinc-600">
+          No scan yet — run your first health scan.
+        </div>
+      ) : (
+        <>
+          <div className="flex items-center gap-1.5 flex-wrap">
+            {HEALTH_VERDICTS.map((v) => {
+              const active = verdicts.has(v.key);
+              return (
+                <button
+                  key={v.key}
+                  onClick={() => toggleVerdict(v.key)}
+                  className={`inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-[11px] transition-colors ${
+                    active ? v.badge : "border-[#27272a] text-zinc-500 hover:text-zinc-300"
+                  }`}
+                >
+                  {v.label}
+                  <span className="tabular-nums font-medium">{full(data.counts[v.key] ?? 0)}</span>
+                </button>
+              );
+            })}
+          </div>
+
+          {selected.size > 0 && (
+            <div className="flex items-center gap-2 flex-wrap border border-[#27272a] rounded-lg bg-[#0c0c10] px-3 py-2 text-xs">
+              <span className="text-zinc-300 tabular-nums">{selected.size} selected</span>
+              {!assigneesDenied && (
+                <>
+                  <span className="text-zinc-600">— assign to:</span>
+                  <select
+                    value={assigneeId}
+                    onChange={(e) => setAssigneeId(e.target.value)}
+                    className="bg-[#09090b] border border-[#27272a] rounded-md px-2 py-1 text-xs text-zinc-200 focus:outline-none focus:border-zinc-600"
+                  >
+                    <option value="">
+                      {assigneesLoading ? "Loading…" : "Select assignee…"}
+                    </option>
+                    {(assignees ?? []).map((u) => (
+                      <option key={u.id} value={u.id}>
+                        {u.name || u.email}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    onClick={doAssign}
+                    disabled={!assigneeId || assignBusy}
+                    className="flex items-center gap-1.5 text-xs border border-zinc-700 bg-zinc-800 text-zinc-100 hover:bg-zinc-700 rounded-md px-2.5 py-1 transition-colors disabled:opacity-50 disabled:hover:bg-zinc-800"
+                  >
+                    {assignBusy && <Loader2 className="w-3 h-3 animate-spin" />}
+                    Assign
+                  </button>
+                </>
+              )}
+              <button
+                onClick={() => setSelected(new Set())}
+                className="ml-auto text-[11px] text-zinc-500 hover:text-zinc-300"
+              >
+                Clear
+              </button>
+            </div>
+          )}
+
+          <div className="border border-[#27272a] rounded-lg overflow-hidden">
+            <div className="max-h-[65vh] overflow-y-auto">
+              <table className="w-full text-xs">
+                <thead className="sticky top-0 bg-[#0c0c10] z-10">
+                  <tr className="border-b border-[#27272a]">
+                    <th className="pl-4 pr-1 py-2.5 w-8">
+                      <input
+                        type="checkbox"
+                        checked={allVisibleSelected}
+                        onChange={toggleAllVisible}
+                        aria-label="Select all visible"
+                        className="w-3.5 h-3.5 accent-zinc-500 align-middle"
+                      />
+                    </th>
+                    <th className="text-left px-3 py-2.5 text-zinc-500 font-medium">Account</th>
+                    <th className="text-left px-3 py-2.5 text-zinc-500 font-medium">Section</th>
+                    <th className="text-left px-3 py-2.5 text-zinc-500 font-medium">Last post</th>
+                    <th className="text-left px-3 py-2.5 text-zinc-500 font-medium">
+                      Last 3 posts views
+                    </th>
+                    <th className="text-right px-3 py-2.5 text-zinc-500 font-medium">Baseline</th>
+                    <th className="text-left px-3 py-2.5 text-zinc-500 font-medium">Verdict</th>
+                    <th className="text-left px-3 py-2.5 text-zinc-500 font-medium">Assignee</th>
+                    <th className="text-left px-3 py-2.5 text-zinc-500 font-medium">Status</th>
+                    <th className="text-right px-4 py-2.5 text-zinc-500 font-medium">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {entries.map((e) => {
+                    const vStyle = HEALTH_VERDICTS.find((v) => v.key === e.verdict);
+                    const rowActions: {
+                      label: string;
+                      action: "dismiss" | "reopen" | "mark-replaced";
+                    }[] = [];
+                    if (e.replacementStatus === "OPEN" || e.replacementStatus === "ASSIGNED")
+                      rowActions.push({ label: "Dismiss", action: "dismiss" });
+                    if (e.replacementStatus === "DISMISSED")
+                      rowActions.push({ label: "Reopen", action: "reopen" });
+                    if (e.replacementStatus === "ASSIGNED")
+                      rowActions.push({ label: "Replaced", action: "mark-replaced" });
+                    return (
+                      <tr
+                        key={e.id}
+                        className="border-b border-[#1c1c21] last:border-0 hover:bg-zinc-900/40"
+                      >
+                        <td className="pl-4 pr-1 py-2.5">
+                          <input
+                            type="checkbox"
+                            checked={selected.has(e.id)}
+                            onChange={() =>
+                              setSelected((s) => {
+                                const next = new Set(s);
+                                if (next.has(e.id)) next.delete(e.id);
+                                else next.add(e.id);
+                                return next;
+                              })
+                            }
+                            aria-label={`Select @${e.accountName}`}
+                            className="w-3.5 h-3.5 accent-zinc-500 align-middle"
+                          />
+                        </td>
+                        <td className="px-3 py-2.5">
+                          <div>
+                            <a
+                              href={`https://www.tiktok.com/@${e.accountName}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-zinc-100 font-medium hover:text-blue-400 hover:underline"
+                            >
+                              @{e.accountName}
+                            </a>
+                            <div className="text-[11px] text-zinc-600 truncate max-w-[220px]">
+                              {e.driveFolderName ?? "—"}
+                            </div>
+                          </div>
+                        </td>
+                        <td className="px-3 py-2.5 text-zinc-400 whitespace-nowrap">
+                          {e.sectionName ?? "—"}
+                        </td>
+                        <td className="px-3 py-2.5 text-zinc-500 whitespace-nowrap">
+                          {istDateTime(e.lastPostAt)}
+                        </td>
+                        <td className="px-3 py-2.5 whitespace-nowrap tabular-nums">
+                          {e.recentPosts.length === 0 ? (
+                            <span className="text-zinc-700">—</span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1.5">
+                              {e.recentPosts.map((p, i) => (
+                                <Fragment key={i}>
+                                  {i > 0 && <span className="text-zinc-700">·</span>}
+                                  {p.url ? (
+                                    <a
+                                      href={p.url}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      title={`${istDateTime(p.publishedAt)} · ${p.url}`}
+                                      className="text-zinc-300 hover:text-blue-400 hover:underline"
+                                    >
+                                      {full(p.views)}
+                                    </a>
+                                  ) : (
+                                    <span className="text-zinc-300" title={istDateTime(p.publishedAt)}>
+                                      {full(p.views)}
+                                    </span>
+                                  )}
+                                </Fragment>
+                              ))}
+                            </span>
+                          )}
+                        </td>
+                        <td className="px-3 py-2.5 text-right text-zinc-400 tabular-nums">
+                          {e.baselineViews === null ? (
+                            <span className="text-zinc-700">—</span>
+                          ) : (
+                            full(e.baselineViews)
+                          )}
+                        </td>
+                        <td className="px-3 py-2.5 whitespace-nowrap">
+                          <span
+                            title={e.reason}
+                            className={`inline-flex items-center rounded border px-1.5 py-px text-[10px] font-medium leading-4 ${vStyle?.badge ?? "border-zinc-700 text-zinc-400"}`}
+                          >
+                            {vStyle?.label ?? e.verdict}
+                          </span>
+                        </td>
+                        <td className="px-3 py-2.5 text-zinc-400 whitespace-nowrap">
+                          {e.assignee ? e.assignee.name || e.assignee.email : "—"}
+                        </td>
+                        <td className="px-3 py-2.5 whitespace-nowrap">
+                          <span
+                            className={`inline-flex items-center rounded border px-1.5 py-px text-[10px] font-medium leading-4 ${REPLACEMENT_BADGE[e.replacementStatus]}`}
+                          >
+                            {e.replacementStatus.charAt(0) + e.replacementStatus.slice(1).toLowerCase()}
+                          </span>
+                        </td>
+                        <td className="px-4 py-2.5 text-right whitespace-nowrap">
+                          {rowActions.length === 0 ? (
+                            <span className="text-zinc-700">—</span>
+                          ) : (
+                            <span className="inline-flex items-center gap-2">
+                              {rowActions.map((a) => (
+                                <button
+                                  key={a.action}
+                                  onClick={() => doEntryAction(e.id, a.action)}
+                                  disabled={actionBusy === `${e.id}:${a.action}`}
+                                  className="text-[11px] text-zinc-500 hover:text-zinc-200 transition-colors disabled:opacity-50"
+                                >
+                                  {actionBusy === `${e.id}:${a.action}` ? "…" : a.label}
+                                </button>
+                              ))}
+                            </span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            {entries.length === 0 && (
+              <div className="px-4 py-10 text-center text-xs text-zinc-600 border-t border-[#1c1c21]">
+                No accounts match the selected verdicts.
+              </div>
+            )}
+            <div className="flex items-center justify-between px-4 py-2 border-t border-[#27272a] bg-[#0c0c10]">
+              <span className="text-[11px] text-zinc-500 tabular-nums">
+                Page {safePage} · {full(data.total)} accounts
+              </span>
+              <div className="flex items-center gap-1.5">
+                <button
+                  onClick={() => setPage((p) => Math.max(1, p - 1))}
+                  disabled={safePage <= 1}
+                  className="text-xs text-zinc-400 hover:text-zinc-200 border border-[#27272a] rounded-md px-2.5 py-1 disabled:opacity-40 disabled:hover:text-zinc-400"
+                >
+                  Prev
+                </button>
+                <button
+                  onClick={() => setPage((p) => Math.min(pageCount, p + 1))}
+                  disabled={safePage >= pageCount}
+                  className="text-xs text-zinc-400 hover:text-zinc-200 border border-[#27272a] rounded-md px-2.5 py-1 disabled:opacity-40 disabled:hover:text-zinc-400"
+                >
+                  Next
+                </button>
+              </div>
+            </div>
+          </div>
+        </>
+      )}
+    </section>
   );
 }
 

@@ -55,6 +55,9 @@ model User {
   ticketsCreated     Ticket[] @relation("TicketCreator")
   ticketsAssigned    Ticket[] @relation("TicketAssignee")
 
+  // Account health scan relations
+  healthEntries      AccountHealthEntry[] @relation("HealthEntryAssignee")
+
   // LMS relations
   lessonProgress     LessonProgress[]
   courseEnrollments  CourseEnrollment[]
@@ -510,6 +513,43 @@ model AccountDailyStat {
 
   @@unique([accountId, date])
   @@index([date])
+}
+
+// One run of the Account Health Scan (shadowban detection). Triggered manually
+// from the Account Performance page; entries are written once the background
+// pass finishes. accountId on entries is a plain scalar so history survives
+// account deletion.
+model AccountHealthScan {
+  id             String   @id @default(uuid())
+  createdBy      String?
+  status         String   @default("running") // running | done | failed
+  thresholdsJson Json     @default("{}")
+  countsJson     Json     @default("{}")
+  error          String?  @db.Text
+  createdAt      DateTime @default(now())
+  finishedAt     DateTime?
+  entries        AccountHealthEntry[]
+}
+
+model AccountHealthEntry {
+  id                String   @id @default(uuid())
+  scanId            String
+  scan              AccountHealthScan @relation(fields: [scanId], references: [id], onDelete: Cascade)
+  accountId         String   // plain scalar — historical record, survives account deletion
+  verdict           String   // HEALTHY | SUSPECT | SHADOWBANNED | NOT_POSTING | NO_DATA
+  reason            String   @default("")
+  lastPostAt        DateTime?
+  recentPostsJson   Json     @default("[]") // [{url, publishedAt, views}] latest first
+  baselineViews     Int?
+  assigneeId        String?
+  assignee          User?    @relation("HealthEntryAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
+  replacementStatus String   @default("OPEN") // OPEN | ASSIGNED | REPLACED | DISMISSED
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@index([scanId, verdict])
+  @@index([assigneeId, replacementStatus])
+  @@index([accountId])
 }
 
 model GoogleCredential {
