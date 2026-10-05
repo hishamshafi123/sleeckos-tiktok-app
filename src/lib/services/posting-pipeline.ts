@@ -38,7 +38,7 @@ export async function ingestDriveFiles(accountId: string) {
 
     // Retire jobs whose source file was deleted from Drive — otherwise they
     // keep getting claimed and fail on every attempt forever.
-    const liveFileIds = new Set(files.map((f) => f.id).filter(Boolean));
+    const liveFileIds = new Set(files.map((f) => f.id).filter((id): id is string => Boolean(id)));
     const staleJobs = await prisma.postJob.findMany({
       where: {
         accountId: account.id,
@@ -66,6 +66,49 @@ export async function ingestDriveFiles(accountId: string) {
         data: { status: "SKIPPED", errorMessage: "Source file removed from Google Drive" },
       });
       console.log(`[Ingestion] Retired ${vanished.length} job(s) whose Drive file was deleted (account ${accountId})`);
+    }
+
+    // Requeue retryable FAILED jobs whose file is still in the folder. An
+    // infra outage (PostPeer credits, transient network/5xx) burns a job's
+    // 3 attempts and lands it in terminal FAILED with the file untouched —
+    // with no requeue path the account then reports "no unposted videos"
+    // forever. Only infra-class errors requeue automatically; content and
+    // account errors (spam_risk, invalid_grant, paused-campaign removals,
+    // PostPeer mapping errors) stay FAILED for a human.
+    const RETRYABLE_FAILURE_PATTERNS = [
+      "Not enough credits",
+      "fetch failed",
+      "timed out",
+      "timeout",
+      "(500)",
+      "(502)",
+      "(503)",
+      "(504)",
+      "too_many_posts",
+    ];
+    const retryableFailed = await prisma.postJob.findMany({
+      where: {
+        accountId: account.id,
+        state: "FAILED",
+        driveFileId: { in: [...liveFileIds] },
+        OR: RETRYABLE_FAILURE_PATTERNS.map((p) => ({ failureReason: { contains: p } })),
+      },
+      select: { id: true, driveFileId: true },
+    });
+    if (retryableFailed.length > 0) {
+      await prisma.postJob.updateMany({
+        where: { id: { in: retryableFailed.map((j) => j.id) } },
+        data: { state: "AVAILABLE", attempts: 0, lockedAt: null, lockedBy: null, failureReason: null },
+      });
+      await prisma.scheduledPost.updateMany({
+        where: {
+          accountId: account.id,
+          driveFileId: { in: retryableFailed.map((j) => j.driveFileId) },
+          status: "FAILED",
+        },
+        data: { status: "QUEUED", errorMessage: null },
+      });
+      console.log(`[Ingestion] Requeued ${retryableFailed.length} retryable FAILED job(s) with live Drive files (account ${accountId})`);
     }
 
     // Dedupe by canonical file name: the same video re-added to the folder
@@ -799,10 +842,14 @@ export async function handleFailure(jobId: string, errorMsg: string) {
   const job = await prisma.postJob.findUnique({ where: { id: jobId } });
   if (!job) return;
 
-  const nextAttempts = job.attempts + 1;
+  // Infra outages (PostPeer credits exhausted) must not burn the 3-attempt
+  // budget — the file did nothing wrong, and a 90-min credit gap otherwise
+  // lands thousands of jobs in terminal FAILED. Back off attempt-free.
+  const isCreditOutage = errorMsg.includes("Not enough credits");
+  const nextAttempts = isCreditOutage ? job.attempts : job.attempts + 1;
   const maxAttempts = 3;
 
-  if (nextAttempts >= maxAttempts) {
+  if (!isCreditOutage && nextAttempts >= maxAttempts) {
     console.error(`[Posting Pipeline] Job ${jobId} reached max failures. Setting status to FAILED.`);
     await prisma.postJob.update({
       where: { id: jobId },
@@ -841,7 +888,7 @@ export async function handleFailure(jobId: string, errorMsg: string) {
   } else {
     // Safe backoff: Unlock it and let it retry in 30 minutes
     const retryTime = new Date(Date.now() + 30 * 60 * 1000);
-    console.warn(`[Posting Pipeline] Job ${jobId} failed (attempt ${nextAttempts}/${maxAttempts}). Backing off until ${retryTime.toISOString()}.`);
+    console.warn(`[Posting Pipeline] Job ${jobId} failed${isCreditOutage ? " (credit outage — attempt not counted)" : ` (attempt ${nextAttempts}/${maxAttempts})`}. Backing off until ${retryTime.toISOString()}.`);
     
     await prisma.postJob.update({
       where: { id: jobId },
