@@ -33,6 +33,8 @@ import {
   Minus,
   Pause,
   ChevronRight,
+  Type,
+  Copy,
 } from "lucide-react";
 
 const COLOR_MAP: Record<string, string> = {
@@ -333,6 +335,10 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
   // Per-file caption overrides, keyed by `${file.name}:${file.size}`.
   const [bulkCaptions, setBulkCaptions] = useState<Record<string, string>>({});
   const bulkFileKey = (f: File) => `${f.name}:${f.size}`;
+  // Per-file custom text hooks (pasted from a spreadsheet), same keying.
+  const [bulkCustomHooksEnabled, setBulkCustomHooksEnabled] = useState(false);
+  const [bulkCustomHooks, setBulkCustomHooks] = useState<Record<string, string[]>>({});
+  const [hooksEditorKey, setHooksEditorKey] = useState<string | null>(null);
 
   // Bulk-intake preset selection carries over to the Group Builder.
   useEffect(() => {
@@ -993,6 +999,8 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
         formData.append("hookCount", String(bulkHookCount));
         const caption = bulkCaptionsEnabled ? (bulkCaptions[bulkFileKey(file)] || "").trim() : "";
         if (caption) formData.append("caption", caption);
+        const fileHooks = bulkCustomHooksEnabled ? (bulkCustomHooks[bulkFileKey(file)] ?? []) : [];
+        if (fileHooks.length > 0) formData.append("customHooks", JSON.stringify(fileHooks));
 
         try {
           const res = await fetch("/api/multiplier/bulk-upload", { method: "POST", body: formData });
@@ -3783,6 +3791,24 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
                   <p className="text-[10px] text-[#71717a] mt-1.5">Empty caption falls back to a random campaign caption at posting.</p>
                 )}
               </div>
+              <div>
+                <label className="block text-xs font-semibold uppercase tracking-wider text-[#a1a1aa] mb-2">Custom text hooks</label>
+                <label className="flex items-center gap-2 text-xs text-[#e4e4e7] font-medium cursor-pointer py-2.5">
+                  <input
+                    type="checkbox"
+                    checked={bulkCustomHooksEnabled}
+                    disabled={bulkUploading}
+                    onChange={(e) => setBulkCustomHooksEnabled(e.target.checked)}
+                    className="rounded border-[#27272a] bg-[#09090b] text-[#E11D48] focus:ring-[#E11D48]/30 w-3.5 h-3.5 cursor-pointer"
+                  />
+                  <span>Paste hooks per file (from Google Sheets)</span>
+                </label>
+                {bulkCustomHooksEnabled && (
+                  <p className="text-[10px] text-[#71717a] mt-1.5">
+                    Files with hooks skip AI generation — fewer hooks than variations repeat in order.
+                  </p>
+                )}
+              </div>
             </div>
 
             {/* Dropzone */}
@@ -3854,6 +3880,23 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
                   <div key={`${f.name}-${idx}`} className="flex items-center justify-between gap-2 px-3 py-2">
                     <p className="text-xs text-[#e4e4e7] truncate" title={f.name}>{f.name}</p>
                     <div className="flex items-center gap-2 flex-shrink-0">
+                      {bulkCustomHooksEnabled && (
+                        <button
+                          type="button"
+                          onClick={() => setHooksEditorKey(bulkFileKey(f))}
+                          className={`flex items-center gap-1 text-[10px] font-semibold border rounded-lg px-2 py-1 transition-colors cursor-pointer ${
+                            (bulkCustomHooks[bulkFileKey(f)]?.length ?? 0) > 0
+                              ? "border-[#E11D48]/40 text-[#E11D48] bg-[#E11D48]/10 hover:bg-[#E11D48]/20"
+                              : "border-[#27272a] text-[#a1a1aa] hover:text-[#fafafa] hover:border-zinc-600"
+                          }`}
+                          title="Paste custom text hooks for this video"
+                        >
+                          <Type className="w-3 h-3" />
+                          {(bulkCustomHooks[bulkFileKey(f)]?.length ?? 0) > 0
+                            ? `${bulkCustomHooks[bulkFileKey(f)].length} hook${bulkCustomHooks[bulkFileKey(f)].length !== 1 ? "s" : ""}`
+                            : "Hooks"}
+                        </button>
+                      )}
                       {bulkCaptionsEnabled && (
                         <input
                           type="text"
@@ -4847,6 +4890,25 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
         </div>
       )}
 
+      {/* Custom text hooks editor (bulk intake, per file) */}
+      {hooksEditorKey !== null && (
+        <CustomHooksEditor
+          fileKey={hooksEditorKey}
+          hookCount={bulkHookCount}
+          hooks={bulkCustomHooks[hooksEditorKey] ?? []}
+          onSave={(hooks) => {
+            setBulkCustomHooks((prev) => {
+              const next = { ...prev };
+              if (hooks.length > 0) next[hooksEditorKey] = hooks;
+              else delete next[hooksEditorKey];
+              return next;
+            });
+            setHooksEditorKey(null);
+          }}
+          onClose={() => setHooksEditorKey(null)}
+        />
+      )}
+
       {/* Warn In Use Modal */}
       {showWarnInUseDialog && (
         <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
@@ -5767,6 +5829,194 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// ─── Custom text hooks editor (bulk intake) ──────────────────────────────────
+// Paste from Google Sheets: Sheets copies cells as TSV (tabs between columns,
+// newlines between rows), so splitting on both turns any selection — a column,
+// a row, or a block of cells — into individual hooks. Surrounding quotes are
+// stripped and duplicates removed, order preserved.
+function parseSheetHooks(text: string): string[] {
+  const cells = text.split(/\r?\n/).flatMap((row) => row.split("\t"));
+  const cleaned = cells
+    .map((c) => c.trim().replace(/^["']+/, "").replace(/["']+$/, "").trim())
+    .filter((c) => c.length > 0);
+  return [...new Set(cleaned)];
+}
+
+function CustomHooksEditor({
+  fileKey,
+  hookCount,
+  hooks,
+  onSave,
+  onClose,
+}: {
+  fileKey: string;
+  hookCount: number;
+  hooks: string[];
+  onSave: (hooks: string[]) => void;
+  onClose: () => void;
+}) {
+  const fileName = fileKey.split(":")[0];
+  const [list, setList] = useState<string[]>(hooks);
+  const [pasteValue, setPasteValue] = useState("");
+  const [addValue, setAddValue] = useState("");
+
+  const handlePasteArea = (value: string) => {
+    setPasteValue(value);
+    if (!value.trim()) return;
+    const parsed = parseSheetHooks(value);
+    if (parsed.length > 0) {
+      setList((prev) => [...new Set([...prev, ...parsed])]);
+      setPasteValue("");
+      toast.success(`Added ${parsed.length} hook${parsed.length !== 1 ? "s" : ""} from the paste.`);
+    }
+  };
+
+  const copyAll = async () => {
+    if (list.length === 0) return;
+    try {
+      await navigator.clipboard.writeText(list.join("\n"));
+      toast.success(`${list.length} hook${list.length !== 1 ? "s" : ""} copied — paste into Sheets or another video.`);
+    } catch {
+      toast.error("Clipboard blocked — select the text and copy manually.");
+    }
+  };
+
+  return (
+    <div
+      className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+      onClick={onClose}
+    >
+      <div
+        className="bg-[#09090b] border border-[#27272a] rounded-xl max-w-lg w-full p-6 shadow-2xl space-y-4 max-h-[85vh] overflow-y-auto custom-scrollbar"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex justify-between items-center border-b border-[#27272a] pb-3">
+          <div className="min-w-0">
+            <h3 className="text-[#fafafa] text-base font-semibold">Custom text hooks</h3>
+            <p className="text-[10px] text-[#71717a] truncate mt-0.5" title={fileName}>{fileName}</p>
+          </div>
+          <button type="button" onClick={onClose} className="text-[#71717a] hover:text-[#fafafa] transition-colors flex-shrink-0">
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        {/* Paste zone */}
+        <div className="space-y-1.5">
+          <label className="block text-[11px] uppercase font-bold text-[#a1a1aa]">Paste from Google Sheets</label>
+          <textarea
+            value={pasteValue}
+            onChange={(e) => handlePasteArea(e.target.value)}
+            placeholder={"Paste cells here — a column, a row, or a block.\nEach cell becomes one hook."}
+            rows={3}
+            className="w-full bg-[#18181b] border border-dashed border-[#3f3f46] focus:border-[#E11D48] rounded-lg px-3 py-2.5 text-xs text-[#fafafa] placeholder:text-[#52525b] focus:outline-none resize-none"
+            autoFocus
+          />
+          <p className="text-[10px] text-[#71717a]">
+            Copy the same list into another video's editor to reuse it there.
+          </p>
+        </div>
+
+        {/* Hook list */}
+        <div className="space-y-1.5">
+          <div className="flex items-center justify-between">
+            <label className="block text-[11px] uppercase font-bold text-[#a1a1aa]">
+              Hooks ({list.length})
+            </label>
+            {list.length > 0 && (
+              <button
+                type="button"
+                onClick={copyAll}
+                className="flex items-center gap-1 text-[10px] text-[#a1a1aa] hover:text-[#fafafa] border border-[#27272a] rounded-md px-2 py-1 transition-colors cursor-pointer"
+              >
+                <Copy className="w-3 h-3" /> Copy all
+              </button>
+            )}
+          </div>
+          {list.length === 0 ? (
+            <p className="text-[11px] text-[#52525b] border border-[#27272a] rounded-lg px-3 py-4 text-center">
+              No hooks yet — paste from Sheets above.
+            </p>
+          ) : (
+            <div className="border border-[#27272a] rounded-lg divide-y divide-[#27272a] max-h-52 overflow-y-auto custom-scrollbar">
+              {list.map((h, i) => (
+                <div key={`${i}-${h.slice(0, 12)}`} className="flex items-center gap-2 px-3 py-2">
+                  <span className="text-[10px] text-[#52525b] tabular-nums w-5 flex-shrink-0">{i + 1}</span>
+                  <p className="text-xs text-[#e4e4e7] flex-1 min-w-0 break-words">{h}</p>
+                  <button
+                    type="button"
+                    onClick={() => setList((prev) => prev.filter((_, j) => j !== i))}
+                    className="text-[#52525b] hover:text-red-400 transition-colors flex-shrink-0 cursor-pointer"
+                    title="Remove hook"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+          {list.length > 0 && list.length < hookCount && (
+            <p className="text-[10px] text-amber-400/90">
+              {list.length} hook{list.length !== 1 ? "s" : ""} × {hookCount} variations — hooks repeat in order
+              (e.g. {list.slice(0, 3).map((_, i) => i + 1).join(", ")}{list.length > 3 ? "…" : ""},{" "}
+              {list.slice(0, 2).map((_, i) => i + 1).join(", ")}…).
+            </p>
+          )}
+          {list.length >= hookCount && list.length > 0 && (
+            <p className="text-[10px] text-[#71717a]">
+              {list.length} hooks ≥ {hookCount} variations — first {hookCount} used in order.
+            </p>
+          )}
+        </div>
+
+        {/* Manual add */}
+        <div className="flex gap-2">
+          <input
+            type="text"
+            value={addValue}
+            onChange={(e) => setAddValue(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && addValue.trim()) {
+                setList((prev) => [...new Set([...prev, addValue.trim()])]);
+                setAddValue("");
+              }
+            }}
+            placeholder="Type a hook and press Enter"
+            className="flex-1 bg-[#18181b] border border-[#27272a] rounded-lg px-3 py-2 text-xs text-[#fafafa] placeholder:text-[#52525b] focus:outline-none focus:border-[#E11D48]"
+          />
+          <button
+            type="button"
+            onClick={() => {
+              if (!addValue.trim()) return;
+              setList((prev) => [...new Set([...prev, addValue.trim()])]);
+              setAddValue("");
+            }}
+            className="px-3 py-2 rounded-lg text-xs font-semibold bg-[#18181b] text-[#fafafa] hover:bg-[#27272a] transition-colors cursor-pointer"
+          >
+            <Plus className="w-4 h-4" />
+          </button>
+        </div>
+
+        <div className="flex justify-end gap-3 pt-1">
+          <button
+            type="button"
+            onClick={() => onSave([])}
+            className="px-4 py-2 rounded-lg text-xs font-semibold text-[#71717a] hover:text-red-400 transition-colors cursor-pointer"
+          >
+            Clear
+          </button>
+          <button
+            type="button"
+            onClick={() => onSave(list)}
+            className="px-4 py-2 rounded-lg text-xs font-semibold text-white bg-[#E11D48] hover:bg-rose-700 transition-colors cursor-pointer"
+          >
+            Save hooks
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

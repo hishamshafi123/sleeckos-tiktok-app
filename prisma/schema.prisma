@@ -990,6 +990,7 @@ model MultiplierGroup {
   transcript      String?                   @db.Text
   transcriptStatus String                    @default("PENDING") // PENDING | TRANSCRIBING | TRANSCRIBED | FAILED
   caption         String?                   // per-video custom caption (bulk intake) — used as the TikTok caption at posting time
+  customHooks     String[]                  @default([]) // per-video pasted hooks (bulk intake GSheet paste) — cycled to hookCount; overrides Gemini when non-empty
   styleId         String                    // template preset key or ID
   mappingMode     String                    @default("each")    // each | distribute
   settings        Json                      @default("{}")      // holds custom visual overrides

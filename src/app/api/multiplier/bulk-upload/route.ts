@@ -58,6 +58,28 @@ export async function POST(req: NextRequest) {
     // Per-file custom caption (empty string = no custom caption).
     const caption = (formData.get("caption") as string) || "";
 
+    // Per-file custom hooks pasted from a spreadsheet (JSON string array).
+    // Clients upload one file per request, so a single field applies to that
+    // request's file. Validated hard: ≤50 hooks, each ≤300 chars after trim.
+    let customHooks: string[] = [];
+    const customHooksRaw = formData.get("customHooks") as string | null;
+    if (customHooksRaw) {
+      try {
+        const parsed = JSON.parse(customHooksRaw);
+        if (!Array.isArray(parsed)) throw new Error("not an array");
+        customHooks = parsed
+          .filter((h): h is string => typeof h === "string")
+          .map((h) => h.trim())
+          .filter((h) => h.length > 0)
+          .slice(0, 50);
+        if (customHooks.some((h) => h.length > 300)) {
+          return NextResponse.json({ error: "Each custom hook must be 300 characters or fewer" }, { status: 400 });
+        }
+      } catch {
+        return NextResponse.json({ error: "customHooks must be a JSON array of strings" }, { status: 400 });
+      }
+    }
+
     if ((!files || files.length === 0) && !finalize) {
       return NextResponse.json({ error: "No files uploaded" }, { status: 400 });
     }
@@ -72,7 +94,7 @@ export async function POST(req: NextRequest) {
     }
 
     const tempDir = os.tmpdir();
-    const staged: { tempPath: string; fileName: string; caption: string }[] = [];
+    const staged: { tempPath: string; fileName: string; caption: string; customHooks: string[] }[] = [];
 
     for (const file of files) {
       const tempPath = path.join(tempDir, `bulk_${Date.now()}_${Math.random().toString(36).slice(2)}_${file.name}`);
@@ -80,7 +102,7 @@ export async function POST(req: NextRequest) {
       const readableWebStream = file.stream();
       const nodeReadable = Readable.fromWeb(readableWebStream as any);
       await pipeline(nodeReadable, writeStream);
-      staged.push({ tempPath, fileName: file.name, caption });
+      staged.push({ tempPath, fileName: file.name, caption, customHooks });
     }
 
     let jobId: string;

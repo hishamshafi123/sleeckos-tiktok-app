@@ -446,6 +446,24 @@ export async function createEmptyHooks(groupId: string, count: number): Promise<
   }
 }
 
+// Custom-hook bulk mode: the operator pasted hooks per video (GSheet paste in
+// bulk intake, stored on the group). `count` hook rows are created by cycling
+// the pasted set in order — 3 pasted hooks × 15 variations yields
+// h1,h2,h3,h1,h2,h3,… so every variation still gets a hook.
+export async function createCustomHooks(groupId: string, hooks: string[], count: number): Promise<void> {
+  await prisma.multiplierHook.deleteMany({ where: { groupId } });
+  for (let i = 0; i < count; i++) {
+    await prisma.multiplierHook.create({
+      data: {
+        groupId,
+        text: hooks[i % hooks.length],
+        source: "manual",
+        order: i,
+      },
+    });
+  }
+}
+
 export async function updateHook(hookId: string, text: string) {
   return prisma.multiplierHook.update({
     where: { id: hookId },
@@ -1212,7 +1230,7 @@ export async function applyStyleSplitToGroup(groupId: string, styleIds: string[]
 
 async function addFileToBulkBatch(input: {
   jobId: string;
-  file: { tempPath: string; fileName: string; caption?: string | null };
+  file: { tempPath: string; fileName: string; caption?: string | null; customHooks?: string[] };
   campaignId?: string | null;
   styleId?: string | null;
   styleIds?: string[]; // multi-preset selection — takes precedence over styleId
@@ -1234,6 +1252,7 @@ async function addFileToBulkBatch(input: {
         name,
         campaignId: input.campaignId || null,
         caption: input.file.caption?.trim() || null,
+        customHooks: (input.file.customHooks ?? []).map((h) => h.trim()).filter((h) => h.length > 0),
         styleId: assignedStyle,
         mappingMode: "distribute",
         settings: {},
@@ -1281,7 +1300,7 @@ export function clampBulkHookCount(count?: number | null): number {
 // follows arrival order (files normally arrive one request at a time, in the
 // order the operator picked them).
 export async function createBulkBatch(input: {
-  files: { tempPath: string; fileName: string; caption?: string | null }[];
+  files: { tempPath: string; fileName: string; caption?: string | null; customHooks?: string[] }[];
   campaignId?: string | null;
   styleId?: string | null;
   styleIds?: string[]; // multi-preset selection — persisted on the job
@@ -1343,7 +1362,7 @@ export async function createBulkBatch(input: {
 // operator can change them any time before finalize.
 export async function appendToBulkBatch(
   jobId: string,
-  files: { tempPath: string; fileName: string; caption?: string | null }[],
+  files: { tempPath: string; fileName: string; caption?: string | null; customHooks?: string[] }[],
   opts?: { hooksEnabled?: boolean | null; hookCount?: number | null }
 ): Promise<string[]> {
   ensureDirsExist();
@@ -1451,7 +1470,15 @@ export async function processBulkBatch(jobId: string) {
             where: { id: task.itemId },
             data: { status: "GENERATING_HOOKS" },
           });
-          if (job.hooksEnabled) {
+          const groupHooks = await prisma.multiplierGroup.findUnique({
+            where: { id: task.groupId },
+            select: { customHooks: true },
+          });
+          if (groupHooks && groupHooks.customHooks.length > 0) {
+            // Pasted custom hooks win over both Gemini and the hooks-off mode —
+            // cycled to hookCount by createCustomHooks.
+            await createCustomHooks(task.groupId, groupHooks.customHooks, job.hookCount);
+          } else if (job.hooksEnabled) {
             await generateHooks(task.groupId, job.hookCount, !!job.campaignId);
           } else {
             // Hooks-off: skip Gemini — placeholder rows with empty text yield
