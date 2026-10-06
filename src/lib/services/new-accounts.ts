@@ -399,3 +399,85 @@ export async function getNewAccountsOverview(query: NewAccountsQuery = {}): Prom
     projection,
   };
 }
+
+// ─── Creator drill-down ──────────────────────────────────────────────────────
+
+export type CreatorDayAccount = {
+  id: string;
+  username: string;
+  displayName: string;
+  driveFolderName: string | null;
+  sectionName: string;
+  addedAt: string; // ISO
+};
+
+export type CreatorDailyBreakdown = {
+  creator: { userId: string; name: string; email: string };
+  timezone: string;
+  totalAccounts: number;
+  /** Zero-filled last 30 days, oldest → newest (org tz) — for the mini chart. */
+  daily: DailyCreatedPoint[];
+  /** Only days that have accounts, newest day first; accounts newest first. */
+  days: { date: string; count: number; accounts: CreatorDayAccount[] }[];
+};
+
+/**
+ * Per-creator breakdown for the "Who's adding accounts" leaderboard drill-down:
+ * every tracked account that user added, bucketed by org-tz day. Read-only.
+ * Returns null when the user doesn't exist.
+ */
+export async function getCreatorDailyBreakdown(creatorUserId: string): Promise<CreatorDailyBreakdown | null> {
+  const user = await prisma.user.findUnique({
+    where: { id: creatorUserId },
+    select: { id: true, name: true, email: true },
+  });
+  if (!user) return null;
+
+  const tz = await getOrgTimezone();
+  const accounts = await prisma.managedAccount.findMany({
+    where: { createdByUserId: creatorUserId },
+    orderBy: { createdAt: "desc" },
+    select: {
+      id: true,
+      tiktokUsername: true,
+      tiktokDisplayName: true,
+      driveFolderName: true,
+      createdAt: true,
+      section: { select: { name: true } },
+    },
+  });
+
+  const bucket = new Map<string, CreatorDayAccount[]>();
+  for (const a of accounts) {
+    const day = getZonedDateString(a.createdAt, tz);
+    const arr = bucket.get(day) ?? [];
+    arr.push({
+      id: a.id,
+      username: a.tiktokUsername,
+      displayName: a.tiktokDisplayName ?? "",
+      driveFolderName: a.driveFolderName,
+      sectionName: a.section?.name ?? "—",
+      addedAt: a.createdAt.toISOString(),
+    });
+    bucket.set(day, arr);
+  }
+
+  const today = getZonedDateString(new Date(), tz);
+  const daily: DailyCreatedPoint[] = [];
+  for (let i = 29; i >= 0; i--) {
+    const d = addDays(today, -i);
+    daily.push({ date: d, count: bucket.get(d)?.length ?? 0 });
+  }
+
+  const days = [...bucket.entries()]
+    .sort((a, b) => (a[0] < b[0] ? 1 : -1))
+    .map(([date, accs]) => ({ date, count: accs.length, accounts: accs }));
+
+  return {
+    creator: { userId: user.id, name: user.name || user.email, email: user.email },
+    timezone: tz,
+    totalAccounts: accounts.length,
+    daily,
+    days,
+  };
+}

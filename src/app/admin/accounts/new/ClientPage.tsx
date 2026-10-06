@@ -11,7 +11,9 @@ import {
   AlertTriangle,
   PlugZap,
   HardDrive,
+  ChevronRight,
 } from "lucide-react";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 
 // ── API contract types ──────────────────────────────────────────────────────
 type NewAccountRow = {
@@ -89,6 +91,26 @@ type NewAccountsData = {
 
 type SectionOption = { id: string; name: string; slug: string };
 
+// ── Creator drill-down types (GET /api/managed/new-accounts/creator) ────────
+type CreatorBreakdown = {
+  creator: { userId: string; name: string; email: string };
+  timezone: string;
+  totalAccounts: number;
+  daily: { date: string; count: number }[];
+  days: {
+    date: string;
+    count: number;
+    accounts: {
+      id: string;
+      username: string;
+      displayName: string;
+      driveFolderName: string | null;
+      sectionName: string;
+      addedAt: string;
+    }[];
+  }[];
+};
+
 // ── Display helpers ─────────────────────────────────────────────────────────
 const COLOR_MAP: Record<string, string> = {
   red: "#ef4444",
@@ -148,6 +170,27 @@ export default function ClientPage({ sections }: { sections: SectionOption[] }) 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [hoveredBar, setHoveredBar] = useState<number | null>(null);
+
+  // ── Creator drill-down (click a person in the leaderboard) ──────────────
+  const [drillUserId, setDrillUserId] = useState<string | null>(null);
+  const [drillData, setDrillData] = useState<CreatorBreakdown | null>(null);
+  const [drillLoading, setDrillLoading] = useState(false);
+  const [drillError, setDrillError] = useState<string | null>(null);
+
+  const openCreator = useCallback((userId: string) => {
+    setDrillUserId(userId);
+    setDrillData(null);
+    setDrillError(null);
+    setDrillLoading(true);
+    fetch(`/api/managed/new-accounts/creator?userId=${encodeURIComponent(userId)}`)
+      .then(async (res) => {
+        const json = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`);
+        setDrillData(json);
+      })
+      .catch((err) => setDrillError(err.message || "Failed to load creator"))
+      .finally(() => setDrillLoading(false));
+  }, []);
 
   useEffect(() => {
     const t = setTimeout(() => setDebouncedSearch(search.trim()), 300);
@@ -309,7 +352,7 @@ export default function ClientPage({ sections }: { sections: SectionOption[] }) 
         <section className="border border-white/5 rounded-2xl overflow-hidden">
           <header className="px-5 py-3.5 bg-white/[0.03] border-b border-white/5 flex items-center justify-between">
             <h2 className="text-sm font-semibold text-white">Who's adding accounts</h2>
-            <span className="text-xs text-gray-600">Tracked adds only — tracking started Sep 18, 2026</span>
+            <span className="text-xs text-gray-600">Click a person for their day-by-day breakdown · tracked adds only</span>
           </header>
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
@@ -331,7 +374,16 @@ export default function ClientPage({ sections }: { sections: SectionOption[] }) 
                   return (
                     <tr key={c.userId} className="border-b border-white/[0.03] hover:bg-white/[0.02]">
                       <td className="px-5 py-2.5 text-gray-600">{i + 1}</td>
-                      <td className="px-3 py-2.5 text-white font-medium">{c.name}</td>
+                      <td className="px-3 py-2.5">
+                        <button
+                          onClick={() => openCreator(c.userId)}
+                          className="group flex items-center gap-1 text-white font-medium hover:text-sky-300 transition-colors cursor-pointer"
+                          title={`See every account ${c.name} added, day by day`}
+                        >
+                          {c.name}
+                          <ChevronRight className="w-3.5 h-3.5 text-gray-600 group-hover:text-sky-300" />
+                        </button>
+                      </td>
                       <td className="px-3 py-2.5">
                         <div className="flex items-end gap-[2px] h-6 w-24">
                           {c.daily.map((d) => (
@@ -638,6 +690,153 @@ export default function ClientPage({ sections }: { sections: SectionOption[] }) 
           Updating…
         </div>
       )}
+
+      {/* Creator drill-down modal */}
+      <CreatorDrilldownModal
+        open={drillUserId !== null}
+        onClose={() => setDrillUserId(null)}
+        loading={drillLoading}
+        error={drillError}
+        data={drillData}
+      />
     </div>
+  );
+}
+
+// ── Creator drill-down modal ─────────────────────────────────────────────────
+// Day-by-day view of one person's account generation: a 30-day mini chart,
+// then per-day sections listing every account they added that day.
+function CreatorDrilldownModal({
+  open,
+  onClose,
+  loading,
+  error,
+  data,
+}: {
+  open: boolean;
+  onClose: () => void;
+  loading: boolean;
+  error: string | null;
+  data: CreatorBreakdown | null;
+}) {
+  const tz = data?.timezone ?? "Asia/Kolkata";
+  const last7d = data ? data.daily.slice(-7).reduce((s, p) => s + p.count, 0) : 0;
+  const maxDay = data ? Math.max(...data.daily.map((p) => p.count), 1) : 1;
+
+  const dayLabel = (dateStr: string) =>
+    new Intl.DateTimeFormat("en-GB", { weekday: "short", day: "2-digit", month: "short", timeZone: "UTC" }).format(
+      new Date(`${dateStr}T00:00:00Z`)
+    );
+  const timeLabel = (iso: string) =>
+    new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: tz }).format(
+      new Date(iso)
+    );
+
+  return (
+    <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="bg-zinc-950 border border-zinc-800 sm:max-w-2xl max-h-[85vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle className="text-white text-sm">
+            {data ? `${data.creator.name} — accounts added` : "Accounts added"}
+          </DialogTitle>
+        </DialogHeader>
+
+        {loading && (
+          <div className="flex items-center justify-center gap-2 py-12 text-sm text-gray-500">
+            <Loader2 className="w-4 h-4 animate-spin" /> Loading…
+          </div>
+        )}
+
+        {error && !loading && (
+          <div className="flex items-center gap-3 bg-red-500/10 border border-red-500/20 rounded-xl px-4 py-3">
+            <AlertCircle className="w-4 h-4 text-red-400 flex-shrink-0" />
+            <p className="text-sm text-red-300">{error}</p>
+          </div>
+        )}
+
+        {data && !loading && (
+          <div className="space-y-5">
+            {/* Totals */}
+            <div className="flex flex-wrap gap-2 text-xs">
+              <span className="px-2.5 py-1 rounded-md border border-white/10 bg-white/5 text-gray-300">
+                <span className="text-white font-semibold">{data.totalAccounts}</span> total tracked
+              </span>
+              <span className="px-2.5 py-1 rounded-md border border-white/10 bg-white/5 text-gray-300">
+                <span className="text-white font-semibold">{last7d}</span> last 7 days
+              </span>
+              <span className="px-2.5 py-1 rounded-md border border-white/10 bg-white/5 text-gray-300">
+                <span className="text-white font-semibold">{(last7d / 7).toFixed(1)}</span>/day pace
+              </span>
+              <span className="px-2.5 py-1 rounded-md border border-white/5 text-gray-500">
+                Times in {data.timezone}
+              </span>
+            </div>
+
+            {/* 30-day mini chart */}
+            <div>
+              <p className="text-xs text-gray-500 mb-2">Accounts per day — last 30 days</p>
+              <div className="flex items-end gap-[2px] h-16">
+                {data.daily.map((p) => (
+                  <div
+                    key={p.date}
+                    title={`${p.date}: ${p.count}`}
+                    className={`flex-1 rounded-[2px] ${p.count > 0 ? "bg-sky-500/60 hover:bg-sky-400" : "bg-white/5"}`}
+                    style={{ height: `${Math.max((p.count / maxDay) * 100, p.count > 0 ? 8 : 3)}%` }}
+                  />
+                ))}
+              </div>
+              <div className="flex justify-between text-[10px] text-gray-600 mt-1">
+                <span>{data.daily[0]?.date}</span>
+                <span>{data.daily[data.daily.length - 1]?.date} (today)</span>
+              </div>
+            </div>
+
+            {/* Per-day account lists */}
+            {data.days.length === 0 ? (
+              <p className="text-sm text-gray-600 text-center py-6">No tracked accounts yet.</p>
+            ) : (
+              <div className="space-y-3">
+                {data.days.map((day) => (
+                  <section key={day.date} className="border border-white/5 rounded-xl overflow-hidden">
+                    <header className="px-4 py-2.5 bg-white/[0.03] border-b border-white/5 flex items-center justify-between">
+                      <span className="text-xs font-semibold text-gray-200">{dayLabel(day.date)}</span>
+                      <span className="text-xs text-gray-500">
+                        <span className="text-sky-300 font-semibold">{day.count}</span> account
+                        {day.count !== 1 ? "s" : ""}
+                      </span>
+                    </header>
+                    <div className="divide-y divide-white/[0.03]">
+                      {day.accounts.map((a) => (
+                        <div key={a.id} className="flex items-center gap-3 px-4 py-2">
+                          <div className="min-w-0 flex-1">
+                            <a
+                              href={`https://www.tiktok.com/@${a.username}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-sm text-white hover:underline font-medium flex items-center gap-1 truncate"
+                            >
+                              @{a.username}
+                              <ExternalLink className="w-3 h-3 text-gray-600 flex-shrink-0" />
+                            </a>
+                            {a.displayName && a.displayName !== a.username && (
+                              <div className="text-xs text-gray-600 truncate">{a.displayName}</div>
+                            )}
+                          </div>
+                          <span className="text-xs text-gray-500 truncate max-w-[140px]" title={a.driveFolderName ?? undefined}>
+                            {a.driveFolderName ?? "—"}
+                          </span>
+                          <span className="text-xs text-gray-500 w-20 truncate text-right">{a.sectionName}</span>
+                          <span className="text-xs text-gray-600 tabular-nums w-12 text-right">{timeLabel(a.addedAt)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </section>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </DialogContent>
+    </Dialog>
   );
 }
