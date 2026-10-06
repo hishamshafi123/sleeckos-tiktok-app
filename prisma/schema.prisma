@@ -54,6 +54,7 @@ model User {
   // Tickets relations
   ticketsCreated     Ticket[] @relation("TicketCreator")
   ticketsAssigned    Ticket[] @relation("TicketAssignee")
+  notifications      UserNotification[]
 
   // Account health scan relations
   healthEntries      AccountHealthEntry[] @relation("HealthEntryAssignee")
@@ -1309,6 +1310,7 @@ model Ticket {
   assigneeId  String?
   assignee    User?     @relation("TicketAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
   dueDate     DateTime?
+  assignedAt  DateTime? // when the current assignee was set
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
   completedAt DateTime?
@@ -1316,6 +1318,22 @@ model Ticket {
   @@index([assigneeId, status])
   @@index([creatorId])
   @@index([status, priority])
+}
+
+// Per-user notifications (ticket assignment, etc.) — read state is per user.
+model UserNotification {
+  id        String    @id @default(uuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      String // "ticket_assigned" | future types
+  title     String
+  body      String    @db.Text
+  link      String? // in-app path, e.g. "/admin/tickets"
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId, readAt])
+  @@index([userId, createdAt])
 }
 
 model ChatMessage {

@@ -85,3 +85,80 @@ export async function markAllNotificationsRead(): Promise<{ updated: number }> {
   });
   return { updated: res.count };
 }
+
+/**
+ * Per-user notifications — written by user-facing events (e.g. ticket
+ * assignment). Read state is per user. Never throws — notifying must never
+ * break the operation that triggered it.
+ */
+
+export interface NotifyUserInput {
+  type: string;
+  title: string;
+  body: string;
+  link?: string | null;
+}
+
+export async function notifyUser(userId: string, input: NotifyUserInput): Promise<void> {
+  try {
+    await prisma.userNotification.create({
+      data: {
+        userId,
+        type: input.type,
+        title: input.title.slice(0, 200),
+        body: input.body.slice(0, 2000),
+        link: input.link ?? null,
+      },
+    });
+  } catch (err: any) {
+    console.warn(`[Notifications] Failed to write user notification: ${err?.message || err}`);
+  }
+}
+
+export interface UserNotificationRow {
+  id: string;
+  createdAt: string;
+  type: string;
+  title: string;
+  body: string;
+  link: string | null;
+  read: boolean;
+}
+
+/** Latest notifications + unread count for a user's bell. */
+export async function getUserNotifications(
+  userId: string,
+  limit = 30
+): Promise<{ unreadCount: number; rows: UserNotificationRow[] }> {
+  const take = Math.min(Math.max(1, Math.trunc(limit)), 100);
+  const [rows, unreadCount] = await Promise.all([
+    prisma.userNotification.findMany({
+      where: { userId },
+      orderBy: { createdAt: "desc" },
+      take,
+    }),
+    prisma.userNotification.count({ where: { userId, readAt: null } }),
+  ]);
+  return {
+    unreadCount,
+    rows: rows.map((r) => ({
+      id: r.id,
+      createdAt: r.createdAt.toISOString(),
+      type: r.type,
+      title: r.title,
+      body: r.body,
+      link: r.link,
+      read: r.readAt !== null,
+    })),
+  };
+}
+
+export async function markAllUserNotificationsRead(
+  userId: string
+): Promise<{ updated: number }> {
+  const res = await prisma.userNotification.updateMany({
+    where: { userId, readAt: null },
+    data: { readAt: new Date() },
+  });
+  return { updated: res.count };
+}

@@ -1,5 +1,5 @@
 "use client";
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { toast } from "sonner";
 import {
   Plus,
@@ -8,6 +8,8 @@ import {
   TicketCheck,
   Calendar,
   User,
+  Users,
+  LayoutList,
   AlertCircle,
   CheckCircle,
 } from "lucide-react";
@@ -34,9 +36,36 @@ interface Ticket {
   dueDate: string | null;
   createdAt: string;
   updatedAt: string;
+  assignedAt: string | null;
   completedAt: string | null;
   creator: AssigneeUser;
   assignee: AssigneeUser | null;
+}
+
+interface MemberTicket {
+  id: string;
+  title: string;
+  description: string | null;
+  status: string;
+  priority: string;
+  dueDate: string | null;
+  createdAt: string;
+  assignedAt: string | null;
+  updatedAt: string;
+  completedAt: string | null;
+  creator: AssigneeUser;
+}
+
+interface MemberBucket {
+  user: AssigneeUser;
+  counts: Record<string, number>;
+  openCount: number;
+  tickets: MemberTicket[];
+}
+
+interface ByMemberData {
+  members: MemberBucket[];
+  unassigned: { counts: Record<string, number>; tickets: MemberTicket[] };
 }
 
 interface TicketsClientProps {
@@ -96,12 +125,250 @@ function isOverdue(t: Ticket) {
   );
 }
 
+const COUNT_CHIP_STYLES: Record<string, string> = {
+  OPEN: "bg-zinc-900/20 text-zinc-300 border-zinc-800",
+  IN_PROGRESS: "bg-blue-950/20 text-blue-400 border-blue-900/50",
+  DONE: "bg-emerald-950/20 text-emerald-400 border-emerald-900/50",
+  CANCELLED: "bg-zinc-900/20 text-zinc-600 border-zinc-800",
+};
+
+function AssigneeCombobox({
+  assignees,
+  value,
+  onChange,
+}: {
+  assignees: AssigneeUser[];
+  value: string;
+  onChange: (id: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [highlight, setHighlight] = useState(0);
+  const ref = useRef<HTMLDivElement>(null);
+
+  const selected = assignees.find((u) => u.id === value) || null;
+  const q = query.trim().toLowerCase();
+  const filtered = assignees.filter(
+    (u) =>
+      (u.name || "").toLowerCase().includes(q) || u.email.toLowerCase().includes(q)
+  );
+
+  useEffect(() => {
+    if (!open) return;
+    const onClick = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onClick);
+    return () => document.removeEventListener("mousedown", onClick);
+  }, [open]);
+
+  const select = (id: string) => {
+    onChange(id);
+    setOpen(false);
+    setQuery("");
+    setHighlight(0);
+  };
+
+  if (selected) {
+    return (
+      <span className="inline-flex items-center gap-1.5 w-full bg-[#121214] border border-[#27272a] rounded-md px-3 py-2 text-xs">
+        <User className="w-3 h-3 text-zinc-500 flex-shrink-0" />
+        <span className="truncate text-zinc-200">{selected.name || selected.email}</span>
+        <button
+          type="button"
+          onClick={() => onChange("")}
+          aria-label="Clear assignee"
+          className="ml-auto text-zinc-500 hover:text-zinc-200 flex-shrink-0"
+        >
+          <X className="w-3.5 h-3.5" />
+        </button>
+      </span>
+    );
+  }
+
+  return (
+    <div className="relative" ref={ref}>
+      <input
+        type="text"
+        placeholder="Search people..."
+        value={query}
+        onChange={(e) => {
+          setQuery(e.target.value);
+          setOpen(true);
+          setHighlight(0);
+        }}
+        onFocus={() => setOpen(true)}
+        onKeyDown={(e) => {
+          if (e.key === "ArrowDown") {
+            e.preventDefault();
+            setOpen(true);
+            setHighlight((h) => Math.min(h + 1, filtered.length - 1));
+          } else if (e.key === "ArrowUp") {
+            e.preventDefault();
+            setHighlight((h) => Math.max(h - 1, 0));
+          } else if (e.key === "Enter") {
+            if (open && filtered[highlight]) {
+              e.preventDefault();
+              select(filtered[highlight].id);
+            }
+          } else if (e.key === "Escape") {
+            setOpen(false);
+          }
+        }}
+        className="w-full bg-[#121214] border border-[#27272a] rounded-md px-3 py-2 text-xs focus:outline-none focus:border-blue-500"
+      />
+      {open && (
+        <div className="absolute left-0 right-0 top-full mt-1 max-h-48 overflow-y-auto rounded-md border border-[#27272a] bg-[#09090b] shadow-xl shadow-black/50 z-50">
+          {filtered.length === 0 ? (
+            <div className="px-3 py-3 text-center text-[11px] text-zinc-600">
+              No matching people
+            </div>
+          ) : (
+            filtered.map((u, i) => (
+              <button
+                key={u.id}
+                type="button"
+                onMouseEnter={() => setHighlight(i)}
+                onClick={() => select(u.id)}
+                className={`w-full text-left px-3 py-2 border-b border-[#27272a]/60 last:border-0 ${
+                  i === highlight ? "bg-zinc-900" : ""
+                }`}
+              >
+                <p className="text-xs font-medium text-zinc-200 truncate">
+                  {u.name || u.email}
+                </p>
+                <p className="text-[10px] text-zinc-600 truncate">{u.email}</p>
+              </button>
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ClampedDescription({ text }: { text: string }) {
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <p className="text-[11px] text-zinc-500 leading-snug mt-1">
+      <span className={expanded ? "" : "line-clamp-2"}>{text}</span>
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        className="ml-1 text-[10px] font-semibold text-zinc-400 hover:text-zinc-200"
+      >
+        {expanded ? "less" : "more"}
+      </button>
+    </p>
+  );
+}
+
+function MemberCard({
+  name,
+  email,
+  assignee,
+  counts,
+  openCount,
+  tickets,
+  onOpen,
+}: {
+  name: string;
+  email: string | null;
+  assignee: AssigneeUser | null;
+  counts: Record<string, number>;
+  openCount: number;
+  tickets: MemberTicket[];
+  onOpen: (t: Ticket) => void;
+}) {
+  return (
+    <div className="border border-[#27272a] rounded-lg bg-[#09090b]">
+      <div className="flex flex-wrap items-center gap-2 px-4 py-3 border-b border-[#27272a]">
+        <span className="flex items-center gap-1.5 text-xs font-semibold text-zinc-100">
+          <User className="w-3.5 h-3.5 text-zinc-500" />
+          {name}
+        </span>
+        {email && <span className="text-[10px] text-zinc-600">{email}</span>}
+        <div className="flex items-center gap-1.5 ml-auto">
+          {STATUSES.map((s) =>
+            (counts[s] || 0) > 0 ? (
+              <span
+                key={s}
+                className={`px-1.5 py-0.5 rounded-full text-[9px] font-black border ${
+                  COUNT_CHIP_STYLES[s]
+                }`}
+              >
+                {STATUS_LABELS[s]} {counts[s]}
+              </span>
+            ) : null
+          )}
+          <span className="text-[10px] font-bold text-amber-500 whitespace-nowrap">
+            {openCount} open
+          </span>
+        </div>
+      </div>
+
+      {tickets.length === 0 ? (
+        <div className="px-4 py-4 text-[11px] text-zinc-600">No tickets</div>
+      ) : (
+        <div className="divide-y divide-[#27272a]/60">
+          {tickets.map((t) => (
+            <div key={t.id} className="px-4 py-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <span
+                  className={`px-2 py-0.5 rounded-full text-[9px] font-black uppercase border ${
+                    PRIORITY_STYLES[t.priority] || PRIORITY_STYLES.MEDIUM
+                  }`}
+                >
+                  {t.priority}
+                </span>
+                <button
+                  onClick={() => onOpen({ ...t, assignee })}
+                  className="text-xs font-semibold text-zinc-100 hover:text-white hover:underline text-left truncate min-w-0"
+                >
+                  {t.title}
+                </button>
+                <span
+                  className={`px-2 py-0.5 rounded-full text-[10px] font-semibold border whitespace-nowrap ${
+                    STATUS_STYLES[t.status] || STATUS_STYLES.OPEN
+                  }`}
+                >
+                  {STATUS_LABELS[t.status] || t.status}
+                </span>
+                <span className="text-[10px] text-zinc-600 whitespace-nowrap">
+                  raised {timeAgo(t.createdAt)}
+                  {t.assignedAt && <> · assigned {timeAgo(t.assignedAt)}</>}
+                </span>
+                {t.dueDate && (
+                  <span className="flex items-center gap-1 text-[10px] font-semibold text-zinc-400 whitespace-nowrap">
+                    <Calendar className="w-3 h-3" />
+                    {new Date(t.dueDate).toLocaleDateString()}
+                  </span>
+                )}
+                <span className="text-[10px] text-zinc-600 whitespace-nowrap ml-auto">
+                  by {displayName(t.creator)}
+                </span>
+              </div>
+              {t.description && <ClampedDescription text={t.description} />}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function TicketsClient({ currentUser, isManagement }: TicketsClientProps) {
   const [view, setView] = useState<ViewKey>("mine");
+  const [layout, setLayout] = useState<"list" | "member">("list");
   const [statusFilter, setStatusFilter] = useState<string[]>([]);
   const [tickets, setTickets] = useState<Ticket[]>([]);
   const [ticketsLoading, setTicketsLoading] = useState(true);
   const [assignees, setAssignees] = useState<AssigneeUser[]>([]);
+
+  // By-member view states
+  const [byMember, setByMember] = useState<ByMemberData | null>(null);
+  const [byMemberLoading, setByMemberLoading] = useState(false);
+  const [byMemberError, setByMemberError] = useState<string | null>(null);
 
   // Create modal states
   const [showCreateModal, setShowCreateModal] = useState(false);
@@ -129,6 +396,25 @@ export default function TicketsClient({ currentUser, isManagement }: TicketsClie
   useEffect(() => {
     fetchAssignees();
   }, []);
+
+  useEffect(() => {
+    if (layout === "member" && !byMember && !byMemberLoading) fetchByMember();
+  }, [layout]);
+
+  const fetchByMember = async () => {
+    setByMemberLoading(true);
+    setByMemberError(null);
+    try {
+      const res = await fetch("/api/tickets/by-member");
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to load tickets by member");
+      setByMember(data);
+    } catch (err: any) {
+      setByMemberError(err.message || "Failed to load tickets by member");
+    } finally {
+      setByMemberLoading(false);
+    }
+  };
 
   const fetchTickets = async () => {
     setTicketsLoading(true);
@@ -274,7 +560,31 @@ export default function TicketsClient({ currentUser, isManagement }: TicketsClie
             Raise and assign tasks across the team.
           </p>
         </div>
-        <div>
+        <div className="flex items-center gap-2">
+          <div className="flex border border-[#27272a] rounded-md overflow-hidden">
+            {(
+              [
+                { key: "list", label: "List", icon: LayoutList },
+                { key: "member", label: "By member", icon: Users },
+              ] as { key: "list" | "member"; label: string; icon: any }[]
+            ).map((tab) => {
+              const Icon = tab.icon;
+              return (
+                <button
+                  key={tab.key}
+                  onClick={() => setLayout(tab.key)}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider transition ${
+                    layout === tab.key
+                      ? "bg-[#2563eb] text-white"
+                      : "bg-[#121214] text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900"
+                  }`}
+                >
+                  <Icon className="w-3 h-3" />
+                  {tab.label}
+                </button>
+              );
+            })}
+          </div>
           <button
             onClick={() => setShowCreateModal(true)}
             className="flex items-center gap-1.5 px-3 py-1.5 bg-[#2563eb] text-white rounded-md text-xs font-semibold hover:bg-blue-700 transition"
@@ -285,6 +595,69 @@ export default function TicketsClient({ currentUser, isManagement }: TicketsClie
         </div>
       </div>
 
+      {layout === "member" ? (
+        <div className="space-y-4">
+          {byMemberLoading && !byMember ? (
+            <div className="space-y-4">
+              {[0, 1, 2].map((i) => (
+                <div
+                  key={i}
+                  className="border border-[#27272a] rounded-lg bg-[#09090b] p-4 animate-pulse"
+                >
+                  <div className="h-3 w-40 bg-zinc-800 rounded" />
+                  <div className="mt-3 space-y-2">
+                    <div className="h-2.5 w-full bg-zinc-900 rounded" />
+                    <div className="h-2.5 w-3/4 bg-zinc-900 rounded" />
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : byMemberError ? (
+            <div className="border border-[#27272a] rounded-lg bg-[#09090b] py-12 text-center space-y-3">
+              <AlertCircle className="w-8 h-8 text-red-900 mx-auto" />
+              <div className="text-zinc-500 text-xs">{byMemberError}</div>
+              <button
+                onClick={fetchByMember}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 border border-[#27272a] hover:bg-zinc-900 rounded-md text-xs font-semibold transition"
+              >
+                Retry
+              </button>
+            </div>
+          ) : byMember ? (
+            <>
+              {[...byMember.members]
+                .sort((a, b) => b.openCount - a.openCount)
+                .map((m) => (
+                  <MemberCard
+                    key={m.user.id}
+                    name={m.user.name || m.user.email}
+                    email={m.user.email}
+                    assignee={m.user}
+                    counts={m.counts}
+                    openCount={m.openCount}
+                    tickets={m.tickets}
+                    onOpen={openDetail}
+                  />
+                ))}
+              {byMember.unassigned.tickets.length > 0 && (
+                <MemberCard
+                  name="Unassigned"
+                  email={null}
+                  assignee={null}
+                  counts={byMember.unassigned.counts}
+                  openCount={
+                    (byMember.unassigned.counts.OPEN || 0) +
+                    (byMember.unassigned.counts.IN_PROGRESS || 0)
+                  }
+                  tickets={byMember.unassigned.tickets}
+                  onOpen={openDetail}
+                />
+              )}
+            </>
+          ) : null}
+        </div>
+      ) : (
+      <>
       {/* View tabs */}
       <div className="flex gap-2 border-b border-[#27272a]">
         {(
@@ -423,6 +796,11 @@ export default function TicketsClient({ currentUser, isManagement }: TicketsClie
                         <User className="w-3 h-3" />
                         {displayName(t.assignee)}
                       </span>
+                      {t.assignee && t.assignedAt && (
+                        <span className="block text-[9px] text-zinc-600 mt-0.5">
+                          assigned {timeAgo(t.assignedAt)}
+                        </span>
+                      )}
                     </td>
                     <td className="py-3 pr-4 text-zinc-400 whitespace-nowrap">
                       {displayName(t.creator)}
@@ -456,6 +834,8 @@ export default function TicketsClient({ currentUser, isManagement }: TicketsClie
           </div>
         )}
       </div>
+      </>
+      )}
 
       {/* Create Ticket Modal */}
       {showCreateModal && (
@@ -515,18 +895,11 @@ export default function TicketsClient({ currentUser, isManagement }: TicketsClie
 
               <div className="space-y-1">
                 <label className="text-[10px] font-bold uppercase tracking-wider text-zinc-500">Assignee</label>
-                <select
+                <AssigneeCombobox
+                  assignees={assignees}
                   value={newAssigneeId}
-                  onChange={(e) => setNewAssigneeId(e.target.value)}
-                  className="w-full bg-[#121214] border border-[#27272a] rounded-md px-3 py-2 text-xs focus:outline-none focus:border-blue-500"
-                >
-                  <option value="">Unassigned</option>
-                  {assignees.map((u) => (
-                    <option key={u.id} value={u.id}>
-                      {u.name || u.email}
-                    </option>
-                  ))}
-                </select>
+                  onChange={setNewAssigneeId}
+                />
               </div>
             </div>
 
@@ -650,18 +1023,11 @@ export default function TicketsClient({ currentUser, isManagement }: TicketsClie
 
               <div className="space-y-1">
                 <label className="text-[10px] font-bold uppercase tracking-wider text-zinc-500">Assignee</label>
-                <select
+                <AssigneeCombobox
+                  assignees={assignees}
                   value={draftAssigneeId}
-                  onChange={(e) => setDraftAssigneeId(e.target.value)}
-                  className="w-full bg-[#121214] border border-[#27272a] rounded-md px-3 py-2 text-xs focus:outline-none focus:border-blue-500"
-                >
-                  <option value="">Unassigned</option>
-                  {assignees.map((u) => (
-                    <option key={u.id} value={u.id}>
-                      {u.name || u.email}
-                    </option>
-                  ))}
-                </select>
+                  onChange={setDraftAssigneeId}
+                />
               </div>
             </div>
 
@@ -681,6 +1047,13 @@ export default function TicketsClient({ currentUser, isManagement }: TicketsClie
                 Raised by <span className="text-zinc-300 font-semibold">{displayName(selectedTicket.creator)}</span>{" "}
                 on {new Date(selectedTicket.createdAt).toLocaleString()}
               </div>
+              {selectedTicket.assignedAt && (
+                <div>
+                  Assigned to{" "}
+                  <span className="text-zinc-300 font-semibold">{displayName(selectedTicket.assignee)}</span>{" "}
+                  {timeAgo(selectedTicket.assignedAt)}
+                </div>
+              )}
               {selectedTicket.status === "DONE" && selectedTicket.completedAt && (
                 <div>
                   Completed on{" "}

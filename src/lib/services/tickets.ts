@@ -1,4 +1,5 @@
 import prisma from "@/lib/db";
+import { notifyUser } from "./notifications";
 
 export const TICKET_STATUSES = ["OPEN", "IN_PROGRESS", "DONE", "CANCELLED"] as const;
 export const TICKET_PRIORITIES = ["LOW", "MEDIUM", "HIGH", "URGENT"] as const;
@@ -133,17 +134,56 @@ export async function createTicket(
     assigneeId = data.assigneeId;
   }
 
-  return prisma.ticket.create({
+  const ticket = await prisma.ticket.create({
     data: {
       title,
       description: typeof data.description === "string" ? data.description : null,
       priority,
       creatorId: userId,
       assigneeId,
+      assignedAt: assigneeId ? new Date() : null,
       dueDate: parseDueDate(data.dueDate),
     },
     include: ticketInclude,
   });
+
+  if (assigneeId) {
+    const creatorName = ticket.creator.name || ticket.creator.email;
+    void notifyUser(assigneeId, {
+      type: "ticket_assigned",
+      title: `${creatorName} assigned you a ticket`,
+      body: title,
+      link: "/admin/tickets",
+    });
+  }
+
+  return ticket;
+}
+
+// Fire-and-forget assignment notification — must never fail the ticket op.
+async function notifyAssignment(
+  actorUserId: string | undefined,
+  assigneeId: string,
+  ticketTitle: string
+) {
+  try {
+    let actorName = "Someone";
+    if (actorUserId) {
+      const actor = await prisma.user.findUnique({
+        where: { id: actorUserId },
+        select: { name: true, email: true },
+      });
+      if (actor) actorName = actor.name || actor.email;
+    }
+    await notifyUser(assigneeId, {
+      type: "ticket_assigned",
+      title: `${actorName} assigned you a ticket`,
+      body: ticketTitle,
+      link: "/admin/tickets",
+    });
+  } catch (err: any) {
+    console.warn(`[Tickets] Failed to notify assignment: ${err?.message || err}`);
+  }
 }
 
 export async function updateTicket(
@@ -155,7 +195,8 @@ export async function updateTicket(
     title?: unknown;
     description?: unknown;
     dueDate?: unknown;
-  }
+  },
+  actorUserId?: string
 ) {
   const existing = await prisma.ticket.findUnique({ where: { id: ticketId } });
   if (!existing) {
@@ -182,6 +223,9 @@ export async function updateTicket(
   if (data.assigneeId !== undefined) {
     if (data.assigneeId === null) {
       update.assigneeId = null;
+      if (existing.assigneeId !== null) {
+        update.assignedAt = null;
+      }
     } else {
       if (typeof data.assigneeId !== "string") {
         throw new TicketError("Invalid assigneeId");
@@ -191,6 +235,9 @@ export async function updateTicket(
         throw new TicketError("Assignee not found");
       }
       update.assigneeId = data.assigneeId;
+      if (data.assigneeId !== existing.assigneeId) {
+        update.assignedAt = new Date();
+      }
     }
   }
 
@@ -210,11 +257,22 @@ export async function updateTicket(
     update.dueDate = parseDueDate(data.dueDate);
   }
 
-  return prisma.ticket.update({
+  const newAssigneeId =
+    typeof update.assigneeId === "string" && update.assigneeId !== existing.assigneeId
+      ? (update.assigneeId as string)
+      : null;
+
+  const updated = await prisma.ticket.update({
     where: { id: ticketId },
     data: update,
     include: ticketInclude,
   });
+
+  if (newAssigneeId) {
+    void notifyAssignment(actorUserId, newAssigneeId, updated.title);
+  }
+
+  return updated;
 }
 
 export async function deleteTicket(userId: string, ticketId: string) {
@@ -242,4 +300,117 @@ export async function listAssignees() {
     select: userSelect,
     orderBy: { name: "asc" },
   });
+}
+
+type TicketRow = {
+  id: string;
+  title: string;
+  description: string | null;
+  status: string;
+  priority: string;
+  dueDate: Date | null;
+  assignedAt: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
+  completedAt: Date | null;
+  assigneeId: string | null;
+  creator: { id: string; name: string | null; email: string };
+  assignee: { id: string; name: string | null; email: string } | null;
+};
+
+function serializeTicket(t: TicketRow) {
+  return {
+    id: t.id,
+    title: t.title,
+    description: t.description,
+    status: t.status,
+    priority: t.priority,
+    dueDate: t.dueDate ? t.dueDate.toISOString() : null,
+    createdAt: t.createdAt.toISOString(),
+    assignedAt: t.assignedAt ? t.assignedAt.toISOString() : null,
+    updatedAt: t.updatedAt.toISOString(),
+    completedAt: t.completedAt ? t.completedAt.toISOString() : null,
+    creator: t.creator,
+  };
+}
+
+function countByStatus(tickets: TicketRow[]): Record<TicketStatus, number> {
+  const counts: Record<TicketStatus, number> = {
+    OPEN: 0,
+    IN_PROGRESS: 0,
+    DONE: 0,
+    CANCELLED: 0,
+  };
+  for (const t of tickets) {
+    if (t.status in counts) counts[t.status as TicketStatus]++;
+  }
+  return counts;
+}
+
+// All tickets grouped by assignee — workload view. Routes guard access.
+export async function getTicketsByMember(_userId: string) {
+  const tickets = (await prisma.ticket.findMany({ include: ticketInclude })) as TicketRow[];
+
+  const byAssignee = new Map<string, { user: NonNullable<TicketRow["assignee"]>; tickets: TicketRow[] }>();
+  const unassigned: TicketRow[] = [];
+
+  for (const t of tickets) {
+    if (t.assigneeId && t.assignee) {
+      let group = byAssignee.get(t.assigneeId);
+      if (!group) {
+        group = { user: t.assignee, tickets: [] };
+        byAssignee.set(t.assigneeId, group);
+      }
+      group.tickets.push(t);
+    } else {
+      unassigned.push(t);
+    }
+  }
+
+  const members = [...byAssignee.values()].map((group) => {
+    const sorted = sortTickets(group.tickets);
+    const counts = countByStatus(sorted);
+    return {
+      user: group.user,
+      counts,
+      openCount: counts.OPEN + counts.IN_PROGRESS,
+      tickets: sorted.map(serializeTicket),
+    };
+  });
+  members.sort(
+    (a, b) =>
+      b.openCount - a.openCount ||
+      (a.user.name || a.user.email).localeCompare(b.user.name || b.user.email)
+  );
+
+  const sortedUnassigned = sortTickets(unassigned);
+  return {
+    members,
+    unassigned: {
+      counts: countByStatus(sortedUnassigned),
+      tickets: sortedUnassigned.map(serializeTicket),
+    },
+  };
+}
+
+// The signed-in user's open assigned tickets — bell/summary widget.
+export async function getMyTicketsSummary(userId: string) {
+  const open = (await prisma.ticket.findMany({
+    where: { assigneeId: userId, status: { in: OPEN_STATUSES } },
+    include: ticketInclude,
+  })) as TicketRow[];
+
+  const sorted = sortTickets(open);
+  return {
+    openCount: sorted.length,
+    rows: sorted.slice(0, 6).map((t) => ({
+      id: t.id,
+      title: t.title,
+      status: t.status,
+      priority: t.priority,
+      dueDate: t.dueDate ? t.dueDate.toISOString() : null,
+      assignedAt: t.assignedAt ? t.assignedAt.toISOString() : null,
+      creator: t.creator,
+    })),
+  };
 }

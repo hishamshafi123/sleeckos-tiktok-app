@@ -29,6 +29,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import NotificationBell from "@/components/NotificationBell";
+import TicketsButton from "@/components/TicketsButton";
 
 const PRODUCTION_NAV = [
   { href: "/admin/style-lab", label: "Style Lab", icon: Palette, toolKey: "style_studio" },
@@ -118,7 +119,10 @@ export default function AdminSidebar({ allowedTools = [] }: AdminSidebarProps) {
               className="h-6 w-auto object-contain brightness-110"
             />
           </Link>
-          <NotificationBell />
+          <div className="flex items-center gap-1">
+            <TicketsButton />
+            <NotificationBell />
+          </div>
         </div>
         <p className="text-[10px] text-zinc-500 mt-1 font-semibold uppercase tracking-wider">
           Internal Ops

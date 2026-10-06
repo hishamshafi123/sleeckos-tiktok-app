@@ -20,7 +20,7 @@ export async function PATCH(
 
   try {
     const body = await req.json();
-    const ticket = await updateTicket(id, body);
+    const ticket = await updateTicket(id, body, session.userId);
     return NextResponse.json({ ticket });
   } catch (err: any) {
     console.error("[Ticket PATCH] Error:", err);
