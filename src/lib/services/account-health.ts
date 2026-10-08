@@ -31,7 +31,7 @@ export class HealthScanError extends Error {
   }
 }
 
-export const HEALTH_VERDICTS = ["HEALTHY", "SUSPECT", "SHADOWBANNED", "NOT_POSTING", "NO_DATA"] as const;
+export const HEALTH_VERDICTS = ["LIKELY_BANNED", "HEALTHY", "SUSPECT", "SHADOWBANNED", "NOT_POSTING", "NO_DATA"] as const;
 export type HealthVerdict = (typeof HEALTH_VERDICTS)[number];
 
 export type HealthThresholds = {
@@ -52,11 +52,12 @@ export const DEFAULT_HEALTH_THRESHOLDS: HealthThresholds = {
 
 // Verdict sort order for the results table (most urgent first).
 const SEVERITY_ORDER: Record<HealthVerdict, number> = {
-  SHADOWBANNED: 0,
-  SUSPECT: 1,
-  NOT_POSTING: 2,
-  NO_DATA: 3,
-  HEALTHY: 4,
+  LIKELY_BANNED: 0,
+  SHADOWBANNED: 1,
+  SUSPECT: 2,
+  NOT_POSTING: 3,
+  NO_DATA: 4,
+  HEALTHY: 5,
 };
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -133,8 +134,32 @@ function computeVerdict(
   lastPostAt: Date | null,
   videos: CapturedVideo[], // captured only, sorted publishedAt desc
   t: HealthThresholds,
-  now: number
+  now: number,
+  accountFlags: { sweepNotFoundStreak: number; color: string | null }
 ): VerdictResult {
+  // LIKELY_BANNED — the profile itself is gone: consecutive sweep fetches
+  // failed with not_found, or an operator manually marked it red (Banned).
+  // Checked before everything else — stats-based verdicts are meaningless
+  // when the account no longer exists.
+  if (accountFlags.sweepNotFoundStreak >= 2) {
+    return {
+      verdict: "LIKELY_BANNED",
+      reason: `Profile not found in ${accountFlags.sweepNotFoundStreak} consecutive sweeps — likely banned`,
+      lastPostAt,
+      recentPosts: [],
+      baselineViews: null,
+    };
+  }
+  if (accountFlags.color === "red") {
+    return {
+      verdict: "LIKELY_BANNED",
+      reason: "Manually marked banned",
+      lastPostAt,
+      recentPosts: [],
+      baselineViews: null,
+    };
+  }
+
   // NOT_POSTING — nothing published recently (or ever).
   if (!lastPostAt) {
     return { verdict: "NOT_POSTING", reason: "No published posts", lastPostAt: null, recentPosts: [], baselineViews: null };
@@ -241,6 +266,8 @@ async function executeHealthScan(scanId: string, t: HealthThresholds): Promise<v
         tiktokUsername: true,
         driveFolderName: true,
         sectionId: true,
+        sweepNotFoundStreak: true,
+        color: true,
         section: { select: { name: true } },
       },
     });
@@ -291,6 +318,7 @@ async function executeHealthScan(scanId: string, t: HealthThresholds): Promise<v
 
     // e. Compute verdicts and write entries.
     const counts: Record<HealthVerdict, number> = {
+      LIKELY_BANNED: 0,
       HEALTHY: 0,
       SUSPECT: 0,
       SHADOWBANNED: 0,
@@ -315,7 +343,8 @@ async function executeHealthScan(scanId: string, t: HealthThresholds): Promise<v
         lastPostMap.get(account.id) ?? null,
         videosByAccount.get(account.id) ?? [],
         t,
-        now
+        now,
+        { sweepNotFoundStreak: account.sweepNotFoundStreak, color: account.color }
       );
       counts[result.verdict]++;
       const carry = carryMap.get(account.id);
@@ -415,7 +444,7 @@ export async function getHealthScanStatusFor(userId: string): Promise<HealthScan
 }
 
 function zeroCounts(): Record<HealthVerdict, number> {
-  return { HEALTHY: 0, SUSPECT: 0, SHADOWBANNED: 0, NOT_POSTING: 0, NO_DATA: 0 };
+  return { LIKELY_BANNED: 0, HEALTHY: 0, SUSPECT: 0, SHADOWBANNED: 0, NOT_POSTING: 0, NO_DATA: 0 };
 }
 
 export async function getLatestHealthScan(

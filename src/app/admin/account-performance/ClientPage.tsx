@@ -895,7 +895,7 @@ function CoverageSection({
 const HEALTH_API = "/api/admin/account-performance/health-scan";
 const HEALTH_PAGE_SIZE = 50;
 
-type HealthScanVerdict = "HEALTHY" | "SUSPECT" | "SHADOWBANNED" | "NOT_POSTING" | "NO_DATA";
+type HealthScanVerdict = "LIKELY_BANNED" | "HEALTHY" | "SUSPECT" | "SHADOWBANNED" | "NOT_POSTING" | "NO_DATA";
 
 type HealthScanThresholds = {
   viewFloor: number;
@@ -966,6 +966,7 @@ type HealthScanAssignee = { id: string; name: string | null; email: string };
 type HealthScanNotice = { kind: "ok" | "warn" | "err"; text: string } | null;
 
 const HEALTH_VERDICTS: { key: HealthScanVerdict; label: string; badge: string }[] = [
+  { key: "LIKELY_BANNED", label: "Banned", badge: "border-red-500/40 bg-red-500/15 text-red-400" },
   { key: "HEALTHY", label: "Healthy", badge: "border-green-500/30 bg-green-500/10 text-green-400" },
   { key: "SUSPECT", label: "Suspect", badge: "border-amber-500/30 bg-amber-500/10 text-amber-400" },
   { key: "SHADOWBANNED", label: "Shadowbanned", badge: "border-red-500/30 bg-red-500/10 text-red-400" },
@@ -983,7 +984,7 @@ const REPLACEMENT_BADGE: Record<HealthScanEntry["replacementStatus"], string> = 
 function HealthScanSection() {
   // Filter chips; empty set = show all. Defaults to the actionable verdicts.
   const [verdicts, setVerdicts] = useState<Set<HealthScanVerdict>>(
-    () => new Set<HealthScanVerdict>(["SHADOWBANNED", "SUSPECT", "NOT_POSTING"])
+    () => new Set<HealthScanVerdict>(["LIKELY_BANNED", "SHADOWBANNED", "SUSPECT", "NOT_POSTING"])
   );
   const [page, setPage] = useState(1);
   const verdictKey = [...verdicts].sort().join(",");

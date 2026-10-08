@@ -460,11 +460,32 @@ export async function runDailyAccountSweep(
       console.error(
         `[Sweep] Latest-videos fetch failed for @${account.tiktokUsername} (transient): ${err?.message || err}`
       );
+      // Ban detection: a not_found profile (banned/deleted on TikTok) builds a
+      // streak across consecutive sweeps; transient errors are recorded but
+      // don't move the streak. The health scan reads this as LIKELY_BANNED.
+      const isNotFound = err instanceof ProviderError && err.kind === "not_found";
+      await prisma.managedAccount
+        .update({
+          where: { id: account.id },
+          data: {
+            lastSweepError: (err?.message || String(err)).slice(0, 300),
+            ...(isNotFound ? { sweepNotFoundStreak: { increment: 1 } } : {}),
+          },
+        })
+        .catch(() => {});
       if (accounts[accounts.length - 1] !== account) await sleep(SLEEP_MS);
       continue;
     }
     accountsSwept++;
     const refreshedBefore = refreshed;
+
+    // Successful fetch — clear any ban-detection streak/error for this account.
+    await prisma.managedAccount
+      .update({
+        where: { id: account.id },
+        data: { sweepNotFoundStreak: 0, lastSweepError: null, lastSweepOkAt: now },
+      })
+      .catch(() => {});
 
     // Videos already attributed to ANY TrackedVideo row are untouchable for
     // matching — but they DO get a free stats refresh from this payload

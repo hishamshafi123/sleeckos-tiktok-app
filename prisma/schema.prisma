@@ -331,6 +331,13 @@ model ManagedAccount {
   lastCheckedAt         DateTime?
   lastError             String?
 
+  // Sweep ban detection: consecutive daily sweeps where the profile fetch
+  // failed with not_found (profile gone = banned/deleted). Reset on any
+  // successful fetch. Powers the LIKELY_BANNED health-scan verdict.
+  sweepNotFoundStreak   Int          @default(0)
+  lastSweepError        String?
+  lastSweepOkAt         DateTime?
+
   connectedAt           DateTime     @default(now())
   revokedAt             DateTime?
   createdAt             DateTime     @default(now())
