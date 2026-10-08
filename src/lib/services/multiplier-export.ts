@@ -524,57 +524,99 @@ async function finalizeDrainedJobs() {
   }
 }
 
+// Uploads are network-bound and stream from/to disk, so a small pool of
+// workers is RAM-safe on the 2GB container. All video data flows through
+// streams (fs.createReadStream / downloadFromR2 pipe) — nothing is buffered.
+const EXPORT_WORKER_CONCURRENCY = 4;
+
+const assignmentClaimInclude = {
+  video: {
+    include: {
+      hook: { select: { text: true } },
+      group: {
+        include: {
+          campaign: {
+            select: { title: true, name: true }
+          }
+        }
+      }
+    },
+  },
+  job: true,
+} as const;
+
+/**
+ * Atomically claim the next pending assignment.
+ * Returns the claimed assignment, "lost" when another worker won the race
+ * (caller retries immediately), or null when the queue is empty.
+ * The claim is a conditional updateMany — two workers may read the same
+ * candidate id, but only one transition pending → uploading succeeds.
+ */
+async function claimNextAssignment() {
+  const candidate = await prisma.smartExportAssignment.findFirst({
+    where: { status: "pending" },
+    orderBy: { id: "asc" },
+    select: { id: true },
+  });
+  if (!candidate) return null;
+
+  const claim = await prisma.smartExportAssignment.updateMany({
+    where: { id: candidate.id, status: "pending" },
+    data: { status: "uploading" },
+  });
+  if (claim.count === 0) return "lost";
+
+  const assignment = await prisma.smartExportAssignment.findUnique({
+    where: { id: candidate.id },
+    include: assignmentClaimInclude,
+  });
+  // Row vanished between claim and fetch (e.g. cascade delete) — treat as lost.
+  if (!assignment) return "lost";
+
+  // Update parent job status to uploading if it was pending
+  if (assignment.job.status === "pending") {
+    await prisma.smartExportJob.update({
+      where: { id: assignment.jobId },
+      data: { status: "uploading" },
+    });
+  }
+
+  return assignment;
+}
+
 async function processExportQueue() {
-  console.log("[Smart Export Worker] Starting processing queue...");
+  console.log(`[Smart Export Worker] Starting processing queue with ${EXPORT_WORKER_CONCURRENCY} workers...`);
 
+  await Promise.all(
+    Array.from({ length: EXPORT_WORKER_CONCURRENCY }, (_, i) => workerLoop(i))
+  );
 
+  // Queue drained — finalize any job whose status flip was lost to a crash.
+  await finalizeDrainedJobs().catch((err) => {
+    console.error("[Smart Export Worker] Drained-job finalization failed:", err);
+  });
+}
+
+async function workerLoop(workerIndex: number) {
   while (true) {
-    // Fetch + claim the next pending assignment. A throw here is almost
-    // certainly the DB itself — stop the worker (the cron/boot resume
-    // re-triggers it) instead of hot-looping on the same row.
+    // Claim the next pending assignment. A throw here is almost
+    // certainly the DB itself — stop this worker (the cron/boot resume
+    // re-triggers the pool) instead of hot-looping on the same row.
     let assignment;
     try {
-      assignment = await prisma.smartExportAssignment.findFirst({
-        where: { status: "pending" },
-        include: {
-          video: {
-            include: {
-              hook: { select: { text: true } },
-              group: {
-                include: {
-                  campaign: {
-                    select: { title: true, name: true }
-                  }
-                }
-              }
-            },
-          },
-          job: true,
-        },
-        orderBy: { id: "asc" },
-      });
-
-      if (!assignment) {
-        console.log("[Smart Export Worker] Queue empty. Going to sleep.");
+      const claimed = await claimNextAssignment();
+      if (claimed === null) {
+        console.log(`[Smart Export Worker ${workerIndex}] Queue empty. Going to sleep.`);
         break;
       }
-
-      // Set to uploading
-      await prisma.smartExportAssignment.update({
-        where: { id: assignment.id },
-        data: { status: "uploading" },
-      });
-
-      // Update parent job status to uploading if it was pending
-      if (assignment.job.status === "pending") {
-        await prisma.smartExportJob.update({
-          where: { id: assignment.jobId },
-          data: { status: "uploading" },
-        });
+      if (claimed === "lost") {
+        // Another worker claimed it first — retry immediately, no sleep.
+        continue;
       }
+      assignment = claimed;
     } catch (err) {
       console.error(
-        "[Smart Export Worker] Queue fetch/claim failed — stopping worker (cron resume will retrigger):",
+        `[Smart Export Worker ${workerIndex}] Queue fetch/claim failed — stopping worker (cron resume will retrigger):`,
         err
       );
       break;
@@ -726,11 +768,6 @@ async function processExportQueue() {
     // Rate limiting: 2s pause
     await new Promise((resolve) => setTimeout(resolve, 2000));
   }
-
-  // Queue drained — finalize any job whose status flip was lost to a crash.
-  await finalizeDrainedJobs().catch((err) => {
-    console.error("[Smart Export Worker] Drained-job finalization failed:", err);
-  });
 }
 
 async function updateParentJobStatus(jobId: string) {
@@ -929,4 +966,77 @@ export async function searchAccounts(input: { q: string; mode?: "drive" | "accou
       ? { id: f.mappedAccount.id, tiktokUsername: f.mappedAccount.tiktokUsername }
       : null,
   }));
+}
+
+
+/**
+ * Smart-select for the Smart Export account picker.
+ * Returns ManagedAccount ids that pass every gate:
+ *  - base: isActive + driveConnected + driveFolderId + postpeerAccountId (optionally section-scoped)
+ *  - not banned: sweepNotFoundStreak < 2 and color != 'red'
+ *  - recently published: >=1 PostJob in a terminal-published state with publishedAt within postedWithinDays
+ *  - not dead-reach: >=1 captured TrackedVideo published within zeroViewDays with views > 0
+ * `considered` = accounts passing the base gates before the post/view/ban filters.
+ */
+export async function getSmartSelectAccounts(opts: {
+  sectionIds?: string[];
+  postedWithinDays?: number;
+  zeroViewDays?: number;
+}) {
+  const postedWithinDays = Math.max(1, Math.floor(opts.postedWithinDays ?? 10) || 10);
+  const zeroViewDays = Math.max(1, Math.floor(opts.zeroViewDays ?? 4) || 4);
+  const now = Date.now();
+  const postedSince = new Date(now - postedWithinDays * 24 * 60 * 60 * 1000);
+  const viewsSince = new Date(now - zeroViewDays * 24 * 60 * 60 * 1000);
+
+  const sectionIds = (opts.sectionIds || []).filter(Boolean);
+
+  // Base gates
+  const accounts = await prisma.managedAccount.findMany({
+    where: {
+      isActive: true,
+      driveConnected: true,
+      driveFolderId: { not: null },
+      postpeerAccountId: { not: null },
+      ...(sectionIds.length > 0 ? { sectionId: { in: sectionIds } } : {}),
+    },
+    select: { id: true, sectionId: true, sweepNotFoundStreak: true, color: true },
+  });
+
+  const considered = accounts.length;
+  if (considered === 0) return { accountIds: [] as string[], matched: 0, considered };
+
+  // Banned accounts are excluded before the post/view lookups
+  const eligibleIds = accounts
+    .filter((a) => a.sweepNotFoundStreak < 2 && (a.color || "").toLowerCase() !== "red")
+    .map((a) => a.id);
+  if (eligibleIds.length === 0) return { accountIds: [] as string[], matched: 0, considered };
+
+  // Recent publishers: >=1 terminal-published PostJob within the window
+  const recentJobs = await prisma.postJob.groupBy({
+    by: ["accountId"],
+    where: {
+      accountId: { in: eligibleIds },
+      state: { in: ["PUBLISHED", "PENDING_DELETION", "DELETED"] },
+      publishedAt: { gte: postedSince },
+    },
+  });
+  const publisherIds = new Set(recentJobs.map((j) => j.accountId));
+
+  // Live reach: >=1 captured TrackedVideo in the window with views > 0
+  const recentVideos = await prisma.trackedVideo.findMany({
+    where: {
+      accountId: { in: eligibleIds },
+      status: "captured",
+      publishedAt: { gte: viewsSince },
+      views: { gt: BigInt(0) },
+    },
+    select: { accountId: true },
+    distinct: ["accountId"],
+  });
+  const liveReachIds = new Set(recentVideos.map((v) => v.accountId));
+
+  const accountIds = eligibleIds.filter((id) => publisherIds.has(id) && liveReachIds.has(id));
+
+  return { accountIds, matched: accountIds.length, considered };
 }

@@ -35,6 +35,7 @@ import {
   ChevronRight,
   Type,
   Copy,
+  Wand2,
 } from "lucide-react";
 
 const COLOR_MAP: Record<string, string> = {
@@ -320,6 +321,11 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
   const [exportPasteInput, setExportPasteInput] = useState("");
   const [exportPasteLoading, setExportPasteLoading] = useState(false);
   const [exportPasteResult, setExportPasteResult] = useState<{ selected: number; notFound: string[]; skippedRed: string[] } | null>(null);
+  // Smart Export selector: smart-select ("active & posting") + section filter chips
+  const [smartSelectLoading, setSmartSelectLoading] = useState(false);
+  const [exportSections, setExportSections] = useState<{ id: string; name: string; slug: string; color: string }[]>([]);
+  const [exportSectionFilter, setExportSectionFilter] = useState<string[]>([]);
+  const [exportAccountSections, setExportAccountSections] = useState<Record<string, string>>({}); // accountId → section name
 
   // Bulk intake state
   const [bulkCampaignId, setBulkCampaignId] = useState("");
@@ -541,8 +547,20 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
   const exportDisplayName = (f: { name: string; mappedAccount?: { tiktokUsername: string } | null }) =>
     f.mappedAccount && f.name === f.mappedAccount.tiktokUsername ? `@${f.name}` : f.name;
 
+  // Visible results after section-chip filtering (client-side, by account → section name map)
+  const getSectionFilteredExportResults = (rows: typeof searchedExportFolders) => {
+    if (exportSectionFilter.length === 0) return rows;
+    return rows.filter((f) => {
+      if (!f.mappedAccount) return false;
+      const sectionName = exportAccountSections[f.mappedAccount.id];
+      const section = exportSections.find((s) => s.name === sectionName);
+      return !!section && exportSectionFilter.includes(section.id);
+    });
+  };
+
   // Visible results order (natural numeric sort) — used by drag/shift-range selection
-  const getSortedExportResults = () => [...searchedExportFolders].sort((a, b) => naturalCompare(a.name || "", b.name || ""));
+  const getSortedExportResults = () =>
+    getSectionFilteredExportResults([...searchedExportFolders]).sort((a, b) => naturalCompare(a.name || "", b.name || ""));
 
   const toggleExportFolder = (folder: (typeof searchedExportFolders)[number]) => {
     if (isRedExportResult(folder)) return;
@@ -759,6 +777,75 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
     } finally {
       setExportPasteLoading(false);
       setExportPasteInput("");
+    }
+  };
+
+  // Load sections + account→section map when the modal opens (smart-select chips).
+  // Both endpoints require the "accounts" tool; on 403 the chips simply stay hidden.
+  useEffect(() => {
+    if (!showSmartExport) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch("/api/managed/sections");
+        if (res.ok && !cancelled) {
+          const data = await res.json();
+          setExportSections(
+            (Array.isArray(data) ? data : []).map((s: any) => ({ id: s.id, name: s.name, slug: s.slug, color: s.color }))
+          );
+        }
+      } catch {}
+      try {
+        const res = await fetch("/api/managed/accounts/all");
+        if (res.ok && !cancelled) {
+          const data = await res.json();
+          const map: Record<string, string> = {};
+          for (const a of Array.isArray(data) ? data : []) {
+            if (a?.id && a?.section?.name) map[a.id] = a.section.name;
+          }
+          setExportAccountSections(map);
+        }
+      } catch {}
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [showSmartExport]);
+
+  // Smart-select: replace the selection with every active, Drive-connected,
+  // recently-posting account that is not banned and still gets views.
+  const handleSmartSelect = async () => {
+    if (smartSelectLoading) return;
+    setSmartSelectLoading(true);
+    try {
+      const params = new URLSearchParams();
+      if (exportSectionFilter.length > 0) params.set("sectionIds", exportSectionFilter.join(","));
+      const qs = params.toString();
+      const [selectRes, accountsRes] = await Promise.all([
+        fetch(`/api/multiplier/export/smart-select${qs ? `?${qs}` : ""}`),
+        // Empty q matches all Drive-connected accounts — resolves account ids to folder rows
+        fetch("/api/accounts/search?q=&mode=account"),
+      ]);
+      const selectData = await selectRes.json();
+      if (!selectRes.ok) throw new Error(selectData.error || "Smart select failed");
+      const accountIds: string[] = selectData.accountIds || [];
+      const wanted = new Set(accountIds);
+      const accountsData = accountsRes.ok ? await accountsRes.json() : { results: [] };
+      const picked = ((accountsData.results || []) as AccountSearchRow[])
+        .filter((r) => r.account && wanted.has(r.account.id))
+        .map((r) => mapAccountSearchResult(r, "account"))
+        .filter((r) => !isRedExportResult(r))
+        .map((r) => ({ ...r, count: prefillExportCount(r.defaultPostCount) }));
+      setSelectedExportFolders(picked);
+      toast.success(`Selected ${picked.length} active accounts`);
+      const missing = accountIds.length - picked.length;
+      if (missing > 0) {
+        toast.warning(`${missing} matched account${missing === 1 ? "" : "s"} not in the loaded account list`);
+      }
+    } catch (err: any) {
+      toast.error(err.message || "Smart select failed");
+    } finally {
+      setSmartSelectLoading(false);
     }
   };
 
@@ -5170,7 +5257,7 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
         const cannotExport = overAllocated || (exportPreview && exportPreview.unfulfillable.length > 0) || selectedExportFolders.length === 0;
 
         const sortedSelected = [...selectedExportFolders].sort((a, b) => naturalCompare(a.name || "", b.name || ""));
-        const sortedResults = [...searchedExportFolders].sort((a, b) => naturalCompare(a.name || "", b.name || ""));
+        const sortedResults = getSortedExportResults();
 
         return (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-sm">
@@ -5247,6 +5334,56 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
                       </label>
                     )}
                   </div>
+
+                {/* Smart-select + section filter chips */}
+                <div className="flex items-center gap-1.5 flex-wrap flex-shrink-0">
+                  <button
+                    type="button"
+                    onClick={handleSmartSelect}
+                    disabled={smartSelectLoading}
+                    title="Select every active, Drive-connected account that posted recently and still gets views"
+                    className="px-2.5 py-1 bg-[#E11D48] hover:bg-[#be123c] disabled:opacity-50 disabled:cursor-not-allowed text-white text-[10px] font-bold rounded-md transition-colors cursor-pointer flex items-center gap-1 flex-shrink-0"
+                  >
+                    {smartSelectLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Wand2 className="w-3 h-3" />}
+                    Select active &amp; posting
+                  </button>
+                  {exportSections.length > 0 && (
+                    <>
+                      <span className="text-[10px] text-[#71717a] font-medium ml-1">Sections:</span>
+                      {exportSections.map((s) => {
+                        const active = exportSectionFilter.includes(s.id);
+                        return (
+                          <button
+                            key={s.id}
+                            type="button"
+                            onClick={() =>
+                              setExportSectionFilter((prev) =>
+                                active ? prev.filter((id) => id !== s.id) : [...prev, s.id]
+                              )
+                            }
+                            className={`px-2 py-1 rounded-md border text-[10px] font-semibold transition-colors cursor-pointer ${
+                              active
+                                ? "bg-[#E11D48]/15 border-[#E11D48] text-white"
+                                : "bg-[#09090b] border-[#27272a] text-[#a1a1aa] hover:text-white hover:border-[#3f3f46]"
+                            }`}
+                          >
+                            {s.name}
+                          </button>
+                        );
+                      })}
+                      {exportSectionFilter.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => setExportSectionFilter([])}
+                          className="text-[10px] text-[#71717a] hover:text-white transition-colors cursor-pointer px-1"
+                          title="Clear section filter"
+                        >
+                          Clear
+                        </button>
+                      )}
+                    </>
+                  )}
+                </div>
 
                 <div className="flex items-center gap-2 flex-shrink-0">
                   <div className="relative flex-1">
