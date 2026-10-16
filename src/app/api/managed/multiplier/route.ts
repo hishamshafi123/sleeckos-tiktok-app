@@ -8,8 +8,19 @@ import fs from "fs";
 import path from "path";
 import { deleteFromR2 } from "@/lib/services/storage";
 
-// GET /api/managed/multiplier — List all multiplier groups (slim; legacy batches live at /legacy-batches)
-export async function GET() {
+const GROUPS_PAGE_SIZE = 150;
+
+// Groups in an active state are always included in the list payload regardless
+// of age, so in-flight work never falls out of the window.
+const ACTIVE_GROUPS_FILTER = {
+  OR: [{ status: { in: ["QUEUED", "RENDERING"] } }, { transcriptStatus: "TRANSCRIBING" }],
+};
+
+// GET /api/managed/multiplier — List multiplier groups, windowed to the latest
+// 150 (+ active groups of any age). Pass ?before=<ISO createdAt> for the next
+// older page. X-Has-More header signals whether another page exists.
+// (Slim payload; legacy batches live at /legacy-batches)
+export async function GET(req: NextRequest) {
   const session = await getSession();
   if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -18,52 +29,92 @@ export async function GET() {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
+  const { searchParams } = new URL(req.url);
+  const beforeParam = searchParams.get("before");
+  let before: Date | null = null;
+  if (beforeParam !== null) {
+    before = new Date(beforeParam);
+    if (Number.isNaN(before.getTime())) {
+      return NextResponse.json({ error: "Invalid 'before' parameter — expected an ISO date" }, { status: 400 });
+    }
+  }
+
   try {
     console.log("[Multiplier GET] Querying groups...");
     // `transcript` (huge word-level JSON) and `customHooks` are excluded from the
     // list payload: transcripts are lazy-loaded via /groups/[id]/transcript, and
     // legacy batches live at /legacy-batches. The keys are kept with empty values
     // so the response shape stays backward-compatible.
-    const groups = await prisma.multiplierGroup.findMany({
-      orderBy: { createdAt: "desc" },
-      select: {
-        id: true,
-        name: true,
-        campaignId: true,
-        transcriptStatus: true,
-        caption: true,
-        styleId: true,
-        mappingMode: true,
-        settings: true,
-        status: true,
-        errorMessage: true,
-        createdBy: true,
-        createdAt: true,
-        updatedAt: true,
-        campaign: {
-          select: { id: true, title: true },
-        },
-        variations: {
-          orderBy: { order: "asc" },
-        },
-        hooks: {
-          orderBy: { order: "asc" },
-        },
-        outputs: {
-          orderBy: { createdAt: "asc" },
-          include: {
-            variation: { select: { videoRef: true } },
-            hook: { select: { text: true } },
-          },
+    const select = {
+      id: true,
+      name: true,
+      campaignId: true,
+      transcriptStatus: true,
+      caption: true,
+      styleId: true,
+      mappingMode: true,
+      settings: true,
+      status: true,
+      errorMessage: true,
+      createdBy: true,
+      createdAt: true,
+      updatedAt: true,
+      campaign: {
+        select: { id: true, title: true },
+      },
+      variations: {
+        orderBy: { order: "asc" },
+      },
+      hooks: {
+        orderBy: { order: "asc" },
+      },
+      outputs: {
+        orderBy: { createdAt: "asc" },
+        include: {
+          variation: { select: { videoRef: true } },
+          hook: { select: { text: true } },
         },
       },
-    });
-    console.log(`[Multiplier GET] Found ${groups.length} groups.`);
+    } as const;
+
+    let groups;
+    let hasMore: boolean;
+
+    if (before) {
+      // Older page: groups before the cursor (plus active ones, cheap safety —
+      // the client dedupes by id).
+      const rows = await prisma.multiplierGroup.findMany({
+        where: { OR: [{ createdAt: { lt: before } }, ACTIVE_GROUPS_FILTER] },
+        orderBy: { createdAt: "desc" },
+        take: GROUPS_PAGE_SIZE + 1,
+        select,
+      });
+      hasMore = rows.length > GROUPS_PAGE_SIZE;
+      groups = rows.slice(0, GROUPS_PAGE_SIZE);
+    } else {
+      // First window: latest 150, plus any active groups that fell outside it.
+      const rows = await prisma.multiplierGroup.findMany({
+        orderBy: { createdAt: "desc" },
+        take: GROUPS_PAGE_SIZE + 1,
+        select,
+      });
+      hasMore = rows.length > GROUPS_PAGE_SIZE;
+      const window = rows.slice(0, GROUPS_PAGE_SIZE);
+      const activeOutsideWindow = await prisma.multiplierGroup.findMany({
+        where: { AND: [ACTIVE_GROUPS_FILTER, { id: { notIn: window.map((g) => g.id) } }] },
+        orderBy: { createdAt: "desc" },
+        select,
+      });
+      groups = [...window, ...activeOutsideWindow].sort(
+        (a, b) => b.createdAt.getTime() - a.createdAt.getTime()
+      );
+    }
+    console.log(`[Multiplier GET] Found ${groups.length} groups (hasMore: ${hasMore}).`);
 
     const slimGroups = groups.map((g) => ({ ...g, transcript: null, customHooks: [] as string[] }));
 
     console.log(`[Multiplier GET] Successfully returning ${slimGroups.length} groups.`);
-    return NextResponse.json(slimGroups);
+    return NextResponse.json(slimGroups, { headers: { "X-Has-More": String(hasMore) } });
   } catch (err: any) {
     console.error("[Multiplier Group GET API] Error:", err);
     return NextResponse.json({ error: err.message || "Failed to fetch groups" }, { status: 500 });

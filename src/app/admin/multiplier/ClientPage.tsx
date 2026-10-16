@@ -210,6 +210,9 @@ export default function ClientPage({ session }: ClientPageProps = {}) {
   const [groups, setGroups] = useState<MultiplierGroup[]>([]);
   const [loadingCampaigns, setLoadingCampaigns] = useState(true);
   const [loadingGroups, setLoadingGroups] = useState(true);
+  const [hasMoreGroups, setHasMoreGroups] = useState(false);
+  const [loadingOlderGroups, setLoadingOlderGroups] = useState(false);
+  const [loadedOlderGroups, setLoadedOlderGroups] = useState(false);
 
   // Builder state
   const [selectedGroup, setSelectedGroup] = useState<MultiplierGroup | null>(null);
@@ -1199,6 +1202,7 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
         fetch("/api/managed/multiplier/legacy-batches"),
       ]);
       if (groupRes.ok) {
+        setHasMoreGroups(groupRes.headers.get("X-Has-More") === "true");
         const groupsData = await groupRes.json();
         const legacyData = legacyRes.ok ? await legacyRes.json() : [];
         const data = [...groupsData, ...legacyData].sort(
@@ -1207,8 +1211,20 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
         // Transcripts are lazy-loaded; preserve already-fetched ones across refreshes
         setGroups((prev) => {
           const prevTranscripts = new Map(prev.filter((g) => g.transcript != null).map((g) => [g.id, g.transcript]));
-          if (prevTranscripts.size === 0) return data;
-          return data.map((g: MultiplierGroup) =>
+          // Older groups pulled in via "Load older groups" fall outside the fresh
+          // window — re-append them so action-triggered refreshes don't drop them.
+          // Legacy batches (campaignId === "") are always fully loaded, so a
+          // missing one means it was deleted — never resurrect those.
+          const freshIds = new Set(data.map((g: any) => g.id));
+          const olderLoaded = prev.filter((g) => g.campaignId !== "" && !freshIds.has(g.id));
+          const merged =
+            olderLoaded.length > 0
+              ? [...data, ...olderLoaded].sort(
+                  (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+                )
+              : data;
+          if (prevTranscripts.size === 0) return merged;
+          return merged.map((g: MultiplierGroup) =>
             g.transcript == null && prevTranscripts.has(g.id) ? { ...g, transcript: prevTranscripts.get(g.id)! } : g
           );
         });
@@ -1229,6 +1245,39 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
       setLoadingGroups(false);
     }
     return null;
+  };
+
+  // Pull the next older page of groups (150 at a time) and append them to state.
+  const loadOlderGroups = async () => {
+    if (loadingOlderGroups || !hasMoreGroups) return;
+    // Legacy batches (campaignId === "") are always fully loaded — exclude them
+    // when locating the oldest loaded group.
+    const loaded = groups.filter((g) => g.campaignId !== "");
+    if (loaded.length === 0) return;
+    const oldest = loaded.reduce((min, g) =>
+      new Date(g.createdAt).getTime() < new Date(min.createdAt).getTime() ? g : min
+    );
+    setLoadingOlderGroups(true);
+    try {
+      const res = await fetch(`/api/managed/multiplier?before=${encodeURIComponent(oldest.createdAt)}`);
+      if (!res.ok) throw new Error("Failed to load older groups");
+      setHasMoreGroups(res.headers.get("X-Has-More") === "true");
+      const older: MultiplierGroup[] = await res.json();
+      setGroups((prev) => {
+        const known = new Set(prev.map((g) => g.id));
+        const fresh = older.filter((g) => !known.has(g.id));
+        if (fresh.length === 0) return prev;
+        return [...prev, ...fresh].sort(
+          (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+        );
+      });
+      setLoadedOlderGroups(true);
+    } catch (err) {
+      console.error("Error loading older groups:", err);
+      toast.error("Failed to load older groups");
+    } finally {
+      setLoadingOlderGroups(false);
+    }
   };
 
   // ── Bulk intake ───────────────────────────────────────────────────────────
@@ -3150,6 +3199,24 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
                           </div>
                         );
                       })}
+                      {hasMoreGroups && (
+                        <button
+                          onClick={loadOlderGroups}
+                          disabled={loadingOlderGroups}
+                          className="w-full py-2.5 bg-[#09090b] hover:bg-[#18181b] text-[#a1a1aa] hover:text-[#fafafa] border border-[#27272a] rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition-all disabled:opacity-50 cursor-pointer"
+                        >
+                          {loadingOlderGroups ? (
+                            <>
+                              <Loader2 className="w-3.5 h-3.5 animate-spin" /> Loading older groups...
+                            </>
+                          ) : (
+                            "Load older groups"
+                          )}
+                        </button>
+                      )}
+                      {!hasMoreGroups && loadedOlderGroups && (
+                        <p className="text-center text-[10px] text-[#52525b] py-2">All groups loaded</p>
+                      )}
                     </div>
                   )}
                 </>
