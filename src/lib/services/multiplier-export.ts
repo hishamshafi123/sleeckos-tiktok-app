@@ -1061,17 +1061,27 @@ export interface ExportWarmupAccount {
   eligible: boolean;
   blockedReason: "warmup" | "test_post_failed" | "never_posted" | "banned" | "not_connected" | null;
   firstPostAt: string | null;
+  lastPostAt: string | null;
   publishedCount: number;
   failedCount: number;
+  /** Graduated = we've selected this account in an export and fed videos into its
+   *  Drive (AccountFeedEvent). Graduated accounts leave the warm-up list and are
+   *  managed as normal accounts. Age alone does NOT graduate an account. */
+  graduated: boolean;
+  /** First time we fed videos into this account's Drive (null if never). */
+  firstFedAt: string | null;
 }
 
 /**
  * Warm-up status for newly created ManagedAccounts in the export pipeline.
  * Accounts within the age window (default: 0..14 days) are listed with a status
  * derived from ManagedAccount.createdAt + PostJob history (no schema state):
- *  - "verified": has >=1 terminal-published PostJob (test post landed). Eligible
- *    for smart-select only once older than EXPORT_WARMUP_MIN_AGE_DAYS and passing
- *    the base export gates (connected, not banned).
+ *  - "verified": has >=1 terminal-published PostJob (test post landed). Selectable
+ *    ("ready") once older than EXPORT_WARMUP_MIN_AGE_DAYS, passing the base export
+ *    gates (connected, not banned) AND not yet graduated. Graduation is NOT
+ *    age-based: an account graduates only once an export feeds videos into its
+ *    Drive (AccountFeedEvent), after which it leaves this list and is managed as
+ *    a normal account.
  *  - "failed":   no publish yet but >=1 terminally FAILED PostJob — flag for review.
  *  - "stalled":  3+ days old, never attempted a post.
  *  - "test_due": 2-3 days old, no posts yet — the day-2 test post should happen now.
@@ -1081,6 +1091,9 @@ export async function getExportWarmupAccounts(opts: {
   sectionIds?: string[];
   minAgeDays?: number;
   maxAgeDays?: number;
+  /** Include graduated accounts (3+ days old AND posting) in the list. Default false —
+   *  the warm-up tab is only for accounts still warming up or not posting yet. */
+  includeGraduated?: boolean;
 }) {
   const minAgeDays = Math.max(0, Math.floor(opts.minAgeDays ?? 0) || 0);
   const maxAgeDays = Math.min(60, Math.max(1, Math.floor(opts.maxAgeDays ?? 14) || 14));
@@ -1112,7 +1125,7 @@ export async function getExportWarmupAccounts(opts: {
   });
 
   const accountIds = accounts.map((a) => a.id);
-  const [publishedJobs, failedJobs] = accountIds.length > 0
+  const [publishedJobs, failedJobs, feedEvents] = accountIds.length > 0
     ? await Promise.all([
         prisma.postJob.groupBy({
           by: ["accountId"],
@@ -1122,19 +1135,34 @@ export async function getExportWarmupAccounts(opts: {
           },
           _count: { _all: true },
           _min: { publishedAt: true },
+          _max: { publishedAt: true },
         }),
         prisma.postJob.groupBy({
           by: ["accountId"],
           where: { accountId: { in: accountIds }, state: "FAILED" },
           _count: { _all: true },
         }),
+        // Graduation signal: we selected this account in an export and fed
+        // videos into its Drive at least once.
+        prisma.accountFeedEvent.groupBy({
+          by: ["accountId"],
+          where: { accountId: { in: accountIds } },
+          _count: { _all: true },
+          _min: { createdAt: true },
+        }),
       ])
-    : [[], []];
+    : [[], [], []];
 
   const publishedByAccount = new Map(
-    publishedJobs.map((j) => [j.accountId, { count: j._count._all, firstPostAt: j._min.publishedAt }]),
+    publishedJobs.map((j) => [
+      j.accountId,
+      { count: j._count._all, firstPostAt: j._min.publishedAt, lastPostAt: j._max.publishedAt },
+    ]),
   );
   const failedByAccount = new Map(failedJobs.map((j) => [j.accountId, j._count._all]));
+  const fedByAccount = new Map(
+    feedEvents.map((e) => [e.accountId, { count: e._count._all, firstFedAt: e._min.createdAt }]),
+  );
 
   const warmupMs = EXPORT_WARMUP_MIN_AGE_DAYS * 24 * 60 * 60 * 1000;
 
@@ -1144,6 +1172,8 @@ export async function getExportWarmupAccounts(opts: {
     const published = publishedByAccount.get(a.id);
     const publishedCount = published?.count ?? 0;
     const failedCount = failedByAccount.get(a.id) ?? 0;
+    const fed = fedByAccount.get(a.id);
+    const graduated = (fed?.count ?? 0) >= 1;
 
     let status: ExportWarmupStatus;
     let eligible = false;
@@ -1159,6 +1189,9 @@ export async function getExportWarmupAccounts(opts: {
         blockedReason = "not_connected";
       } else if (ageMs < warmupMs) {
         blockedReason = "warmup";
+      } else if (graduated) {
+        // Already fed by an export — a normal account now, not selectable here.
+        blockedReason = null;
       } else {
         eligible = true;
       }
@@ -1189,8 +1222,11 @@ export async function getExportWarmupAccounts(opts: {
       eligible,
       blockedReason,
       firstPostAt: published?.firstPostAt ? published.firstPostAt.toISOString() : null,
+      lastPostAt: published?.lastPostAt ? published.lastPostAt.toISOString() : null,
       publishedCount,
       failedCount,
+      graduated,
+      firstFedAt: fed?.firstFedAt ? fed.firstFedAt.toISOString() : null,
     };
   });
 
@@ -1201,11 +1237,17 @@ export async function getExportWarmupAccounts(opts: {
     failed: 0,
     stalled: 0,
     eligible: 0,
+    graduated: 0,
   };
   for (const a of result) {
     counts[a.status] += 1;
     if (a.eligible) counts.eligible += 1;
+    if (a.graduated) counts.graduated += 1;
   }
 
-  return { warmupMinAgeDays: EXPORT_WARMUP_MIN_AGE_DAYS, accounts: result, counts };
+  // Graduated accounts (already fed videos via an export) are normal accounts now —
+  // they leave the warm-up list unless explicitly requested.
+  const visible = opts.includeGraduated ? result : result.filter((a) => !a.graduated);
+
+  return { warmupMinAgeDays: EXPORT_WARMUP_MIN_AGE_DAYS, accounts: visible, counts };
 }

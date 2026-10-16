@@ -29,6 +29,7 @@ export async function GET(req: NextRequest) {
       sectionIds,
       minAgeDays: minAgeDaysParam ? Math.max(0, parseInt(minAgeDaysParam, 10) || 0) : undefined,
       maxAgeDays: maxAgeDaysParam ? Math.min(60, Math.max(1, parseInt(maxAgeDaysParam, 10) || 14)) : undefined,
+      includeGraduated: sp.get("includeGraduated") === "true",
     });
     return NextResponse.json(result);
   } catch (err: any) {

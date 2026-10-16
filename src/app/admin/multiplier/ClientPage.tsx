@@ -144,8 +144,11 @@ type WarmupAccount = {
   eligible: boolean;
   blockedReason: "warmup" | "test_post_failed" | "never_posted" | "banned" | "not_connected" | null;
   firstPostAt: string | null;
+  lastPostAt: string | null;
   publishedCount: number;
   failedCount: number;
+  graduated: boolean;
+  firstFedAt: string | null;
 };
 
 const WARMUP_AGE_FILTERS: { key: string; label: string; min: number; max: number }[] = [
@@ -372,11 +375,12 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
   const [smartExportTab, setSmartExportTab] = useState<"accounts" | "warmup">("accounts");
   // Warm-up tab: accounts still inside the 3-day warm-up gate (from /api/multiplier/export/warmup-accounts)
   const [warmupAccounts, setWarmupAccounts] = useState<WarmupAccount[]>([]);
-  const [warmupCounts, setWarmupCounts] = useState<{ warming: number; test_due: number; verified: number; failed: number; stalled: number; eligible: number } | null>(null);
+  const [warmupCounts, setWarmupCounts] = useState<{ warming: number; test_due: number; verified: number; failed: number; stalled: number; eligible: number; graduated: number } | null>(null);
   const [warmupLoading, setWarmupLoading] = useState(false);
   const [warmupLoaded, setWarmupLoaded] = useState(false);
   const [warmupError, setWarmupError] = useState<string | null>(null);
   const [warmupAgeFilter, setWarmupAgeFilter] = useState<string>("all");
+  const [warmupShowGraduated, setWarmupShowGraduated] = useState(false);
   const [warmupRefreshNonce, setWarmupRefreshNonce] = useState(0);
   const warmupSeqRef = useRef(0);
 
@@ -914,6 +918,7 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
       const preset = WARMUP_AGE_FILTERS.find((f) => f.key === warmupAgeFilter) || WARMUP_AGE_FILTERS[0];
       params.set("minAgeDays", String(preset.min));
       params.set("maxAgeDays", String(preset.max));
+      if (warmupShowGraduated) params.set("includeGraduated", "true");
       const res = await fetch(`/api/multiplier/export/warmup-accounts?${params.toString()}`);
       const data = await res.json();
       if (seq !== warmupSeqRef.current) return;
@@ -940,7 +945,7 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
       await fetchWarmupAccounts();
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [showSmartExport, smartExportTab, exportSectionFilter, warmupAgeFilter, warmupRefreshNonce]);
+  }, [showSmartExport, smartExportTab, exportSectionFilter, warmupAgeFilter, warmupRefreshNonce, warmupShowGraduated]);
 
   // Map a warm-up account into the same element shape search results use, so the
   // Selected Accounts pane, per-account counts and preview/run payloads work unchanged.
@@ -960,11 +965,12 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
     );
   };
 
-  // Additive bulk select: dedupes by driveFolderId against the existing selection.
-  const handleWarmupBulkSelect = (verifiedOnly: boolean) => {
+  // Additive bulk select of ready accounts: dedupes by driveFolderId against the
+  // existing selection. Once the export feeds them, they graduate out of this tab.
+  const handleWarmupBulkSelect = () => {
     const have = new Set(selectedExportFolders.map((f) => f.id));
     const fresh = warmupAccounts
-      .filter((a) => a.eligible && (!verifiedOnly || a.status === "verified") && !have.has(a.driveFolderId))
+      .filter((a) => a.eligible && !have.has(a.driveFolderId))
       .map((a) => ({ ...mapWarmupAccountToFolder(a), count: prefillExportCount(1) }));
     if (fresh.length > 0) {
       setSelectedExportFolders((prev) => {
@@ -5481,7 +5487,7 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
                   </div>
                   {smartExportTab === "warmup" && (
                     <span className="text-[10px] text-[#71717a] leading-snug">
-                      New accounts under the 3-day warm-up gate — verified &amp; eligible ones can be added to the selection.
+                      New accounts warming up. Select the ready ones — once an export feeds videos into their Drive they graduate and become normal accounts in the Accounts tab.
                     </span>
                   )}
                 </div>
@@ -5708,8 +5714,22 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
                       {warmupCounts.test_due > 0 && <>{" · "}<span className="text-amber-300">{warmupCounts.test_due} test due</span></>}
                       {warmupCounts.failed > 0 && <>{" · "}<span className="text-red-400">{warmupCounts.failed} failed</span></>}
                       {warmupCounts.stalled > 0 && <>{" · "}<span className="text-red-400">{warmupCounts.stalled} stalled</span></>}
-                      {" · "}<span className="text-[#fafafa]">{warmupCounts.eligible} eligible</span>
+                      {" · "}<span className="text-[#fafafa]">{warmupCounts.eligible} ready</span>
                     </span>
+                  )}
+                  {warmupCounts != null && warmupCounts.graduated > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setWarmupShowGraduated((v) => !v)}
+                      title="Accounts already fed by an export — they are normal accounts now (Accounts tab). Toggle to see them here."
+                      className={`px-2 py-1 rounded-md border text-[10px] font-semibold transition-colors cursor-pointer ${
+                        warmupShowGraduated
+                          ? "bg-emerald-500/15 border-emerald-500 text-white"
+                          : "bg-[#09090b] border-[#27272a] text-[#a1a1aa] hover:text-white hover:border-[#3f3f46]"
+                      }`}
+                    >
+                      Graduated ({warmupCounts.graduated})
+                    </button>
                   )}
                   <button
                     type="button"
@@ -5741,27 +5761,18 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
                   })}
                 </div>
 
-                {/* Bulk actions: add eligible warm-up accounts to the export selection */}
+                {/* Bulk actions: add ready warm-up accounts to the export selection.
+                    Once the export feeds their Drive they graduate out of this tab. */}
                 <div className="flex items-center gap-1.5 flex-wrap flex-shrink-0">
                   <button
                     type="button"
-                    onClick={() => handleWarmupBulkSelect(false)}
+                    onClick={() => handleWarmupBulkSelect()}
                     disabled={warmupLoading || warmupAccounts.every((a) => !a.eligible)}
-                    title="Add every eligible account to the export selection"
+                    title="Add every ready account (3+ days old, test post verified, not yet fed) to the export selection"
                     className="px-2.5 py-1 bg-[#E11D48] hover:bg-[#be123c] disabled:opacity-50 disabled:cursor-not-allowed text-white text-[10px] font-bold rounded-md transition-colors cursor-pointer flex items-center gap-1 flex-shrink-0"
                   >
                     <CheckSquare className="w-3 h-3" />
-                    Select all eligible ({warmupAccounts.filter((a) => a.eligible).length})
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleWarmupBulkSelect(true)}
-                    disabled={warmupLoading || !warmupAccounts.some((a) => a.eligible && a.status === "verified")}
-                    title="Add only eligible verified accounts (have a published post) to the export selection"
-                    className="px-2.5 py-1 bg-[#27272a] hover:bg-[#3f3f46] disabled:opacity-50 disabled:cursor-not-allowed text-white text-[10px] font-bold rounded-md transition-colors cursor-pointer flex items-center gap-1 flex-shrink-0"
-                  >
-                    <CheckCircle2 className="w-3 h-3" />
-                    Select verified only
+                    Select all ready ({warmupAccounts.filter((a) => a.eligible).length})
                   </button>
                 </div>
 
@@ -5810,20 +5821,32 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
                                 className="rounded border-[#27272a] bg-[#09090b] text-blue-600 focus:ring-blue-600/30 w-3.5 h-3.5 cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed flex-shrink-0"
                               />
                               <span className="truncate flex-1 min-w-0 text-[#e4e4e7]" title={a.name}>@{a.name}</span>
+                              {a.graduated && (
+                                <span
+                                  className="px-1.5 py-0.5 rounded border text-[9px] font-bold uppercase tracking-wide flex-shrink-0 bg-emerald-500/15 border-emerald-500/40 text-emerald-300"
+                                  title={a.firstFedAt ? `Fed by an export on ${new Date(a.firstFedAt).toLocaleString()} — this is a normal account now` : "Fed by an export — normal account"}
+                                >
+                                  Fed
+                                </span>
+                              )}
                               <span
                                 className={`px-1.5 py-0.5 rounded border text-[9px] font-bold uppercase tracking-wide flex-shrink-0 ${meta.chipClass}`}
                                 title={hint}
                               >
-                                {meta.label}
+                                {a.eligible ? "Ready" : meta.label}
                               </span>
                               {!a.eligible && a.blockedReason && (
                                 <span className="text-[9px] text-red-300/80 flex-shrink-0 hidden xl:inline" title={hint}>
                                   {WARMUP_BLOCKED_REASONS[a.blockedReason] || a.blockedReason}
                                 </span>
                               )}
-                              {a.status === "verified" && a.firstPostAt && (
-                                <span className="text-[9px] text-[#71717a] font-mono flex-shrink-0 hidden md:inline" title="First published post">
-                                  1st post {new Date(a.firstPostAt).toLocaleDateString(undefined, { month: "short", day: "numeric" })}
+                              {a.publishedCount > 0 && (
+                                <span
+                                  className="text-[9px] text-[#71717a] font-mono flex-shrink-0 hidden md:inline"
+                                  title={`${a.publishedCount} post${a.publishedCount === 1 ? "" : "s"} published${a.lastPostAt ? ` · last on ${new Date(a.lastPostAt).toLocaleString()}` : ""}`}
+                                >
+                                  {a.publishedCount} post{a.publishedCount === 1 ? "" : "s"}
+                                  {a.lastPostAt && <> · last {new Date(a.lastPostAt).toLocaleDateString(undefined, { month: "short", day: "numeric" })}</>}
                                 </span>
                               )}
                               <span className="text-[9px] text-[#a1a1aa] font-mono flex-shrink-0" title={`Created ${new Date(a.createdAt).toLocaleString()}`}>
