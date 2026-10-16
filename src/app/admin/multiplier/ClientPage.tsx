@@ -123,6 +123,27 @@ interface BulkBatchJob {
   items: BulkBatchItem[];
 }
 
+// Shape returned by GET /api/managed/multiplier/status (lightweight render poll)
+interface MultiplierStatusOutput {
+  id: string;
+  variationId?: string;
+  hookId?: string;
+  status: MultiplierOutput["status"];
+  errorMessage?: string | null;
+}
+
+interface MultiplierStatusGroup {
+  id: string;
+  status: MultiplierGroup["status"];
+  transcriptStatus?: MultiplierGroup["transcriptStatus"];
+  errorMessage?: string | null;
+  updatedAt: string;
+  outputs: MultiplierStatusOutput[];
+}
+
+const isGroupActive = (g: { status: string; transcriptStatus: string }) =>
+  g.status === "QUEUED" || g.status === "RENDERING" || g.transcriptStatus === "TRANSCRIBING";
+
 interface ClientPageProps {
   session?: {
     userId: string;
@@ -284,6 +305,27 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
       setCustomPrompt((prev) => prev.replace(/Generate exactly \d+/i, `Generate exactly ${aiHookCount}`));
     }
   }, [selectedGroup?.id, selectedGroup?.transcript, campaigns, aiHookCount, hasManuallyEditedPrompt]);
+
+  // Transcripts are excluded from the list payload — lazy-load the selected
+  // group's transcript on demand and merge it into groups + selectedGroup.
+  useEffect(() => {
+    if (!selectedGroup || selectedGroup.transcript != null) return;
+    if (selectedGroup.transcriptStatus !== "TRANSCRIBED") return;
+    if (!selectedGroup.campaignId) return; // legacy batches have no transcript
+    const groupId = selectedGroup.id;
+    let cancelled = false;
+    fetch(`/api/managed/multiplier/groups/${groupId}/transcript`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (cancelled || !data) return;
+        setGroups((prev) => prev.map((g) => (g.id === groupId ? { ...g, transcript: data.transcript } : g)));
+        setSelectedGroup((prev) => (prev && prev.id === groupId ? { ...prev, transcript: data.transcript } : prev));
+      })
+      .catch((err) => console.error("Transcript fetch failed:", err));
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedGroup?.id, selectedGroup?.transcript, selectedGroup?.transcriptStatus, selectedGroup?.campaignId]);
 
   // File Drag-Drop Ref
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -1152,15 +1194,32 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
     }
 
     try {
-      const groupRes = await fetch("/api/managed/multiplier");
+      const [groupRes, legacyRes] = await Promise.all([
+        fetch("/api/managed/multiplier"),
+        fetch("/api/managed/multiplier/legacy-batches"),
+      ]);
       if (groupRes.ok) {
-        const data = await groupRes.json();
-        setGroups(data);
+        const groupsData = await groupRes.json();
+        const legacyData = legacyRes.ok ? await legacyRes.json() : [];
+        const data = [...groupsData, ...legacyData].sort(
+          (a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+        );
+        // Transcripts are lazy-loaded; preserve already-fetched ones across refreshes
+        setGroups((prev) => {
+          const prevTranscripts = new Map(prev.filter((g) => g.transcript != null).map((g) => [g.id, g.transcript]));
+          if (prevTranscripts.size === 0) return data;
+          return data.map((g: MultiplierGroup) =>
+            g.transcript == null && prevTranscripts.has(g.id) ? { ...g, transcript: prevTranscripts.get(g.id)! } : g
+          );
+        });
         // Sync selectedGroup with the new data
         setSelectedGroup((prev) => {
           if (!prev) return null;
           const updated = data.find((g: any) => g.id === prev.id);
-          return updated || prev;
+          if (!updated) return prev;
+          return updated.transcript == null && prev.transcript != null
+            ? { ...updated, transcript: prev.transcript }
+            : updated;
         });
         return data; // Return the fresh data array!
       }
@@ -1814,37 +1873,93 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
     }
   }, [folderPickerTarget]);
 
-  // Poll active rendering groups
+  // Poll active rendering groups via the lightweight status endpoint and merge
+  // statuses into the existing groups state in place. When a group settles (or
+  // the merge sees outputs it doesn't know), do ONE full fetchData() to pick up
+  // outputRefs and other settled fields.
   useEffect(() => {
-    const activeGroups = groups.filter(
-      (g) => g.status === "QUEUED" || g.status === "RENDERING" || g.transcriptStatus === "TRANSCRIBING"
-    );
+    const activeGroups = groups.filter(isGroupActive);
+    if (activeGroups.length === 0) return;
 
-    let intervalId: NodeJS.Timeout | null = null;
+    let settling = false;
+    const intervalId = setInterval(async () => {
+      try {
+        const res = await fetch("/api/managed/multiplier/status");
+        if (!res.ok) return;
+        const data: { groups: MultiplierStatusGroup[]; serverTime: string } = await res.json();
+        const statusById = new Map(data.groups.map((g) => [g.id, g]));
+        let needsFullRefresh = false;
 
-    if (activeGroups.length > 0) {
-      intervalId = setInterval(async () => {
-        try {
-          const res = await fetch("/api/managed/multiplier");
-          if (res.ok) {
-            const data = await res.json();
-            setGroups(data);
-            // Update selected group in real-time
-            if (selectedGroup) {
-              const updated = data.find((g: MultiplierGroup) => g.id === selectedGroup.id);
-              if (updated) setSelectedGroup(updated);
-            }
+        const mergeGroup = (g: MultiplierGroup): MultiplierGroup => {
+          const s = statusById.get(g.id);
+          if (!s) {
+            // Active locally but no longer reported → settled or deleted
+            if (isGroupActive(g)) needsFullRefresh = true;
+            return g;
           }
-        } catch (err) {
-          console.error("Polling failed:", err);
-        }
-      }, 3000);
-    }
+          const nextStatus = (s.status as MultiplierGroup["status"]) ?? g.status;
+          const nextTranscriptStatus = (s.transcriptStatus as MultiplierGroup["transcriptStatus"]) ?? g.transcriptStatus;
+          const nextError = s.errorMessage !== undefined ? s.errorMessage : g.errorMessage;
 
-    return () => {
-      if (intervalId) clearInterval(intervalId);
-    };
-  }, [groups, selectedGroup]);
+          const knownOutputIds = new Set(g.outputs.map((o) => o.id));
+          if ((s.outputs || []).some((so) => !knownOutputIds.has(so.id))) needsFullRefresh = true;
+
+          let outputsChanged = false;
+          const nextOutputs = g.outputs.map((o) => {
+            const so = (s.outputs || []).find((x) => x.id === o.id);
+            if (!so) {
+              if (isGroupActive(g)) needsFullRefresh = true;
+              return o;
+            }
+            const mergedStatus = (so.status as MultiplierOutput["status"]) ?? o.status;
+            const mergedError = so.errorMessage !== undefined ? so.errorMessage : o.errorMessage;
+            if (mergedStatus === o.status && mergedError === o.errorMessage) return o;
+            outputsChanged = true;
+            return { ...o, status: mergedStatus, errorMessage: mergedError };
+          });
+
+          if (
+            nextStatus === g.status &&
+            nextTranscriptStatus === g.transcriptStatus &&
+            nextError === g.errorMessage &&
+            !outputsChanged
+          ) {
+            return g;
+          }
+
+          const next = { ...g, status: nextStatus, transcriptStatus: nextTranscriptStatus, errorMessage: nextError, outputs: nextOutputs };
+          // Transition from active to terminal → settle once with a full refresh
+          if (isGroupActive(g) && !isGroupActive(next)) needsFullRefresh = true;
+          return next;
+        };
+
+        setGroups((prev) => {
+          let changed = false;
+          const next = prev.map((g) => {
+            const merged = mergeGroup(g);
+            if (merged !== g) changed = true;
+            return merged;
+          });
+          return changed ? next : prev;
+        });
+        setSelectedGroup((prev) => (prev ? mergeGroup(prev) : prev));
+
+        if (needsFullRefresh && !settling) {
+          settling = true;
+          try {
+            await fetchData();
+          } finally {
+            settling = false;
+          }
+        }
+      } catch (err) {
+        console.error("Status polling failed:", err);
+      }
+    }, 3000);
+
+    return () => clearInterval(intervalId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [groups]);
 
   // Load selected group details into form
   const handleSelectGroup = (group: MultiplierGroup) => {

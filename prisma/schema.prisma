@@ -1009,6 +1009,7 @@ model MultiplierGroup {
   variations      MultiplierGroupVariation[]
   hooks           MultiplierHook[]
   outputs         MultiplierOutput[]
+  @@index([status])
 }
 
 model MultiplierGroupVariation {
@@ -1055,6 +1056,9 @@ model MultiplierOutput {
   exportAssignments          SmartExportAssignment[]
   createdAt                  DateTime                  @default(now())
   updatedAt                  DateTime                  @updatedAt
+  @@index([status, createdAt])
+  @@index([groupId])
+  @@index([exportStatus])
 }
 
 model SmartExportJob {
@@ -1081,6 +1085,7 @@ model SmartExportAssignment {
   // Drives stale-"uploading" recovery (crash mid-upload → reset to pending).
   updatedAt     DateTime         @default(now()) @updatedAt
   @@index([status])
+  @@index([jobId])
 }
 
 // Durable "account received videos" evidence for the Account Performance
@@ -1126,6 +1131,7 @@ model MultiplierBatchJobItem {
   error     String?            @db.Text
   createdAt DateTime           @default(now())
   updatedAt DateTime           @updatedAt
+  @@index([jobId])
 }
 
 // ─── Global Google Drive Connection ──────────────────────────────────────────

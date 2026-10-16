@@ -91,3 +91,28 @@ export async function getMultiplierDriveClient() {
 
   return google.drive({ version: "v3", auth: oauth2Client });
 }
+
+// Cached variant for hot loops (export workers). getMultiplierDriveClient() takes
+// no inputs: the returned client's identity is fully determined by the single
+// Drive-connected ManagedAccount (or the service-account fallback) — a global —
+// so a caller-supplied key is identity-safe whenever that caller would resolve
+// to the same connected account. The export worker passes a constant key.
+const driveClientCache = new Map<string, { client: any; expiresAt: number }>();
+const DRIVE_CLIENT_CACHE_TTL_MS = 50 * 60 * 1000; // under the 1h access-token lifetime
+const DRIVE_CLIENT_CACHE_MAX = 100;
+
+export async function getCachedMultiplierDriveClient(key: string) {
+  const now = Date.now();
+  const cached = driveClientCache.get(key);
+  if (cached && cached.expiresAt > now) return cached.client;
+  driveClientCache.delete(key);
+  // Map iterates in insertion order — the first key is the oldest entry.
+  while (driveClientCache.size >= DRIVE_CLIENT_CACHE_MAX) {
+    const oldest = driveClientCache.keys().next().value;
+    if (oldest === undefined) break;
+    driveClientCache.delete(oldest);
+  }
+  const client = await getMultiplierDriveClient();
+  driveClientCache.set(key, { client, expiresAt: now + DRIVE_CLIENT_CACHE_TTL_MS });
+  return client;
+}

@@ -8,7 +8,7 @@ import fs from "fs";
 import path from "path";
 import { deleteFromR2 } from "@/lib/services/storage";
 
-// GET /api/managed/multiplier — List all multiplier groups (and transform/merge legacy batches)
+// GET /api/managed/multiplier — List all multiplier groups (slim; legacy batches live at /legacy-batches)
 export async function GET() {
   const session = await getSession();
   if (!session) {
@@ -20,9 +20,26 @@ export async function GET() {
 
   try {
     console.log("[Multiplier GET] Querying groups...");
+    // `transcript` (huge word-level JSON) and `customHooks` are excluded from the
+    // list payload: transcripts are lazy-loaded via /groups/[id]/transcript, and
+    // legacy batches live at /legacy-batches. The keys are kept with empty values
+    // so the response shape stays backward-compatible.
     const groups = await prisma.multiplierGroup.findMany({
       orderBy: { createdAt: "desc" },
-      include: {
+      select: {
+        id: true,
+        name: true,
+        campaignId: true,
+        transcriptStatus: true,
+        caption: true,
+        styleId: true,
+        mappingMode: true,
+        settings: true,
+        status: true,
+        errorMessage: true,
+        createdBy: true,
+        createdAt: true,
+        updatedAt: true,
         campaign: {
           select: { id: true, title: true },
         },
@@ -43,83 +60,10 @@ export async function GET() {
     });
     console.log(`[Multiplier GET] Found ${groups.length} groups.`);
 
-    console.log("[Multiplier GET] Querying legacy batches...");
-    const legacyBatches = await prisma.multiplierBatch.findMany({
-      orderBy: { createdAt: "desc" },
-      include: {
-        items: {
-          orderBy: { createdAt: "asc" },
-        },
-      },
-    });
-    console.log(`[Multiplier GET] Found ${legacyBatches.length} legacy batches.`);
+    const slimGroups = groups.map((g) => ({ ...g, transcript: null, customHooks: [] as string[] }));
 
-    const transformedLegacy = legacyBatches.map((b) => {
-      try {
-        return {
-          id: b.id,
-          name: b.name || "Legacy Batch",
-          campaignId: "",
-          campaign: { id: "", title: "Legacy Batch" },
-          transcript: null,
-          transcriptStatus: "PENDING",
-          styleId: "news-lower-third",
-          mappingMode: "each",
-          settings: {
-            fontSize: b.fontSize,
-            fontColor: b.fontColor,
-            bgStripColor: b.bgStripColor,
-            bgStripOpacity: b.bgStripOpacity,
-            positionYPercent: b.positionYPercent,
-            hookDuration: b.hookDuration,
-            accentColor: "#E11D48",
-            driveFolderId: b.driveFolderId || null,
-            driveFolderName: b.driveFolderName || null,
-          },
-          status: b.status === "COMPLETED" ? "COMPLETED" : b.status === "FAILED" ? "FAILED" : b.status === "RENDERING" ? "RENDERING" : "DRAFT",
-          errorMessage: b.errorMessage,
-          createdAt: b.createdAt.toISOString(),
-          variations: [
-            {
-              id: b.id + "-var",
-              groupId: b.id,
-              videoRef: b.sourceVideoUrl,
-              order: 0,
-            }
-          ],
-          hooks: b.items.map((item, idx) => ({
-            id: item.id,
-            groupId: b.id,
-            text: item.hookText,
-            source: "manual",
-            order: idx,
-          })),
-          outputs: b.items.map((item) => ({
-            id: item.id,
-            variationId: b.id + "-var",
-            hookId: item.id,
-            status: item.status === "RENDERED" ? "COMPLETED" : item.status === "FAILED" ? "FAILED" : item.status === "RENDERING" ? "RENDERING" : "PENDING",
-            outputRef: item.renderedVideoUrl,
-            driveFolderId: item.driveFolderId || b.driveFolderId,
-            driveFolderName: item.driveFolderName || b.driveFolderName,
-            googleEmail: item.googleEmail || b.googleEmail,
-            errorMessage: item.errorMessage,
-            variation: { videoRef: b.sourceVideoUrl },
-            hook: { text: item.hookText },
-          })),
-        };
-      } catch (mapErr: any) {
-        console.error(`[Multiplier GET] Error mapping legacy batch ${b.id}:`, mapErr);
-        throw mapErr;
-      }
-    });
-
-    const combined = [...groups, ...transformedLegacy].sort(
-      (a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-    );
-
-    console.log(`[Multiplier GET] Successfully returning ${combined.length} total items.`);
-    return NextResponse.json(combined);
+    console.log(`[Multiplier GET] Successfully returning ${slimGroups.length} groups.`);
+    return NextResponse.json(slimGroups);
   } catch (err: any) {
     console.error("[Multiplier Group GET API] Error:", err);
     return NextResponse.json({ error: err.message || "Failed to fetch groups" }, { status: 500 });

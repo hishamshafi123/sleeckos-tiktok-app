@@ -1,5 +1,5 @@
 import prisma from "@/lib/db";
-import { getMultiplierDriveClient } from "@/app/api/managed/multiplier/google/drive-helper";
+import { getMultiplierDriveClient, getCachedMultiplierDriveClient } from "@/app/api/managed/multiplier/google/drive-helper";
 import { naturalCompare } from "@/lib/utils/sorting";
 import { downloadFromR2 } from "@/lib/services/storage";
 import { assignVideosFairRoundRobin } from "@/lib/services/smart-export-assign";
@@ -642,8 +642,10 @@ async function workerLoop(workerIndex: number) {
         throw new Error(`Video file does not exist on disk or storage: ${video.outputRef}`);
       }
 
-      // 2. Fetch Drive client
-      const drive = await getMultiplierDriveClient();
+      // 2. Fetch Drive client (cached per worker — the client identity is the
+      // single Drive-connected account, identical for every file in the queue,
+      // hence the constant cache key)
+      const drive = await getCachedMultiplierDriveClient("export-worker");
       if (!drive) {
         throw new Error("Google Drive connection is not connected. Please connect Drive first.");
       }
@@ -764,25 +766,33 @@ async function workerLoop(workerIndex: number) {
     await updateParentJobStatus(assignment.jobId).catch((err) => {
       console.error(`[Smart Export Worker] Parent status update failed for job ${assignment.jobId}:`, err);
     });
-
-    // Rate limiting: 2s pause
-    await new Promise((resolve) => setTimeout(resolve, 2000));
   }
 }
 
 async function updateParentJobStatus(jobId: string) {
-  const assignments = await prisma.smartExportAssignment.findMany({
+  // One aggregate read instead of fetching every assignment row — this runs
+  // once per file per worker, so row-fetching made it O(N²) on jobId.
+  const grouped = await prisma.smartExportAssignment.groupBy({
+    by: ["status"],
     where: { jobId },
+    _count: true,
   });
 
-  const allFinished = assignments.every((a) => a.status === "done" || a.status === "failed");
+  let successCount = 0;
+  let failedCount = 0;
+  let unfinishedCount = 0;
+  for (const row of grouped) {
+    if (row.status === "done") successCount = row._count;
+    else if (row.status === "failed") failedCount = row._count;
+    else unfinishedCount += row._count;
+  }
+
+  const allFinished = unfinishedCount === 0;
   if (allFinished) {
-    const successCount = assignments.filter((a) => a.status === "done").length;
-    const failedCount = assignments.filter((a) => a.status === "failed").length;
     const finalStatus = failedCount > 0 ? "failed" : "done";
 
     const summary = {
-      total: assignments.length,
+      total: successCount + failedCount,
       successCount,
       failedCount,
       completedAt: new Date().toISOString(),
@@ -831,12 +841,16 @@ async function uploadWithRetry(
 ): Promise<{ success: boolean; fileId?: string; error?: string }> {
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-      // Dedup guard: a previous attempt may have created the file server-side but
-      // timed out before we saw the response — reuse it instead of duplicating.
-      const existingId = await findExistingDriveFile(drive, fileName, folderId);
-      if (existingId) {
-        console.log(`[Smart Export Drive] Dedup hit: "${fileName}" already exists in folder ${folderId} (file id: ${existingId}) — skipping re-upload`);
-        return { success: true, fileId: existingId };
+      // Dedup guard, retries only: a previous attempt may have created the file
+      // server-side but timed out before we saw the response — reuse it instead
+      // of duplicating. Skipped on the first attempt to save an API roundtrip
+      // per file (first attempts can't have a partial success to dedup against).
+      if (attempt > 1) {
+        const existingId = await findExistingDriveFile(drive, fileName, folderId);
+        if (existingId) {
+          console.log(`[Smart Export Drive] Dedup hit: "${fileName}" already exists in folder ${folderId} (file id: ${existingId}) — skipping re-upload`);
+          return { success: true, fileId: existingId };
+        }
       }
 
       const fileStream = fs.createReadStream(filePath);
