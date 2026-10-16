@@ -969,10 +969,13 @@ export async function searchAccounts(input: { q: string; mode?: "drive" | "accou
 }
 
 
+export const EXPORT_WARMUP_MIN_AGE_DAYS = 3;
+
 /**
  * Smart-select for the Smart Export account picker.
  * Returns ManagedAccount ids that pass every gate:
  *  - base: isActive + driveConnected + driveFolderId + postpeerAccountId (optionally section-scoped)
+ *  - warmup: createdAt older than EXPORT_WARMUP_MIN_AGE_DAYS (new accounts warm up first)
  *  - not banned: sweepNotFoundStreak < 2 and color != 'red'
  *  - recently published: >=1 PostJob in a terminal-published state with publishedAt within postedWithinDays
  *  - not dead-reach: >=1 captured TrackedVideo published within zeroViewDays with views > 0
@@ -998,6 +1001,7 @@ export async function getSmartSelectAccounts(opts: {
       driveConnected: true,
       driveFolderId: { not: null },
       postpeerAccountId: { not: null },
+      createdAt: { lte: new Date(now - EXPORT_WARMUP_MIN_AGE_DAYS * 24 * 60 * 60 * 1000) },
       ...(sectionIds.length > 0 ? { sectionId: { in: sectionIds } } : {}),
     },
     select: { id: true, sectionId: true, sweepNotFoundStreak: true, color: true },
@@ -1039,4 +1043,169 @@ export async function getSmartSelectAccounts(opts: {
   const accountIds = eligibleIds.filter((id) => publisherIds.has(id) && liveReachIds.has(id));
 
   return { accountIds, matched: accountIds.length, considered };
+}
+
+
+export type ExportWarmupStatus = "warming" | "test_due" | "verified" | "failed" | "stalled";
+
+export interface ExportWarmupAccount {
+  id: string;
+  name: string;
+  driveFolderId: string | null;
+  sectionId: string;
+  color: string | null;
+  createdAt: string;
+  ageDays: number;
+  ageHours: number;
+  status: ExportWarmupStatus;
+  eligible: boolean;
+  blockedReason: "warmup" | "test_post_failed" | "never_posted" | "banned" | "not_connected" | null;
+  firstPostAt: string | null;
+  publishedCount: number;
+  failedCount: number;
+}
+
+/**
+ * Warm-up status for newly created ManagedAccounts in the export pipeline.
+ * Accounts within the age window (default: 0..14 days) are listed with a status
+ * derived from ManagedAccount.createdAt + PostJob history (no schema state):
+ *  - "verified": has >=1 terminal-published PostJob (test post landed). Eligible
+ *    for smart-select only once older than EXPORT_WARMUP_MIN_AGE_DAYS and passing
+ *    the base export gates (connected, not banned).
+ *  - "failed":   no publish yet but >=1 terminally FAILED PostJob — flag for review.
+ *  - "stalled":  3+ days old, never attempted a post.
+ *  - "test_due": 2-3 days old, no posts yet — the day-2 test post should happen now.
+ *  - "warming":  under 2 days old, no posts yet.
+ */
+export async function getExportWarmupAccounts(opts: {
+  sectionIds?: string[];
+  minAgeDays?: number;
+  maxAgeDays?: number;
+}) {
+  const minAgeDays = Math.max(0, Math.floor(opts.minAgeDays ?? 0) || 0);
+  const maxAgeDays = Math.min(60, Math.max(1, Math.floor(opts.maxAgeDays ?? 14) || 14));
+  const now = Date.now();
+  const createdAfter = new Date(now - maxAgeDays * 24 * 60 * 60 * 1000);
+  const createdBefore = new Date(now - minAgeDays * 24 * 60 * 60 * 1000);
+
+  const sectionIds = (opts.sectionIds || []).filter(Boolean);
+
+  const accounts = await prisma.managedAccount.findMany({
+    where: {
+      isActive: true,
+      createdAt: { gte: createdAfter, lte: createdBefore },
+      ...(sectionIds.length > 0 ? { sectionId: { in: sectionIds } } : {}),
+    },
+    select: {
+      id: true,
+      tiktokUsername: true,
+      tiktokDisplayName: true,
+      driveFolderId: true,
+      sectionId: true,
+      color: true,
+      createdAt: true,
+      driveConnected: true,
+      postpeerAccountId: true,
+      sweepNotFoundStreak: true,
+    },
+    orderBy: { createdAt: "desc" },
+  });
+
+  const accountIds = accounts.map((a) => a.id);
+  const [publishedJobs, failedJobs] = accountIds.length > 0
+    ? await Promise.all([
+        prisma.postJob.groupBy({
+          by: ["accountId"],
+          where: {
+            accountId: { in: accountIds },
+            state: { in: ["PUBLISHED", "PENDING_DELETION", "DELETED"] },
+          },
+          _count: { _all: true },
+          _min: { publishedAt: true },
+        }),
+        prisma.postJob.groupBy({
+          by: ["accountId"],
+          where: { accountId: { in: accountIds }, state: "FAILED" },
+          _count: { _all: true },
+        }),
+      ])
+    : [[], []];
+
+  const publishedByAccount = new Map(
+    publishedJobs.map((j) => [j.accountId, { count: j._count._all, firstPostAt: j._min.publishedAt }]),
+  );
+  const failedByAccount = new Map(failedJobs.map((j) => [j.accountId, j._count._all]));
+
+  const warmupMs = EXPORT_WARMUP_MIN_AGE_DAYS * 24 * 60 * 60 * 1000;
+
+  const result: ExportWarmupAccount[] = accounts.map((a) => {
+    const ageMs = now - a.createdAt.getTime();
+    const hours = ageMs / 3.6e6;
+    const published = publishedByAccount.get(a.id);
+    const publishedCount = published?.count ?? 0;
+    const failedCount = failedByAccount.get(a.id) ?? 0;
+
+    let status: ExportWarmupStatus;
+    let eligible = false;
+    let blockedReason: ExportWarmupAccount["blockedReason"] = null;
+
+    if (publishedCount >= 1) {
+      status = "verified";
+      const banned = a.sweepNotFoundStreak >= 2 || (a.color || "").toLowerCase() === "red";
+      const connected = a.driveConnected && a.driveFolderId != null && a.postpeerAccountId != null;
+      if (banned) {
+        blockedReason = "banned";
+      } else if (!connected) {
+        blockedReason = "not_connected";
+      } else if (ageMs < warmupMs) {
+        blockedReason = "warmup";
+      } else {
+        eligible = true;
+      }
+    } else if (failedCount >= 1) {
+      status = "failed";
+      blockedReason = "test_post_failed";
+    } else if (hours >= 72) {
+      status = "stalled";
+      blockedReason = "never_posted";
+    } else if (hours >= 48) {
+      status = "test_due";
+      blockedReason = "warmup";
+    } else {
+      status = "warming";
+      blockedReason = "warmup";
+    }
+
+    return {
+      id: a.id,
+      name: a.tiktokDisplayName || a.tiktokUsername,
+      driveFolderId: a.driveFolderId,
+      sectionId: a.sectionId,
+      color: a.color ?? null,
+      createdAt: a.createdAt.toISOString(),
+      ageDays: Math.floor(hours / 24),
+      ageHours: Math.floor(hours),
+      status,
+      eligible,
+      blockedReason,
+      firstPostAt: published?.firstPostAt ? published.firstPostAt.toISOString() : null,
+      publishedCount,
+      failedCount,
+    };
+  });
+
+  const counts = {
+    warming: 0,
+    test_due: 0,
+    verified: 0,
+    failed: 0,
+    stalled: 0,
+    eligible: 0,
+  };
+  for (const a of result) {
+    counts[a.status] += 1;
+    if (a.eligible) counts.eligible += 1;
+  }
+
+  return { warmupMinAgeDays: EXPORT_WARMUP_MIN_AGE_DAYS, accounts: result, counts };
 }

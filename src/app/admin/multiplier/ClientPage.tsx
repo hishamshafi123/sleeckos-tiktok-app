@@ -130,6 +130,48 @@ interface ClientPageProps {
   };
 }
 
+// Row shape returned by /api/multiplier/export/warmup-accounts
+type WarmupAccount = {
+  id: string;
+  name: string;
+  driveFolderId: string;
+  sectionId: string;
+  color: string | null;
+  createdAt: string;
+  ageDays: number;
+  ageHours: number;
+  status: "warming" | "test_due" | "verified" | "failed" | "stalled";
+  eligible: boolean;
+  blockedReason: "warmup" | "test_post_failed" | "never_posted" | "banned" | "not_connected" | null;
+  firstPostAt: string | null;
+  publishedCount: number;
+  failedCount: number;
+};
+
+const WARMUP_AGE_FILTERS: { key: string; label: string; min: number; max: number }[] = [
+  { key: "all", label: "All (14d)", min: 0, max: 14 },
+  { key: "3plus", label: "≥ 3 days", min: 3, max: 14 },
+  { key: "2d", label: "2 days", min: 2, max: 3 },
+  { key: "1d", label: "1 day", min: 1, max: 2 },
+  { key: "today", label: "Today", min: 0, max: 1 },
+];
+
+const WARMUP_STATUS_META: Record<WarmupAccount["status"], { label: string; chipClass: string; hint: string }> = {
+  warming: { label: "Warming", chipClass: "bg-blue-500/15 border-blue-500/40 text-blue-300", hint: "Resting — under 48h old" },
+  test_due: { label: "Test due", chipClass: "bg-amber-500/15 border-amber-500/40 text-amber-300", hint: "48–72h old — should make its first test post now" },
+  verified: { label: "Verified", chipClass: "bg-green-500/15 border-green-500/40 text-green-300", hint: "Has a published post" },
+  failed: { label: "Failed", chipClass: "bg-red-500/15 border-red-500/40 text-red-300", hint: "Test post failed — review" },
+  stalled: { label: "Stalled", chipClass: "border-red-500/40 text-red-300", hint: "No posts after 3 days" },
+};
+
+const WARMUP_BLOCKED_REASONS: Record<string, string> = {
+  warmup: "Still warming up (under 3 days)",
+  test_post_failed: "Test post failed — review",
+  never_posted: "Never posted",
+  banned: "Banned",
+  not_connected: "Drive not connected",
+};
+
 export default function ClientPage({ session }: ClientPageProps = {}) {
   const getServeUrl = (path: string | null | undefined) => {
     if (!path) return "";
@@ -326,6 +368,17 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
   const [exportSections, setExportSections] = useState<{ id: string; name: string; slug: string; color: string }[]>([]);
   const [exportSectionFilter, setExportSectionFilter] = useState<string[]>([]);
   const [exportAccountSections, setExportAccountSections] = useState<Record<string, string>>({}); // accountId → section name
+  // Smart Export selector: picker tabs ("accounts" search picker vs "warmup" new-account list)
+  const [smartExportTab, setSmartExportTab] = useState<"accounts" | "warmup">("accounts");
+  // Warm-up tab: accounts still inside the 3-day warm-up gate (from /api/multiplier/export/warmup-accounts)
+  const [warmupAccounts, setWarmupAccounts] = useState<WarmupAccount[]>([]);
+  const [warmupCounts, setWarmupCounts] = useState<{ warming: number; test_due: number; verified: number; failed: number; stalled: number; eligible: number } | null>(null);
+  const [warmupLoading, setWarmupLoading] = useState(false);
+  const [warmupLoaded, setWarmupLoaded] = useState(false);
+  const [warmupError, setWarmupError] = useState<string | null>(null);
+  const [warmupAgeFilter, setWarmupAgeFilter] = useState<string>("all");
+  const [warmupRefreshNonce, setWarmupRefreshNonce] = useState(0);
+  const warmupSeqRef = useRef(0);
 
   // Bulk intake state
   const [bulkCampaignId, setBulkCampaignId] = useState("");
@@ -846,6 +899,81 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
       toast.error(err.message || "Smart select failed");
     } finally {
       setSmartSelectLoading(false);
+    }
+  };
+
+  // Warm-up tab: fetch new accounts still inside the warm-up gate.
+  // Race-safe: a stale response is dropped if a newer fetch was started.
+  const fetchWarmupAccounts = async () => {
+    const seq = ++warmupSeqRef.current;
+    setWarmupLoading(true);
+    setWarmupError(null);
+    try {
+      const params = new URLSearchParams();
+      if (exportSectionFilter.length > 0) params.set("sectionIds", exportSectionFilter.join(","));
+      const preset = WARMUP_AGE_FILTERS.find((f) => f.key === warmupAgeFilter) || WARMUP_AGE_FILTERS[0];
+      params.set("minAgeDays", String(preset.min));
+      params.set("maxAgeDays", String(preset.max));
+      const res = await fetch(`/api/multiplier/export/warmup-accounts?${params.toString()}`);
+      const data = await res.json();
+      if (seq !== warmupSeqRef.current) return;
+      if (!res.ok) throw new Error(data.error || "Failed to load warm-up accounts");
+      setWarmupAccounts(Array.isArray(data.accounts) ? data.accounts : []);
+      setWarmupCounts(data.counts || null);
+      setWarmupLoaded(true);
+    } catch (err: any) {
+      if (seq !== warmupSeqRef.current) return;
+      setWarmupError(err.message || "Failed to load warm-up accounts");
+      setWarmupAccounts([]);
+      setWarmupCounts(null);
+      setWarmupLoaded(true);
+    } finally {
+      if (seq === warmupSeqRef.current) setWarmupLoading(false);
+    }
+  };
+
+  // Fetch on tab open, section/age filter change, or manual refresh (nonce bump).
+  useEffect(() => {
+    if (!showSmartExport || smartExportTab !== "warmup") return;
+    void (async () => {
+      await Promise.resolve(); // keep the initial setState out of the sync effect body
+      await fetchWarmupAccounts();
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showSmartExport, smartExportTab, exportSectionFilter, warmupAgeFilter, warmupRefreshNonce]);
+
+  // Map a warm-up account into the same element shape search results use, so the
+  // Selected Accounts pane, per-account counts and preview/run payloads work unchanged.
+  const mapWarmupAccountToFolder = (a: WarmupAccount) => ({
+    id: a.driveFolderId,
+    name: a.name,
+    defaultPostCount: 1,
+    mappedAccount: { id: a.id, tiktokUsername: a.name, color: a.color ?? undefined },
+  });
+
+  const toggleWarmupAccount = (a: WarmupAccount) => {
+    if (!a.eligible) return;
+    setSelectedExportFolders((prev) =>
+      prev.some((f) => f.id === a.driveFolderId)
+        ? prev.filter((f) => f.id !== a.driveFolderId)
+        : [...prev, { ...mapWarmupAccountToFolder(a), count: prefillExportCount(1) }]
+    );
+  };
+
+  // Additive bulk select: dedupes by driveFolderId against the existing selection.
+  const handleWarmupBulkSelect = (verifiedOnly: boolean) => {
+    const have = new Set(selectedExportFolders.map((f) => f.id));
+    const fresh = warmupAccounts
+      .filter((a) => a.eligible && (!verifiedOnly || a.status === "verified") && !have.has(a.driveFolderId))
+      .map((a) => ({ ...mapWarmupAccountToFolder(a), count: prefillExportCount(1) }));
+    if (fresh.length > 0) {
+      setSelectedExportFolders((prev) => {
+        const prevHave = new Set(prev.map((f) => f.id));
+        return [...prev, ...fresh.filter((f) => !prevHave.has(f.id))];
+      });
+      toast.success(`Added ${fresh.length} account${fresh.length === 1 ? "" : "s"} to the export selection`);
+    } else {
+      toast.info("Already selected");
     }
   };
 
@@ -5335,8 +5463,32 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
                     )}
                   </div>
 
+                {/* Picker tabs: Accounts (search picker) vs Warm-up (new accounts in warm-up) */}
+                <div className="flex items-center gap-1.5 flex-shrink-0">
+                  <div className="flex items-center bg-[#09090b] border border-[#27272a] rounded-lg overflow-hidden">
+                    {(["accounts", "warmup"] as const).map((t) => (
+                      <button
+                        key={t}
+                        type="button"
+                        onClick={() => setSmartExportTab(t)}
+                        className={`px-2.5 py-1.5 text-[10px] font-bold transition-colors cursor-pointer ${
+                          smartExportTab === t ? "bg-[#E11D48] text-white" : "text-[#a1a1aa] hover:text-white"
+                        }`}
+                      >
+                        {t === "accounts" ? "Accounts" : "Warm-up"}
+                      </button>
+                    ))}
+                  </div>
+                  {smartExportTab === "warmup" && (
+                    <span className="text-[10px] text-[#71717a] leading-snug">
+                      New accounts under the 3-day warm-up gate — verified &amp; eligible ones can be added to the selection.
+                    </span>
+                  )}
+                </div>
+
                 {/* Smart-select + section filter chips */}
                 <div className="flex items-center gap-1.5 flex-wrap flex-shrink-0">
+                  {smartExportTab === "accounts" && (
                   <button
                     type="button"
                     onClick={handleSmartSelect}
@@ -5347,6 +5499,7 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
                     {smartSelectLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Wand2 className="w-3 h-3" />}
                     Select active &amp; posting
                   </button>
+                  )}
                   {exportSections.length > 0 && (
                     <>
                       <span className="text-[10px] text-[#71717a] font-medium ml-1">Sections:</span>
@@ -5385,6 +5538,7 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
                   )}
                 </div>
 
+                {smartExportTab === "accounts" && (<>
                 <div className="flex items-center gap-2 flex-shrink-0">
                   <div className="relative flex-1">
                     <Search className="absolute left-3 top-2.5 w-4 h-4 text-[#71717a]" />
@@ -5542,6 +5696,149 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
                     </div>
                   )}
                 </div>
+                </>)}
+
+                {smartExportTab === "warmup" && (<>
+                {/* Header: summary chips from counts, refresh, age filter */}
+                <div className="flex items-center gap-x-2 gap-y-1.5 flex-wrap flex-shrink-0">
+                  {warmupCounts && (
+                    <span className="text-[10px] text-[#a1a1aa] font-semibold">
+                      <span className="text-green-400">{warmupCounts.verified} verified</span>
+                      {" · "}{warmupCounts.warming} warming
+                      {warmupCounts.test_due > 0 && <>{" · "}<span className="text-amber-300">{warmupCounts.test_due} test due</span></>}
+                      {warmupCounts.failed > 0 && <>{" · "}<span className="text-red-400">{warmupCounts.failed} failed</span></>}
+                      {warmupCounts.stalled > 0 && <>{" · "}<span className="text-red-400">{warmupCounts.stalled} stalled</span></>}
+                      {" · "}<span className="text-[#fafafa]">{warmupCounts.eligible} eligible</span>
+                    </span>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setWarmupRefreshNonce((n) => n + 1)}
+                    disabled={warmupLoading}
+                    title="Reload warm-up accounts"
+                    className="px-2 py-1 bg-[#27272a] hover:bg-[#3f3f46] disabled:opacity-40 disabled:cursor-not-allowed text-white text-[10px] font-semibold rounded-md transition-colors cursor-pointer flex items-center gap-1 flex-shrink-0"
+                  >
+                    {warmupLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
+                    Refresh
+                  </button>
+                  <span className="text-[10px] text-[#71717a] font-medium ml-1">Age:</span>
+                  {WARMUP_AGE_FILTERS.map((f) => {
+                    const active = warmupAgeFilter === f.key;
+                    return (
+                      <button
+                        key={f.key}
+                        type="button"
+                        onClick={() => setWarmupAgeFilter(f.key)}
+                        className={`px-2 py-1 rounded-md border text-[10px] font-semibold transition-colors cursor-pointer ${
+                          active
+                            ? "bg-[#E11D48]/15 border-[#E11D48] text-white"
+                            : "bg-[#09090b] border-[#27272a] text-[#a1a1aa] hover:text-white hover:border-[#3f3f46]"
+                        }`}
+                      >
+                        {f.label}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {/* Bulk actions: add eligible warm-up accounts to the export selection */}
+                <div className="flex items-center gap-1.5 flex-wrap flex-shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => handleWarmupBulkSelect(false)}
+                    disabled={warmupLoading || warmupAccounts.every((a) => !a.eligible)}
+                    title="Add every eligible account to the export selection"
+                    className="px-2.5 py-1 bg-[#E11D48] hover:bg-[#be123c] disabled:opacity-50 disabled:cursor-not-allowed text-white text-[10px] font-bold rounded-md transition-colors cursor-pointer flex items-center gap-1 flex-shrink-0"
+                  >
+                    <CheckSquare className="w-3 h-3" />
+                    Select all eligible ({warmupAccounts.filter((a) => a.eligible).length})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleWarmupBulkSelect(true)}
+                    disabled={warmupLoading || !warmupAccounts.some((a) => a.eligible && a.status === "verified")}
+                    title="Add only eligible verified accounts (have a published post) to the export selection"
+                    className="px-2.5 py-1 bg-[#27272a] hover:bg-[#3f3f46] disabled:opacity-50 disabled:cursor-not-allowed text-white text-[10px] font-bold rounded-md transition-colors cursor-pointer flex items-center gap-1 flex-shrink-0"
+                  >
+                    <CheckCircle2 className="w-3 h-3" />
+                    Select verified only
+                  </button>
+                </div>
+
+                {/* Account list: eligible pinned to top, backend order (createdAt desc) within groups */}
+                <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar bg-[#09090b] border border-[#27272a] rounded-xl p-2">
+                  {warmupLoading && !warmupLoaded ? (
+                    <div className="h-full flex items-center justify-center text-[#71717a] text-[11px] italic gap-2">
+                      <Loader2 className="w-3.5 h-3.5 animate-spin text-[#E11D48]" /> Loading warm-up accounts…
+                    </div>
+                  ) : warmupError ? (
+                    <div className="h-full flex items-center justify-center text-red-400 text-[11px] italic px-4 text-center">
+                      {warmupError}
+                    </div>
+                  ) : warmupAccounts.length === 0 ? (
+                    <div className="h-full flex items-center justify-center text-[#71717a] text-[11px] italic">
+                      No accounts created in this window.
+                    </div>
+                  ) : (
+                    <div className="flex flex-col gap-1">
+                      {[...warmupAccounts]
+                        .sort((a, b) => Number(b.eligible) - Number(a.eligible))
+                        .map((a) => {
+                          const meta = WARMUP_STATUS_META[a.status] || WARMUP_STATUS_META.warming;
+                          const isSelected = selectedExportFolders.some((f) => f.id === a.driveFolderId);
+                          const isProblem = a.status === "failed" || a.status === "stalled";
+                          const colKey = a.color || "zinc";
+                          const baseColor = COLOR_MAP[colKey] || (colKey.startsWith("#") ? colKey : null) || COLOR_MAP.zinc;
+                          const remHours = Math.max(0, a.ageHours - a.ageDays * 24);
+                          const hint = !a.eligible && a.blockedReason
+                            ? WARMUP_BLOCKED_REASONS[a.blockedReason] || meta.hint
+                            : meta.hint;
+                          return (
+                            <div
+                              key={a.id}
+                              className={`flex items-center gap-2 px-2 py-1.5 rounded-md border text-[11px] font-medium ${
+                                isProblem ? "bg-red-500/5 border-red-500/20" : "bg-[#18181b] border-[#27272a]"
+                              }`}
+                              style={{ borderLeft: `3px solid ${isProblem ? "#ef4444" : baseColor}` }}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={isSelected}
+                                disabled={!a.eligible}
+                                onChange={() => toggleWarmupAccount(a)}
+                                title={a.eligible ? "Add to export selection" : hint}
+                                className="rounded border-[#27272a] bg-[#09090b] text-blue-600 focus:ring-blue-600/30 w-3.5 h-3.5 cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed flex-shrink-0"
+                              />
+                              <span className="truncate flex-1 min-w-0 text-[#e4e4e7]" title={a.name}>@{a.name}</span>
+                              <span
+                                className={`px-1.5 py-0.5 rounded border text-[9px] font-bold uppercase tracking-wide flex-shrink-0 ${meta.chipClass}`}
+                                title={hint}
+                              >
+                                {meta.label}
+                              </span>
+                              {!a.eligible && a.blockedReason && (
+                                <span className="text-[9px] text-red-300/80 flex-shrink-0 hidden xl:inline" title={hint}>
+                                  {WARMUP_BLOCKED_REASONS[a.blockedReason] || a.blockedReason}
+                                </span>
+                              )}
+                              {a.status === "verified" && a.firstPostAt && (
+                                <span className="text-[9px] text-[#71717a] font-mono flex-shrink-0 hidden md:inline" title="First published post">
+                                  1st post {new Date(a.firstPostAt).toLocaleDateString(undefined, { month: "short", day: "numeric" })}
+                                </span>
+                              )}
+                              <span className="text-[9px] text-[#a1a1aa] font-mono flex-shrink-0" title={`Created ${new Date(a.createdAt).toLocaleString()}`}>
+                                {a.ageDays > 0 ? `${a.ageDays}d ` : ""}{remHours}h
+                              </span>
+                              <span className="text-[9px] text-[#71717a] font-mono flex-shrink-0 hidden sm:inline" title="Created">
+                                {new Date(a.createdAt).toLocaleDateString(undefined, { month: "short", day: "numeric" })}
+                              </span>
+                            </div>
+                          );
+                        })}
+                    </div>
+                  )}
+                </div>
+                </>)}
 
                 </div>{/* end LEFT pane */}
 
