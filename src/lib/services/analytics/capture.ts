@@ -354,6 +354,28 @@ export async function captureVideoLink(
       };
     }
 
+    // Placeholder-first: persist an unresolved row BEFORE the provider call.
+    // If the scrape throws (provider outage, credits exhausted, profile gone),
+    // the row survives and retryUnresolvedCaptures picks it up later — without
+    // this, scrape failures left no trace and the post leaked permanently.
+    const placeholderId = unresolvedPlaceholderId(job.id);
+    await prisma.trackedVideo.upsert({
+      where: { tiktokVideoId: placeholderId },
+      create: {
+        tiktokVideoId: placeholderId,
+        url: "",
+        accountId: job.accountId,
+        campaignId: job.campaignId,
+        postJobId: job.id,
+        publishedAt: job.publishedAt,
+        captureMethod: "recent_match",
+        status: "unresolved",
+        captureAttempts: 0,
+      },
+      // Row already exists from a prior failed attempt — leave attempts/backoff intact.
+      update: { campaignId: job.campaignId },
+    });
+
     const latestCtx: ProviderCallContext = { source: "capture", refId: postJobId };
     const latest = await provider.fetchLatestVideosForAccount(
       job.account.tiktokUsername,
@@ -519,6 +541,67 @@ export async function retryUnresolvedCaptures(
   }
   console.log(
     `[Capture] Retry pass: retried=${summary.retried} captured=${summary.captured} stillUnresolved=${summary.stillUnresolved} backoffSkipped=${summary.skippedBackoff} refreshed=${refreshed}`
+  );
+  return summary;
+}
+
+/**
+ * Reconciliation sweep: terminal-published PostJobs that have NO TrackedVideo
+ * row at all. This is the leak-plugger for the pre-placeholder-first era and
+ * for any path where a publish-time capture died before writing its row —
+ * nothing else ever retried those posts. Grouped BY ACCOUNT: one shared
+ * latest-videos scrape per account covers all of its missing posts (via
+ * captureAccountPosts, which also treats no-row jobs as uncaptured).
+ *
+ * `accountLimit` caps scrapes per pass (provider cost control); the daily cron
+ * re-runs it, so a backlog drains over successive passes, newest posts first.
+ * Jobs without publishedAt can't be window-matched and are skipped by design.
+ * Never throws.
+ */
+export async function reconcileMissingCaptures(
+  accountLimit = 40,
+  provider: AnalyticsProvider = analyticsProvider
+): Promise<{ accounts: number; attempted: number; captured: number; unresolved: number }> {
+  const summary = { accounts: 0, attempted: 0, captured: 0, unresolved: 0 };
+  try {
+    // Recent missing jobs first, capped — enough to discover the accounts
+    // that need a scrape without scanning the whole table.
+    const jobs = await prisma.postJob.findMany({
+      where: {
+        state: { in: TERMINAL_PUBLISHED_STATES },
+        publishedAt: { not: null, lt: new Date(Date.now() - 60 * 60 * 1000) },
+      },
+      select: { id: true, accountId: true },
+      orderBy: { publishedAt: "desc" },
+      take: 4000,
+    });
+    if (jobs.length === 0) return summary;
+
+    const tracked = await prisma.trackedVideo.findMany({
+      where: { postJobId: { in: jobs.map((j) => j.id) } },
+      select: { postJobId: true },
+    });
+    const hasRow = new Set(tracked.map((t) => t.postJobId));
+
+    const accountIds: string[] = [];
+    for (const j of jobs) {
+      if (hasRow.has(j.id)) continue;
+      if (!accountIds.includes(j.accountId)) accountIds.push(j.accountId);
+      if (accountIds.length >= accountLimit) break;
+    }
+
+    for (const accountId of accountIds) {
+      summary.accounts++;
+      const res = await captureAccountPosts(accountId, {}, provider);
+      summary.attempted += res.attempted;
+      summary.captured += res.captured;
+      summary.unresolved += res.unresolved;
+    }
+  } catch (err: any) {
+    console.error("[Capture] reconcileMissingCaptures failed:", err?.message || err);
+  }
+  console.log(
+    `[Capture] Reconcile pass: accounts=${summary.accounts} attempted=${summary.attempted} captured=${summary.captured} unresolved=${summary.unresolved}`
   );
   return summary;
 }
