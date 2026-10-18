@@ -170,8 +170,13 @@ model Campaign {
 
   // Posting priority: when priorityQuota is set, this campaign's AVAILABLE jobs
   // are claimed before all others until priorityUsed reaches the quota (auto-off).
+  // priorityRank (1 = highest) marks membership in the standing, drag-ordered
+  // priority pool: pool campaigns claim after quota campaigns, with today's
+  // posts divided among ACTIVE members by rank-weighted share (see
+  // claimNextVideo in posting-pipeline.ts). null = not in the pool.
   priorityQuota         Int?
   priorityUsed          Int            @default(0)
+  priorityRank          Int?
 
   // Goal / calculator parameters
   targetViews            Int         @default(0)
@@ -450,6 +455,7 @@ model PostJob {
   updatedAt       DateTime       @updatedAt
 
   @@unique([driveFileId, accountId])
+  @@index([campaignId, state])
 }
 
 model ScheduledPost {

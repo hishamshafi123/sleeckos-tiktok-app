@@ -1,11 +1,12 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Plus, Search, HelpCircle, AlertCircle, X, Loader2, ArrowRight, Pause, Play, Zap } from "lucide-react";
 import { toast } from "sonner";
 import { Campaign } from "@prisma/client";
+import PriorityOrderModal from "./PriorityOrderModal";
 
 interface CampaignsClientProps {
   initialCampaigns: any[];
@@ -14,7 +15,13 @@ interface CampaignsClientProps {
 export default function CampaignsClient({ initialCampaigns }: CampaignsClientProps) {
   const router = useRouter();
   const [campaigns, setCampaigns] = useState<any[]>(initialCampaigns);
+
+  // Pick up server re-fetches after router.refresh() (e.g. priority rank changes)
+  useEffect(() => {
+    setCampaigns(initialCampaigns);
+  }, [initialCampaigns]);
   const [isCreateOpen, setIsCreateOpen] = useState(false);
+  const [isPriorityOpen, setIsPriorityOpen] = useState(false);
   const [search, setSearch] = useState("");
   const [filterType, setFilterType] = useState("all");
   const [filterStatus, setFilterStatus] = useState("all");
@@ -70,7 +77,7 @@ export default function CampaignsClient({ initialCampaigns }: CampaignsClientPro
     COMPLETED: "text-blue-400 bg-blue-400/10 border-blue-500/20",
     CANCELLED: "text-red-400 bg-red-400/10 border-red-500/20",
     ACTIVE: "text-emerald-400 bg-emerald-400/10 border-emerald-500/20",
-    PAUSED: "text-amber-400 bg-amber-400/10 border-amber-500/20",
+    PAUSED: "text-zinc-500 bg-zinc-500/10 border-zinc-600/20",
     DONE: "text-blue-400 bg-blue-400/10 border-blue-500/20",
   };
 
@@ -89,6 +96,14 @@ export default function CampaignsClient({ initialCampaigns }: CampaignsClientPro
     const matchesStatus = filterStatus === "all" || c.status === filterStatus;
     return matchesSearch && matchesType && matchesStatus;
   });
+
+  // Sort: ACTIVE first, PAUSED last, everything else in between.
+  // Stable sort keeps the server's createdAt desc order within each tier.
+  const statusTier = (status: string) => (status === "ACTIVE" ? 0 : status === "PAUSED" ? 2 : 1);
+  const sorted = [...filtered].sort((a, b) => statusTier(a.status) - statusTier(b.status));
+
+  // Pool size for the "rank N of M" tooltip on priority chips
+  const priorityPoolSize = campaigns.filter((c) => c.priorityRank != null).length;
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -202,6 +217,15 @@ export default function CampaignsClient({ initialCampaigns }: CampaignsClientPro
           <option value="DONE">Done</option>
           <option value="DRAFT">Draft</option>
         </select>
+
+        {/* Posting priority */}
+        <button
+          onClick={() => setIsPriorityOpen(true)}
+          className="flex items-center gap-1.5 bg-[#09090b] border border-[#27272a] hover:border-zinc-500 text-zinc-300 transition text-xs font-semibold px-3 py-1.5 rounded w-full sm:w-auto sm:ml-auto"
+        >
+          <Zap size={14} className="text-[#E11D48]" />
+          Posting priority
+        </button>
       </div>
 
       {/* Campaigns Table */}
@@ -224,7 +248,7 @@ export default function CampaignsClient({ initialCampaigns }: CampaignsClientPro
               </tr>
             </thead>
             <tbody className="divide-y divide-[#27272a]">
-              {filtered.map((c) => {
+              {sorted.map((c) => {
                 // Calculate projected days to goal
                 const totalVideosNeeded = c.avgViewsPerVideo > 0 ? Math.ceil(c.targetViews / c.avgViewsPerVideo) : 0;
                 const videosPerDay = c.accountsCount * c.videosPerAccountPerDay;
@@ -242,9 +266,19 @@ export default function CampaignsClient({ initialCampaigns }: CampaignsClientPro
                     </td>
                     <td className="py-3.5 px-4">
                       <div className="flex flex-col items-start gap-1">
-                        <span className={`text-[10px] font-semibold px-2 py-0.5 rounded border ${STATUS_COLORS[c.status] || STATUS_COLORS.DRAFT}`}>
-                          {c.status}
-                        </span>
+                        <div className="flex items-center gap-1">
+                          <span className={`text-[10px] font-semibold px-2 py-0.5 rounded border ${STATUS_COLORS[c.status] || STATUS_COLORS.DRAFT}`}>
+                            {c.status}
+                          </span>
+                          {c.priorityRank != null && (
+                            <span
+                              className="text-[10px] font-semibold px-1.5 py-0.5 rounded border text-amber-400 bg-amber-400/10 border-amber-500/20 font-mono"
+                              title={`Posting priority rank ${c.priorityRank} of ${priorityPoolSize}`}
+                            >
+                              P{c.priorityRank}
+                            </span>
+                          )}
+                        </div>
                         {c.priorityQuota != null && c.priorityQuota > 0 && (
                           (c.priorityUsed ?? 0) >= c.priorityQuota ? (
                             <span className="text-[10px] font-semibold px-2 py-0.5 rounded border text-zinc-500 bg-zinc-500/10 border-zinc-600/20">
@@ -309,7 +343,7 @@ export default function CampaignsClient({ initialCampaigns }: CampaignsClientPro
                   </tr>
                 );
               })}
-              {filtered.length === 0 && (
+              {sorted.length === 0 && (
                 <tr>
                   <td colSpan={11} className="py-12 text-center text-zinc-500">
                     No campaigns found matching the search and filters.
@@ -483,6 +517,15 @@ export default function CampaignsClient({ initialCampaigns }: CampaignsClientPro
             </form>
           </div>
         </div>
+      )}
+
+      {/* Posting Priority Modal */}
+      {isPriorityOpen && (
+        <PriorityOrderModal
+          campaigns={campaigns}
+          onClose={() => setIsPriorityOpen(false)}
+          onSaved={() => router.refresh()}
+        />
       )}
     </div>
   );

@@ -1,6 +1,8 @@
 import prisma from "@/lib/db";
+import { fromZonedTime } from "date-fns-tz";
 import { deleteDriveFile, getServiceAccountDriveClient } from "@/lib/google";
 import { parseCampaignBracket, canonicalDriveFileName } from "@/lib/services/posting-pipeline";
+import { getOrgTimezone, getZonedDateString } from "@/lib/services/timezone";
 import { CampaignStatus } from "@prisma/client";
 
 export const PAUSED_REMOVAL_NOTE = "Campaign paused — file removed from Drive";
@@ -354,4 +356,99 @@ export async function startPausedFilesRescan(campaignId: string): Promise<Paused
   rescanRuns.set(campaignId, progress);
   void runPausedFilesRescan(campaignId, progress);
   return progress;
+}
+
+// ── Standing priority pool (drag-ordered, rank-weighted daily division) ─────
+// Campaigns with priorityRank set form the pool; rank 1 is highest. Claims
+// prefer pool campaigns (after quota campaigns), dividing today's posts among
+// ACTIVE members by weight: position i (1-based) of M active members gets
+// weight M - i + 1, and the member with the lowest postsToday/weight ratio is
+// claimed next (see claimNextVideo in posting-pipeline.ts).
+
+const POOL_COUNTED_STATES = ["PUBLISHED", "PENDING_DELETION", "DELETED"];
+
+async function getStartOfTodayOrgTz(): Promise<Date> {
+  const tz = await getOrgTimezone();
+  return fromZonedTime(`${getZonedDateString(new Date(), tz)}T00:00:00`, tz);
+}
+
+async function getPoolPostsToday(campaignIds: string[]): Promise<Map<string, number>> {
+  const counts = new Map<string, number>();
+  if (campaignIds.length === 0) return counts;
+  const grouped = await prisma.postJob.groupBy({
+    by: ["campaignId"],
+    where: {
+      campaignId: { in: campaignIds },
+      state: { in: POOL_COUNTED_STATES },
+      publishedAt: { gte: await getStartOfTodayOrgTz() },
+    },
+    _count: { _all: true },
+  });
+  for (const g of grouped) {
+    if (g.campaignId) counts.set(g.campaignId, g._count._all);
+  }
+  return counts;
+}
+
+export interface PriorityPoolEntry {
+  id: string;
+  title: string;
+  status: CampaignStatus;
+  priorityRank: number;
+  postsToday: number;
+  weight: number;
+  sharePct: number;
+}
+
+/**
+ * Replace the priority pool with the given campaigns in drag order
+ * (index 0 → rank 1). Campaigns not listed are removed from the pool
+ * (priorityRank → null). Returns the saved pool.
+ */
+export async function setPriorityOrder(orderedIds: string[]): Promise<PriorityPoolEntry[]> {
+  await prisma.$transaction(async (tx) => {
+    await tx.campaign.updateMany({
+      where: { id: { notIn: orderedIds }, priorityRank: { not: null } },
+      data: { priorityRank: null },
+    });
+    for (let i = 0; i < orderedIds.length; i++) {
+      await tx.campaign.updateMany({
+        where: { id: orderedIds[i] },
+        data: { priorityRank: i + 1 },
+      });
+    }
+  });
+  return getPriorityOrder();
+}
+
+/**
+ * The priority pool ordered by rank, with today's org-tz post counts and the
+ * rank-weighted daily share. Only ACTIVE members carry weight; paused or
+ * otherwise non-active members report weight 0 / sharePct 0.
+ */
+export async function getPriorityOrder(): Promise<PriorityPoolEntry[]> {
+  const campaigns = await prisma.campaign.findMany({
+    where: { priorityRank: { not: null } },
+    orderBy: { priorityRank: "asc" },
+    select: { id: true, title: true, status: true, priorityRank: true },
+  });
+  const postsTodayById = await getPoolPostsToday(campaigns.map((c) => c.id));
+
+  const active = campaigns.filter((c) => c.status === CampaignStatus.ACTIVE);
+  const M = active.length;
+  const totalWeight = (M * (M + 1)) / 2;
+  const weightById = new Map(active.map((c, i) => [c.id, M - i]));
+
+  return campaigns.map((c) => {
+    const weight = weightById.get(c.id) ?? 0;
+    return {
+      id: c.id,
+      title: c.title,
+      status: c.status,
+      priorityRank: c.priorityRank as number,
+      postsToday: postsTodayById.get(c.id) ?? 0,
+      weight,
+      sharePct: weight > 0 ? Math.round((weight / totalWeight) * 1000) / 10 : 0,
+    };
+  });
 }

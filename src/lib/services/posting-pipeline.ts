@@ -1,4 +1,6 @@
 import prisma from "@/lib/db";
+import { Prisma } from "@prisma/client";
+import { fromZonedTime } from "date-fns-tz";
 import {
   listVideoFilesInFolder,
   makeFilePublic,
@@ -8,6 +10,7 @@ import {
 import { getMultiplierDriveClient } from "@/app/api/managed/multiplier/google/drive-helper";
 import { postViaPostPeer, driveDirectUrl } from "@/lib/postpeer";
 import { captureVideoLink } from "@/lib/services/analytics/capture";
+import { getOrgTimezone, getZonedDateString } from "@/lib/services/timezone";
 import fs from "fs";
 import path from "path";
 
@@ -216,9 +219,16 @@ export function canonicalDriveFileName(name: string | null | undefined): string 
  * repeated copies: "Copy of Copy of (Campaign) ..."). Tolerate that prefix
  * and square brackets — otherwise attribution silently fails, and an
  * unattributed job also bypasses the PAUSED-campaign filter in claimNextVideo.
+ *
+ * Campaign titles may themselves contain brackets — e.g. "Ready for the Fight
+ * (Pritzker)" exports as "(Ready for the Fight (Pritzker)) Name_uuid.mp4".
+ * Capture up to the LAST closing bracket followed by a separator (space,
+ * underscore, dot, or end), not the first — a non-greedy/first-bracket match
+ * truncates such titles and the campaign lookup silently misses, leaving the
+ * job untagged (no priority, no paused-filter).
  */
 export function parseCampaignBracket(fileName: string | null | undefined): string | null {
-  const m = fileName?.match(/^\s*(?:copy of\s+)*[\(\[]([^\)\]]+)[\)\]]/i);
+  const m = fileName?.match(/^\s*(?:copy of\s+)*[\(\[](.+)[\)\]](?=[\s_.]|$)/i);
   return m ? m[1].trim() : null;
 }
 
@@ -226,12 +236,47 @@ export function parseCampaignBracket(fileName: string | null | undefined): strin
  * 2. Claim next available video file atomically using SKIP LOCKED.
  */
 export async function claimNextVideo(accountId: string, workerId = "worker-default") {
+  // Standing priority pool (rank-weighted daily division), loaded before the
+  // transaction so the locking SELECT stays short. When the pool is empty the
+  // query below keeps the exact quota-only ordering.
+  const pool = await prisma.campaign.findMany({
+    where: { priorityRank: { not: null }, status: "ACTIVE" },
+    orderBy: { priorityRank: "asc" },
+    select: { id: true },
+  });
+
+  let ratioOrderSql = Prisma.empty;
+  if (pool.length > 0) {
+    const tz = await getOrgTimezone();
+    const startOfToday = fromZonedTime(`${getZonedDateString(new Date(), tz)}T00:00:00`, tz);
+    const grouped = await prisma.postJob.groupBy({
+      by: ["campaignId"],
+      where: {
+        campaignId: { in: pool.map((c) => c.id) },
+        state: { in: ["PUBLISHED", "PENDING_DELETION", "DELETED"] },
+        publishedAt: { gte: startOfToday },
+      },
+      _count: { _all: true },
+    });
+    const postsTodayById = new Map(grouped.map((g) => [g.campaignId, g._count._all]));
+    // Position i (1-based) of M active members → weight M - i + 1; claim the
+    // lowest postsToday/weight ratio first. Ratios are computed numbers and
+    // ids are DB-generated UUIDs — safe to interpolate as SQL text.
+    const M = pool.length;
+    const whens = pool
+      .map((c, i) => `WHEN '${c.id}' THEN ${(postsTodayById.get(c.id) ?? 0) / (M - i)}`)
+      .join(" ");
+    ratioOrderSql = Prisma.raw(`CASE c."id" ${whens} ELSE 0 END ASC,`);
+  }
+
   return await prisma.$transaction(async (tx) => {
     // Select first AVAILABLE job with pessimistic locking, skipping locked rows.
     // LEFT JOIN Campaign (plain column, no FK) to:
     //  - exclude jobs whose campaign is PAUSED (null campaignId is never paused)
-    //  - order priority campaigns first: priorityQuota set and not yet exhausted,
-    //    then oldest-first within each tier.
+    //  - order quota campaigns first (priorityQuota set and not yet exhausted),
+    //    then priority-pool campaigns (lowest postsToday/weight ratio first,
+    //    dividing the day by rank weight), then everything else — oldest-first
+    //    within each tier.
     // NOT EXISTS: never claim a file whose canonical name (Drive "Copy of "
     // prefixes stripped) was already published on this account — the same
     // video must never go out twice, even if it was re-added to the folder.
@@ -250,7 +295,10 @@ export async function claimNextVideo(accountId: string, workerId = "worker-defau
               = regexp_replace(j."driveFileName", '^\s*([Cc]opy [Oo]f\s+)+', '')
         )
       ORDER BY
-        CASE WHEN c."priorityQuota" IS NOT NULL AND c."priorityUsed" < c."priorityQuota" THEN 0 ELSE 1 END ASC,
+        CASE WHEN c."priorityQuota" IS NOT NULL AND c."priorityUsed" < c."priorityQuota" THEN 0
+             WHEN c."priorityRank" IS NOT NULL THEN 1
+             ELSE 2 END ASC,
+        ${ratioOrderSql}
         j."createdAt" ASC
       LIMIT 1
       FOR UPDATE OF j SKIP LOCKED
