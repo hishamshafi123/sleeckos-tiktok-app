@@ -15,16 +15,24 @@ function verifyCronSecret(req: NextRequest) {
 // covers captures that died at the provider call before writing a row),
 // then refresh stats for due tracked videos (tiered 24h/72h/7d). Runs in the
 // background — a crashed pass resumes from its cursor on the next trigger.
+// Manual backfill knobs (cron-secret guarded): ?retryLimit=&accounts=&skipRefresh=1
 export async function GET(req: NextRequest) {
   if (!verifyCronSecret(req)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
+  const sp = req.nextUrl.searchParams;
+  const clamp = (v: string | null, dflt: number, max: number) =>
+    Math.min(max, Math.max(1, parseInt(v || "", 10) || dflt));
+  const retryLimit = clamp(sp.get("retryLimit"), 50, 200);
+  const accounts = clamp(sp.get("accounts"), 40, 300);
+  const skipRefresh = sp.get("skipRefresh") === "1";
+
   (async () => {
     try {
-      await retryUnresolvedCaptures(50);
-      await reconcileMissingCaptures(40);
-      await runAnalyticsRefresh({ type: "daily" });
+      await retryUnresolvedCaptures(retryLimit);
+      await reconcileMissingCaptures(accounts);
+      if (!skipRefresh) await runAnalyticsRefresh({ type: "daily" });
     } catch (err) {
       console.error("[Cron analytics-refresh] Background pass failed:", err);
     }
