@@ -21,5 +21,19 @@ export default async function AdminCampaignsPage() {
     orderBy: { createdAt: "desc" },
   });
 
-  return <CampaignsClient initialCampaigns={campaigns} />;
+  // Override the drift-prone postedCount column with live PostJob state counts
+  // (one grouped query for all campaigns) so the list's "posts" column matches
+  // the campaign stats endpoint and the public API.
+  const postedByCampaign = await prisma.postJob.groupBy({
+    by: ["campaignId"],
+    where: { state: { in: ["PUBLISHED", "PENDING_DELETION", "DELETED"] } },
+    _count: { _all: true },
+  });
+  const postedMap = new Map(postedByCampaign.map((r) => [r.campaignId, r._count._all]));
+  const campaignsWithLiveCounts = campaigns.map((c) => ({
+    ...c,
+    postedCount: postedMap.get(c.id) ?? 0,
+  }));
+
+  return <CampaignsClient initialCampaigns={campaignsWithLiveCounts} />;
 }

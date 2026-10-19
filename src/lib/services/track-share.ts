@@ -108,7 +108,7 @@ export async function getPublicTrackingPayload(campaignId: string): Promise<Publ
   });
   if (!campaign) return null;
 
-  const [videos, scheduledAgg] = await Promise.all([
+  const [videos, scheduledAgg, postedJobsAgg] = await Promise.all([
     prisma.trackedVideo.findMany({
       where: { campaignId },
       select: {
@@ -129,6 +129,11 @@ export async function getPublicTrackingPayload(campaignId: string): Promise<Publ
     prisma.delivery.aggregate({
       where: { campaignId, status: { in: ["delivered", "scheduled"] } },
       _sum: { videoCount: true },
+    }),
+    // Posts published — derived live from PostJob states, not the drift-prone
+    // counter column (untagged-era posts + cascade-deleted accounts skew it).
+    prisma.postJob.count({
+      where: { campaignId, state: { in: ["PUBLISHED", "PENDING_DELETION", "DELETED"] } },
     }),
   ]);
 
@@ -202,7 +207,7 @@ export async function getPublicTrackingPayload(campaignId: string): Promise<Publ
   return {
     campaign: { id: campaign.id, title: campaign.title || campaign.name || "Campaign" },
     totals: {
-      posted: campaign.postedCount,
+      posted: postedJobsAgg,
       captured: captured.length,
       published,
       scheduled: scheduledAgg._sum.videoCount ?? 0,

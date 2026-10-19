@@ -49,10 +49,29 @@ export async function GET(
   try {
     const campaign = await prisma.campaign.findUnique({
       where: { id },
-      select: { id: true, exportedCount: true, postedCount: true, failedCount: true },
+      select: { id: true, exportedCount: true },
     });
     if (!campaign) {
       return NextResponse.json({ error: "Campaign not found" }, { status: 404 });
+    }
+
+    // Posted/failed are derived LIVE from PostJob state counts — the counter
+    // columns drift historically (untagged-era posts, cascade-deleted accounts)
+    // and misstate reality by thousands on big campaigns. Indexed on
+    // (campaignId, state), so this is cheap.
+    const stateCounts = await prisma.postJob.groupBy({
+      by: ["state"],
+      where: {
+        campaignId: id,
+        state: { in: ["PUBLISHED", "PENDING_DELETION", "DELETED", "FAILED"] },
+      },
+      _count: { _all: true },
+    });
+    let postedCount = 0;
+    let failedCount = 0;
+    for (const row of stateCounts) {
+      if (row.state === "FAILED") failedCount = row._count._all;
+      else postedCount += row._count._all;
     }
 
     const tz = await getOrgTimezone();
@@ -110,15 +129,15 @@ export async function GET(
       if (bucket) bucket[key] += e.count;
     }
 
-    const attempted = campaign.postedCount + campaign.failedCount;
+    const attempted = postedCount + failedCount;
     const postSuccessRate =
-      attempted > 0 ? Math.round((campaign.postedCount / attempted) * 100) : 0;
+      attempted > 0 ? Math.round((postedCount / attempted) * 100) : 0;
 
     return NextResponse.json({
       totals: {
         exported: campaign.exportedCount,
-        posted: campaign.postedCount,
-        failed: campaign.failedCount,
+        posted: postedCount,
+        failed: failedCount,
         postSuccessRate,
       },
       rangeTotals,
