@@ -375,6 +375,10 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
   const [searchingExportFolders, setSearchingExportFolders] = useState(false);
   const [searchedExportFolders, setSearchedExportFolders] = useState<{ id: string; name: string; defaultPostCount: number; mappedAccount: { id: string; tiktokUsername: string; color?: string } | null }[]>([]);
   const [selectedExportFolders, setSelectedExportFolders] = useState<{ id: string; name: string; count: number; defaultPostCount?: number; mappedAccount: { id: string; tiktokUsername: string; color?: string } | null }[]>([]);
+  // Selected-pane bulk tools: text filter, checkbox multi-select, bulk set-count / remove
+  const [selectedPaneQuery, setSelectedPaneQuery] = useState("");
+  const [checkedSelectedIds, setCheckedSelectedIds] = useState<Set<string>>(new Set());
+  const [bulkCountInput, setBulkCountInput] = useState("");
   const [includeExportedSmartExport, setIncludeExportedSmartExport] = useState(false);
   const [exportPreview, setExportPreview] = useState<{
     videoBudget: { totalAvailable: number; assigned: number; videosLeft: number };
@@ -671,6 +675,42 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
         ? prev.filter((f) => f.id !== folder.id)
         : [...prev, { ...folder, count: prefillExportCount(folder.defaultPostCount) }]
     );
+  };
+
+  // ── Selected-pane bulk tools ────────────────────────────────────────────
+  const toggleCheckedSelected = (id: string) => {
+    setCheckedSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  // Set the per-account video count for every checked account at once.
+  const applyBulkCountToChecked = () => {
+    const n = parseInt(bulkCountInput, 10);
+    if (!Number.isFinite(n) || n < 0) {
+      toast.error("Enter a valid count (0 or more)");
+      return;
+    }
+    const cap = selectedGroupIds.size;
+    if (n > cap) {
+      toast.error(`Per-account count cannot exceed selected groups (${cap})!`);
+      return;
+    }
+    setSelectedExportFolders((prev) =>
+      prev.map((f) => (checkedSelectedIds.has(f.id) ? { ...f, count: n } : f))
+    );
+    toast.success(`Set count ${n} on ${checkedSelectedIds.size} account${checkedSelectedIds.size === 1 ? "" : "s"}`);
+  };
+
+  // Remove every checked account from the selection at once.
+  const removeCheckedSelected = () => {
+    const n = checkedSelectedIds.size;
+    setSelectedExportFolders((prev) => prev.filter((f) => !checkedSelectedIds.has(f.id)));
+    setCheckedSelectedIds(new Set());
+    toast.success(`Removed ${n} account${n === 1 ? "" : "s"} from the selection`);
   };
 
   // Additive-only add used by drag-paint, shift-range and paste: never toggles off,
@@ -5573,6 +5613,11 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
         const cannotExport = overAllocated || (exportPreview && exportPreview.unfulfillable.length > 0) || selectedExportFolders.length === 0;
 
         const sortedSelected = [...selectedExportFolders].sort((a, b) => naturalCompare(a.name || "", b.name || ""));
+        // Selected-pane text filter — find specific accounts inside a big selection
+        const visibleSelected = selectedPaneQuery.trim()
+          ? sortedSelected.filter((f) => exportDisplayName(f).toLowerCase().includes(selectedPaneQuery.trim().toLowerCase()))
+          : sortedSelected;
+        const allVisibleChecked = visibleSelected.length > 0 && visibleSelected.every((f) => checkedSelectedIds.has(f.id));
         const sortedResults = getSortedExportResults();
 
         return (
@@ -6061,15 +6106,78 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
                     </p>
                   </div>
 
+                  {/* Bulk tools: filter within the selection + checkbox multi-select actions */}
+                  {sortedSelected.length > 0 && (
+                    <div className="flex-shrink-0 pb-2 space-y-1.5">
+                      <div className="relative">
+                        <Search className="absolute left-2 top-1.5 w-3 h-3 text-[#71717a]" />
+                        <input
+                          type="text"
+                          value={selectedPaneQuery}
+                          onChange={(e) => setSelectedPaneQuery(e.target.value)}
+                          placeholder="Filter selected accounts…"
+                          className="w-full bg-[#09090b] border border-[#27272a] rounded-md pl-6 pr-2 py-1 text-[10px] text-white placeholder-[#52525b] focus:outline-none focus:border-[#E11D48]"
+                        />
+                      </div>
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <label className="flex items-center gap-1 text-[9px] text-[#a1a1aa] font-semibold cursor-pointer select-none">
+                          <input
+                            type="checkbox"
+                            checked={allVisibleChecked}
+                            onChange={() => {
+                              setCheckedSelectedIds(allVisibleChecked ? new Set() : new Set(visibleSelected.map((f) => f.id)));
+                            }}
+                            className="rounded border-[#27272a] bg-[#09090b] text-blue-600 focus:ring-blue-600/30 w-3 h-3 cursor-pointer"
+                          />
+                          {checkedSelectedIds.size > 0 ? `${checkedSelectedIds.size} checked` : "All"}
+                        </label>
+                        {checkedSelectedIds.size > 0 && (
+                          <>
+                            <div className="flex items-center bg-[#09090b] border border-[#27272a] rounded-md overflow-hidden flex-shrink-0">
+                              <input
+                                type="text"
+                                inputMode="numeric"
+                                value={bulkCountInput}
+                                onChange={(e) => setBulkCountInput(e.target.value.replace(/[^0-9]/g, ""))}
+                                placeholder="count"
+                                className="w-12 bg-transparent px-1.5 py-0.5 text-[10px] text-white placeholder-[#52525b] focus:outline-none text-center font-mono"
+                              />
+                              <button
+                                type="button"
+                                onClick={applyBulkCountToChecked}
+                                title={`Set this count on all ${checkedSelectedIds.size} checked accounts`}
+                                className="px-1.5 py-0.5 bg-[#27272a] hover:bg-[#3f3f46] text-white text-[9px] font-bold transition-colors cursor-pointer"
+                              >
+                                Set
+                              </button>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={removeCheckedSelected}
+                              title={`Remove all ${checkedSelectedIds.size} checked accounts from the selection`}
+                              className="px-1.5 py-0.5 bg-red-500/15 hover:bg-red-500/25 border border-red-500/40 text-red-300 text-[9px] font-bold rounded-md transition-colors cursor-pointer"
+                            >
+                              Remove {checkedSelectedIds.size}
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
                   {/* Selected tabs: internal scroll on desktop; whole pane scrolls (capped) below md */}
                   <div className="flex-shrink-0 md:flex-1 md:min-h-0 md:overflow-y-auto custom-scrollbar bg-[#09090b] border border-[#27272a] rounded-xl p-2">
                     {sortedSelected.length === 0 ? (
                       <p className="text-[10px] text-[#71717a] italic px-1 py-0.5">
                         No accounts selected — click, drag across, or paste from the results to add.
                       </p>
+                    ) : visibleSelected.length === 0 ? (
+                      <p className="text-[10px] text-[#71717a] italic px-1 py-0.5">
+                        No selected accounts match &quot;{selectedPaneQuery}&quot;.
+                      </p>
                     ) : (
                       <div className="flex flex-col gap-1.5">
-                        {sortedSelected.map((folder) => {
+                        {visibleSelected.map((folder) => {
                           const colKey = folder.mappedAccount?.color || "zinc";
                           const baseColor = COLOR_MAP[colKey] || (colKey.startsWith("#") ? colKey : null) || COLOR_MAP.zinc;
                           const origIndex = selectedExportFolders.findIndex((f) => f.id === folder.id);
@@ -6079,6 +6187,13 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
                               className="flex items-center gap-2 pl-2 pr-1.5 py-1.5 rounded-md border text-[11px] font-medium text-white"
                               style={{ borderColor: `${baseColor}55`, borderLeft: `3px solid ${baseColor}`, backgroundColor: `${baseColor}14` }}
                             >
+                              <input
+                                type="checkbox"
+                                checked={checkedSelectedIds.has(folder.id)}
+                                onChange={() => toggleCheckedSelected(folder.id)}
+                                title="Check for bulk actions"
+                                className="rounded border-[#27272a] bg-[#09090b] text-blue-600 focus:ring-blue-600/30 w-3 h-3 cursor-pointer flex-shrink-0"
+                              />
                               <span className="truncate flex-1 min-w-0" title={exportDisplayName(folder)}>
                                 {exportDisplayName(folder)}
                               </span>
