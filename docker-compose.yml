@@ -49,14 +49,13 @@ services:
     deploy:
       resources:
         limits:
-          # Sized for KVM8 (8 vCPU / 32GB): 4 render workers × 2 ffmpeg threads
-          # (RENDER_CONCURRENCY / FFMPEG_THREADS) + 2-3 Remotion still lanes
-          # (REMOTION_STILL_CONCURRENCY) + 2 Whisper lanes (TRANSCRIBE_CONCURRENCY),
-          # with headroom for the web server. Caps don't reserve — on the current
-          # 4-vCPU box the kernel simply shares fairly; set the envs down
-          # (RENDER_CONCURRENCY=2 etc.) until the upgrade lands.
-          memory: 14g
-          cpus: "6.0"
+          # Caps are validated against the host's actual cores — keep them
+          # env-driven so the KVM8 upgrade is a .env change, not a code change.
+          #   KVM4 (now):    APP_CPU_LIMIT=3.5 APP_MEM_LIMIT=6g
+          #   KVM8 (target): APP_CPU_LIMIT=6.0 APP_MEM_LIMIT=14g
+          # Render parallelism envs are documented above (environment: block).
+          memory: ${APP_MEM_LIMIT:-6g}
+          cpus: "${APP_CPU_LIMIT:-3.5}"
 
 volumes:
   pgdata:
