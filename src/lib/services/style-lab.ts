@@ -472,14 +472,19 @@ async function getBundle(): Promise<string> {
   return getRemotionBundle();
 }
 
-// In-process serial queue — one render at a time, like the style-studio worker.
-// Exported: the Multiplier's Remotion caption-still path routes through this
-// same queue so heavy Remotion stills never stampede the 2-core VPS.
-let renderQueue: Promise<unknown> = Promise.resolve();
+// In-process N-lane queue — like the style-studio worker, but parallelizable.
+// The Multiplier's Remotion caption-still path routes through this same queue.
+// Each lane is a headless-Chrome render (~300-500MB RAM), so default 2 lanes;
+// raise REMOTION_STILL_CONCURRENCY on bigger boxes (KVM8: 3-4 lanes).
+const STILL_LANES = Math.max(1, parseInt(process.env.REMOTION_STILL_CONCURRENCY || "2", 10) || 2);
+let renderLanes: Promise<unknown>[] = Array.from({ length: STILL_LANES }, () => Promise.resolve());
+let nextLane = 0;
 
 export function enqueueRender<T>(job: () => Promise<T>): Promise<T> {
-  const run = renderQueue.then(job);
-  renderQueue = run.catch(() => undefined);
+  const lane = nextLane;
+  nextLane = (nextLane + 1) % renderLanes.length;
+  const run = renderLanes[lane].then(job);
+  renderLanes[lane] = run.catch(() => undefined);
   return run;
 }
 

@@ -751,8 +751,8 @@ export async function composeOutput(
     // keeps file sizes bounded, so the tradeoff is only a slight efficiency loss.
     "-preset", "veryfast",
     // x264 sizes its thread pool from the HOST core count and ignores the
-    // container's CPU limit — pin it so 2 concurrent renders don't thrash.
-    "-threads", "2",
+    // container's CPU limit — pin it so concurrent renders don't thrash.
+    "-threads", String(FFMPEG_THREADS),
     "-crf", "26",
     "-maxrate", "8M",
     "-bufsize", "16M",
@@ -810,7 +810,7 @@ export async function composeOutputPlain(
     "-map", "0:a?",
     "-c:v", "libx264",
     "-preset", "veryfast",
-    "-threads", "2",
+    "-threads", String(FFMPEG_THREADS),
     "-crf", "26",
     "-maxrate", "8M",
     "-bufsize", "16M",
@@ -895,11 +895,13 @@ export async function resumeRenderQueueIfWorkPending(): Promise<{ recovered: num
   return { recovered, pending };
 }
 
-// 2 concurrent renders: each ffmpeg is pinned to -threads 2, so two workers
-// keep ~4 threads busy — sized for the app container's raised 3-core limit.
-// More than 2 would oversubscribe the shared CPU (renders are CPU-bound) and
-// starve the web server; it would not make total throughput any faster.
-const RENDER_CONCURRENCY = 2;
+// Render worker count and ffmpeg thread pinning are env-tunable so a bigger
+// VPS (or a dedicated render box) is a config change, not a code change.
+// KVM8 target: 4 workers × 2 threads = 8 ffmpeg threads across 8 vCPUs.
+// On the current 4-core box, keep RENDER_CONCURRENCY=2 in the env to avoid
+// starving the web server — more workers than CPU threads doesn't help.
+const RENDER_CONCURRENCY = Math.max(1, parseInt(process.env.RENDER_CONCURRENCY || "2", 10) || 2);
+const FFMPEG_THREADS = Math.max(1, parseInt(process.env.FFMPEG_THREADS || "2", 10) || 2);
 
 async function processRenderQueue() {
   console.log(`[Multiplier Worker] Starting processing render queue (concurrency ${RENDER_CONCURRENCY})...`);
@@ -1500,32 +1502,42 @@ export async function processBulkBatch(jobId: string) {
     };
     const hookWorkers = Array.from({ length: HOOK_CONCURRENCY }, () => hookWorker());
 
-    for (const item of pendingItems) {
-      try {
-        if (!item.groupId) throw new Error("Batch item has no associated group");
-
-        await prisma.multiplierBatchJobItem.update({
-          where: { id: item.id },
-          data: { status: "TRANSCRIBING", error: null },
-        });
-        await transcribeGroup(item.groupId);
-
-        hookQueue.push({ itemId: item.id, groupId: item.groupId, fileName: item.fileName });
-      } catch (err: any) {
-        console.error(`[Multiplier Bulk Batch] Item ${item.id} (${item.fileName}) failed:`, err);
-        // One bad video must not kill the batch — mark it and continue. Best-
-        // effort: if this update itself throws (DB hiccup), the loop must still
-        // continue; the boot resume / retry-failed path re-queues it later.
+    // Transcription worker pool: Whisper is CPU-bound but mostly idle-waits on
+    // process I/O, so 2 parallel transcriptions roughly halve batch intake time
+    // without starving renders (env-tunable for bigger boxes).
+    const TRANSCRIBE_CONCURRENCY = Math.max(1, parseInt(process.env.TRANSCRIBE_CONCURRENCY || "2", 10) || 2);
+    const transcriptionQueue = [...pendingItems];
+    const transcribeWorker = async () => {
+      for (;;) {
+        const item = transcriptionQueue.shift();
+        if (!item) return;
         try {
+          if (!item.groupId) throw new Error("Batch item has no associated group");
+
           await prisma.multiplierBatchJobItem.update({
             where: { id: item.id },
-            data: { status: "FAILED", error: err?.message || String(err) },
+            data: { status: "TRANSCRIBING", error: null },
           });
-        } catch (markErr) {
-          console.error(`[Multiplier Bulk Batch] Could not mark item ${item.id} FAILED:`, markErr);
+          await transcribeGroup(item.groupId);
+
+          hookQueue.push({ itemId: item.id, groupId: item.groupId, fileName: item.fileName });
+        } catch (err: any) {
+          console.error(`[Multiplier Bulk Batch] Item ${item.id} (${item.fileName}) failed:`, err);
+          // One bad video must not kill the batch — mark it and continue. Best-
+          // effort: if this update itself throws (DB hiccup), the loop must still
+          // continue; the boot resume / retry-failed path re-queues it later.
+          try {
+            await prisma.multiplierBatchJobItem.update({
+              where: { id: item.id },
+              data: { status: "FAILED", error: err?.message || String(err) },
+            });
+          } catch (markErr) {
+            console.error(`[Multiplier Bulk Batch] Could not mark item ${item.id} FAILED:`, markErr);
+          }
         }
       }
-    }
+    };
+    await Promise.all(Array.from({ length: TRANSCRIBE_CONCURRENCY }, () => transcribeWorker()));
     transcriptionDone = true;
     await Promise.all(hookWorkers);
 

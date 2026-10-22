@@ -30,6 +30,14 @@ services:
     environment:
       # Constructed from the individual POSTGRES_* vars so password is set once.
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      # Render pipeline parallelism — tuned per box size (defaults are safe for
+      # the current 4-vCPU box; raise after the KVM8 upgrade):
+      #   KVM4 (now):   RENDER_CONCURRENCY=2 FFMPEG_THREADS=2 REMOTION_STILL_CONCURRENCY=2 TRANSCRIBE_CONCURRENCY=2
+      #   KVM8 (target): RENDER_CONCURRENCY=4 FFMPEG_THREADS=2 REMOTION_STILL_CONCURRENCY=3 TRANSCRIBE_CONCURRENCY=2
+      RENDER_CONCURRENCY: ${RENDER_CONCURRENCY:-2}
+      FFMPEG_THREADS: ${FFMPEG_THREADS:-2}
+      REMOTION_STILL_CONCURRENCY: ${REMOTION_STILL_CONCURRENCY:-2}
+      TRANSCRIBE_CONCURRENCY: ${TRANSCRIBE_CONCURRENCY:-2}
     ports:
       # Bind to localhost only — nginx terminates TLS and proxies here.
       - "127.0.0.1:${PORT:-3000}:${PORT:-3000}"
@@ -41,11 +49,14 @@ services:
     deploy:
       resources:
         limits:
-          # Raised after measuring render headroom: 2 concurrent factory renders
-          # (2 ffmpeg x -threads 2 + Chromium). Vinci idles most of the time;
-          # the kernel shares fairly when it bursts.
-          memory: 6g
-          cpus: "3.0"
+          # Sized for KVM8 (8 vCPU / 32GB): 4 render workers × 2 ffmpeg threads
+          # (RENDER_CONCURRENCY / FFMPEG_THREADS) + 2-3 Remotion still lanes
+          # (REMOTION_STILL_CONCURRENCY) + 2 Whisper lanes (TRANSCRIBE_CONCURRENCY),
+          # with headroom for the web server. Caps don't reserve — on the current
+          # 4-vCPU box the kernel simply shares fairly; set the envs down
+          # (RENDER_CONCURRENCY=2 etc.) until the upgrade lands.
+          memory: 14g
+          cpus: "6.0"
 
 volumes:
   pgdata:
