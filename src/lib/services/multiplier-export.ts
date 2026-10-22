@@ -404,6 +404,69 @@ export async function retryExportAssignment(assignmentId: string) {
 // (the loop only fetches "pending") — older than this, they're reset.
 const STALE_UPLOADING_MINUTES = 10;
 
+/**
+ * True when an upload failure is the master Google account's Drive storage
+ * quota being exhausted — a job-fatal condition: every remaining upload will
+ * fail the same way, so the job gets paused instead of burning through.
+ * Matches the raw googleapis error shape and the "Auth error (403): ..."
+ * string uploadWithRetry wraps it in.
+ */
+export function isDriveQuotaError(err: any): boolean {
+  const message: string =
+    err?.response?.data?.error?.message || err?.message || String(err ?? "");
+  const reason: string = String(
+    err?.response?.data?.error?.errors?.[0]?.reason ?? err?.code ?? ""
+  );
+  if (/storage.?quota/i.test(message) || /storage.?quota/i.test(reason)) return true;
+  const status = err?.response?.status;
+  if ((status === 403 || /^Auth error \(403\)/.test(message)) && /quota/i.test(message)) return true;
+  return false;
+}
+
+/**
+ * Pause a job whose uploads are failing on Drive storage quota. Still-pending
+ * assignments stay pending so a later retry resumes cleanly. The updateMany
+ * status guard makes this race-safe: a job that already finalized (done/failed)
+ * is never re-paused, and if a retry raced an in-flight quota failure, pausing
+ * again is correct — the quota is still full.
+ */
+async function pauseJobForQuota(jobId: string, reason: string) {
+  const grouped = await prisma.smartExportAssignment.groupBy({
+    by: ["status"],
+    where: { jobId },
+    _count: true,
+  });
+  let successCount = 0;
+  let failedCount = 0;
+  let pendingCount = 0;
+  for (const row of grouped) {
+    if (row.status === "done") successCount = row._count;
+    else if (row.status === "failed") failedCount = row._count;
+    else pendingCount += row._count;
+  }
+
+  const res = await prisma.smartExportJob.updateMany({
+    where: { id: jobId, status: { in: ["pending", "uploading"] } },
+    data: {
+      status: "paused_quota",
+      summary: {
+        total: successCount + failedCount + pendingCount,
+        successCount,
+        failedCount,
+        pendingCount,
+        pausedAt: new Date().toISOString(),
+        pauseReason: reason,
+      },
+    },
+  });
+  if (res.count > 0) {
+    console.warn(
+      `[Smart Export Worker] Job ${jobId} paused — Drive storage quota exceeded (${reason}). ` +
+        `${pendingCount} assignment(s) left pending; free space on the master Google account, then retry the job.`
+    );
+  }
+}
+
 let isExportWorkerRunning = false;
 
 export async function triggerSmartExportWorker() {
@@ -507,6 +570,62 @@ export async function resumeSmartExportJob(jobId: string): Promise<{
   return { requeuedFailed, requeuedStaleUploading, pendingTotal };
 }
 
+/**
+ * Job-level retry used by POST /api/multiplier/smart-export/jobs/[id]/retry.
+ * Requeues failed (error cleared) + stale "uploading" assignments as pending,
+ * resets the job to "pending" (clears failed/paused_quota), and retriggers the
+ * worker. Refuses while a worker is actively uploading this job's files — a
+ * fresh "uploading" row means a live worker holds it. Also resumes jobs stuck
+ * in "pending" from a dead queue (requeued may be 0 — the worker kick is the
+ * point).
+ */
+export async function retrySmartExportJob(jobId: string): Promise<{ requeued: number }> {
+  const job = await prisma.smartExportJob.findUnique({ where: { id: jobId } });
+  if (!job) throw new Error("Smart Export Job not found");
+
+  const staleBefore = new Date(Date.now() - STALE_UPLOADING_MINUTES * 60 * 1000);
+  const activeUploads = await prisma.smartExportAssignment.count({
+    where: { jobId, status: "uploading", updatedAt: { gte: staleBefore } },
+  });
+  if (job.status === "uploading" && activeUploads > 0) {
+    throw new Error("Job is currently processing");
+  }
+
+  const requeueable = await prisma.smartExportAssignment.findMany({
+    where: {
+      jobId,
+      OR: [{ status: "failed" }, { status: "uploading", updatedAt: { lt: staleBefore } }],
+    },
+    select: { id: true, videoId: true },
+  });
+
+  if (requeueable.length > 0) {
+    await prisma.$transaction([
+      prisma.smartExportAssignment.updateMany({
+        where: { id: { in: requeueable.map((a) => a.id) } },
+        data: { status: "pending", error: null },
+      }),
+      // Videos of failed assignments were reverted to not_exported on failure —
+      // mark them exporting again so they don't look eligible for a new plan.
+      prisma.multiplierOutput.updateMany({
+        where: { id: { in: requeueable.map((a) => a.videoId) } },
+        data: { exportStatus: "exporting" },
+      }),
+    ]);
+  }
+
+  await prisma.smartExportJob.update({
+    where: { id: jobId },
+    data: { status: "pending" },
+  });
+
+  triggerSmartExportWorker().catch((err) => {
+    console.error("[Smart Export Service] Failed to trigger background worker on job retry:", err);
+  });
+
+  return { requeued: requeueable.length };
+}
+
 // Jobs stuck in pending/uploading whose assignments are ALL terminal (crash
 // between the last assignment and the status flip) get their final status.
 async function finalizeDrainedJobs() {
@@ -553,8 +672,10 @@ const assignmentClaimInclude = {
  * candidate id, but only one transition pending → uploading succeeds.
  */
 async function claimNextAssignment() {
+  // Jobs paused on Drive quota are skipped at candidate selection so their
+  // assignments stay pending for a later retry.
   const candidate = await prisma.smartExportAssignment.findFirst({
-    where: { status: "pending" },
+    where: { status: "pending", job: { status: { notIn: ["paused_quota"] } } },
     orderBy: { id: "asc" },
     select: { id: true },
   });
@@ -572,6 +693,17 @@ async function claimNextAssignment() {
   });
   // Row vanished between claim and fetch (e.g. cascade delete) — treat as lost.
   if (!assignment) return "lost";
+
+  // The job may have been paused for quota between candidate read and claim —
+  // release the claim back to pending and treat as lost (the candidate filter
+  // above excludes it on the next pass).
+  if (assignment.job.status === "paused_quota") {
+    await prisma.smartExportAssignment.updateMany({
+      where: { id: assignment.id, status: "uploading" },
+      data: { status: "pending" },
+    });
+    return "lost";
+  }
 
   // Update parent job status to uploading if it was pending
   if (assignment.job.status === "pending") {
@@ -760,6 +892,17 @@ async function workerLoop(workerIndex: number) {
           markErr
         );
       }
+
+      // Quota exhausted is job-fatal: pause the job so workers stop claiming
+      // its assignments instead of failing thousands of uploads one by one.
+      if (isDriveQuotaError(err)) {
+        await pauseJobForQuota(assignment.jobId, errMsg).catch((pauseErr) => {
+          console.error(
+            `[Smart Export Worker] Failed to pause job ${assignment.jobId} after quota error:`,
+            pauseErr
+          );
+        });
+      }
     }
 
     // Update parent job status check
@@ -789,7 +932,9 @@ async function updateParentJobStatus(jobId: string) {
 
   const allFinished = unfinishedCount === 0;
   if (allFinished) {
-    const finalStatus = failedCount > 0 ? "failed" : "done";
+    // Partial success is DONE with failures — only a job where nothing
+    // uploaded at all counts as failed.
+    const finalStatus = failedCount > 0 && successCount === 0 ? "failed" : "done";
 
     const summary = {
       total: successCount + failedCount,

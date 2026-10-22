@@ -196,6 +196,52 @@ const WARMUP_BLOCKED_REASONS: Record<string, string> = {
   not_connected: "Drive not connected",
 };
 
+// Smart Export job status presentation. Partial success is "Done (N failed)"
+// (amber), clean completion is "Done" (green), total failure / quota pause are
+// red. `summary` is the job's JSON summary ({total, successCount, failedCount}).
+type SmartExportJobListItem = {
+  id: string;
+  status: string;
+  days: number;
+  createdAt: string;
+  summary?: { total?: number; successCount?: number; failedCount?: number; pendingCount?: number } | null;
+};
+
+function smartExportJobStatusMeta(job: { status: string; summary?: { failedCount?: number } | null }): {
+  label: string;
+  chipClass: string;
+  textClass: string;
+} {
+  const failedCount = job.summary?.failedCount ?? 0;
+  if (job.status === "done" && failedCount > 0) {
+    return {
+      label: `Done (${failedCount} failed)`,
+      chipClass: "bg-amber-500/10 text-amber-400 border-amber-500/20",
+      textClass: "text-amber-400",
+    };
+  }
+  if (job.status === "done") {
+    return { label: "Done", chipClass: "bg-green-500/10 text-green-400 border-green-500/20", textClass: "text-green-400" };
+  }
+  if (job.status === "paused_quota") {
+    return {
+      label: "Paused — Drive storage full",
+      chipClass: "bg-red-500/10 text-red-400 border-red-500/20",
+      textClass: "text-red-400",
+    };
+  }
+  if (job.status === "failed") {
+    return { label: "Failed", chipClass: "bg-red-500/10 text-red-500 border-red-500/20", textClass: "text-red-400" };
+  }
+  if (job.status === "uploading") {
+    return { label: "Uploading", chipClass: "bg-blue-500/10 text-blue-400 border-blue-500/20", textClass: "text-blue-400" };
+  }
+  return { label: "Pending", chipClass: "bg-gray-500/10 text-gray-400 border-gray-500/20", textClass: "text-blue-400" };
+}
+
+// A stuck-pending job (queue died before it started) becomes retryable after this age.
+const SMART_EXPORT_STUCK_PENDING_MS = 60 * 60 * 1000;
+
 export default function ClientPage({ session }: ClientPageProps = {}) {
   const getServeUrl = (path: string | null | undefined) => {
     if (!path) return "";
@@ -435,6 +481,9 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
   const [exportJobDetails, setExportJobDetails] = useState<any | null>(null);
   const [exportPollNonce, setExportPollNonce] = useState(0);
   const [resumingExportJob, setResumingExportJob] = useState(false);
+  // Recent Smart Export jobs list (queue tab) + per-job retry-in-flight marker
+  const [exportJobs, setExportJobs] = useState<SmartExportJobListItem[]>([]);
+  const [retryingExportJobId, setRetryingExportJobId] = useState<string | null>(null);
   const [pollingJobDetails, setPollingJobDetails] = useState(false);
   const [exportDays, setExportDays] = useState(1);
   const [exportRunError, setExportRunError] = useState<string | null>(null);
@@ -1229,7 +1278,7 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
           const data = await res.json();
           if (active) {
             setExportJobDetails(data.job);
-            if (data.job.status === "done" || data.job.status === "failed") {
+            if (data.job.status === "done" || data.job.status === "failed" || data.job.status === "paused_quota") {
               fetchData();
             } else {
               setTimeout(fetchProgress, 3000);
@@ -1270,6 +1319,51 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
       toast.error(err.message || "Failed to resume job");
     } finally {
       setResumingExportJob(false);
+    }
+  };
+
+  // Recent Smart Export jobs list (queue tab) — polled while the tab is open.
+  const fetchExportJobs = async () => {
+    try {
+      const res = await fetch("/api/managed/multiplier/smart-export/jobs");
+      if (!res.ok) return;
+      const data = await res.json();
+      setExportJobs(data.jobs || []);
+    } catch (err) {
+      console.error("Error loading smart export jobs:", err);
+    }
+  };
+
+  useEffect(() => {
+    if (activeTab !== "queue") return;
+    fetchExportJobs();
+    const intervalId = setInterval(fetchExportJobs, 10000);
+    return () => clearInterval(intervalId);
+  }, [activeTab]);
+
+  // Retry a failed / quota-paused / stuck-pending Smart Export job via
+  // POST /api/multiplier/smart-export/jobs/[id]/retry, then refresh the list.
+  const handleRetryExportJob = async (jobId: string) => {
+    if (retryingExportJobId) return;
+    setRetryingExportJobId(jobId);
+    try {
+      const res = await fetch(`/api/multiplier/smart-export/jobs/${jobId}/retry`, {
+        method: "POST",
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Retry failed");
+      toast.success(
+        data.requeued > 0
+          ? `Requeued ${data.requeued} assignment${data.requeued === 1 ? "" : "s"} — export resumed`
+          : "Export resumed"
+      );
+      await fetchExportJobs();
+      // If the job's progress modal is open, restart its polling.
+      if (exportingJobId === jobId) setExportPollNonce((n) => n + 1);
+    } catch (err: any) {
+      toast.error(err.message || "Failed to retry export job");
+    } finally {
+      setRetryingExportJobId(null);
     }
   };
 
@@ -4856,6 +4950,89 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
             </div>
           </div>
 
+          {/* Smart Export jobs */}
+          {exportJobs.length > 0 && (
+            <div className="bg-[#18181b] rounded-xl border border-[#27272a] p-5 space-y-3">
+              <div className="flex items-center justify-between gap-3">
+                <h3 className="font-bold text-sm text-[#a1a1aa] uppercase tracking-wider">Smart Export Jobs</h3>
+                <button
+                  onClick={fetchExportJobs}
+                  className="p-1.5 bg-[#09090b] border border-[#27272a] rounded-lg hover:bg-[#27272a] transition-all"
+                  title="Refresh export jobs"
+                >
+                  <RefreshCw className="w-3.5 h-3.5 text-[#a1a1aa]" />
+                </button>
+              </div>
+              <div className="space-y-2">
+                {exportJobs.map((job) => {
+                  const meta = smartExportJobStatusMeta(job);
+                  const successCount = job.summary?.successCount ?? 0;
+                  const failedCount = job.summary?.failedCount ?? 0;
+                  const total = job.summary?.total ?? 0;
+                  const stuckPending =
+                    job.status === "pending" &&
+                    Date.now() - new Date(job.createdAt).getTime() > SMART_EXPORT_STUCK_PENDING_MS;
+                  const retryable =
+                    job.status === "failed" ||
+                    job.status === "paused_quota" ||
+                    stuckPending ||
+                    (job.status === "done" && failedCount > 0);
+                  return (
+                    <div
+                      key={job.id}
+                      className="bg-[#09090b] border border-[#27272a] rounded-xl px-4 py-3 flex items-center justify-between gap-3"
+                    >
+                      <button
+                        onClick={() => setExportingJobId(job.id)}
+                        className="min-w-0 text-left space-y-1 cursor-pointer group"
+                        title="Open job progress"
+                      >
+                        <p className="text-xs font-semibold text-[#71717a] font-mono truncate group-hover:text-[#a1a1aa] transition-colors">
+                          Job {job.id.slice(0, 8)} · {new Date(job.createdAt).toLocaleString()} · {job.days} day{job.days !== 1 ? "s" : ""}
+                        </p>
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className={`px-2.5 py-0.5 rounded-full border text-[10px] font-bold ${meta.chipClass}`}>
+                            {meta.label}
+                          </span>
+                          {total > 0 && (
+                            <span className="text-[10px] text-[#71717a] font-medium">
+                              {successCount}/{total} uploaded{failedCount > 0 ? ` · ${failedCount} failed` : ""}
+                            </span>
+                          )}
+                        </div>
+                        {job.status === "paused_quota" && (
+                          <p className="text-[10px] text-red-400/80 font-medium">
+                            Free space on the master Google account, then retry.
+                          </p>
+                        )}
+                        {stuckPending && (
+                          <p className="text-[10px] text-amber-400/80 font-medium">
+                            Stuck in queue — retry to resume.
+                          </p>
+                        )}
+                      </button>
+                      {retryable && (
+                        <button
+                          onClick={() => handleRetryExportJob(job.id)}
+                          disabled={retryingExportJobId !== null}
+                          className="px-3 py-1.5 bg-blue-600/15 hover:bg-blue-600/25 text-blue-400 text-xs font-bold rounded-lg border border-blue-500/20 transition-colors cursor-pointer disabled:opacity-50 flex items-center gap-1.5 flex-shrink-0"
+                          title={
+                            job.status === "paused_quota"
+                              ? "Requeue failed + pending assignments and resume uploading"
+                              : "Requeue failed assignments and resume uploading"
+                          }
+                        >
+                          {retryingExportJobId === job.id && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                          Retry
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
           {loadingGroups ? (
             <div className="flex justify-center p-12">
               <Loader2 className="w-8 h-8 animate-spin text-[#E11D48]" />
@@ -6469,6 +6646,9 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
         const failed = job.assignments?.filter((a: any) => a.status === "failed").length || 0;
         const pending = job.assignments?.filter((a: any) => a.status === "pending" || a.status === "uploading").length || 0;
         const percent = totalAssigned > 0 ? Math.round(((done + failed) / totalAssigned) * 100) : 0;
+        // Partial success reads "Done (N failed)" (amber), not "failed".
+        const jobMeta = smartExportJobStatusMeta({ status: job.status, summary: { failedCount: failed } });
+        const isTerminal = job.status === "done" || job.status === "failed" || job.status === "paused_quota";
 
         return (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-sm">
@@ -6479,12 +6659,12 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
               <div className="flex items-center justify-between border-b border-[#27272a] pb-4 flex-shrink-0">
                 <div>
                   <h3 className="text-[#fafafa] text-base font-bold flex items-center gap-2">
-                    <Loader2 className={`w-5 h-5 text-blue-500 ${job.status === "uploading" ? "animate-spin" : ""}`} /> 
+                    <Loader2 className={`w-5 h-5 text-blue-500 ${job.status === "uploading" ? "animate-spin" : ""}`} />
                     Smart Export Job Progress
                   </h3>
                   <p className="text-[10px] text-[#71717a] mt-0.5 font-mono">Job ID: {job.id}</p>
                 </div>
-                {(job.status === "done" || job.status === "failed") && (
+                {isTerminal && (
                   <button
                     onClick={() => setExportingJobId(null)}
                     className="text-[#71717a] hover:text-[#fafafa] transition-all cursor-pointer"
@@ -6496,12 +6676,12 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
 
               <div className="space-y-2 flex-shrink-0">
                 <div className="flex justify-between text-xs text-[#a1a1aa] font-semibold">
-                  <span className="capitalize">Status: <span className={job.status === "done" ? "text-green-400 font-bold" : job.status === "failed" ? "text-red-400 font-bold" : "text-blue-400 font-bold"}>{job.status}</span></span>
+                  <span>Status: <span className={`${jobMeta.textClass} font-bold`}>{jobMeta.label}</span></span>
                   <span>{percent}% ({done + failed}/{totalAssigned})</span>
                 </div>
                 <div className="w-full h-2 bg-[#09090b] rounded-full overflow-hidden border border-[#27272a]">
                   <div
-                    className={`h-full transition-all duration-500 ${job.status === "failed" ? "bg-red-500" : "bg-blue-600"}`}
+                    className={`h-full transition-all duration-500 ${job.status === "failed" || job.status === "paused_quota" ? "bg-red-500" : job.status === "done" && failed > 0 ? "bg-amber-500" : "bg-blue-600"}`}
                     style={{ width: `${percent}%` }}
                   />
                 </div>
@@ -6510,6 +6690,11 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
                   <span>Uploaded: <span className="text-green-400 font-bold">{done}</span></span>
                   <span>Failed: <span className="text-red-400 font-bold">{failed}</span></span>
                 </div>
+                {job.status === "paused_quota" && (
+                  <div className="text-[10px] text-red-400 font-bold bg-red-500/10 py-1.5 px-3 rounded-lg border border-red-500/20 flex items-center gap-1.5">
+                    <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" /> Paused — the master Google account's Drive storage is full. Free space on the master Google account, then retry.
+                  </div>
+                )}
                 {(failed > 0 || pending > 0) && (
                   <button
                     onClick={() => handleResumeExportJob(job.id)}
@@ -6567,7 +6752,7 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
                 })}
               </div>
 
-              {(job.status === "done" || job.status === "failed") && (
+              {isTerminal && (
                 <div className="flex justify-end border-t border-[#27272a] pt-4 flex-shrink-0">
                   <button
                     onClick={() => setExportingJobId(null)}

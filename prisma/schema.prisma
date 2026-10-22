@@ -1070,7 +1070,7 @@ model MultiplierOutput {
 model SmartExportJob {
   id          String                  @id @default(uuid())
   groupIds    String[]
-  status      String                  @default("pending") // pending | uploading | done | failed
+  status      String                  @default("pending") // pending | uploading | done | failed | paused_quota
   days        Int                     @default(1)
   createdBy   String?
   createdAt   DateTime                @default(now())
