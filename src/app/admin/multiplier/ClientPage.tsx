@@ -1380,30 +1380,35 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
   };
 
   // Pull the next older page of groups (150 at a time) and append them to state.
-  const loadOlderGroups = async () => {
+  // With all=true, keep paging until every older group is loaded (one click).
+  const loadOlderGroups = async (all = false) => {
     if (loadingOlderGroups || !hasMoreGroups) return;
-    // Legacy batches (campaignId === "") are always fully loaded — exclude them
-    // when locating the oldest loaded group.
-    const loaded = groups.filter((g) => g.campaignId !== "");
-    if (loaded.length === 0) return;
-    const oldest = loaded.reduce((min, g) =>
-      new Date(g.createdAt).getTime() < new Date(min.createdAt).getTime() ? g : min
-    );
     setLoadingOlderGroups(true);
     try {
-      const res = await fetch(`/api/managed/multiplier?before=${encodeURIComponent(oldest.createdAt)}`);
-      if (!res.ok) throw new Error("Failed to load older groups");
-      setHasMoreGroups(res.headers.get("X-Has-More") === "true");
-      const older: MultiplierGroup[] = await res.json();
-      setGroups((prev) => {
-        const known = new Set(prev.map((g) => g.id));
-        const fresh = older.filter((g) => !known.has(g.id));
-        if (fresh.length === 0) return prev;
-        return [...prev, ...fresh].sort(
-          (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+      for (let guard = 0; guard < 40; guard++) {
+        // Legacy batches (campaignId === "") are always fully loaded — exclude them
+        // when locating the oldest loaded group.
+        const loaded = groupsRef.current.filter((g) => g.campaignId !== "");
+        if (loaded.length === 0) break;
+        const oldest = loaded.reduce((min, g) =>
+          new Date(g.createdAt).getTime() < new Date(min.createdAt).getTime() ? g : min
         );
-      });
-      setLoadedOlderGroups(true);
+        const res = await fetch(`/api/managed/multiplier?before=${encodeURIComponent(oldest.createdAt)}`);
+        if (!res.ok) throw new Error("Failed to load older groups");
+        const more = res.headers.get("X-Has-More") === "true";
+        const older: MultiplierGroup[] = await res.json();
+        setHasMoreGroups(more);
+        setGroups((prev) => {
+          const known = new Set(prev.map((g) => g.id));
+          const fresh = older.filter((g) => !known.has(g.id));
+          if (fresh.length === 0) return prev;
+          return [...prev, ...fresh].sort(
+            (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+          );
+        });
+        setLoadedOlderGroups(true);
+        if (!all || !more || older.length === 0) break;
+      }
     } catch (err) {
       console.error("Error loading older groups:", err);
       toast.error("Failed to load older groups");
@@ -3344,19 +3349,35 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
                         );
                       })}
                       {hasMoreGroups && (
-                        <button
-                          onClick={loadOlderGroups}
-                          disabled={loadingOlderGroups}
-                          className="w-full py-2.5 bg-[#E11D48]/10 hover:bg-[#E11D48]/20 text-[#fda4af] hover:text-white border border-[#E11D48]/40 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition-all disabled:opacity-50 cursor-pointer"
-                        >
-                          {loadingOlderGroups ? (
-                            <>
-                              <Loader2 className="w-3.5 h-3.5 animate-spin" /> Loading older groups...
-                            </>
-                          ) : (
-                            <>Showing latest {Math.min(150, groups.length)} groups — load older groups</>
-                          )}
-                        </button>
+                        <div className="flex gap-1.5">
+                          <button
+                            onClick={() => loadOlderGroups(false)}
+                            disabled={loadingOlderGroups}
+                            className="flex-1 py-2.5 bg-[#09090b] hover:bg-[#18181b] text-[#a1a1aa] hover:text-[#fafafa] border border-[#27272a] rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition-all disabled:opacity-50 cursor-pointer"
+                          >
+                            {loadingOlderGroups ? (
+                              <>
+                                <Loader2 className="w-3.5 h-3.5 animate-spin" /> Loading...
+                              </>
+                            ) : (
+                              "+150 older"
+                            )}
+                          </button>
+                          <button
+                            onClick={() => loadOlderGroups(true)}
+                            disabled={loadingOlderGroups}
+                            title="Load every older group (all renders, all days)"
+                            className="flex-[2] py-2.5 bg-[#E11D48]/10 hover:bg-[#E11D48]/20 text-[#fda4af] hover:text-white border border-[#E11D48]/40 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition-all disabled:opacity-50 cursor-pointer"
+                          >
+                            {loadingOlderGroups ? (
+                              <>
+                                <Loader2 className="w-3.5 h-3.5 animate-spin" /> Loading all groups…
+                              </>
+                            ) : (
+                              <>Load ALL older groups (latest {Math.min(150, groups.length)} shown)</>
+                            )}
+                          </button>
+                        </div>
                       )}
                       {!hasMoreGroups && loadedOlderGroups && (
                         <p className="text-center text-[10px] text-[#52525b] py-2">All groups loaded</p>
