@@ -18,7 +18,9 @@ const ACTIVE_GROUPS_FILTER = {
 
 // GET /api/managed/multiplier — List multiplier groups, windowed to the latest
 // 150 (+ active groups of any age). Pass ?before=<ISO createdAt> for the next
-// older page. X-Has-More header signals whether another page exists.
+// older page; X-Has-More header signals whether another page exists.
+// Pass ?q=<text> to search ALL groups by name (bypasses the window — used by
+// the sidebar search so older renders stay findable; capped at 100 matches).
 // (Slim payload; legacy batches live at /legacy-batches)
 export async function GET(req: NextRequest) {
   const session = await getSession();
@@ -30,6 +32,7 @@ export async function GET(req: NextRequest) {
   }
 
   const { searchParams } = new URL(req.url);
+  const qParam = (searchParams.get("q") || "").trim();
   const beforeParam = searchParams.get("before");
   let before: Date | null = null;
   if (beforeParam !== null) {
@@ -80,7 +83,17 @@ export async function GET(req: NextRequest) {
     let groups;
     let hasMore: boolean;
 
-    if (before) {
+    if (qParam) {
+      // Name search across ALL groups (window bypass) — keeps yesterday's
+      // renders findable without paging. Capped at 100 matches.
+      groups = await prisma.multiplierGroup.findMany({
+        where: { name: { contains: qParam, mode: "insensitive" } },
+        orderBy: { createdAt: "desc" },
+        take: 100,
+        select,
+      });
+      hasMore = false;
+    } else if (before) {
       // Older page: groups before the cursor (plus active ones, cheap safety —
       // the client dedupes by id).
       const rows = await prisma.multiplierGroup.findMany({

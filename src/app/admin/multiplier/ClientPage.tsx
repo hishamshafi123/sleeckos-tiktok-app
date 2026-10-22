@@ -213,6 +213,15 @@ export default function ClientPage({ session }: ClientPageProps = {}) {
   const [hasMoreGroups, setHasMoreGroups] = useState(false);
   const [loadingOlderGroups, setLoadingOlderGroups] = useState(false);
   const [loadedOlderGroups, setLoadedOlderGroups] = useState(false);
+  // Ref mirror of `groups` + loading flag for the Smart Export full-list pager
+  // (the sidebar list is windowed to the latest 150; export needs all of them).
+  const groupsRef = useRef<MultiplierGroup[]>([]);
+  const [exportGroupsLoading, setExportGroupsLoading] = useState(false);
+
+  // Keep the ref mirror in sync with the groups state.
+  useEffect(() => {
+    groupsRef.current = groups;
+  }, [groups]);
 
   // Builder state
   const [selectedGroup, setSelectedGroup] = useState<MultiplierGroup | null>(null);
@@ -368,6 +377,42 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
   const [builderSelectedIds, setBuilderSelectedIds] = useState<Set<string>>(new Set());
   const [builderGroupSearch, setBuilderGroupSearch] = useState("");
   const [bulkDeleting, setBulkDeleting] = useState(false);
+  const [serverSearchingGroups, setServerSearchingGroups] = useState(false);
+
+  // Sidebar group search: when the list is windowed (older groups not loaded),
+  // a local-only filter can't find yesterday's renders — so after a short
+  // debounce, also query the server across ALL groups and merge the matches.
+  useEffect(() => {
+    const q = builderGroupSearch.trim();
+    if (q.length < 2 || !hasMoreGroups) return;
+    let cancelled = false;
+    const t = setTimeout(async () => {
+      setServerSearchingGroups(true);
+      try {
+        const res = await fetch(`/api/managed/multiplier?q=${encodeURIComponent(q)}`);
+        if (!res.ok) return;
+        const matches: MultiplierGroup[] = await res.json();
+        if (cancelled) return;
+        setGroups((prev) => {
+          const known = new Set(prev.map((g) => g.id));
+          const fresh = matches.filter((g) => !known.has(g.id));
+          if (fresh.length === 0) return prev;
+          return [...prev, ...fresh].sort(
+            (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+          );
+        });
+      } catch (err) {
+        console.error("Server group search failed:", err);
+      } finally {
+        if (!cancelled) setServerSearchingGroups(false);
+      }
+    }, 300);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [builderGroupSearch, hasMoreGroups]);
 
   // Smart Export state
   const [showSmartExport, setShowSmartExport] = useState(false);
@@ -839,10 +884,57 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
     if (!e.metaKey && !e.ctrlKey) exportLastClickedRef.current = pendingId;
   };
 
-  // Esc cancels an in-progress drag and reverts to the pre-drag snapshot
+  // Smart Export needs the FULL group list — the sidebar is windowed to the
+  // latest 150 groups for page-load speed, which hides yesterday's renders.
+  // When the export modal opens, page through all older groups automatically.
   useEffect(() => {
     if (!showSmartExport) return;
-    const onKeyDown = (e: KeyboardEvent) => {
+    let cancelled = false;
+    void (async () => {
+      await Promise.resolve(); // keep initial setState out of the sync effect body
+      if (cancelled) return;
+      setExportGroupsLoading(true);
+      try {
+        for (let guard = 0; guard < 40 && !cancelled; guard++) {
+          const loaded = groupsRef.current.filter((g) => g.campaignId !== "");
+          if (loaded.length === 0) break;
+          const oldest = loaded.reduce((min, g) =>
+            new Date(g.createdAt).getTime() < new Date(min.createdAt).getTime() ? g : min
+          );
+          const res = await fetch(`/api/managed/multiplier?before=${encodeURIComponent(oldest.createdAt)}`);
+          if (!res.ok) break;
+          const more = res.headers.get("X-Has-More") === "true";
+          const older: MultiplierGroup[] = await res.json();
+          if (cancelled) break;
+          setGroups((prev) => {
+            const known = new Set(prev.map((g) => g.id));
+            const fresh = older.filter((g) => !known.has(g.id));
+            if (fresh.length === 0) return prev;
+            return [...prev, ...fresh].sort(
+              (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+            );
+          });
+          if (!more || older.length === 0) {
+            setHasMoreGroups(false);
+            setLoadedOlderGroups(true);
+            break;
+          }
+        }
+      } catch (err) {
+        console.error("Failed to load all groups for export:", err);
+      } finally {
+        if (!cancelled) setExportGroupsLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showSmartExport]);
+
+  // Esc cancels an in-progress drag and reverts to the pre-drag snapshot
+  useEffect(() => {
+    if (!showSmartExport) return;    const onKeyDown = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
       const d = exportDragRef.current;
       if (!d.pendingId) return;
@@ -3102,9 +3194,12 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
                       type="text"
                       value={builderGroupSearch}
                       onChange={(e) => setBuilderGroupSearch(e.target.value)}
-                      placeholder="Filter groups..."
-                      className="w-full bg-[#09090b] border border-[#27272a] rounded-lg pl-8 pr-3 py-2 text-xs focus:outline-none focus:border-[#E11D48] placeholder:text-[#52525b]"
+                      placeholder="Filter groups… (searches older groups too)"
+                      className="w-full bg-[#09090b] border border-[#27272a] rounded-lg pl-8 pr-8 py-2 text-xs focus:outline-none focus:border-[#E11D48] placeholder:text-[#52525b]"
                     />
+                    {serverSearchingGroups && (
+                      <Loader2 className="w-3.5 h-3.5 absolute right-3 top-1/2 -translate-y-1/2 animate-spin text-[#E11D48]" />
+                    )}
                   </div>
 
                   {/* List header: select-all (filtered) + count */}
@@ -3162,8 +3257,17 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
 
                   {filteredGroups.length === 0 ? (
                     <div className="flex-1 flex flex-col items-center justify-center text-center p-4 text-[#71717a]">
-                      <Search className="w-8 h-8 mb-2 opacity-30" />
-                      <p className="text-xs">No groups match &quot;{builderGroupSearch.trim()}&quot;.</p>
+                      {serverSearchingGroups ? (
+                        <>
+                          <Loader2 className="w-8 h-8 mb-2 opacity-50 animate-spin text-[#E11D48]" />
+                          <p className="text-xs">Searching all groups…</p>
+                        </>
+                      ) : (
+                        <>
+                          <Search className="w-8 h-8 mb-2 opacity-30" />
+                          <p className="text-xs">No groups match &quot;{builderGroupSearch.trim()}&quot;.</p>
+                        </>
+                      )}
                     </div>
                   ) : (
                     <div className="flex-1 overflow-y-auto space-y-2 pr-2 custom-scrollbar">
@@ -3243,14 +3347,14 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
                         <button
                           onClick={loadOlderGroups}
                           disabled={loadingOlderGroups}
-                          className="w-full py-2.5 bg-[#09090b] hover:bg-[#18181b] text-[#a1a1aa] hover:text-[#fafafa] border border-[#27272a] rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition-all disabled:opacity-50 cursor-pointer"
+                          className="w-full py-2.5 bg-[#E11D48]/10 hover:bg-[#E11D48]/20 text-[#fda4af] hover:text-white border border-[#E11D48]/40 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition-all disabled:opacity-50 cursor-pointer"
                         >
                           {loadingOlderGroups ? (
                             <>
                               <Loader2 className="w-3.5 h-3.5 animate-spin" /> Loading older groups...
                             </>
                           ) : (
-                            "Load older groups"
+                            <>Showing latest {Math.min(150, groups.length)} groups — load older groups</>
                           )}
                         </button>
                       )}
