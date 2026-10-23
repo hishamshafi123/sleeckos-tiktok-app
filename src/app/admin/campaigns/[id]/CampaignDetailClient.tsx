@@ -340,6 +340,9 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
   const [resLabel, setResLabel] = useState("");
   const [resUrl, setResUrl] = useState("");
   const [resType, setResType] = useState("link");
+  const [resTypeTouched, setResTypeTouched] = useState(false);
+  const [showAddResource, setShowAddResource] = useState(false);
+  const [copiedResourceId, setCopiedResourceId] = useState<string | null>(null);
 
   // Save states
   const [isSavingMeta, setIsSavingMeta] = useState(false);
@@ -1536,11 +1539,40 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
     }
   };
 
+  // Resource helpers — normalize pasted URLs, auto-derive label & type
+  const normalizeResourceUrl = (raw: string) => {
+    const trimmed = raw.trim();
+    if (!trimmed) return "";
+    return /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+  };
+
+  const deriveResourceLabel = (url: string) => {
+    try {
+      const u = new URL(normalizeResourceUrl(url));
+      return u.hostname.replace(/^www\./, "");
+    } catch {
+      return "";
+    }
+  };
+
+  const detectResourceType = (url: string) => {
+    const u = url.toLowerCase();
+    if (/drive\.google|dropbox|\.(pdf|zip|mp4|mov|png|jpe?g|webp)(\?|#|$)/.test(u)) return "file";
+    if (/notion\.|docs\.google|sheets\.google|figma\.com|canva\.com/.test(u)) return "reference";
+    return "link";
+  };
+
   // Add Resource
   const handleAddResource = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!resLabel.trim() || !resUrl.trim()) {
-      toast.error("Label and URL are required");
+    const url = normalizeResourceUrl(resUrl);
+    if (!url) {
+      toast.error("URL is required");
+      return;
+    }
+    const label = resLabel.trim() || deriveResourceLabel(url);
+    if (!label) {
+      toast.error("Label is required");
       return;
     }
 
@@ -1550,8 +1582,8 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          label: resLabel.trim(),
-          url: resUrl.trim(),
+          label,
+          url,
           type: resType,
         }),
       });
@@ -1562,11 +1594,25 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
       setResources([...resources, newRes]);
       setResLabel("");
       setResUrl("");
+      setResType("link");
+      setResTypeTouched(false);
+      setShowAddResource(false);
       toast.success("Resource added successfully");
     } catch (err: any) {
       toast.error(err.message);
     } finally {
       setIsAddingResource(false);
+    }
+  };
+
+  // Copy Resource URL
+  const handleCopyResource = async (r: CampaignResource) => {
+    try {
+      await navigator.clipboard.writeText(r.url);
+      setCopiedResourceId(r.id);
+      setTimeout(() => setCopiedResourceId((cur) => (cur === r.id ? null : cur)), 1500);
+    } catch {
+      toast.error("Failed to copy link");
     }
   };
 
@@ -3911,84 +3957,156 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
         {/* Right Column (Resources & Integrations) */}
         <div className="space-y-6">
           {/* Resources Panel */}
-          <div className="border border-[#27272a] rounded-md bg-[#09090b] p-4 space-y-4">
-            <h3 className="text-xs font-semibold text-zinc-200 border-b border-[#27272a] pb-2">Campaign Resources</h3>
+          <div className="border border-[#27272a] rounded-md bg-[#09090b] p-4 space-y-3">
+            <div className="flex items-center justify-between border-b border-[#27272a] pb-2">
+              <h3 className="text-xs font-semibold text-zinc-200 flex items-center gap-2">
+                Campaign Resources
+                <span className="text-[10px] font-mono text-zinc-500 bg-zinc-900 border border-[#27272a] rounded px-1.5 py-0.5">
+                  {resources.length}
+                </span>
+              </h3>
+              <button
+                onClick={() => setShowAddResource((v) => !v)}
+                className={`text-[11px] font-semibold flex items-center gap-1 px-2 py-1 rounded transition ${
+                  showAddResource
+                    ? "text-zinc-400 hover:text-zinc-200"
+                    : "text-emerald-400 hover:text-emerald-300 bg-emerald-500/10 border border-emerald-500/20"
+                }`}
+              >
+                <Plus size={11} className={showAddResource ? "rotate-45 transition-transform" : "transition-transform"} />
+                {showAddResource ? "Close" : "Add resource"}
+              </button>
+            </div>
 
             {/* Resources List */}
-            <div className="space-y-2 max-h-[220px] overflow-y-auto">
+            <div className="space-y-1.5 max-h-[320px] overflow-y-auto">
               {resources.map((r) => (
-                <div key={r.id} className="flex items-center justify-between bg-zinc-950/40 border border-[#27272a] rounded p-2 text-xs group">
-                  <div className="flex items-center gap-2 overflow-hidden">
-                    {r.type === "file" ? (
-                      <FileText size={13} className="text-blue-400 flex-shrink-0" />
-                    ) : r.type === "reference" ? (
-                      <Bookmark size={13} className="text-amber-400 flex-shrink-0" />
-                    ) : (
-                      <Link2 size={13} className="text-emerald-400 flex-shrink-0" />
-                    )}
+                <div key={r.id} className="flex items-center gap-2.5 bg-zinc-950/40 border border-[#27272a] rounded px-2.5 py-2 group hover:border-zinc-600 transition">
+                  {r.type === "file" ? (
+                    <FileText size={14} className="text-blue-400 flex-shrink-0" />
+                  ) : r.type === "reference" ? (
+                    <Bookmark size={14} className="text-amber-400 flex-shrink-0" />
+                  ) : (
+                    <Link2 size={14} className="text-emerald-400 flex-shrink-0" />
+                  )}
+                  <div className="flex-1 min-w-0">
                     <a
                       href={r.url}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="font-medium text-zinc-200 hover:text-zinc-100 truncate hover:underline"
+                      className="block text-xs font-medium text-zinc-100 hover:text-white truncate hover:underline"
                     >
                       {r.label}
                     </a>
+                    <span className="block text-[10px] text-zinc-500 truncate font-mono">
+                      {deriveResourceLabel(r.url)}
+                    </span>
                   </div>
-                  <button
-                    onClick={() => handleDeleteResource(r.id)}
-                    className="text-zinc-500 hover:text-red-400 opacity-0 group-hover:opacity-100 transition p-1"
-                    title="Delete resource"
-                  >
-                    <Trash2 size={12} />
-                  </button>
+                  <div className="flex items-center gap-0.5 flex-shrink-0">
+                    <button
+                      onClick={() => handleCopyResource(r)}
+                      className="text-zinc-500 hover:text-zinc-200 p-1.5 rounded hover:bg-zinc-800 transition"
+                      title="Copy link"
+                    >
+                      {copiedResourceId === r.id ? <Check size={13} className="text-emerald-400" /> : <Copy size={13} />}
+                    </button>
+                    <a
+                      href={r.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-zinc-500 hover:text-zinc-200 p-1.5 rounded hover:bg-zinc-800 transition"
+                      title="Open in new tab"
+                    >
+                      <ExternalLink size={13} />
+                    </a>
+                    <button
+                      onClick={() => handleDeleteResource(r.id)}
+                      className="text-zinc-600 hover:text-red-400 p-1.5 rounded hover:bg-zinc-800 transition sm:opacity-0 sm:group-hover:opacity-100"
+                      title="Delete resource"
+                    >
+                      <Trash2 size={13} />
+                    </button>
+                  </div>
                 </div>
               ))}
               {resources.length === 0 && (
-                <p className="text-[11px] text-zinc-500 italic text-center py-4">No resources linked.</p>
+                <div className="text-center py-5 space-y-2">
+                  <p className="text-[11px] text-zinc-500">No resources linked yet.</p>
+                  {!showAddResource && (
+                    <button
+                      onClick={() => setShowAddResource(true)}
+                      className="text-[11px] font-semibold text-emerald-400 hover:text-emerald-300 inline-flex items-center gap-1"
+                    >
+                      <Plus size={11} /> Add the first resource
+                    </button>
+                  )}
+                </div>
               )}
             </div>
 
-            {/* Add Resource Form */}
-            <form onSubmit={handleAddResource} className="pt-3 border-t border-[#27272a] space-y-2 text-[11px]">
-              <div className="space-y-1">
-                <input
-                  type="text"
-                  placeholder="Resource Label (e.g. Asset Folder)"
-                  value={resLabel}
-                  onChange={(e) => setResLabel(e.target.value)}
-                  className="w-full bg-[#09090b] border border-[#27272a] rounded px-2.5 py-1 text-zinc-100 focus:outline-none focus:border-zinc-500"
-                />
-              </div>
-              <div className="space-y-1">
-                <input
-                  type="text"
-                  placeholder="Resource URL (e.g. https://drive.google.com/...)"
-                  value={resUrl}
-                  onChange={(e) => setResUrl(e.target.value)}
-                  className="w-full bg-[#09090b] border border-[#27272a] rounded px-2.5 py-1 text-zinc-100 focus:outline-none focus:border-zinc-500 font-mono text-[10px]"
-                />
-              </div>
-              <div className="flex gap-2">
-                <select
-                  value={resType}
-                  onChange={(e) => setResType(e.target.value)}
-                  className="flex-1 bg-[#09090b] border border-[#27272a] rounded px-2.5 py-1 text-zinc-300 focus:outline-none text-[11px]"
-                >
-                  <option value="link">Link</option>
-                  <option value="file">File</option>
-                  <option value="reference">Reference</option>
-                </select>
-                <button
-                  type="submit"
-                  disabled={isAddingResource}
-                  className="bg-zinc-100 hover:bg-zinc-200 text-zinc-950 font-semibold px-3 py-1 rounded transition flex items-center gap-1 disabled:opacity-50"
-                >
-                  {isAddingResource ? <Loader2 size={11} className="animate-spin" /> : <Plus size={11} />}
-                  Add
-                </button>
-              </div>
-            </form>
+            {/* Add Resource Form (collapsible) */}
+            {showAddResource && (
+              <form onSubmit={handleAddResource} className="pt-3 border-t border-[#27272a] space-y-2.5 text-[11px]">
+                <div>
+                  <label className="block text-[10px] font-semibold text-zinc-500 uppercase tracking-wide mb-1">URL</label>
+                  <input
+                    type="text"
+                    placeholder="Paste a link — https://drive.google.com/..."
+                    value={resUrl}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      setResUrl(v);
+                      if (!resTypeTouched) setResType(detectResourceType(v));
+                    }}
+                    autoFocus
+                    className="w-full bg-[#09090b] border border-[#27272a] rounded px-2.5 py-1.5 text-zinc-100 focus:outline-none focus:border-zinc-500 font-mono text-[11px]"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-semibold text-zinc-500 uppercase tracking-wide mb-1">
+                    Label <span className="normal-case font-normal text-zinc-600">(optional — derived from URL)</span>
+                  </label>
+                  <input
+                    type="text"
+                    placeholder={resUrl.trim() ? deriveResourceLabel(resUrl) || "e.g. Asset Folder" : "e.g. Asset Folder"}
+                    value={resLabel}
+                    onChange={(e) => setResLabel(e.target.value)}
+                    className="w-full bg-[#09090b] border border-[#27272a] rounded px-2.5 py-1.5 text-zinc-100 focus:outline-none focus:border-zinc-500"
+                  />
+                </div>
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex gap-1">
+                    {([
+                      { value: "link", label: "Link", icon: Link2, active: "text-emerald-300 border-emerald-500/40 bg-emerald-500/10" },
+                      { value: "file", label: "File", icon: FileText, active: "text-blue-300 border-blue-500/40 bg-blue-500/10" },
+                      { value: "reference", label: "Reference", icon: Bookmark, active: "text-amber-300 border-amber-500/40 bg-amber-500/10" },
+                    ] as const).map(({ value, label, icon: Icon, active }) => (
+                      <button
+                        key={value}
+                        type="button"
+                        onClick={() => { setResType(value); setResTypeTouched(true); }}
+                        className={`flex items-center gap-1 px-2 py-1 rounded border text-[10px] font-semibold transition ${
+                          resType === value
+                            ? active
+                            : "text-zinc-500 border-[#27272a] hover:text-zinc-300 hover:border-zinc-600"
+                        }`}
+                      >
+                        <Icon size={11} />
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                  <button
+                    type="submit"
+                    disabled={isAddingResource || !resUrl.trim()}
+                    className="bg-zinc-100 hover:bg-zinc-200 text-zinc-950 font-semibold px-3 py-1.5 rounded transition flex items-center gap-1 disabled:opacity-50"
+                  >
+                    {isAddingResource ? <Loader2 size={11} className="animate-spin" /> : <Plus size={11} />}
+                    Add
+                  </button>
+                </div>
+              </form>
+            )}
           </div>
 
           {/* Clip Mixer Subfolders (Phase 4) */}
