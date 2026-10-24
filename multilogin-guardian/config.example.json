@@ -1,0 +1,37 @@
+{
+  "multilogin": {
+    "base_url": "https://api.multilogin.com",
+    "automation_token": "mlx_at_xxxxxxxx",
+    "check_interval_seconds": 60,
+    "batch_size": 50
+  },
+  "rules": {
+    "by_tag": {
+      "political": { "max_runtime_minutes": 10, "description": "Political accounts" },
+      "general": { "max_runtime_minutes": 10, "description": "General accounts" },
+      "state": { "max_runtime_minutes": 35, "description": "State accounts" }
+    },
+    "default": { "max_runtime_minutes": 10, "description": "Fallback" }
+  },
+  "logging": {
+    "level": "INFO",
+    "file": "logs/guardian.log",
+    "max_bytes": 10485760,
+    "backup_count": 5,
+    "console": true
+  },
+  "notifications": {
+    "enabled": false,
+    "webhook_url": "",
+    "notify_on_stop": true,
+    "notify_on_error": true
+  },
+  "sleeckos": {
+    "enabled": false,
+    "base_url": "http://127.0.0.1:3000",
+    "shared_secret": "replace_with_guardian_integration_secret",
+    "timeout_seconds": 15,
+    "report_outbox": "state/reports.jsonl",
+    "remote_config_cache": "state/remote-config.json"
+  }
+}

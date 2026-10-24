@@ -1,0 +1,33 @@
+[Unit]
+Description=Multilogin Guardian Agent
+Documentation=file:///opt/multilogin-guardian/README.md
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=guardian
+Group=guardian
+WorkingDirectory=/opt/multilogin-guardian
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/opt/multilogin-guardian/.venv/bin/python /opt/multilogin-guardian/agent.py --config /opt/multilogin-guardian/config.json
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=always
+RestartSec=10
+# Do not SIGKILL an active API cycle during shutdown; requests have timeouts.
+TimeoutStopSec=infinity
+KillSignal=SIGTERM
+UMask=0077
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/opt/multilogin-guardian/logs /opt/multilogin-guardian/state
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=multilogin-guardian
+
+[Install]
+WantedBy=multi-user.target

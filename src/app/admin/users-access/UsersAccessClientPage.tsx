@@ -51,6 +51,7 @@ interface User {
 const TOOLS = [
   { key: "overview", label: "Overview", desc: "Access the system dashboard and general overview analytics." },
   { key: "accounts", label: "Managed Accounts", desc: "Link/unlink accounts, modify sections and metadata." },
+  { key: "multilogin_guardian", label: "Phone Guardian", desc: "Monitor Multilogin phones, runtime enforcement settings, and stop history." },
   { key: "analytics", label: "Analytics Dashboard", desc: "View detailed post analytics, views, and engagement performance." },
   { key: "post_queue", label: "Post Queue", desc: "Manage scheduled, processing, and queued posts." },
   { key: "history", label: "Posting History", desc: "Audit completed, published, and skipped posting records." },
@@ -69,7 +70,7 @@ const TOOLS = [
 ];
 
 const ROLE_DEFAULTS: Record<string, string[]> = {
-  admin: ["overview", "accounts", "analytics", "post_queue", "history", "clip_mixer", "style_studio", "composer", "multiplier", "campaigns", "projects", "data_vault", "sourcing", "users_access", "lms", "agent", "tickets"],
+  admin: ["overview", "accounts", "multilogin_guardian", "analytics", "post_queue", "history", "clip_mixer", "style_studio", "composer", "multiplier", "campaigns", "projects", "data_vault", "sourcing", "users_access", "lms", "agent", "tickets"],
   team_lead: ["lms", "tickets"],
   editor: ["lms", "tickets"],
   curator: ["lms", "tickets"],

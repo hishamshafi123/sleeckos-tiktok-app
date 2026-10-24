@@ -25,7 +25,8 @@ import {
   TrendingUp,
   DollarSign,
   UserPlus,
-  TicketCheck
+  TicketCheck,
+  ShieldCheck
 } from "lucide-react";
 import { toast } from "sonner";
 import NotificationBell from "@/components/NotificationBell";
@@ -39,6 +40,7 @@ const PRODUCTION_NAV = [
 
 const OPERATIONS_NAV = [
   { href: "/admin", label: "Overview", icon: LayoutDashboard, exact: true, toolKey: "overview" },
+  { href: "/admin/multilogin-guardian", label: "Phone Guardian", icon: ShieldCheck, toolKey: "multilogin_guardian" },
   { href: "/admin/accounts", label: "Managed Accounts", icon: MonitorPlay, exact: true, toolKey: "accounts" },
   { href: "/admin/accounts/new", label: "New Accounts", icon: UserPlus, toolKey: "accounts" },
   { href: "/admin/accounts/dashboard", label: "Analytics", icon: BarChart3, toolKey: "analytics" },
@@ -86,7 +88,7 @@ export default function AdminSidebar({ allowedTools = [] }: AdminSidebarProps) {
   const filteredOperations = OPERATIONS_NAV.filter(item => allowedSet.has(item.toolKey));
   const filteredPeople = PEOPLE_NAV.filter(item => allowedSet.has(item.toolKey));
 
-  const renderLink = (item: { href: string; label: string; icon: any; exact?: boolean }) => {
+  const renderLink = (item: { href: string; label: string; icon: typeof LayoutDashboard; exact?: boolean }) => {
     const Icon = item.icon;
     const active = item.exact
       ? pathname === item.href

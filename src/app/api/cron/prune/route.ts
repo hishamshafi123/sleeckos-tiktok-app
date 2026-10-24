@@ -108,9 +108,28 @@ export async function GET(req: NextRequest) {
     results["public/uploads/sourcing/temp"] = { deleted: 0, failed: 0, skipped: 0 };
   }
 
+  const guardianCycleCutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+  const guardianStopEventCutoff = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000);
+  try {
+    const [stopEvents, cycles] = await prisma.$transaction([
+      prisma.guardianStopEvent.deleteMany({
+        where: { occurredAt: { lt: guardianStopEventCutoff } },
+      }),
+      prisma.guardianCycle.deleteMany({
+        where: { finishedAt: { lt: guardianCycleCutoff } },
+      }),
+    ]);
+    results["database.guardianStopEvents"] = { deleted: stopEvents.count, failed: 0, skipped: 0 };
+    results["database.guardianCycles"] = { deleted: cycles.count, failed: 0, skipped: 0 };
+  } catch (err) {
+    console.error("[Prune Cron] Guardian retention cleanup failed:", err);
+    results["database.guardianStopEvents"] = { deleted: 0, failed: 1, skipped: 0 };
+    results["database.guardianCycles"] = { deleted: 0, failed: 1, skipped: 0 };
+  }
+
   return NextResponse.json({
     ok: true,
-    message: "Local file pruning run completed",
+    message: "File and database pruning run completed",
     results,
   });
 }

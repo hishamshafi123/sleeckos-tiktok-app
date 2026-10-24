@@ -2119,3 +2119,63 @@ model SourcedVideoAssignment {
   @@index([sourcedVideoId])
   @@index([accountId])
 }
+
+model GuardianCycle {
+  id                String             @id
+  startedAt         DateTime
+  finishedAt        DateTime
+  status            String // success | partial | error
+  inventoryComplete Boolean            @default(false)
+  runningCount      Int                @default(0)
+  stopRequested     Int                @default(0)
+  stopSucceeded     Int                @default(0)
+  stopFailed        Int                @default(0)
+  stopUnknown       Int                @default(0)
+  error             String?
+  createdAt         DateTime           @default(now())
+  stopEvents        GuardianStopEvent[]
+
+  @@index([finishedAt])
+}
+
+model GuardianPhone {
+  profileId       String   @id
+  name            String
+  tags            Json
+  matchedTag      String?
+  isRunning       Boolean  @default(false)
+  status          Int?
+  runningTimeSecs Int?
+  limitMinutes    Float?
+  lastDecision    String?
+  lastSeenAt      DateTime
+  lastStoppedAt   DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([isRunning, lastSeenAt])
+  @@index([name])
+}
+
+model GuardianStopEvent {
+  id            String         @id @default(uuid())
+  cycle         GuardianCycle? @relation(fields: [cycleId], references: [id], onDelete: SetNull)
+  cycleId       String?
+  sourceCycleId String
+  profileId     String
+  profileName   String
+  tags          Json
+  matchedTag    String?
+  runtimeSecs   Int?
+  limitMinutes  Float?
+  result        String // stopped | failed | unknown
+  error         String?
+  occurredAt    DateTime
+  createdAt     DateTime       @default(now())
+
+  @@unique([sourceCycleId, profileId])
+  @@index([createdAt])
+  @@index([occurredAt])
+  @@index([profileId, occurredAt])
+  @@index([result, occurredAt])
+}

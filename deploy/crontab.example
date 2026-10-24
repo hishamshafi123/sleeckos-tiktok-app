@@ -2,7 +2,7 @@
 #
 # Usage:
 #   crontab -e
-#   Paste the CRON_SECRET line and the four job lines below, then save.
+#   Paste the CRON_SECRET line and the job lines below, then save.
 #
 # The app container listens on 127.0.0.1:3000. Hitting localhost avoids nginx.
 # Output is appended to /var/log/sleeckos-cron.log — create and set permissions
@@ -21,3 +21,4 @@ CRON_SECRET=replace-with-your-cron-secret
 0    */6 *  *  *  curl -fsS -H "x-cron-secret: $CRON_SECRET" http://127.0.0.1:3000/api/cron/sync-analytics  >> /var/log/sleeckos-cron.log 2>&1
 0    */12 * *  *  curl -fsS -H "x-cron-secret: $CRON_SECRET" http://127.0.0.1:3000/api/cron/refresh-tokens  >> /var/log/sleeckos-cron.log 2>&1
 17   3   *  *  *  curl -fsS -H "x-cron-secret: $CRON_SECRET" http://127.0.0.1:3000/api/cron/analytics-refresh >> /var/log/sleeckos-cron.log 2>&1
+43   2   *  *  *  curl -fsS -H "x-cron-secret: $CRON_SECRET" http://127.0.0.1:3000/api/cron/prune >> /var/log/sleeckos-cron.log 2>&1

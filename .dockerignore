@@ -18,6 +18,9 @@ CLAUDE.md
 deploy/
 vercel.json
 
+# Standalone daemon — its local config contains live API tokens.
+multilogin-guardian/
+
 # OS / editor
 .DS_Store
 .vscode

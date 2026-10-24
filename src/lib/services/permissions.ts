@@ -3,6 +3,7 @@ import prisma from "@/lib/db";
 export const ALL_TOOLS = [
   "overview",
   "accounts",
+  "multilogin_guardian",
   "analytics",
   "post_queue",
   "history",
