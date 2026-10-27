@@ -33,7 +33,9 @@ services:
     environment:
       # Constructed from the individual POSTGRES_* vars so password is set once.
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
-      # Render pipeline parallelism — defaults tuned for the KVM8 8-vCPU box.
+      # Render pipeline bootstrap/default parallelism — tuned for KVM8.
+      # Queue Dashboard performance modes override the primary render/Smart
+      # Export limits live; these env values remain the fallback/boot defaults.
       # KVM4 rollback: RENDER_CONCURRENCY=2 FFMPEG_THREADS=2
       #   REMOTION_STILL_CONCURRENCY=2 TRANSCRIBE_CONCURRENCY=2
       #   EXPORT_WORKER_CONCURRENCY=4

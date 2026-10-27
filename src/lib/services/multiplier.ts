@@ -14,6 +14,11 @@ import { enqueueRender } from "./style-lab";
 import { LAYERED_TEMPLATE_KEY, coerceLayers } from "../style-lab/layers";
 import { SAMPLE_LYRIC_LINES } from "../style-lab/schema";
 import { assertVideoCaptionUnique } from "./campaigns";
+import {
+  getMultiplierPerformanceState,
+  RENDER_ADMISSION_POOL_LIMIT,
+  renderAdmissionController,
+} from "./multiplier-performance";
 
 // Directory constants
 const UPLOADS_DIR = path.join(process.cwd(), "public", "uploads", "multiplier");
@@ -956,25 +961,26 @@ export async function resumeRenderQueueIfWorkPending(): Promise<{ recovered: num
   return { recovered, pending };
 }
 
-// Render worker count and ffmpeg thread pinning are env-tunable so a bigger
-// VPS (or a dedicated render box) is a config change, not a code change.
-// The default matches 8 vCPUs at 2 ffmpeg threads per worker; cap the worker
-// count so a malformed environment cannot create an unbounded process pool.
-const RENDER_CONCURRENCY = Math.min(
-  16,
-  Math.max(1, parseInt(process.env.RENDER_CONCURRENCY || "4", 10) || 4)
-);
+// Admission is dynamic; the physical pool is sized for the largest env/preset
+// limit. FFmpeg thread pinning remains env-tunable for the host CPU budget.
 const FFMPEG_THREADS = Math.max(1, parseInt(process.env.FFMPEG_THREADS || "2", 10) || 2);
 
 async function processRenderQueue() {
-  console.log(`[Multiplier Worker] Starting processing render queue (concurrency ${RENDER_CONCURRENCY})...`);
-
   // A previous process may have died mid-render — recover before starting.
   await recoverStaleRenderingOutputs().catch((err) => {
     console.error("[Multiplier Worker] Stale-output recovery failed:", err);
   });
+  await getMultiplierPerformanceState().catch((err) => {
+    console.error("[Multiplier Worker] Performance settings load failed; using cached limits:", err);
+  });
 
-  await Promise.all(Array.from({ length: RENDER_CONCURRENCY }, (_, i) => renderWorkerLoop(i + 1)));
+  console.log(
+    `[Multiplier Worker] Starting processing render queue ` +
+    `(concurrency ${renderAdmissionController.getMetrics().limit}, pool ${RENDER_ADMISSION_POOL_LIMIT})...`
+  );
+  await Promise.all(
+    Array.from({ length: RENDER_ADMISSION_POOL_LIMIT }, (_, i) => renderWorkerLoop(i + 1))
+  );
 
   // Sweep: groups stuck in QUEUED/RENDERING whose outputs are all terminal
   // (e.g. after a restart or a pause) get their correct final status.
@@ -1011,180 +1017,190 @@ async function renderWorkerLoop(workerId: number) {
       break;
     }
 
-    // Atomic claim: flip exactly one PENDING output so two workers never
-    // render the same video. The dedicated lease fences off an older worker
-    // without being invalidated by unrelated output metadata updates.
-    const candidate = await prisma.multiplierOutput.findFirst({
-      where: { status: "PENDING" },
-      orderBy: { createdAt: "asc" },
-      select: { id: true },
-    });
-
-    if (!candidate) {
-      console.log(`[Multiplier Worker ${workerId}] Queue empty. Going to sleep.`);
-      break;
-    }
-
-    const renderLeaseId = crypto.randomUUID();
-    const claimedAt = new Date();
-    const claimed = await prisma.multiplierOutput.updateMany({
-      where: { id: candidate.id, status: "PENDING" },
-      data: { status: "RENDERING", renderLeaseId, renderHeartbeatAt: claimedAt },
-    });
-    if (claimed.count === 0) continue; // another worker claimed it first
-
-    let leaseLost = false;
-    let terminalTransitionStarted = false;
-    const reportLeaseLost = (operation: string) => {
-      leaseLost = true;
-      console.warn(
-        `[Multiplier Worker ${workerId}] Render lease lost for output ${candidate.id} during ${operation}; ` +
-        "skipping further external side effects"
-      );
-    };
-
-    let leaseOperation: Promise<void> = Promise.resolve();
-    const updateOwnedOutput = (data: Prisma.MultiplierOutputUpdateManyMutationInput) => {
-      const result = leaseOperation.then(() => prisma.multiplierOutput.updateMany({
-        where: { id: candidate.id, status: "RENDERING", renderLeaseId },
-        data,
-      }));
-      leaseOperation = result.then(() => undefined, () => undefined);
-      return result;
-    };
-
-    let heartbeatInFlight = false;
-    const heartbeat = async () => {
-      if (heartbeatInFlight || terminalTransitionStarted || leaseLost) return;
-      heartbeatInFlight = true;
-      const heartbeatAt = new Date();
-      try {
-        const updated = await updateOwnedOutput({ renderHeartbeatAt: heartbeatAt });
-        if (updated.count === 0) reportLeaseLost("heartbeat");
-      } catch (err) {
-        console.error(`[Multiplier Worker ${workerId}] Heartbeat failed for output ${candidate.id}:`, err);
-      } finally {
-        heartbeatInFlight = false;
-      }
-    };
-    const heartbeatTimer = setInterval(() => { void heartbeat(); }, 30000);
-
+    const releaseAdmission = await renderAdmissionController.acquire();
     try {
-      const output = await prisma.multiplierOutput.findUnique({
-        where: { id: candidate.id },
-        include: {
-          group: true,
-          variation: true,
-          hook: true,
-        },
+      if (isRenderPaused) {
+        console.log(`[Multiplier Worker ${workerId}] Paused by operator. Stopping loop.`);
+        break;
+      }
+
+      // Atomic claim: flip exactly one PENDING output so two workers never
+      // render the same video. The dedicated lease fences off an older worker
+      // without being invalidated by unrelated output metadata updates.
+      const candidate = await prisma.multiplierOutput.findFirst({
+        where: { status: "PENDING" },
+        orderBy: { createdAt: "asc" },
+        select: { id: true },
       });
-      if (!output || leaseLost) continue;
 
-      let stillPath = "";
-      try {
-        await prisma.multiplierGroup.update({
-          where: { id: output.groupId },
-          data: { status: "RENDERING" },
-        });
-        if (leaseLost) continue;
+      if (!candidate) {
+        console.log(`[Multiplier Worker ${workerId}] Queue empty. Going to sleep.`);
+        break;
+      }
 
-        const settings = typeof output.group.settings === "string"
-          ? JSON.parse(output.group.settings)
-          : (output.group.settings || {});
+      const renderLeaseId = crypto.randomUUID();
+      const claimedAt = new Date();
+      const claimed = await prisma.multiplierOutput.updateMany({
+        where: { id: candidate.id, status: "PENDING" },
+        data: { status: "RENDERING", renderLeaseId, renderHeartbeatAt: claimedAt },
+      });
+      if (claimed.count === 0) continue; // another worker claimed it first
 
-        const hookText = output.hook.text.trim();
-        let relativeVideoUrl: string;
-        if (hookText) {
-          // 1. Render transparent PNG still in Remotion
-          // Per-variation preset (multi-preset split) wins over the group style.
-          const outputStyleId = output.variation.styleId || output.group.styleId;
-          console.log(`[Multiplier Worker] Rendering still for Hook: "${output.hook.text.substring(0, 30)}..."`);
-          stillPath = await renderCaptionStill(outputStyleId, output.hook.text, settings, output.id);
+      let leaseLost = false;
+      let terminalTransitionStarted = false;
+      const reportLeaseLost = (operation: string) => {
+        leaseLost = true;
+        console.warn(
+          `[Multiplier Worker ${workerId}] Render lease lost for output ${candidate.id} during ${operation}; ` +
+          "skipping further external side effects"
+        );
+      };
 
-          // 2. Composite variation with still overlay in FFmpeg
-          console.log(`[Multiplier Worker] Compositing still on video: ${output.variation.videoRef}`);
-          relativeVideoUrl = await composeOutput(output.variation.videoRef, stillPath, output.id, settings);
+      let leaseOperation: Promise<void> = Promise.resolve();
+      const updateOwnedOutput = (data: Prisma.MultiplierOutputUpdateManyMutationInput) => {
+        const result = leaseOperation.then(() => prisma.multiplierOutput.updateMany({
+          where: { id: candidate.id, status: "RENDERING", renderLeaseId },
+          data,
+        }));
+        leaseOperation = result.then(() => undefined, () => undefined);
+        return result;
+      };
 
-          // Delete the still PNG after success
-          try {
-            fs.unlinkSync(stillPath);
-          } catch {}
-        } else {
-          // Hooks-off bulk mode: empty hook text means NO caption overlay —
-          // re-encode the source video as-is.
-          console.log(`[Multiplier Worker] No hook text — rendering plain output for: ${output.variation.videoRef}`);
-          relativeVideoUrl = await composeOutputPlain(output.variation.videoRef, output.id);
+      let heartbeatInFlight = false;
+      const heartbeat = async () => {
+        if (heartbeatInFlight || terminalTransitionStarted || leaseLost) return;
+        heartbeatInFlight = true;
+        const heartbeatAt = new Date();
+        try {
+          const updated = await updateOwnedOutput({ renderHeartbeatAt: heartbeatAt });
+          if (updated.count === 0) reportLeaseLost("heartbeat");
+        } catch (err) {
+          console.error(`[Multiplier Worker ${workerId}] Heartbeat failed for output ${candidate.id}:`, err);
+        } finally {
+          heartbeatInFlight = false;
         }
+      };
+      const heartbeatTimer = setInterval(() => { void heartbeat(); }, 30000);
 
-        // 3. Auto-upload to Google Drive if connected
-        let driveFolderId: string | null = null;
-        const finalFolderId = output.driveFolderId || settings?.driveFolderId || null;
-        if (finalFolderId && !leaseLost) {
-          try {
-            const drive = await getMultiplierDriveClient();
-            if (drive && !leaseLost) {
-              const localFilePath = path.join(process.cwd(), "public", relativeVideoUrl);
-              const cleanHookSlug = output.hook.text.replace(/[^a-zA-Z0-9 ]/g, "").trim().replace(/\s+/g, "_").substring(0, 40);
-              const fileName = `multi_${output.id}_${cleanHookSlug || "plain"}.mp4`;
+      try {
+        const output = await prisma.multiplierOutput.findUnique({
+          where: { id: candidate.id },
+          include: {
+            group: true,
+            variation: true,
+            hook: true,
+          },
+        });
+        if (!output || leaseLost) continue;
 
-              console.log(`[Multiplier Worker] Uploading output ${output.id} to Drive Folder ${finalFolderId}`);
-              const fileStream = fs.createReadStream(localFilePath);
-              await drive.files.create({
-                requestBody: {
-                  name: fileName,
-                  parents: [finalFolderId],
-                },
-                media: {
-                  mimeType: "video/mp4",
-                  body: fileStream,
-                },
-                fields: "id",
-                supportsAllDrives: true,
-              });
-              driveFolderId = finalFolderId;
+        let stillPath = "";
+        try {
+          await prisma.multiplierGroup.update({
+            where: { id: output.groupId },
+            data: { status: "RENDERING" },
+          });
+          if (leaseLost) continue;
+
+          const settings = typeof output.group.settings === "string"
+            ? JSON.parse(output.group.settings)
+            : (output.group.settings || {});
+
+          const hookText = output.hook.text.trim();
+          let relativeVideoUrl: string;
+          if (hookText) {
+            // 1. Render transparent PNG still in Remotion
+            // Per-variation preset (multi-preset split) wins over the group style.
+            const outputStyleId = output.variation.styleId || output.group.styleId;
+            console.log(`[Multiplier Worker] Rendering still for Hook: "${output.hook.text.substring(0, 30)}..."`);
+            stillPath = await renderCaptionStill(outputStyleId, output.hook.text, settings, output.id);
+
+            // 2. Composite variation with still overlay in FFmpeg
+            console.log(`[Multiplier Worker] Compositing still on video: ${output.variation.videoRef}`);
+            relativeVideoUrl = await composeOutput(output.variation.videoRef, stillPath, output.id, settings);
+
+            // Delete the still PNG after success
+            try {
+              fs.unlinkSync(stillPath);
+            } catch {}
+          } else {
+            // Hooks-off bulk mode: empty hook text means NO caption overlay —
+            // re-encode the source video as-is.
+            console.log(`[Multiplier Worker] No hook text — rendering plain output for: ${output.variation.videoRef}`);
+            relativeVideoUrl = await composeOutputPlain(output.variation.videoRef, output.id);
+          }
+
+          // 3. Auto-upload to Google Drive if connected
+          let driveFolderId: string | null = null;
+          const finalFolderId = output.driveFolderId || settings?.driveFolderId || null;
+          if (finalFolderId && !leaseLost) {
+            try {
+              const drive = await getMultiplierDriveClient();
+              if (drive && !leaseLost) {
+                const localFilePath = path.join(process.cwd(), "public", relativeVideoUrl);
+                const cleanHookSlug = output.hook.text.replace(/[^a-zA-Z0-9 ]/g, "").trim().replace(/\s+/g, "_").substring(0, 40);
+                const fileName = `multi_${output.id}_${cleanHookSlug || "plain"}.mp4`;
+
+                console.log(`[Multiplier Worker] Uploading output ${output.id} to Drive Folder ${finalFolderId}`);
+                const fileStream = fs.createReadStream(localFilePath);
+                await drive.files.create({
+                  requestBody: {
+                    name: fileName,
+                    parents: [finalFolderId],
+                  },
+                  media: {
+                    mimeType: "video/mp4",
+                    body: fileStream,
+                  },
+                  fields: "id",
+                  supportsAllDrives: true,
+                });
+                driveFolderId = finalFolderId;
+              }
+            } catch (driveErr: any) {
+              console.error(`[Multiplier Worker] Drive upload failed for output ${output.id}:`, driveErr?.message || driveErr);
             }
-          } catch (driveErr: any) {
-            console.error(`[Multiplier Worker] Drive upload failed for output ${output.id}:`, driveErr?.message || driveErr);
+          }
+
+          terminalTransitionStarted = true;
+          const completed = await updateOwnedOutput({
+            status: "COMPLETED",
+            outputRef: relativeVideoUrl,
+            driveFolderId,
+            errorMessage: null,
+            renderLeaseId: null,
+            renderHeartbeatAt: null,
+          });
+          if (completed.count === 1) {
+            await updateParentGroupStatus(output.groupId);
+          } else {
+            reportLeaseLost("completion");
+          }
+        } catch (err: any) {
+          console.error(`[Multiplier Worker] Output ${output.id} failed:`, err);
+          // Clean still path if stuck on disk
+          if (stillPath && fs.existsSync(stillPath)) {
+            try { fs.unlinkSync(stillPath); } catch {}
+          }
+
+          terminalTransitionStarted = true;
+          const failed = await updateOwnedOutput({
+            status: "FAILED",
+            errorMessage: err.message || String(err),
+            renderLeaseId: null,
+            renderHeartbeatAt: null,
+          });
+          if (failed.count === 1) {
+            await updateParentGroupStatus(output.groupId);
+          } else {
+            reportLeaseLost("failure");
           }
         }
-
-        terminalTransitionStarted = true;
-        const completed = await updateOwnedOutput({
-          status: "COMPLETED",
-          outputRef: relativeVideoUrl,
-          driveFolderId,
-          errorMessage: null,
-          renderLeaseId: null,
-          renderHeartbeatAt: null,
-        });
-        if (completed.count === 1) {
-          await updateParentGroupStatus(output.groupId);
-        } else {
-          reportLeaseLost("completion");
-        }
-      } catch (err: any) {
-        console.error(`[Multiplier Worker] Output ${output.id} failed:`, err);
-        // Clean still path if stuck on disk
-        if (stillPath && fs.existsSync(stillPath)) {
-          try { fs.unlinkSync(stillPath); } catch {}
-        }
-
-        terminalTransitionStarted = true;
-        const failed = await updateOwnedOutput({
-          status: "FAILED",
-          errorMessage: err.message || String(err),
-          renderLeaseId: null,
-          renderHeartbeatAt: null,
-        });
-        if (failed.count === 1) {
-          await updateParentGroupStatus(output.groupId);
-        } else {
-          reportLeaseLost("failure");
-        }
+      } finally {
+        clearInterval(heartbeatTimer);
+        await leaseOperation;
       }
     } finally {
-      clearInterval(heartbeatTimer);
-      await leaseOperation;
+      releaseAdmission();
     }
   }
 }

@@ -1,12 +1,13 @@
 export const dynamic = "force-dynamic";
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import { getSession } from "@/lib/session";
 import { can } from "@/lib/services/permissions";
 import { getRenderQueueState } from "@/lib/services/multiplier";
+import { getMultiplierPerformanceState } from "@/lib/services/multiplier-performance";
 import prisma from "@/lib/db";
 
 // GET /api/multiplier/queue — active renders plus groups finished in the last 24h
-export async function GET(req: NextRequest) {
+export async function GET() {
   const session = await getSession();
   if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -45,16 +46,20 @@ export async function GET(req: NextRequest) {
       },
     }));
 
-    const staleRendering = await prisma.multiplierOutput.count({
-      where: { status: "RENDERING", updatedAt: { lt: new Date(Date.now() - 2 * 60 * 1000) } },
-    });
+    const [staleRendering, performance] = await Promise.all([
+      prisma.multiplierOutput.count({
+        where: { status: "RENDERING", updatedAt: { lt: new Date(Date.now() - 2 * 60 * 1000) } },
+      }),
+      getMultiplierPerformanceState(),
+    ]);
 
     return NextResponse.json({
       groups: queue,
-      state: { ...getRenderQueueState(), staleRendering },
+      state: { ...getRenderQueueState(), staleRendering, performance },
     });
-  } catch (err: any) {
+  } catch (err: unknown) {
     console.error("[Multiplier Queue GET API] Error:", err);
-    return NextResponse.json({ error: err.message || "Failed to fetch render queue" }, { status: 500 });
+    const message = err instanceof Error ? err.message : "Failed to fetch render queue";
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }

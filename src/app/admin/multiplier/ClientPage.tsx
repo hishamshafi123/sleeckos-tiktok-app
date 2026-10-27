@@ -596,8 +596,20 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
   // Bulk render state
   const [bulkRendering, setBulkRendering] = useState(false);
 
-  // Render queue control (pause/resume) + collapsed queue rows
-  const [queueControl, setQueueControl] = useState<{ paused: boolean; processing: boolean; staleRendering: number } | null>(null);
+  // Render queue control (pause/resume) + live performance mode + collapsed rows
+  type PerformanceMode = "balanced" | "render_boost" | "export_boost";
+  type PerformanceState = {
+    mode: PerformanceMode;
+    limits: { render: number; export: number };
+    active: { render: number; export: number };
+    waiting: { render: number; export: number };
+  };
+  const [queueControl, setQueueControl] = useState<{
+    paused: boolean;
+    processing: boolean;
+    staleRendering: number;
+    performance?: PerformanceState;
+  } | null>(null);
   const [queueControlLoading, setQueueControlLoading] = useState(false);
   const [expandedQueueGroups, setExpandedQueueGroups] = useState<Set<string>>(new Set());
 
@@ -631,6 +643,27 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
       fetchData();
     } catch (err: any) {
       toast.error(err.message || `Failed to ${action} queue`);
+    } finally {
+      setQueueControlLoading(false);
+    }
+  };
+
+  const handlePerformanceModeChange = async (mode: PerformanceMode) => {
+    if (queueControl?.performance?.mode === mode) return;
+    setQueueControlLoading(true);
+    try {
+      const res = await fetch("/api/multiplier/queue/control", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "set-performance-mode", mode }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to change performance mode");
+      if (data.state) setQueueControl((prev) => ({ staleRendering: 0, ...prev, ...data.state }));
+      const label = mode === "render_boost" ? "Render boost" : mode === "export_boost" ? "Export boost" : "Balanced";
+      toast.success(`${label} enabled — current jobs finish; new worker limits apply live.`);
+    } catch (err: any) {
+      toast.error(err.message || "Failed to change performance mode");
     } finally {
       setQueueControlLoading(false);
     }
@@ -5053,6 +5086,49 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
               </button>
             </div>
           </div>
+
+          {queueControl?.performance && (
+            <div className="bg-[#18181b] rounded-xl border border-[#27272a] p-4 flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+              <div className="flex items-start gap-3">
+                <div className="p-2 rounded-lg bg-[#09090b] border border-[#27272a]">
+                  <Settings2 className="w-4 h-4 text-[#E11D48]" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-semibold text-white">Performance mode</h3>
+                  <p className="text-xs text-[#71717a] mt-0.5">New work only · current renders and uploads finish normally</p>
+                </div>
+              </div>
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+                <div className="flex rounded-lg border border-[#27272a] bg-[#09090b] p-1">
+                  {(["balanced", "render_boost", "export_boost"] as PerformanceMode[]).map((mode) => {
+                    const selected = queueControl.performance?.mode === mode;
+                    const label = mode === "render_boost" ? "Render boost" : mode === "export_boost" ? "Export boost" : "Balanced";
+                    return (
+                      <button
+                        key={mode}
+                        onClick={() => handlePerformanceModeChange(mode)}
+                        disabled={queueControlLoading}
+                        className={`px-3 py-1.5 rounded-md text-xs font-semibold transition-all disabled:opacity-50 ${
+                          selected ? "bg-[#E11D48]/15 text-white shadow-sm" : "text-[#71717a] hover:text-white"
+                        }`}
+                      >
+                        {label}
+                      </button>
+                    );
+                  })}
+                </div>
+                <div className="flex items-center gap-3 text-[11px] font-medium text-[#a1a1aa]">
+                  <span>Render {queueControl.performance.active.render}/{queueControl.performance.limits.render}</span>
+                  <span>Export {queueControl.performance.active.export}/{queueControl.performance.limits.export}</span>
+                  {(queueControl.performance.waiting.render + queueControl.performance.waiting.export) > 0 && (
+                    <span className="text-[#71717a]">
+                      {queueControl.performance.waiting.render + queueControl.performance.waiting.export} waiting
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Smart Export jobs */}
           {exportJobs.length > 0 && (

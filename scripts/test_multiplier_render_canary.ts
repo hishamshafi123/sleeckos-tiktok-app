@@ -7,7 +7,8 @@ import { SAMPLE_LYRIC_LINES } from "../src/lib/style-lab/schema";
 
 const execFileAsync = promisify(execFile);
 const ROOT = process.cwd();
-const CHROME_PATH = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+const CHROME_PATH = process.env.PUPPETEER_EXECUTABLE_PATH ||
+  (process.platform === "darwin" ? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" : "/usr/bin/chromium");
 const PLACEHOLDER_DATABASE_URL = "postgresql://canary:canary@127.0.0.1:65432/canary";
 const STYLE_ID = "editorial-caption";
 const MULTIPLIER_DIR = path.join(ROOT, "public", "uploads", "multiplier");

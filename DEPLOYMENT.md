@@ -149,7 +149,9 @@ curl https://example.com/tiktokiMpmDesGbaBtUe2sHO7yWqchZbpRo9HC.txt
 
 ## KVM8 runtime tuning
 
-The Compose defaults target KVM8 with one app/worker container and no replicas. The KVM8-tuned Multiplier/Smart Export knobs and their KVM4 rollback values are listed in `.env.example`. Changing these values requires recreating the containers; `docker compose restart` does not apply them.
+The Compose defaults target KVM8 with one app/worker container and no replicas. The KVM8-tuned Multiplier/Smart Export knobs and their KVM4 rollback values are listed in `.env.example`. Changing Docker resources or secondary FFmpeg/Remotion/transcription settings requires recreating the containers; `docker compose restart` does not apply them.
+
+The primary render and Smart Export worker limits are different: **Multiplier → Queue Dashboard → Performance mode** persists a Balanced, Render boost, or Export boost selection and changes admission live without recreation. Current renders/uploads always finish normally. The environment values remain the fallback/boot defaults until a mode is saved. Keep one app/worker container; the in-process admission and Drive pacing controls do not coordinate replicas.
 
 GitHub Actions auto-deploys only pushes to `main`; other branches are not deployed automatically.
 
@@ -185,7 +187,7 @@ The process check can be empty when no render/export work is active.
 
 ### Roll back to KVM4
 
-Replace the runtime settings in `.env` with the KVM4 rollback values from `.env.example`, then recreate both containers and repeat the inspection and stats checks:
+Replace the runtime settings in `.env` with the KVM4 rollback values from `.env.example`. Also clear the saved UI performance mode (`DELETE FROM "AppSetting" WHERE key = 'multiplier.performanceMode';`) so the KVM4 environment fallback is used instead of persisted KVM8 boost limits. Then recreate both containers and repeat the inspection and stats checks:
 
 ```bash
 cd /home/ubuntu/<project-name>

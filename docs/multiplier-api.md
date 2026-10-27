@@ -331,10 +331,26 @@ the worker is triggered only after the transaction commits. Each reserved
 
 #### Export worker
 
-`EXPORT_WORKER_CONCURRENCY` controls concurrent Drive uploads and defaults to `8`, with
-a maximum of `16` workers. Transient Drive rate-limit, server, and network errors are
-retried for up to five total attempts with exponential backoff and jitter, honoring
-`Retry-After`. Drive quota errors are not retried inline; they pause the affected job.
+`EXPORT_WORKER_CONCURRENCY` supplies the bootstrap/default concurrent Drive upload limit
+(`8` by default, capped at `16`). Queue Dashboard → Performance mode can override the
+primary render and Smart Export limits live: Balanced uses `4`/`8`, Render boost uses
+`5`/`2`, and Export boost uses `1`/`12` (render/export). The selected mode is persisted
+in `AppSetting`; without a saved mode, the environment values remain authoritative.
+Mode changes admit or pause only new claims—active renders/uploads finish normally and
+no container recreation is required. This assumes the documented single app/worker
+container; replicas would require distributed admission control.
+
+`GET /api/multiplier/queue` returns the effective mode, limits, and active/waiting counts
+under `state.performance`. Change it through the existing queue-control endpoint with
+`POST /api/multiplier/queue/control` and `{ action: "set-performance-mode", mode }`,
+where `mode` is `balanced`, `render_boost`, or `export_boost`.
+
+Transient Drive rate-limit, server, and network errors are retried for up to five total
+attempts with exponential backoff and jitter, honoring `Retry-After`. Smart Export lanes
+also share request spacing and a pool-wide rate-limit cooldown covering both dedup
+`files.list` and upload `files.create` calls. Drive storage-quota errors are not retried
+inline; they pause the affected job. The pacer applies to Smart Export only, not legacy
+exports or automatic post-render uploads.
 
 ---
 

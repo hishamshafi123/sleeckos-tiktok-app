@@ -7,6 +7,12 @@ import fs from "fs";
 import path from "path";
 import { createHash, randomUUID } from "crypto";
 import type { Prisma } from "@prisma/client";
+import {
+  EXPORT_ADMISSION_POOL_LIMIT,
+  exportAdmissionController,
+  getMultiplierPerformanceState,
+} from "./multiplier-performance";
+import { smartExportDriveRequestPacer } from "./drive-request-pacer";
 
 interface DriveFileSummary {
   id?: string | null;
@@ -945,15 +951,8 @@ async function finalizeDrainedJobs() {
 }
 
 // Uploads are network-bound and stream from/to disk, so they can use more
-// lanes than CPU-bound renders. Keep an upper bound to protect Drive quotas.
-const requestedExportWorkerConcurrency = Number.parseInt(
-  process.env.EXPORT_WORKER_CONCURRENCY || "8",
-  10
-);
-const EXPORT_WORKER_CONCURRENCY = Math.min(
-  16,
-  Math.max(1, Number.isNaN(requestedExportWorkerConcurrency) ? 8 : requestedExportWorkerConcurrency)
-);
+// lanes than CPU-bound renders. Dynamic admission limits active claims while
+// the physical pool remains sized for the largest env/preset limit.
 
 const assignmentClaimInclude = {
   video: {
@@ -1025,10 +1024,17 @@ async function claimNextAssignment() {
 }
 
 async function processExportQueue() {
-  console.log(`[Smart Export Worker] Starting processing queue with ${EXPORT_WORKER_CONCURRENCY} workers...`);
+  await getMultiplierPerformanceState().catch((err) => {
+    console.error("[Smart Export Worker] Performance settings load failed; using cached limits:", err);
+  });
+  console.log(
+    `[Smart Export Worker] Starting processing queue ` +
+    `with ${exportAdmissionController.getMetrics().limit} active lanes ` +
+    `(pool ${EXPORT_ADMISSION_POOL_LIMIT})...`
+  );
 
   await Promise.all(
-    Array.from({ length: EXPORT_WORKER_CONCURRENCY }, (_, i) => workerLoop(i))
+    Array.from({ length: EXPORT_ADMISSION_POOL_LIMIT }, (_, i) => workerLoop(i))
   );
 
   // Queue drained — finalize any job whose status flip was lost to a crash.
@@ -1039,183 +1045,188 @@ async function processExportQueue() {
 
 async function workerLoop(workerIndex: number) {
   while (true) {
-    // Claim the next pending assignment. A throw here is almost
-    // certainly the DB itself — stop this worker (the cron/boot resume
-    // re-triggers the pool) instead of hot-looping on the same row.
-    let assignment;
+    const releaseAdmission = await exportAdmissionController.acquire();
     try {
-      const claimed = await claimNextAssignment();
-      if (claimed === null) {
-        console.log(`[Smart Export Worker ${workerIndex}] Queue empty. Going to sleep.`);
+      // Claim the next pending assignment. A throw here is almost
+      // certainly the DB itself — stop this worker (the cron/boot resume
+      // re-triggers the pool) instead of hot-looping on the same row.
+      let assignment;
+      try {
+        const claimed = await claimNextAssignment();
+        if (claimed === null) {
+          console.log(`[Smart Export Worker ${workerIndex}] Queue empty. Going to sleep.`);
+          break;
+        }
+        if (claimed === "lost") {
+          // Another worker claimed it first — retry immediately, no sleep.
+          continue;
+        }
+        assignment = claimed;
+      } catch (err) {
+        console.error(
+          `[Smart Export Worker ${workerIndex}] Queue fetch/claim failed — stopping worker (cron resume will retrigger):`,
+          err
+        );
         break;
       }
-      if (claimed === "lost") {
-        // Another worker claimed it first — retry immediately, no sleep.
-        continue;
-      }
-      assignment = claimed;
-    } catch (err) {
-      console.error(
-        `[Smart Export Worker ${workerIndex}] Queue fetch/claim failed — stopping worker (cron resume will retrigger):`,
-        err
-      );
-      break;
-    }
 
-    const stopHeartbeat = startExportHeartbeat(assignment.id, assignment.uploadLeaseId);
-    try {
-      const video = assignment.video;
-      if (!video.outputRef) {
-        throw new Error("Video has no outputRef rendered file path");
-      }
-
-      const publicDir = path.join(process.cwd(), "public");
-      const localFilePath = path.join(publicDir, video.outputRef);
-
-      // 1. Check disk, download from R2 if missing
-      if (!fs.existsSync(localFilePath)) {
-        const key = `uploads/multiplier/renders/multi_${video.id}.mp4`;
-        console.log(`[Smart Export Worker] Video not found on disk, downloading from R2: ${key}`);
-        const downloaded = await downloadFromR2(key, localFilePath);
-        if (!downloaded) throw new Error(`Could not download video from storage: ${key}`);
-      }
-
-      if (!fs.existsSync(localFilePath)) {
-        throw new Error(`Video file does not exist on disk or storage: ${video.outputRef}`);
-      }
-
-      // 2. Fetch Drive client (cached per worker — the client identity is the
-      // single Drive-connected account, identical for every file in the queue,
-      // hence the constant cache key)
-      const drive = await getCachedMultiplierDriveClient("export-worker");
-      if (!drive) {
-        throw new Error("Google Drive connection is not connected. Please connect Drive first.");
-      }
-
-      // 3. Upload to Google Drive
-      const campaignTitle: string | null =
-        video.group?.campaign?.title || video.group?.campaign?.name || null;
-      const cleanCampaignSlug = (campaignTitle || "campaign")
-        .replace(/[^a-zA-Z0-9 ]/g, "")
-        .trim()
-        .replace(/\s+/g, "_")
-        .substring(0, 30);
-
-      // Full campaign title in literal parentheses at position 0 — the posting
-      // pipeline's parseCampaignBracket() attributes posts to campaigns from it
-      // (it tolerates Drive's "Copy of " prefix on duplicated files).
-      const campaignPrefix = campaignTitle ? formatCampaignBracketPrefix(campaignTitle) : "";
-
-      const cleanHookSlug = video.hook.text
-        .replace(/[^a-zA-Z0-9 ]/g, "")
-        .trim()
-        .replace(/\s+/g, "_")
-        .substring(0, 40);
-      // Hooks-off bulk mode leaves the hook text empty — "plain" keeps the
-      // <campaign>_<slug>_<outputId>.mp4 shape the posting pipeline parses.
-      const fileName = `${campaignPrefix}${cleanCampaignSlug}_${cleanHookSlug || "plain"}_${video.id}.mp4`;
-
-      console.log(`[Smart Export Worker] Uploading ${fileName} to folder ${assignment.driveFolderId}`);
-      const uploadResult = await uploadWithRetry(drive, localFilePath, fileName, assignment.driveFolderId);
-      if (!uploadResult.success) {
-        throw new Error(uploadResult.error || "Drive upload failed", { cause: uploadResult.cause });
-      }
-
-      // 4. Mark success
-      const groupCampaignId: string | null = video.group?.campaignId || null;
-      const feedAccount = await prisma.managedAccount.findFirst({
-        where: { driveFolderId: assignment.driveFolderId },
-        select: { id: true },
-      });
-      const completed = await prisma.$transaction(async (tx) => {
-        const transitioned = await tx.smartExportAssignment.updateMany({
-          where: { id: assignment.id, status: "uploading", uploadLeaseId: assignment.uploadLeaseId },
-          data: { status: "done", error: null, uploadLeaseId: null, uploadHeartbeatAt: null },
-        });
-        if (transitioned.count === 0) return false;
-
-        await tx.accountFeedEvent.create({
-          data: {
-            accountId: feedAccount?.id ?? null,
-            driveFolderId: assignment.driveFolderId,
-            source: "smart_export",
-          },
-        });
-        await tx.multiplierOutput.update({
-          where: { id: video.id },
-          data: {
-            exportStatus: "exported",
-            exportedAt: new Date(),
-            exportDestinationFolderId: assignment.driveFolderId,
-          },
-        });
-        if (groupCampaignId) {
-          await tx.campaign.update({
-            where: { id: groupCampaignId },
-            data: { exportedCount: { increment: 1 } },
-          });
-          await tx.campaignEvent.create({
-            data: {
-              campaignId: groupCampaignId,
-              type: "export",
-              meta: {
-                driveFolderId: assignment.driveFolderId,
-                groupId: video.groupId,
-                groupName: video.group?.name || null,
-                jobId: assignment.jobId,
-              },
-            },
-          });
-        }
-        return true;
-      });
-
-      if (completed) {
-        console.log(`[Smart Export Worker] Upload complete for assignment: ${assignment.id}`);
-      } else {
-        console.warn(`[Smart Export Worker] Ignoring stale completion for assignment: ${assignment.id}`);
-      }
-    } catch (err: unknown) {
-      const errMsg = err instanceof Error ? err.message : String(err);
-      console.error(`[Smart Export Worker] Assignment ${assignment.id} failed:`, errMsg);
-
-      let markedFailed = false;
+      const stopHeartbeat = startExportHeartbeat(assignment.id, assignment.uploadLeaseId);
       try {
-        markedFailed = await prisma.$transaction(async (tx) => {
+        const video = assignment.video;
+        if (!video.outputRef) {
+          throw new Error("Video has no outputRef rendered file path");
+        }
+
+        const publicDir = path.join(process.cwd(), "public");
+        const localFilePath = path.join(publicDir, video.outputRef);
+
+        // 1. Check disk, download from R2 if missing
+        if (!fs.existsSync(localFilePath)) {
+          const key = `uploads/multiplier/renders/multi_${video.id}.mp4`;
+          console.log(`[Smart Export Worker] Video not found on disk, downloading from R2: ${key}`);
+          const downloaded = await downloadFromR2(key, localFilePath);
+          if (!downloaded) throw new Error(`Could not download video from storage: ${key}`);
+        }
+
+        if (!fs.existsSync(localFilePath)) {
+          throw new Error(`Video file does not exist on disk or storage: ${video.outputRef}`);
+        }
+
+        // 2. Fetch Drive client (cached per worker — the client identity is the
+        // single Drive-connected account, identical for every file in the queue,
+        // hence the constant cache key)
+        const drive = await getCachedMultiplierDriveClient("export-worker");
+        if (!drive) {
+          throw new Error("Google Drive connection is not connected. Please connect Drive first.");
+        }
+
+        // 3. Upload to Google Drive
+        const campaignTitle: string | null =
+          video.group?.campaign?.title || video.group?.campaign?.name || null;
+        const cleanCampaignSlug = (campaignTitle || "campaign")
+          .replace(/[^a-zA-Z0-9 ]/g, "")
+          .trim()
+          .replace(/\s+/g, "_")
+          .substring(0, 30);
+
+        // Full campaign title in literal parentheses at position 0 — the posting
+        // pipeline's parseCampaignBracket() attributes posts to campaigns from it
+        // (it tolerates Drive's "Copy of " prefix on duplicated files).
+        const campaignPrefix = campaignTitle ? formatCampaignBracketPrefix(campaignTitle) : "";
+
+        const cleanHookSlug = video.hook.text
+          .replace(/[^a-zA-Z0-9 ]/g, "")
+          .trim()
+          .replace(/\s+/g, "_")
+          .substring(0, 40);
+        // Hooks-off bulk mode leaves the hook text empty — "plain" keeps the
+        // <campaign>_<slug>_<outputId>.mp4 shape the posting pipeline parses.
+        const fileName = `${campaignPrefix}${cleanCampaignSlug}_${cleanHookSlug || "plain"}_${video.id}.mp4`;
+
+        console.log(`[Smart Export Worker] Uploading ${fileName} to folder ${assignment.driveFolderId}`);
+        const uploadResult = await uploadWithRetry(drive, localFilePath, fileName, assignment.driveFolderId);
+        if (!uploadResult.success) {
+          throw new Error(uploadResult.error || "Drive upload failed", { cause: uploadResult.cause });
+        }
+
+        // 4. Mark success
+        const groupCampaignId: string | null = video.group?.campaignId || null;
+        const feedAccount = await prisma.managedAccount.findFirst({
+          where: { driveFolderId: assignment.driveFolderId },
+          select: { id: true },
+        });
+        const completed = await prisma.$transaction(async (tx) => {
           const transitioned = await tx.smartExportAssignment.updateMany({
             where: { id: assignment.id, status: "uploading", uploadLeaseId: assignment.uploadLeaseId },
-            data: { status: "failed", error: errMsg, uploadLeaseId: null, uploadHeartbeatAt: null },
+            data: { status: "done", error: null, uploadLeaseId: null, uploadHeartbeatAt: null },
           });
           if (transitioned.count === 0) return false;
-          await tx.multiplierOutput.updateMany({
-            where: { id: assignment.videoId, exportStatus: "exporting" },
-            data: { exportStatus: "not_exported" },
+
+          await tx.accountFeedEvent.create({
+            data: {
+              accountId: feedAccount?.id ?? null,
+              driveFolderId: assignment.driveFolderId,
+              source: "smart_export",
+            },
           });
+          await tx.multiplierOutput.update({
+            where: { id: video.id },
+            data: {
+              exportStatus: "exported",
+              exportedAt: new Date(),
+              exportDestinationFolderId: assignment.driveFolderId,
+            },
+          });
+          if (groupCampaignId) {
+            await tx.campaign.update({
+              where: { id: groupCampaignId },
+              data: { exportedCount: { increment: 1 } },
+            });
+            await tx.campaignEvent.create({
+              data: {
+                campaignId: groupCampaignId,
+                type: "export",
+                meta: {
+                  driveFolderId: assignment.driveFolderId,
+                  groupId: video.groupId,
+                  groupName: video.group?.name || null,
+                  jobId: assignment.jobId,
+                },
+              },
+            });
+          }
           return true;
         });
-      } catch (markErr) {
-        console.error(
-          `[Smart Export Worker] Failed to mark assignment ${assignment.id} as failed:`,
-          markErr
-        );
-      }
 
-      if (markedFailed && isDriveQuotaError(err)) {
-        await pauseJobForQuota(assignment.jobId, errMsg).catch((pauseErr) => {
+        if (completed) {
+          console.log(`[Smart Export Worker] Upload complete for assignment: ${assignment.id}`);
+        } else {
+          console.warn(`[Smart Export Worker] Ignoring stale completion for assignment: ${assignment.id}`);
+        }
+      } catch (err: unknown) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        console.error(`[Smart Export Worker] Assignment ${assignment.id} failed:`, errMsg);
+
+        let markedFailed = false;
+        try {
+          markedFailed = await prisma.$transaction(async (tx) => {
+            const transitioned = await tx.smartExportAssignment.updateMany({
+              where: { id: assignment.id, status: "uploading", uploadLeaseId: assignment.uploadLeaseId },
+              data: { status: "failed", error: errMsg, uploadLeaseId: null, uploadHeartbeatAt: null },
+            });
+            if (transitioned.count === 0) return false;
+            await tx.multiplierOutput.updateMany({
+              where: { id: assignment.videoId, exportStatus: "exporting" },
+              data: { exportStatus: "not_exported" },
+            });
+            return true;
+          });
+        } catch (markErr) {
           console.error(
-            `[Smart Export Worker] Failed to pause job ${assignment.jobId} after quota error:`,
-            pauseErr
+            `[Smart Export Worker] Failed to mark assignment ${assignment.id} as failed:`,
+            markErr
           );
-        });
-      }
-    } finally {
-      stopHeartbeat();
-    }
+        }
 
-    // Update parent job status check
-    await updateParentJobStatus(assignment.jobId).catch((err) => {
-      console.error(`[Smart Export Worker] Parent status update failed for job ${assignment.jobId}:`, err);
-    });
+        if (markedFailed && isDriveQuotaError(err)) {
+          await pauseJobForQuota(assignment.jobId, errMsg).catch((pauseErr) => {
+            console.error(
+              `[Smart Export Worker] Failed to pause job ${assignment.jobId} after quota error:`,
+              pauseErr
+            );
+          });
+        }
+      } finally {
+        stopHeartbeat();
+      }
+
+      // Update parent job status check
+      await updateParentJobStatus(assignment.jobId).catch((err) => {
+        console.error(`[Smart Export Worker] Parent status update failed for job ${assignment.jobId}:`, err);
+      });
+    } finally {
+      releaseAdmission();
+    }
   }
 }
 
@@ -1280,6 +1291,7 @@ async function findExistingDriveFile(
   folderId: string
 ): Promise<string | null> {
   const escapedName = fileName.replace(/'/g, "\\'");
+  await smartExportDriveRequestPacer.beforeRequest();
   const res = await drive.files.list({
     q: `name = '${escapedName}' and '${folderId}' in parents and trashed = false`,
     fields: "files(id,name)",
@@ -1356,6 +1368,11 @@ function driveErrorDetails(err: unknown) {
     .map(String);
 
   return { status, message, reasons, codes };
+}
+
+function isDriveRateLimitError(err: unknown): boolean {
+  const { status, reasons, codes } = driveErrorDetails(err);
+  return status === 429 || (status === 403 && hasDriveRateLimitReason(reasons, codes));
 }
 
 export function isRetryableDriveError(err: unknown): boolean {
@@ -1435,6 +1452,7 @@ export async function uploadWithRetry(
         return { success: true, fileId: existingId };
       }
 
+      await smartExportDriveRequestPacer.beforeRequest();
       const fileStream = fs.createReadStream(filePath);
       const res = await drive.files.create({
         requestBody: {
@@ -1458,9 +1476,12 @@ export async function uploadWithRetry(
         return { success: false, error: `${prefix}${message}`, cause: err };
       }
 
+      const backoff = getDriveRetryDelayMs(err, attempt);
+      if (isDriveRateLimitError(err)) {
+        smartExportDriveRequestPacer.noteRateLimit(backoff);
+      }
       console.warn(`[Smart Export Drive] Upload attempt ${attempt}/${maxRetries} failed: ${message}`);
       if (attempt < maxRetries) {
-        const backoff = getDriveRetryDelayMs(err, attempt);
         await new Promise((resolve) => setTimeout(resolve, backoff));
       }
     }
