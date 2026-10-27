@@ -1,7 +1,10 @@
 import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+import crypto from "crypto";
 import fs from "fs";
 import path from "path";
+import { Readable } from "stream";
+import { pipeline } from "stream/promises";
 
 const isR2Configured = (): boolean => {
   return !!(
@@ -100,6 +103,7 @@ export async function downloadFromR2(key: string, localPath: string): Promise<bo
     return false;
   }
 
+  const tempPath = `${localPath}.${process.pid}.${crypto.randomUUID()}.tmp`;
   try {
     const command = new GetObjectCommand({
       Bucket: process.env.R2_BUCKET_NAME!,
@@ -111,23 +115,14 @@ export async function downloadFromR2(key: string, localPath: string): Promise<bo
       return false;
     }
 
-    const dir = path.dirname(localPath);
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
-
-    const fileStream = fs.createWriteStream(localPath);
-    const bodyStream = response.Body as any;
-    
-    await new Promise<void>((resolve, reject) => {
-      bodyStream.pipe(fileStream);
-      bodyStream.on("end", () => resolve());
-      bodyStream.on("error", (err: any) => reject(err));
-    });
+    await fs.promises.mkdir(path.dirname(localPath), { recursive: true });
+    await pipeline(response.Body as Readable, fs.createWriteStream(tempPath));
+    await fs.promises.rename(tempPath, localPath);
 
     console.log(`[R2 Download Success] Downloaded key: ${key} to ${localPath}`);
     return true;
   } catch (err) {
+    try { await fs.promises.unlink(tempPath); } catch {}
     console.error(`[R2 Download Error] Failed to download key ${key} to ${localPath}:`, err);
     return false;
   }

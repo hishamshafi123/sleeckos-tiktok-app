@@ -40,6 +40,7 @@ CREATE TABLE "FactoryBatch" (
     "campaignId" TEXT,
     "styleIds" TEXT[],
     "status" TEXT NOT NULL DEFAULT 'DRAFT',
+    "errorMessage" TEXT,
     "createdBy" TEXT,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,

@@ -24,8 +24,25 @@ BEGIN
   END IF;
 END $$;
 
--- FK constraint names are cosmetic (Prisma doesn't reference them) and differ
--- across environments ("SV_source_fkey"/"SV_niche_fkey" on prod) — skip.
+-- Match Prisma's names on fresh replay without touching environment-specific
+-- constraint names from already-migrated databases.
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'SourcedVideo_sourceId_fkey'
+      AND conrelid = to_regclass('"YouTubeSourcedVideo"')
+  ) THEN
+    ALTER TABLE "YouTubeSourcedVideo" RENAME CONSTRAINT "SourcedVideo_sourceId_fkey" TO "YouTubeSourcedVideo_sourceId_fkey";
+  END IF;
+  IF EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'SourcedVideo_nicheId_fkey'
+      AND conrelid = to_regclass('"YouTubeSourcedVideo"')
+  ) THEN
+    ALTER TABLE "YouTubeSourcedVideo" RENAME CONSTRAINT "SourcedVideo_nicheId_fkey" TO "YouTubeSourcedVideo_nicheId_fkey";
+  END IF;
+END $$;
 
 -- CreateTable
 CREATE TABLE IF NOT EXISTS "SourcingRun" (

@@ -5,6 +5,39 @@ import { downloadFromR2 } from "@/lib/services/storage";
 import { assignVideosFairRoundRobin } from "@/lib/services/smart-export-assign";
 import fs from "fs";
 import path from "path";
+import { createHash, randomUUID } from "crypto";
+import type { Prisma } from "@prisma/client";
+
+interface DriveFileSummary {
+  id?: string | null;
+  name?: string | null;
+}
+
+interface DriveListResponse {
+  data: {
+    files?: DriveFileSummary[] | null;
+    nextPageToken?: string | null;
+  };
+}
+
+interface SmartExportDriveClient {
+  files: {
+    list(request: {
+      q: string;
+      fields?: string;
+      pageSize?: number;
+      pageToken?: string;
+      supportsAllDrives?: boolean;
+      includeItemsFromAllDrives?: boolean;
+    }): Promise<DriveListResponse>;
+    create(request: {
+      requestBody: { name: string; parents: string[] };
+      media: { mimeType: string; body: fs.ReadStream };
+      fields?: string;
+      supportsAllDrives?: boolean;
+    }): Promise<{ data: { id?: string | null } }>;
+  };
+}
 
 // Shared context for color → defaultPostCount resolution
 async function getColorResolutionContext() {
@@ -80,13 +113,13 @@ export async function searchDriveFolders(query: string) {
     queryStr += ` and name contains '${query.replace(/'/g, "\\'")}'`;
   }
 
-  const folders: any[] = [];
+  const folders: DriveFileSummary[] = [];
   let pageToken: string | undefined = undefined;
 
   // Paginate the ENTIRE match set — Drive returns pages unordered, so any
   // cutoff would silently drop folders before the natural sort below runs.
   do {
-    const res: any = await drive.files.list({
+    const res: DriveListResponse = await drive.files.list({
       q: queryStr,
       fields: "nextPageToken, files(id,name,parents)",
       pageSize: 1000,
@@ -180,12 +213,8 @@ export async function previewSmartExport(
       groupId: { in: groupIds },
       status: "COMPLETED",
       outputRef: { not: null },
-      ...(!includeExported
-        ? {
-            exportStatus: { not: "exported" },
-            exportedAt: null,
-          }
-        : {}),
+      exportStatus: includeExported ? { not: "exporting" } : { notIn: ["exporting", "exported"] },
+      ...(!includeExported ? { exportedAt: null } : {}),
     },
     select: {
       id: true,
@@ -267,6 +296,57 @@ interface SmartExportPlanAssignment {
   videoIds: string[];
 }
 
+interface SmartExportRunOptions {
+  idempotencyKey?: string;
+  requestHash?: string;
+  includeExported?: boolean;
+  startWorker?: boolean;
+}
+
+export class SmartExportRequestConflictError extends Error {}
+export class SmartExportReservationError extends Error {}
+
+export function createSmartExportRequestHash(input: {
+  groupIds: string[];
+  accounts?: AccountAllocation[];
+  plan?: SmartExportPlanAssignment[];
+  days?: number;
+  includeExported?: boolean;
+  countsAreTotal?: boolean;
+}): string {
+  const accounts = input.accounts?.map((a) => ({
+    driveFolderId: a.driveFolderId,
+    name: a.name || "",
+    count: a.count,
+  })).sort((a, b) => a.driveFolderId.localeCompare(b.driveFolderId) || a.name.localeCompare(b.name));
+  const plan = input.plan?.map((p) => ({
+    driveFolderId: p.driveFolderId,
+    driveFolderName: p.driveFolderName || "",
+    videoIds: [...p.videoIds].sort(),
+  })).sort((a, b) => a.driveFolderId.localeCompare(b.driveFolderId));
+
+  return createHash("sha256").update(JSON.stringify({
+    groupIds: [...input.groupIds].sort(),
+    accounts,
+    plan,
+    days: Math.max(1, Math.floor(input.days ?? 1) || 1),
+    includeExported: !!input.includeExported,
+    countsAreTotal: !!input.countsAreTotal,
+  })).digest("hex");
+}
+
+function assertMatchingRequest(job: { requestHash: string | null }, requestHash?: string) {
+  if ((job.requestHash || null) !== (requestHash || null)) {
+    throw new SmartExportRequestConflictError("This idempotency key belongs to a different export request");
+  }
+}
+
+export async function findSmartExportJobByRequestKey(idempotencyKey: string, requestHash?: string) {
+  const job = await prisma.smartExportJob.findUnique({ where: { idempotencyKey } });
+  if (job) assertMatchingRequest(job, requestHash);
+  return job;
+}
+
 /**
  * Creates and runs a new Smart Export background job.
  */
@@ -274,85 +354,195 @@ export async function runSmartExport(
   userId: string | null,
   groupIds: string[],
   plan: SmartExportPlanAssignment[],
-  days: number = 1
+  days: number = 1,
+  options: SmartExportRunOptions = {}
 ) {
-  // Compute flat list of assignments to create
-  const flatAssignments: { videoId: string; sourceGroupId: string; driveFolderId: string }[] = [];
-  
-  // We need to fetch video source group IDs for mapping
-  const allVideoIds = plan.flatMap((p) => p.videoIds);
-  const videos = await prisma.multiplierOutput.findMany({
-    where: { id: { in: allVideoIds } },
-    select: { id: true, groupId: true },
-  });
-
-  const videoGroupMap = new Map<string, string>();
-  videos.forEach((v) => videoGroupMap.set(v.id, v.groupId));
-
-  plan.forEach((p) => {
-    p.videoIds.forEach((vId) => {
-      const sourceGroupId = videoGroupMap.get(vId);
-      if (sourceGroupId) {
-        flatAssignments.push({
-          videoId: vId,
-          sourceGroupId,
-          driveFolderId: p.driveFolderId,
+  const idempotencyKey = options.idempotencyKey?.trim() || undefined;
+  const includeExported = options.includeExported === true;
+  const startWorker = options.startWorker !== false;
+  if (idempotencyKey && !options.requestHash) {
+    throw new Error("A request hash is required when using an idempotency key");
+  }
+  if (idempotencyKey) {
+    const existing = await findSmartExportJobByRequestKey(idempotencyKey, options.requestHash);
+    if (existing) {
+      if (startWorker) {
+        triggerSmartExportWorker().catch((err) => {
+          console.error("[Smart Export Service] Failed to retrigger background worker:", err);
         });
       }
-    });
-  });
-
-  if (flatAssignments.length === 0) {
-    throw new Error("No video assignments to run");
+      return { job: existing, replayed: true };
+    }
   }
 
-  // Create the SmartExportJob
-  const job = await prisma.smartExportJob.create({
-    data: {
-      groupIds,
-      status: "pending",
-      days: Math.max(1, Math.floor(days) || 1),
-      createdBy: userId,
-      summary: {},
-    },
-  });
+  try {
+    const job = await prisma.$transaction(async (tx) => {
+      const allVideoIds = plan.flatMap((p) => p.videoIds);
+      if (allVideoIds.length === 0) {
+        throw new Error("No video assignments to run");
+      }
+      const uniqueVideoIds = new Set(allVideoIds);
+      if (uniqueVideoIds.size !== allVideoIds.length) {
+        throw new SmartExportReservationError("Each video can only be assigned once in an export plan");
+      }
 
-  // Create the SmartExportAssignments and set video statuses to exporting
-  // (per-folder updates so each video also records its destination folder name).
-  // Big exports (hundreds of accounts × hundreds of videos) put thousands of
-  // rows + hundreds of updateMany statements in this one transaction — the
-  // default 5s interactive timeout is not enough, so raise it.
-  await prisma.$transaction(
-    [
-      prisma.smartExportAssignment.createMany({
+      const videos = await tx.multiplierOutput.findMany({
+        where: { id: { in: [...uniqueVideoIds] } },
+        select: { id: true, groupId: true },
+      });
+      if (videos.length !== uniqueVideoIds.size) {
+        throw new SmartExportReservationError(
+          "Some videos are no longer available. Refresh the preview and try again."
+        );
+      }
+
+      const selectedGroupIds = new Set(groupIds);
+      const videoGroupMap = new Map(videos.map((v) => [v.id, v.groupId]));
+      const flatAssignments = plan.flatMap((p) => p.videoIds.map((videoId) => {
+        const sourceGroupId = videoGroupMap.get(videoId);
+        if (!sourceGroupId || !selectedGroupIds.has(sourceGroupId)) {
+          throw new SmartExportReservationError(
+            "The export plan contains a video outside the selected groups. Refresh the preview and try again."
+          );
+        }
+        return {
+          videoId,
+          sourceGroupId,
+          driveFolderId: p.driveFolderId,
+          driveFolderName: p.driveFolderName || "",
+        };
+      }));
+
+      const pairsByKey = new Map<string, {
+        pairKey: string;
+        driveFolderId: string;
+        sourceGroupId: string;
+      }>();
+      for (const assignment of flatAssignments) {
+        const pairKey = JSON.stringify([assignment.driveFolderId, assignment.sourceGroupId]);
+        if (pairsByKey.has(pairKey)) {
+          throw new SmartExportReservationError(
+            "The export plan assigns more than one video from the same source group to a Drive folder"
+          );
+        }
+        pairsByKey.set(pairKey, {
+          pairKey,
+          driveFolderId: assignment.driveFolderId,
+          sourceGroupId: assignment.sourceGroupId,
+        });
+      }
+      const folderGroupPairs = [...pairsByKey.values()].sort((a, b) =>
+        a.pairKey < b.pairKey ? -1 : a.pairKey > b.pairKey ? 1 : 0
+      );
+
+      const created = await tx.smartExportJob.create({
+        data: {
+          groupIds,
+          status: "pending",
+          days: Math.max(1, Math.floor(days) || 1),
+          createdBy: userId,
+          idempotencyKey,
+          requestHash: options.requestHash,
+          summary: {},
+        },
+      });
+
+      await tx.$queryRaw<Array<{ locked: number }>>`
+        SELECT 1 AS "locked"
+        FROM (
+          SELECT "pairKey"
+          FROM jsonb_to_recordset(${JSON.stringify(folderGroupPairs)}::jsonb)
+            AS item("pairKey" text, "driveFolderId" text, "sourceGroupId" text)
+          ORDER BY "pairKey"
+          OFFSET 0
+        ) AS pair
+        WHERE pg_advisory_xact_lock(hashtextextended(pair."pairKey", 0)) IS NOT NULL
+        ORDER BY pair."pairKey"
+      `;
+
+      const conflictingPairs = await tx.$queryRaw<Array<{ pairKey: string }>>`
+        SELECT pair."pairKey"
+        FROM jsonb_to_recordset(${JSON.stringify(folderGroupPairs)}::jsonb)
+          AS pair("pairKey" text, "driveFolderId" text, "sourceGroupId" text)
+        WHERE EXISTS (
+          SELECT 1
+          FROM "SmartExportAssignment" AS existing
+          WHERE existing."driveFolderId" = pair."driveFolderId"
+            AND existing."sourceGroupId" = pair."sourceGroupId"
+            AND existing.status <> 'failed'
+        )
+        LIMIT 1
+      `;
+      if (conflictingPairs.length > 0) {
+        throw new SmartExportReservationError(
+          "A source group is already assigned to one of these Drive folders. Refresh the preview and try again."
+        );
+      }
+
+      const reservedCount = await tx.$executeRaw`
+        UPDATE "MultiplierOutput" AS output
+        SET
+          "exportStatus" = 'exporting',
+          "exportDestinationFolderId" = reservation."driveFolderId",
+          "exportDestinationFolderName" = reservation."driveFolderName",
+          "updatedAt" = NOW()
+        FROM (
+          SELECT *
+          FROM jsonb_to_recordset(${JSON.stringify(flatAssignments)}::jsonb)
+            AS item("videoId" text, "sourceGroupId" text, "driveFolderId" text, "driveFolderName" text)
+        ) AS reservation
+        WHERE output.id = reservation."videoId"
+          AND output.status = 'COMPLETED'
+          AND output."outputRef" IS NOT NULL
+          AND output."exportStatus" <> 'exporting'
+          AND (
+            ${includeExported}::boolean
+            OR (output."exportStatus" = 'not_exported' AND output."exportedAt" IS NULL)
+          )
+      `;
+
+      if (reservedCount !== flatAssignments.length) {
+        throw new SmartExportReservationError(
+          "Some videos are already exporting, already exported, or no longer render-complete. Refresh the preview and try again."
+        );
+      }
+
+      await tx.smartExportAssignment.createMany({
         data: flatAssignments.map((a) => ({
-          jobId: job.id,
+          jobId: created.id,
           videoId: a.videoId,
           sourceGroupId: a.sourceGroupId,
           driveFolderId: a.driveFolderId,
           status: "pending",
         })),
-      }),
-      ...plan.map((p) =>
-        prisma.multiplierOutput.updateMany({
-          where: { id: { in: p.videoIds } },
-          data: {
-            exportStatus: "exporting",
-            exportDestinationFolderId: p.driveFolderId,
-            exportDestinationFolderName: p.driveFolderName,
-          },
-        })
-      ),
-    ],
-    { maxWait: 15_000, timeout: 60_000 }
-  );
+      });
 
-  // Trigger worker asynchronously
-  triggerSmartExportWorker().catch((err) => {
-    console.error("[Smart Export Service] Failed to trigger background worker:", err);
-  });
+      return created;
+    }, { maxWait: 15_000, timeout: 60_000 });
 
-  return job;
+    if (startWorker) {
+      triggerSmartExportWorker().catch((err) => {
+        console.error("[Smart Export Service] Failed to trigger background worker:", err);
+      });
+    }
+
+    return { job, replayed: false };
+  } catch (err: unknown) {
+    const isUniqueConstraintRace =
+      typeof err === "object" && err !== null && "code" in err && err.code === "P2002";
+    if (idempotencyKey && isUniqueConstraintRace) {
+      const existing = await findSmartExportJobByRequestKey(idempotencyKey, options.requestHash);
+      if (existing) {
+        if (startWorker) {
+          triggerSmartExportWorker().catch((triggerErr) => {
+            console.error("[Smart Export Service] Failed to retrigger background worker:", triggerErr);
+          });
+        }
+        return { job: existing, replayed: true };
+      }
+    }
+    throw err;
+  }
 }
 
 /**
@@ -372,22 +562,28 @@ export async function retryExportAssignment(assignmentId: string) {
     throw new Error("Can only retry failed assignments");
   }
 
-  // Update status back to pending
-  await prisma.smartExportAssignment.update({
-    where: { id: assignmentId },
-    data: { status: "pending", error: null },
-  });
-
-  // Set parent job status back to uploading
-  await prisma.smartExportJob.update({
-    where: { id: assignment.jobId },
-    data: { status: "uploading" },
-  });
-
-  // Set video status back to exporting
-  await prisma.multiplierOutput.update({
-    where: { id: assignment.videoId },
-    data: { exportStatus: "exporting" },
+  await prisma.$transaction(async (tx) => {
+    await lockSmartExportJob(tx, assignment.jobId);
+    const transitioned = await tx.smartExportAssignment.updateMany({
+      where: { id: assignmentId, status: "failed" },
+      data: { status: "pending", error: null, uploadLeaseId: null, uploadHeartbeatAt: null },
+    });
+    if (transitioned.count === 0) {
+      throw new SmartExportRequestConflictError("Assignment changed before it could be retried");
+    }
+    await tx.smartExportJob.update({
+      where: { id: assignment.jobId },
+      data: { status: "uploading" },
+    });
+    const reserved = await tx.multiplierOutput.updateMany({
+      where: { id: assignment.videoId, exportStatus: "not_exported" },
+      data: { exportStatus: "exporting" },
+    });
+    if (reserved.count !== 1) {
+      throw new SmartExportRequestConflictError(
+        "Video is already reserved or exported by another job. Refresh and try again."
+      );
+    }
   });
 
   // Trigger worker asynchronously
@@ -403,6 +599,53 @@ export async function retryExportAssignment(assignmentId: string) {
 // Assignments left in "uploading" by a crash/restart are never picked up again
 // (the loop only fetches "pending") — older than this, they're reset.
 const STALE_UPLOADING_MINUTES = 10;
+const EXPORT_HEARTBEAT_MS = 30_000;
+
+function staleUploadingWhere(staleBefore: Date): Prisma.SmartExportAssignmentWhereInput {
+  return {
+    status: "uploading",
+    OR: [
+      { uploadHeartbeatAt: { lt: staleBefore } },
+      { uploadHeartbeatAt: null, updatedAt: { lt: staleBefore } },
+    ],
+  };
+}
+
+function freshUploadingWhere(staleBefore: Date): Prisma.SmartExportAssignmentWhereInput {
+  return {
+    status: "uploading",
+    OR: [
+      { uploadHeartbeatAt: { gte: staleBefore } },
+      { uploadHeartbeatAt: null, updatedAt: { gte: staleBefore } },
+    ],
+  };
+}
+
+async function lockSmartExportJob(tx: Prisma.TransactionClient, jobId: string) {
+  const jobs = await tx.$queryRaw<Array<{ id: string; status: string }>>`
+    SELECT id, status
+    FROM "SmartExportJob"
+    WHERE id = ${jobId}
+    FOR UPDATE
+  `;
+  const job = jobs[0];
+  if (!job) throw new Error("Smart Export Job not found");
+  return job;
+}
+
+function startExportHeartbeat(assignmentId: string, leaseId: string): () => void {
+  const beat = () => {
+    prisma.smartExportAssignment.updateMany({
+      where: { id: assignmentId, status: "uploading", uploadLeaseId: leaseId },
+      data: { uploadHeartbeatAt: new Date() },
+    }).catch((err) => {
+      console.error(`[Smart Export Worker] Heartbeat failed for assignment ${assignmentId}:`, err);
+    });
+  };
+  const timer = setInterval(beat, EXPORT_HEARTBEAT_MS);
+  timer.unref();
+  return () => clearInterval(timer);
+}
 
 /**
  * True when an upload failure is the master Google account's Drive storage
@@ -411,55 +654,58 @@ const STALE_UPLOADING_MINUTES = 10;
  * Matches the raw googleapis error shape and the "Auth error (403): ..."
  * string uploadWithRetry wraps it in.
  */
-export function isDriveQuotaError(err: any): boolean {
-  const message: string =
-    err?.response?.data?.error?.message || err?.message || String(err ?? "");
-  const reason: string = String(
-    err?.response?.data?.error?.errors?.[0]?.reason ?? err?.code ?? ""
-  );
-  if (/storage.?quota/i.test(message) || /storage.?quota/i.test(reason)) return true;
-  const status = err?.response?.status;
-  if ((status === 403 || /^Auth error \(403\)/.test(message)) && /quota/i.test(message)) return true;
-  return false;
+function hasDriveRateLimitReason(reasons: string[], codes: string[]): boolean {
+  return [...reasons, ...codes].some((value) => /^(rateLimitExceeded|userRateLimitExceeded)$/i.test(value));
+}
+
+export function isDriveQuotaError(err: unknown): boolean {
+  const { message, reasons, codes } = driveErrorDetails(err);
+  if (hasDriveRateLimitReason(reasons, codes)) return false;
+  if (/storage.?quota/i.test(message)) return true;
+  return [...reasons, ...codes].some((value) => /storage.?quota/i.test(value));
 }
 
 /**
  * Pause a job whose uploads are failing on Drive storage quota. Still-pending
- * assignments stay pending so a later retry resumes cleanly. The updateMany
- * status guard makes this race-safe: a job that already finalized (done/failed)
- * is never re-paused, and if a retry raced an in-flight quota failure, pausing
- * again is correct — the quota is still full.
+ * assignments stay pending so a later retry resumes cleanly. The job row lock
+ * serializes pauses with retries and finalization.
  */
 async function pauseJobForQuota(jobId: string, reason: string) {
-  const grouped = await prisma.smartExportAssignment.groupBy({
-    by: ["status"],
-    where: { jobId },
-    _count: true,
-  });
-  let successCount = 0;
-  let failedCount = 0;
-  let pendingCount = 0;
-  for (const row of grouped) {
-    if (row.status === "done") successCount = row._count;
-    else if (row.status === "failed") failedCount = row._count;
-    else pendingCount += row._count;
-  }
+  const pendingCount = await prisma.$transaction(async (tx) => {
+    const job = await lockSmartExportJob(tx, jobId);
+    if (job.status !== "pending" && job.status !== "uploading") return null;
 
-  const res = await prisma.smartExportJob.updateMany({
-    where: { id: jobId, status: { in: ["pending", "uploading"] } },
-    data: {
-      status: "paused_quota",
-      summary: {
-        total: successCount + failedCount + pendingCount,
-        successCount,
-        failedCount,
-        pendingCount,
-        pausedAt: new Date().toISOString(),
-        pauseReason: reason,
+    const grouped = await tx.smartExportAssignment.groupBy({
+      by: ["status"],
+      where: { jobId },
+      _count: true,
+    });
+    let successCount = 0;
+    let failedCount = 0;
+    let pendingCount = 0;
+    for (const row of grouped) {
+      if (row.status === "done") successCount = row._count;
+      else if (row.status === "failed") failedCount = row._count;
+      else pendingCount += row._count;
+    }
+
+    await tx.smartExportJob.update({
+      where: { id: jobId },
+      data: {
+        status: "paused_quota",
+        summary: {
+          total: successCount + failedCount + pendingCount,
+          successCount,
+          failedCount,
+          pendingCount,
+          pausedAt: new Date().toISOString(),
+          pauseReason: reason,
+        },
       },
-    },
+    });
+    return pendingCount;
   });
-  if (res.count > 0) {
+  if (pendingCount !== null) {
     console.warn(
       `[Smart Export Worker] Job ${jobId} paused — Drive storage quota exceeded (${reason}). ` +
         `${pendingCount} assignment(s) left pending; free space on the master Google account, then retry the job.`
@@ -468,10 +714,15 @@ async function pauseJobForQuota(jobId: string, reason: string) {
 }
 
 let isExportWorkerRunning = false;
+let exportWorkerRestartRequested = false;
 
 export async function triggerSmartExportWorker() {
-  if (isExportWorkerRunning) return;
+  if (isExportWorkerRunning) {
+    exportWorkerRestartRequested = true;
+    return;
+  }
   isExportWorkerRunning = true;
+  exportWorkerRestartRequested = false;
   processExportQueue()
     .catch((err) => {
       // Last-resort guard: the loop body is individually hardened, but a
@@ -480,6 +731,12 @@ export async function triggerSmartExportWorker() {
     })
     .finally(() => {
       isExportWorkerRunning = false;
+      if (exportWorkerRestartRequested) {
+        exportWorkerRestartRequested = false;
+        triggerSmartExportWorker().catch((err) => {
+          console.error("[Smart Export Worker] Failed to restart requested queue pass:", err);
+        });
+      }
     });
 }
 
@@ -493,8 +750,8 @@ export async function triggerSmartExportWorker() {
 export async function resumeSmartExportQueue(): Promise<{ resetUploading: number; pending: number }> {
   const staleBefore = new Date(Date.now() - STALE_UPLOADING_MINUTES * 60 * 1000);
   const reset = await prisma.smartExportAssignment.updateMany({
-    where: { status: "uploading", updatedAt: { lt: staleBefore } },
-    data: { status: "pending" },
+    where: staleUploadingWhere(staleBefore),
+    data: { status: "pending", error: null, uploadLeaseId: null, uploadHeartbeatAt: null },
   });
   if (reset.count > 0) {
     console.log(`[Smart Export] Recovered ${reset.count} assignment(s) stuck in uploading`);
@@ -524,50 +781,75 @@ export async function resumeSmartExportJob(jobId: string): Promise<{
   requeuedStaleUploading: number;
   pendingTotal: number;
 }> {
-  const job = await prisma.smartExportJob.findUnique({ where: { id: jobId } });
-  if (!job) throw new Error("Smart Export Job not found");
-
   const staleBefore = new Date(Date.now() - STALE_UPLOADING_MINUTES * 60 * 1000);
-  const requeueable = await prisma.smartExportAssignment.findMany({
-    where: {
-      jobId,
-      OR: [{ status: "failed" }, { status: "uploading", updatedAt: { lt: staleBefore } }],
-    },
-    select: { id: true, status: true, videoId: true },
-  });
-  const requeuedFailed = requeueable.filter((a) => a.status === "failed").length;
-  const requeuedStaleUploading = requeueable.length - requeuedFailed;
-
-  if (requeueable.length > 0) {
-    await prisma.$transaction([
-      prisma.smartExportAssignment.updateMany({
-        where: { id: { in: requeueable.map((a) => a.id) } },
-        data: { status: "pending", error: null },
-      }),
-      // Videos of failed assignments were reverted to not_exported on failure —
-      // mark them exporting again so they don't look eligible for a new plan.
-      prisma.multiplierOutput.updateMany({
-        where: { id: { in: requeueable.map((a) => a.videoId) } },
-        data: { exportStatus: "exporting" },
-      }),
-    ]);
-  }
-
-  const pendingTotal = await prisma.smartExportAssignment.count({
-    where: { jobId, status: "pending" },
-  });
-
-  if (pendingTotal > 0) {
-    await prisma.smartExportJob.update({
-      where: { id: jobId },
-      data: { status: "uploading" },
+  const { shouldRun, ...result } = await prisma.$transaction(async (tx) => {
+    await lockSmartExportJob(tx, jobId);
+    const requeueable = await tx.smartExportAssignment.findMany({
+      where: {
+        jobId,
+        OR: [{ status: "failed" }, staleUploadingWhere(staleBefore)],
+      },
+      select: { id: true, status: true, videoId: true },
     });
+    const requeuedFailed = requeueable.filter((a) => a.status === "failed").length;
+    const requeuedStaleUploading = requeueable.length - requeuedFailed;
+
+    if (requeueable.length > 0) {
+      const transitioned = await tx.smartExportAssignment.updateMany({
+        where: {
+          jobId,
+          id: { in: requeueable.map((a) => a.id) },
+          OR: [{ status: "failed" }, staleUploadingWhere(staleBefore)],
+        },
+        data: { status: "pending", error: null, uploadLeaseId: null, uploadHeartbeatAt: null },
+      });
+      if (transitioned.count !== requeueable.length) {
+        throw new SmartExportRequestConflictError("Job changed while it was being retried. Refresh and try again.");
+      }
+      const failedVideoIds = [...new Set(
+        requeueable.filter((a) => a.status === "failed").map((a) => a.videoId)
+      )];
+      const staleVideoIds = [...new Set(
+        requeueable.filter((a) => a.status === "uploading").map((a) => a.videoId)
+      )];
+      const failedReserved = await tx.multiplierOutput.updateMany({
+        where: { id: { in: failedVideoIds }, exportStatus: "not_exported" },
+        data: { exportStatus: "exporting" },
+      });
+      const staleReserved = await tx.multiplierOutput.updateMany({
+        where: { id: { in: staleVideoIds }, exportStatus: { in: ["exporting", "not_exported"] } },
+        data: { exportStatus: "exporting" },
+      });
+      if (failedReserved.count !== failedVideoIds.length || staleReserved.count !== staleVideoIds.length) {
+        throw new SmartExportRequestConflictError(
+          "Some videos are already reserved or exported by another job. Refresh and try again."
+        );
+      }
+    }
+
+    const pendingTotal = await tx.smartExportAssignment.count({
+      where: { jobId, status: "pending" },
+    });
+    const openTotal = await tx.smartExportAssignment.count({
+      where: { jobId, status: { in: ["pending", "uploading"] } },
+    });
+    const shouldRun = openTotal > 0;
+    if (shouldRun) {
+      await tx.smartExportJob.update({
+        where: { id: jobId },
+        data: { status: "uploading" },
+      });
+    }
+    return { requeuedFailed, requeuedStaleUploading, pendingTotal, shouldRun };
+  });
+
+  if (shouldRun) {
     triggerSmartExportWorker().catch((err) => {
       console.error("[Smart Export Service] Failed to trigger background worker on job resume:", err);
     });
   }
 
-  return { requeuedFailed, requeuedStaleUploading, pendingTotal };
+  return result;
 }
 
 /**
@@ -580,50 +862,69 @@ export async function resumeSmartExportJob(jobId: string): Promise<{
  * point).
  */
 export async function retrySmartExportJob(jobId: string): Promise<{ requeued: number }> {
-  const job = await prisma.smartExportJob.findUnique({ where: { id: jobId } });
-  if (!job) throw new Error("Smart Export Job not found");
-
   const staleBefore = new Date(Date.now() - STALE_UPLOADING_MINUTES * 60 * 1000);
-  const activeUploads = await prisma.smartExportAssignment.count({
-    where: { jobId, status: "uploading", updatedAt: { gte: staleBefore } },
-  });
-  if (job.status === "uploading" && activeUploads > 0) {
-    throw new Error("Job is currently processing");
-  }
+  const requeued = await prisma.$transaction(async (tx) => {
+    const job = await lockSmartExportJob(tx, jobId);
+    const activeUploads = await tx.smartExportAssignment.count({
+      where: { jobId, ...freshUploadingWhere(staleBefore) },
+    });
+    if (job.status === "uploading" && activeUploads > 0) {
+      throw new Error("Job is currently processing");
+    }
 
-  const requeueable = await prisma.smartExportAssignment.findMany({
-    where: {
-      jobId,
-      OR: [{ status: "failed" }, { status: "uploading", updatedAt: { lt: staleBefore } }],
-    },
-    select: { id: true, videoId: true },
-  });
+    const requeueable = await tx.smartExportAssignment.findMany({
+      where: {
+        jobId,
+        OR: [{ status: "failed" }, staleUploadingWhere(staleBefore)],
+      },
+      select: { id: true, status: true, videoId: true },
+    });
 
-  if (requeueable.length > 0) {
-    await prisma.$transaction([
-      prisma.smartExportAssignment.updateMany({
-        where: { id: { in: requeueable.map((a) => a.id) } },
-        data: { status: "pending", error: null },
-      }),
-      // Videos of failed assignments were reverted to not_exported on failure —
-      // mark them exporting again so they don't look eligible for a new plan.
-      prisma.multiplierOutput.updateMany({
-        where: { id: { in: requeueable.map((a) => a.videoId) } },
+    if (requeueable.length > 0) {
+      const transitioned = await tx.smartExportAssignment.updateMany({
+        where: {
+          jobId,
+          id: { in: requeueable.map((a) => a.id) },
+          OR: [{ status: "failed" }, staleUploadingWhere(staleBefore)],
+        },
+        data: { status: "pending", error: null, uploadLeaseId: null, uploadHeartbeatAt: null },
+      });
+      if (transitioned.count !== requeueable.length) {
+        throw new SmartExportRequestConflictError("Job changed while it was being retried. Refresh and try again.");
+      }
+      const failedVideoIds = [...new Set(
+        requeueable.filter((a) => a.status === "failed").map((a) => a.videoId)
+      )];
+      const staleVideoIds = [...new Set(
+        requeueable.filter((a) => a.status === "uploading").map((a) => a.videoId)
+      )];
+      const failedReserved = await tx.multiplierOutput.updateMany({
+        where: { id: { in: failedVideoIds }, exportStatus: "not_exported" },
         data: { exportStatus: "exporting" },
-      }),
-    ]);
-  }
+      });
+      const staleReserved = await tx.multiplierOutput.updateMany({
+        where: { id: { in: staleVideoIds }, exportStatus: { in: ["exporting", "not_exported"] } },
+        data: { exportStatus: "exporting" },
+      });
+      if (failedReserved.count !== failedVideoIds.length || staleReserved.count !== staleVideoIds.length) {
+        throw new SmartExportRequestConflictError(
+          "Some videos are already reserved or exported by another job. Refresh and try again."
+        );
+      }
+    }
 
-  await prisma.smartExportJob.update({
-    where: { id: jobId },
-    data: { status: "pending" },
+    await tx.smartExportJob.update({
+      where: { id: jobId },
+      data: { status: "pending" },
+    });
+    return requeueable.length;
   });
 
   triggerSmartExportWorker().catch((err) => {
     console.error("[Smart Export Service] Failed to trigger background worker on job retry:", err);
   });
 
-  return { requeued: requeueable.length };
+  return { requeued };
 }
 
 // Jobs stuck in pending/uploading whose assignments are ALL terminal (crash
@@ -643,10 +944,16 @@ async function finalizeDrainedJobs() {
   }
 }
 
-// Uploads are network-bound and stream from/to disk, so a small pool of
-// workers is RAM-safe on the 2GB container. All video data flows through
-// streams (fs.createReadStream / downloadFromR2 pipe) — nothing is buffered.
-const EXPORT_WORKER_CONCURRENCY = 4;
+// Uploads are network-bound and stream from/to disk, so they can use more
+// lanes than CPU-bound renders. Keep an upper bound to protect Drive quotas.
+const requestedExportWorkerConcurrency = Number.parseInt(
+  process.env.EXPORT_WORKER_CONCURRENCY || "8",
+  10
+);
+const EXPORT_WORKER_CONCURRENCY = Math.min(
+  16,
+  Math.max(1, Number.isNaN(requestedExportWorkerConcurrency) ? 8 : requestedExportWorkerConcurrency)
+);
 
 const assignmentClaimInclude = {
   video: {
@@ -681,9 +988,10 @@ async function claimNextAssignment() {
   });
   if (!candidate) return null;
 
+  const uploadLeaseId = randomUUID();
   const claim = await prisma.smartExportAssignment.updateMany({
     where: { id: candidate.id, status: "pending" },
-    data: { status: "uploading" },
+    data: { status: "uploading", uploadLeaseId, uploadHeartbeatAt: new Date() },
   });
   if (claim.count === 0) return "lost";
 
@@ -692,28 +1000,28 @@ async function claimNextAssignment() {
     include: assignmentClaimInclude,
   });
   // Row vanished between claim and fetch (e.g. cascade delete) — treat as lost.
-  if (!assignment) return "lost";
+  if (!assignment || assignment.uploadLeaseId !== uploadLeaseId) return "lost";
 
   // The job may have been paused for quota between candidate read and claim —
   // release the claim back to pending and treat as lost (the candidate filter
   // above excludes it on the next pass).
   if (assignment.job.status === "paused_quota") {
     await prisma.smartExportAssignment.updateMany({
-      where: { id: assignment.id, status: "uploading" },
-      data: { status: "pending" },
+      where: { id: assignment.id, status: "uploading", uploadLeaseId },
+      data: { status: "pending", uploadLeaseId: null, uploadHeartbeatAt: null },
     });
     return "lost";
   }
 
   // Update parent job status to uploading if it was pending
   if (assignment.job.status === "pending") {
-    await prisma.smartExportJob.update({
-      where: { id: assignment.jobId },
+    await prisma.smartExportJob.updateMany({
+      where: { id: assignment.jobId, status: "pending" },
       data: { status: "uploading" },
     });
   }
 
-  return assignment;
+  return { ...assignment, uploadLeaseId };
 }
 
 async function processExportQueue() {
@@ -754,6 +1062,7 @@ async function workerLoop(workerIndex: number) {
       break;
     }
 
+    const stopHeartbeat = startExportHeartbeat(assignment.id, assignment.uploadLeaseId);
     try {
       const video = assignment.video;
       if (!video.outputRef) {
@@ -767,7 +1076,8 @@ async function workerLoop(workerIndex: number) {
       if (!fs.existsSync(localFilePath)) {
         const key = `uploads/multiplier/renders/multi_${video.id}.mp4`;
         console.log(`[Smart Export Worker] Video not found on disk, downloading from R2: ${key}`);
-        await downloadFromR2(key, localFilePath);
+        const downloaded = await downloadFromR2(key, localFilePath);
+        if (!downloaded) throw new Error(`Could not download video from storage: ${key}`);
       }
 
       if (!fs.existsSync(localFilePath)) {
@@ -784,7 +1094,7 @@ async function workerLoop(workerIndex: number) {
 
       // 3. Upload to Google Drive
       const campaignTitle: string | null =
-        (video as any).group?.campaign?.title || (video as any).group?.campaign?.name || null;
+        video.group?.campaign?.title || video.group?.campaign?.name || null;
       const cleanCampaignSlug = (campaignTitle || "campaign")
         .replace(/[^a-zA-Z0-9 ]/g, "")
         .trim()
@@ -806,86 +1116,83 @@ async function workerLoop(workerIndex: number) {
       const fileName = `${campaignPrefix}${cleanCampaignSlug}_${cleanHookSlug || "plain"}_${video.id}.mp4`;
 
       console.log(`[Smart Export Worker] Uploading ${fileName} to folder ${assignment.driveFolderId}`);
-      
       const uploadResult = await uploadWithRetry(drive, localFilePath, fileName, assignment.driveFolderId);
-      
       if (!uploadResult.success) {
-        throw new Error(uploadResult.error || "Drive upload failed");
+        throw new Error(uploadResult.error || "Drive upload failed", { cause: uploadResult.cause });
       }
 
       // 4. Mark success
-      const groupCampaignId: string | null = (video as any).group?.campaignId || null;
-      // Durable feed event for the "Receiving but not posting" panel — the
-      // assignment row itself cascade-deletes if the group/output is later
-      // cleaned up, so the evidence must live in AccountFeedEvent.
+      const groupCampaignId: string | null = video.group?.campaignId || null;
       const feedAccount = await prisma.managedAccount.findFirst({
         where: { driveFolderId: assignment.driveFolderId },
         select: { id: true },
       });
-      await prisma.$transaction([
-        prisma.smartExportAssignment.update({
-          where: { id: assignment.id },
-          data: { status: "done", error: null },
-        }),
-        prisma.accountFeedEvent.create({
+      const completed = await prisma.$transaction(async (tx) => {
+        const transitioned = await tx.smartExportAssignment.updateMany({
+          where: { id: assignment.id, status: "uploading", uploadLeaseId: assignment.uploadLeaseId },
+          data: { status: "done", error: null, uploadLeaseId: null, uploadHeartbeatAt: null },
+        });
+        if (transitioned.count === 0) return false;
+
+        await tx.accountFeedEvent.create({
           data: {
             accountId: feedAccount?.id ?? null,
             driveFolderId: assignment.driveFolderId,
             source: "smart_export",
           },
-        }),
-        prisma.multiplierOutput.update({
+        });
+        await tx.multiplierOutput.update({
           where: { id: video.id },
           data: {
             exportStatus: "exported",
             exportedAt: new Date(),
             exportDestinationFolderId: assignment.driveFolderId,
           },
-        }),
-        // Durable campaign stat: survives later deletion of the group/output rows
-        ...(groupCampaignId
-          ? [
-              prisma.campaign.update({
-                where: { id: groupCampaignId },
-                data: { exportedCount: { increment: 1 } },
-              }),
-              prisma.campaignEvent.create({
-                data: {
-                  campaignId: groupCampaignId,
-                  type: "export",
-                  meta: {
-                    driveFolderId: assignment.driveFolderId,
-                    groupId: video.groupId,
-                    groupName: (video as any).group?.name || null,
-                    jobId: assignment.jobId,
-                  },
-                },
-              }),
-            ]
-          : []),
-      ]);
+        });
+        if (groupCampaignId) {
+          await tx.campaign.update({
+            where: { id: groupCampaignId },
+            data: { exportedCount: { increment: 1 } },
+          });
+          await tx.campaignEvent.create({
+            data: {
+              campaignId: groupCampaignId,
+              type: "export",
+              meta: {
+                driveFolderId: assignment.driveFolderId,
+                groupId: video.groupId,
+                groupName: video.group?.name || null,
+                jobId: assignment.jobId,
+              },
+            },
+          });
+        }
+        return true;
+      });
 
-      console.log(`[Smart Export Worker] Upload complete for assignment: ${assignment.id}`);
-
-    } catch (err: any) {
-      // One bad video must never kill the loop: mark THIS assignment failed
-      // with the real error and continue with the next one. If the failure
-      // was the DB itself, the mark-failed write may also fail — log it and
-      // let the next iteration's fetch decide whether to stop.
-      const errMsg = err?.message || String(err);
+      if (completed) {
+        console.log(`[Smart Export Worker] Upload complete for assignment: ${assignment.id}`);
+      } else {
+        console.warn(`[Smart Export Worker] Ignoring stale completion for assignment: ${assignment.id}`);
+      }
+    } catch (err: unknown) {
+      const errMsg = err instanceof Error ? err.message : String(err);
       console.error(`[Smart Export Worker] Assignment ${assignment.id} failed:`, errMsg);
 
+      let markedFailed = false;
       try {
-        await prisma.$transaction([
-          prisma.smartExportAssignment.update({
-            where: { id: assignment.id },
-            data: { status: "failed", error: errMsg },
-          }),
-          prisma.multiplierOutput.update({
-            where: { id: assignment.videoId },
-            data: { exportStatus: "not_exported" }, // Revert to eligible for export
-          }),
-        ]);
+        markedFailed = await prisma.$transaction(async (tx) => {
+          const transitioned = await tx.smartExportAssignment.updateMany({
+            where: { id: assignment.id, status: "uploading", uploadLeaseId: assignment.uploadLeaseId },
+            data: { status: "failed", error: errMsg, uploadLeaseId: null, uploadHeartbeatAt: null },
+          });
+          if (transitioned.count === 0) return false;
+          await tx.multiplierOutput.updateMany({
+            where: { id: assignment.videoId, exportStatus: "exporting" },
+            data: { exportStatus: "not_exported" },
+          });
+          return true;
+        });
       } catch (markErr) {
         console.error(
           `[Smart Export Worker] Failed to mark assignment ${assignment.id} as failed:`,
@@ -893,9 +1200,7 @@ async function workerLoop(workerIndex: number) {
         );
       }
 
-      // Quota exhausted is job-fatal: pause the job so workers stop claiming
-      // its assignments instead of failing thousands of uploads one by one.
-      if (isDriveQuotaError(err)) {
+      if (markedFailed && isDriveQuotaError(err)) {
         await pauseJobForQuota(assignment.jobId, errMsg).catch((pauseErr) => {
           console.error(
             `[Smart Export Worker] Failed to pause job ${assignment.jobId} after quota error:`,
@@ -903,6 +1208,8 @@ async function workerLoop(workerIndex: number) {
           );
         });
       }
+    } finally {
+      stopHeartbeat();
     }
 
     // Update parent job status check
@@ -913,29 +1220,35 @@ async function workerLoop(workerIndex: number) {
 }
 
 async function updateParentJobStatus(jobId: string) {
-  // One aggregate read instead of fetching every assignment row — this runs
-  // once per file per worker, so row-fetching made it O(N²) on jobId.
-  const grouped = await prisma.smartExportAssignment.groupBy({
-    by: ["status"],
-    where: { jobId },
-    _count: true,
-  });
+  await prisma.$transaction(async (tx) => {
+    const job = await lockSmartExportJob(tx, jobId);
+    if (job.status !== "pending" && job.status !== "uploading") return;
 
-  let successCount = 0;
-  let failedCount = 0;
-  let unfinishedCount = 0;
-  for (const row of grouped) {
-    if (row.status === "done") successCount = row._count;
-    else if (row.status === "failed") failedCount = row._count;
-    else unfinishedCount += row._count;
-  }
+    const unfinished = await tx.smartExportAssignment.findFirst({
+      where: { jobId, status: { in: ["pending", "uploading"] } },
+      select: { id: true },
+    });
+    if (unfinished) return;
 
-  const allFinished = unfinishedCount === 0;
-  if (allFinished) {
+    const grouped = await tx.smartExportAssignment.groupBy({
+      by: ["status"],
+      where: { jobId },
+      _count: true,
+    });
+
+    let successCount = 0;
+    let failedCount = 0;
+    let unfinishedCount = 0;
+    for (const row of grouped) {
+      if (row.status === "done") successCount = row._count;
+      else if (row.status === "failed") failedCount = row._count;
+      else unfinishedCount += row._count;
+    }
+    if (unfinishedCount > 0) return;
+
     // Partial success is DONE with failures — only a job where nothing
     // uploaded at all counts as failed.
     const finalStatus = failedCount > 0 && successCount === 0 ? "failed" : "done";
-
     const summary = {
       total: successCount + failedCount,
       successCount,
@@ -943,14 +1256,14 @@ async function updateParentJobStatus(jobId: string) {
       completedAt: new Date().toISOString(),
     };
 
-    await prisma.smartExportJob.update({
-      where: { id: jobId },
+    await tx.smartExportJob.updateMany({
+      where: { id: jobId, status: { in: ["pending", "uploading"] } },
       data: {
         status: finalStatus,
         summary,
       },
     });
-  }
+  });
 }
 
 // Builds the "(Campaign Title) " filename prefix. Keeps the full human-readable
@@ -962,7 +1275,7 @@ export function formatCampaignBracketPrefix(campaignTitle: string): string {
 
 // Finds a file with the exact same name already sitting in the target folder.
 async function findExistingDriveFile(
-  drive: any,
+  drive: SmartExportDriveClient,
   fileName: string,
   folderId: string
 ): Promise<string | null> {
@@ -977,25 +1290,149 @@ async function findExistingDriveFile(
   return res.data.files?.[0]?.id || null;
 }
 
-async function uploadWithRetry(
-  drive: any,
+interface DriveErrorShape {
+  code?: unknown;
+  name?: unknown;
+  status?: unknown;
+  message?: unknown;
+  cause?: unknown;
+  response?: {
+    status?: unknown;
+    headers?: unknown;
+    data?: {
+      error?: {
+        message?: unknown;
+        errors?: unknown;
+      };
+    };
+  };
+}
+
+function driveErrorChain(err: unknown): DriveErrorShape[] {
+  const chain: DriveErrorShape[] = [];
+  const seen = new Set<unknown>();
+  let current = err;
+  while (typeof current === "object" && current !== null && !seen.has(current) && chain.length < 4) {
+    seen.add(current);
+    const shape = current as DriveErrorShape;
+    chain.push(shape);
+    current = shape.cause;
+  }
+  return chain;
+}
+
+function driveErrorDetails(err: unknown) {
+  const chain = driveErrorChain(err);
+  let status: number | undefined;
+  for (const error of chain) {
+    const numericStatus = Number(error.response?.status ?? error.status ?? error.code);
+    if (Number.isFinite(numericStatus) && numericStatus >= 100) {
+      status = numericStatus;
+      break;
+    }
+  }
+
+  const responseMessage = chain
+    .map((error) => error.response?.data?.error?.message)
+    .find((value) => typeof value === "string" && value.length > 0);
+  const directMessage = chain
+    .map((error) => error.message)
+    .find((value) => typeof value === "string" && value.length > 0);
+  const messageValue = responseMessage ?? directMessage;
+  const message = messageValue ? String(messageValue) : String(err);
+
+  const reasons = chain.flatMap((error) => {
+    const errors = error.response?.data?.error?.errors;
+    if (!Array.isArray(errors)) return [];
+    return errors.flatMap((item) => {
+      if (typeof item !== "object" || item === null || !("reason" in item)) return [];
+      const reason = String(item.reason ?? "");
+      return reason ? [reason] : [];
+    });
+  });
+  const codes = chain
+    .flatMap((error) => [error.code, error.name])
+    .filter((value): value is string | number => typeof value === "string" || typeof value === "number")
+    .map(String);
+
+  return { status, message, reasons, codes };
+}
+
+export function isRetryableDriveError(err: unknown): boolean {
+  if (isDriveQuotaError(err)) return false;
+  const { status, reasons, codes, message } = driveErrorDetails(err);
+  if (status === 403) {
+    return hasDriveRateLimitReason(reasons, codes);
+  }
+  if (status !== undefined) {
+    return status === 408 || status === 429 || (status >= 500 && status <= 599);
+  }
+
+  const retryableCodes = new Set([
+    "ECONNRESET",
+    "ECONNREFUSED",
+    "ECONNABORTED",
+    "ETIMEDOUT",
+    "EAI_AGAIN",
+    "ENETUNREACH",
+    "EHOSTUNREACH",
+    "ENOTFOUND",
+    "EPIPE",
+    "ERR_NETWORK",
+    "UND_ERR_CONNECT_TIMEOUT",
+    "UND_ERR_SOCKET",
+    "TIMEOUTERROR",
+  ]);
+  return codes.some((code) => retryableCodes.has(code.toUpperCase())) ||
+    /^fetch failed$/i.test(message) ||
+    /socket hang up|network socket disconnected/i.test(message);
+}
+
+function retryAfterMs(err: unknown): number {
+  for (const error of driveErrorChain(err)) {
+    const headers = error.response?.headers;
+    if (typeof headers !== "object" || headers === null) continue;
+
+    let value: unknown;
+    if (typeof (headers as { get?: unknown }).get === "function") {
+      value = (headers as { get: (name: string) => unknown }).get("retry-after");
+    } else {
+      const record = headers as Record<string, unknown>;
+      value = record["retry-after"] ?? record["Retry-After"];
+    }
+    if (Array.isArray(value)) value = value[0];
+    if (value === undefined || value === null || value === "") continue;
+
+    const seconds = Number(value);
+    if (Number.isFinite(seconds)) return Math.max(0, Math.min(120_000, seconds * 1000));
+    const date = Date.parse(String(value));
+    return Number.isNaN(date) ? 0 : Math.max(0, Math.min(120_000, date - Date.now()));
+  }
+  return 0;
+}
+
+export function getDriveRetryDelayMs(err: unknown, attempt: number): number {
+  const safeAttempt = Number.isFinite(attempt) ? Math.max(1, Math.floor(attempt)) : 1;
+  const cap = Math.min(30_000, 1000 * 2 ** (safeAttempt - 1));
+  const jitter = 250 + Math.floor(Math.random() * Math.max(1, cap - 250));
+  return Math.max(jitter, retryAfterMs(err));
+}
+
+export async function uploadWithRetry(
+  drive: SmartExportDriveClient,
   filePath: string,
   fileName: string,
   folderId: string,
-  maxRetries = 3
-): Promise<{ success: boolean; fileId?: string; error?: string }> {
+  maxRetries = 5
+): Promise<{ success: boolean; fileId?: string; error?: string; cause?: unknown }> {
+  let lastError = "Drive upload failed";
+  let lastCause: unknown;
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-      // Dedup guard, retries only: a previous attempt may have created the file
-      // server-side but timed out before we saw the response — reuse it instead
-      // of duplicating. Skipped on the first attempt to save an API roundtrip
-      // per file (first attempts can't have a partial success to dedup against).
-      if (attempt > 1) {
-        const existingId = await findExistingDriveFile(drive, fileName, folderId);
-        if (existingId) {
-          console.log(`[Smart Export Drive] Dedup hit: "${fileName}" already exists in folder ${folderId} (file id: ${existingId}) — skipping re-upload`);
-          return { success: true, fileId: existingId };
-        }
+      const existingId = await findExistingDriveFile(drive, fileName, folderId);
+      if (existingId) {
+        console.log(`[Smart Export Drive] Dedup hit: "${fileName}" already exists in folder ${folderId} (file id: ${existingId}) — skipping re-upload`);
+        return { success: true, fileId: existingId };
       }
 
       const fileStream = fs.createReadStream(filePath);
@@ -1011,24 +1448,24 @@ async function uploadWithRetry(
         fields: "id",
         supportsAllDrives: true,
       });
-      return { success: true, fileId: res.data.id };
-    } catch (err: any) {
-      const status = err?.response?.status || err?.code;
-      const message = err?.response?.data?.error?.message || err?.message || String(err);
-
-      if (status === 401 || status === 403) {
-        return { success: false, error: `Auth error (${status}): ${message}` };
+      return { success: true, fileId: res.data.id ?? undefined };
+    } catch (err: unknown) {
+      const { status, message } = driveErrorDetails(err);
+      lastError = message;
+      lastCause = err;
+      if (!isRetryableDriveError(err)) {
+        const prefix = status === 401 || status === 403 ? `Auth error (${status}): ` : "";
+        return { success: false, error: `${prefix}${message}`, cause: err };
       }
 
       console.warn(`[Smart Export Drive] Upload attempt ${attempt}/${maxRetries} failed: ${message}`);
-
       if (attempt < maxRetries) {
-        const backoff = Math.pow(3, attempt) * 1000;
+        const backoff = getDriveRetryDelayMs(err, attempt);
         await new Promise((resolve) => setTimeout(resolve, backoff));
       }
     }
   }
-  return { success: false, error: "Failed after 3 retries" };
+  return { success: false, error: `Failed after ${maxRetries} attempts: ${lastError}`, cause: lastCause };
 }
 
 // ─── Account-based adapters (new /api/multiplier namespace) ─────────────────

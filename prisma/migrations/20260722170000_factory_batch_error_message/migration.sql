@@ -1,2 +1,3 @@
--- AlterTable
-ALTER TABLE "FactoryBatch" ADD COLUMN     "errorMessage" TEXT;
+-- Intentional no-op: the later 20260722183331_music_niche_foundation
+-- migration now owns FactoryBatch.errorMessage in its CREATE TABLE.
+-- Databases that already applied this migration retain the column added here.

@@ -232,8 +232,11 @@ Errors: `400` unknown action.
 
 Compute a feasible distribution plan without starting the export. Each account's
 `count` is its **per-day** allocation; it is multiplied by `days` server-side.
-Existing constraints still apply: an account can't receive more videos than there are
-groups with remaining completed outputs, and no group repeats within one account.
+By default, only unexported outputs are eligible. `includeExported: true` also includes
+previously exported outputs, but outputs currently being exported (`exporting`) are
+never eligible. Existing constraints still apply: an account can't receive more videos
+than there are groups with remaining completed outputs, and no group repeats within
+one account.
 
 Assignment is fair round-robin: each group's videos are dealt one at a time to the
 eligible account with the fewest assigned videos, so when demand exceeds supply the
@@ -248,7 +251,7 @@ and are also listed in `unfulfillable` with their partial `assignedCount`.
   groupIds: string[];
   accounts: { driveFolderId: string; name?: string; count: number }[]; // count = posts per day
   days?: number = 1;
-  includeExported?: boolean;
+  includeExported?: boolean = false;
 }
 ```
 
@@ -273,26 +276,65 @@ Errors: `400` missing `groupIds`/`accounts`.
 
 ### `POST /api/multiplier/smart-export/run`
 
-Same request body as preview. Computes the plan server-side and runs every account
-that received at least one video — partial plans included; only accounts with
-`assignedCount === 0` are excluded. Starts a background `SmartExportJob` (with `days`
-recorded on the job).
+Accepts the preview fields plus `countsAreTotal` and `idempotencyKey`. Computes the
+plan server-side and runs every account that received at least one video — partial
+plans included; only accounts with `assignedCount === 0` are excluded. Starts a
+background `SmartExportJob` with `days` recorded on the job.
+
+**Request:**
+
+```ts
+{
+  groupIds: string[];
+  accounts: { driveFolderId: string; name?: string; count: number }[];
+  days?: number = 1;
+  includeExported?: boolean = false;
+  countsAreTotal?: boolean = false;
+  idempotencyKey?: string; // non-empty after trimming; at most 128 characters
+}
+```
+
+With the default `countsAreTotal: false`, each `count` is a per-day allocation and is
+multiplied by `days`. Set it to `true` when counts are already totals, such as UI counts
+already multiplied by `days`; they are not multiplied again. This flag applies only to
+`run`; preview always treats counts as per-day.
+
+An idempotency key can be reused to safely retry the same request: the response returns
+the existing `jobId` with `replay: true` instead of creating another job. Reusing the
+key with a different request returns `409`.
 
 **Response `200`:**
 
 ```ts
 {
   jobId: string;
-  budget: { totalAvailable: number; assigned: number; videosLeft: number };
-  unfulfillable: { driveFolderId: string; driveFolderName: string; requestedCount: number; assignedCount: number; reason: string }[];
+  replay: boolean;
+  budget?: { totalAvailable: number; assigned: number; videosLeft: number };
+  unfulfillable?: { driveFolderId: string; driveFolderName: string; requestedCount: number; assignedCount: number; reason: string }[];
 }
 ```
 
-Errors: `400` missing fields, or no account received any videos (`{ error, budget, unfulfillable }`).
+New-job responses include `budget` and `unfulfillable` with `replay: false`; replay
+responses may omit those planning fields.
 
-Note: when a job is created, each included `MultiplierOutput` records its destination
-on `exportDestinationFolderId` / `exportDestinationFolderName` (visible in the queue
-dashboard and in the legacy `GET /api/managed/multiplier` group payloads).
+Errors: `400` missing fields, an invalid `idempotencyKey`, or no account received any
+videos (`{ error, budget, unfulfillable }`); `409` when the key belongs to a different
+request or when outputs cannot be reserved because a concurrent export is already
+exporting them (or they are no longer render-complete).
+
+Job creation, output reservation, and assignment creation are atomic. A reservation
+conflict rolls back the whole transaction, leaving no empty job or partial assignments;
+the worker is triggered only after the transaction commits. Each reserved
+`MultiplierOutput` records its destination on `exportDestinationFolderId` /
+`exportDestinationFolderName` (visible in the queue dashboard and in the legacy
+`GET /api/managed/multiplier` group payloads).
+
+#### Export worker
+
+`EXPORT_WORKER_CONCURRENCY` controls concurrent Drive uploads and defaults to `8`, with
+a maximum of `16` workers. Transient Drive rate-limit, server, and network errors are
+retried for up to five total attempts with exponential backoff and jitter, honoring
+`Retry-After`. Drive quota errors are not retried inline; they pause the affected job.
 
 ---
 

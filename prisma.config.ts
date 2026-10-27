@@ -23,8 +23,6 @@ if (fs.existsSync(envPath)) {
   });
 }
 
-console.log("[PrismaConfig Debug] Loaded process.env.DATABASE_URL:", process.env.DATABASE_URL);
-
 export default defineConfig({
   datasource: {
     url: process.env.DATABASE_URL!,

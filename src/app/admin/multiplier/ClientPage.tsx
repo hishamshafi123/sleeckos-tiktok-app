@@ -207,6 +207,17 @@ type SmartExportJobListItem = {
   summary?: { total?: number; successCount?: number; failedCount?: number; pendingCount?: number } | null;
 };
 
+type SmartExportAssignmentDetail = {
+  id: string;
+  status: "pending" | "uploading" | "done" | "failed";
+  driveFolderId: string;
+  error: string | null;
+  video: {
+    hook: { text: string } | null;
+    group: { name: string } | null;
+  } | null;
+};
+
 function smartExportJobStatusMeta(job: { status: string; summary?: { failedCount?: number } | null }): {
   label: string;
   chipClass: string;
@@ -477,6 +488,11 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
     unfulfillable: { driveFolderId: string; driveFolderName: string; requestedCount: number; assignedCount: number; reason: string }[];
   } | null>(null);
   const [loadingPreview, setLoadingPreview] = useState(false);
+  const [exportPreviewError, setExportPreviewError] = useState<string | null>(null);
+  const [startingSmartExport, setStartingSmartExport] = useState(false);
+  const startingSmartExportRef = useRef(false);
+  const smartExportIdempotencyRef = useRef<{ fingerprint: string; key: string } | null>(null);
+  const exportPreviewSeqRef = useRef(0);
   const [exportingJobId, setExportingJobId] = useState<string | null>(null);
   const [exportJobDetails, setExportJobDetails] = useState<any | null>(null);
   const [exportPollNonce, setExportPollNonce] = useState(0);
@@ -646,43 +662,56 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
 
   // Smart Export logic
   useEffect(() => {
+    const seq = ++exportPreviewSeqRef.current;
+    const controller = new AbortController();
+    setExportPreview(null);
+    setExportPreviewError(null);
+
     if (!showSmartExport || selectedGroupIds.size === 0 || selectedExportFolders.length === 0) {
-      setExportPreview(null);
-      return;
+      setLoadingPreview(false);
+      return () => controller.abort();
     }
 
-    const timer = setTimeout(() => {
-      const getPreview = async () => {
-        setLoadingPreview(true);
-        try {
-          const res = await fetch("/api/managed/multiplier/smart-export/preview", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              groupIds: Array.from(selectedGroupIds),
-              folderCounts: selectedExportFolders.map((f) => ({
-                id: f.id,
-                name: f.name,
-                count: f.count,
-              })),
-              days: exportDays,
-              includeExported: includeExportedSmartExport,
-            }),
-          });
-          if (res.ok) {
-            const data = await res.json();
-            setExportPreview(data);
-          }
-        } catch (err) {
-          console.error("Preview failed:", err);
-        } finally {
-          setLoadingPreview(false);
+    setLoadingPreview(true);
+    const timer = setTimeout(async () => {
+      try {
+        const res = await fetch("/api/managed/multiplier/smart-export/preview", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            groupIds: Array.from(selectedGroupIds),
+            folderCounts: selectedExportFolders.map((f) => ({
+              id: f.id,
+              name: f.name,
+              count: f.count,
+            })),
+            includeExported: includeExportedSmartExport,
+          }),
+          signal: controller.signal,
+        });
+        if (seq !== exportPreviewSeqRef.current) return;
+
+        const data = await res.json().catch(() => null);
+        if (seq !== exportPreviewSeqRef.current) return;
+        if (!res.ok) {
+          const message = typeof data?.error === "string" ? data.error : `Preview failed (HTTP ${res.status})`;
+          throw new Error(message);
         }
-      };
-      getPreview();
+        if (!data) throw new Error("Server returned an invalid preview response.");
+        setExportPreview(data);
+      } catch (err) {
+        if (seq !== exportPreviewSeqRef.current || controller.signal.aborted) return;
+        console.error("Preview failed:", err);
+        setExportPreviewError(err instanceof Error ? err.message : "Failed to generate preview");
+      } finally {
+        if (seq === exportPreviewSeqRef.current && !controller.signal.aborted) setLoadingPreview(false);
+      }
     }, 300); // 300ms debounce
 
-    return () => clearTimeout(timer);
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
   }, [showSmartExport, selectedGroupIds, selectedExportFolders, includeExportedSmartExport]);
 
   // Row shape returned by /api/accounts/search (both modes)
@@ -1210,43 +1239,116 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
   };
 
   const handleStartSmartExport = async () => {
-    if (!exportPreview || exportPreview.unfulfillable.length > 0) return;
+    if (startingSmartExport || startingSmartExportRef.current) return;
+    if (!exportPreview || exportPreview.unfulfillable.length > 0 || exportPreview.videoBudget.assigned < 1) return;
     if (exportPreview.videoBudget.assigned > exportPreview.videoBudget.totalAvailable) {
       toast.error("Cannot export: Over-allocated video budget!");
       return;
     }
 
+    const payload = {
+      groupIds: Array.from(selectedGroupIds),
+      accounts: selectedExportFolders.map((f) => ({
+        driveFolderId: f.id,
+        name: f.name,
+        count: f.count,
+      })),
+      days: exportDays,
+      includeExported: includeExportedSmartExport,
+      countsAreTotal: true,
+    };
+    const fingerprint = JSON.stringify({
+      groupIds: [...payload.groupIds].sort(),
+      accounts: payload.accounts
+        .map((account) => ({
+          driveFolderId: account.driveFolderId,
+          name: account.name || "",
+          count: account.count,
+        }))
+        .sort((a, b) => a.driveFolderId.localeCompare(b.driveFolderId) || a.name.localeCompare(b.name)),
+      days: Math.max(1, Math.floor(payload.days) || 1),
+      includeExported: !!payload.includeExported,
+      countsAreTotal: !!payload.countsAreTotal,
+    });
+    if (smartExportIdempotencyRef.current?.fingerprint !== fingerprint) {
+      smartExportIdempotencyRef.current = { fingerprint, key: crypto.randomUUID() };
+    }
+    const idempotencyKey = smartExportIdempotencyRef.current!.key;
+    const retryHint = "The server did not confirm the export. Retry the same request with the retained idempotency key to avoid a duplicate job.";
+
+    startingSmartExportRef.current = true;
+    setStartingSmartExport(true);
     setExportRunError(null);
     try {
       const res = await fetch("/api/multiplier/smart-export/run", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          groupIds: Array.from(selectedGroupIds),
-          accounts: selectedExportFolders.map((f) => ({
-            driveFolderId: f.id,
-            name: f.name,
-            count: f.count,
-          })),
-          days: exportDays,
-          includeExported: includeExportedSmartExport,
-        }),
+        body: JSON.stringify({ ...payload, idempotencyKey }),
       });
 
-      const data = await res.json();
-      if (!res.ok) {
-        // 400 = nothing fulfillable — surface inline so the user can adjust counts
-        setExportRunError(data.error || "Nothing in the current selection can be fulfilled.");
-        return;
+      const statusLabel = `HTTP ${res.status}${res.statusText ? ` ${res.statusText}` : ""}`;
+      const responseText = await res.text();
+      const trimmedResponse = responseText.trim();
+      const contentType = res.headers.get("content-type") || "";
+      const shouldParseJson =
+        trimmedResponse.length > 0 &&
+        (/application\/json|\+json/i.test(contentType) || trimmedResponse.startsWith("{") || trimmedResponse.startsWith("["));
+      let parsedJson = false;
+      let data: { jobId?: unknown; error?: unknown } | null = null;
+
+      if (shouldParseJson) {
+        try {
+          const parsed: unknown = JSON.parse(trimmedResponse);
+          parsedJson = true;
+          if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+            data = parsed as { jobId?: unknown; error?: unknown };
+          }
+        } catch {
+          throw new Error(`Smart Export returned malformed JSON (${statusLabel}). ${retryHint}`);
+        }
       }
 
+      if (!parsedJson) {
+        const responseDescription = trimmedResponse.length === 0
+          ? "an empty response"
+          : trimmedResponse.startsWith("<")
+            ? "an HTML response"
+            : "a non-JSON response";
+        const retrySuffix = res.ok || res.status >= 500 ? ` ${retryHint}` : "";
+        throw new Error(
+          `Smart Export ${res.ok ? "could not be confirmed" : "request failed"} (${statusLabel}): the server returned ${responseDescription}.${retrySuffix}`
+        );
+      }
+      if (!data) {
+        throw new Error(`Smart Export returned an invalid JSON response (${statusLabel}). ${retryHint}`);
+      }
+      if (!res.ok) {
+        if (res.status >= 500 && res.status < 600) {
+          const serverError = typeof data.error === "string" ? ` ${data.error}` : "";
+          throw new Error(`Smart Export request failed (${statusLabel}).${serverError} ${retryHint}`);
+        }
+        const fallback = res.status === 400
+          ? "Nothing in the current selection can be fulfilled."
+          : `Smart Export request failed (${statusLabel}).`;
+        setExportRunError(typeof data.error === "string" ? data.error : fallback);
+        return;
+      }
+      if (typeof data.jobId !== "string" || data.jobId.length === 0) {
+        throw new Error(`Smart Export returned no job ID (${statusLabel}). ${retryHint}`);
+      }
+
+      smartExportIdempotencyRef.current = null;
       toast.success("Smart Export queued successfully!");
       setExportingJobId(data.jobId);
       resetExportDrag();
       setShowSmartExport(false);
-      fetchData();
-    } catch (err: any) {
-      setExportRunError(err.message || "Failed to start export");
+      void fetchData();
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Failed to start export";
+      setExportRunError(err instanceof TypeError ? `Smart Export could not be confirmed: ${message}. ${retryHint}` : message);
+    } finally {
+      startingSmartExportRef.current = false;
+      setStartingSmartExport(false);
     }
   };
 
@@ -1271,32 +1373,41 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
     }
 
     let active = true;
+    let pollTimer: ReturnType<typeof setTimeout> | null = null;
+    const controller = new AbortController();
     const fetchProgress = async () => {
       try {
-        const res = await fetch(`/api/managed/multiplier/smart-export/jobs/${exportingJobId}`);
-        if (res.ok) {
-          const data = await res.json();
-          if (active) {
-            setExportJobDetails(data.job);
-            if (data.job.status === "done" || data.job.status === "failed" || data.job.status === "paused_quota") {
-              fetchData();
-            } else {
-              setTimeout(fetchProgress, 3000);
-            }
-          }
+        const res = await fetch(`/api/managed/multiplier/smart-export/jobs/${exportingJobId}`, {
+          signal: controller.signal,
+        });
+        if (!active) return;
+        if (!res.ok) {
+          pollTimer = setTimeout(fetchProgress, 5000);
+          return;
+        }
+
+        const data = await res.json();
+        if (!active) return;
+        if (!data.job) throw new Error("Smart Export progress returned an invalid response.");
+        setExportJobDetails(data.job);
+        if (data.job.status === "done" || data.job.status === "failed" || data.job.status === "paused_quota") {
+          void fetchData();
+        } else {
+          pollTimer = setTimeout(fetchProgress, 5000);
         }
       } catch (err) {
+        if (!active || controller.signal.aborted) return;
         console.error("Failed to poll export progress:", err);
-        if (active) {
-          setTimeout(fetchProgress, 5000);
-        }
+        pollTimer = setTimeout(fetchProgress, 5000);
       }
     };
 
-    fetchProgress();
+    void fetchProgress();
 
     return () => {
       active = false;
+      if (pollTimer) clearTimeout(pollTimer);
+      controller.abort();
     };
   }, [exportingJobId, exportPollNonce]);
 
@@ -1375,14 +1486,7 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Retry failed");
       toast.success("Upload retry queued");
-      
-      if (exportingJobId) {
-        const detailRes = await fetch(`/api/managed/multiplier/smart-export/jobs/${exportingJobId}`);
-        if (detailRes.ok) {
-          const detailData = await detailRes.json();
-          setExportJobDetails(detailData.job);
-        }
-      }
+      if (exportingJobId) setExportPollNonce((n) => n + 1);
     } catch (err: any) {
       toast.error(err.message || "Failed to retry upload");
     }
@@ -5901,7 +6005,7 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
         groups.forEach((g) => {
           if (selectedGroupIds.has(g.id)) {
             g.outputs.forEach((out) => {
-              if (out.status === "COMPLETED") {
+              if (out.status === "COMPLETED" && out.exportStatus !== "exporting") {
                 total++;
                 if (out.exportStatus !== "exported" && !out.exportedAt) unexported++;
               }
@@ -5912,7 +6016,12 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
 
         const assignedCount = selectedExportFolders.reduce((sum, f) => sum + f.count, 0);
         const overAllocated = assignedCount > totalCompleted;
-        const cannotExport = overAllocated || (exportPreview && exportPreview.unfulfillable.length > 0) || selectedExportFolders.length === 0;
+        const cannotExport =
+          !exportPreview ||
+          assignedCount < 1 ||
+          overAllocated ||
+          exportPreview.unfulfillable.length > 0 ||
+          selectedExportFolders.length === 0;
 
         const sortedSelected = [...selectedExportFolders].sort((a, b) => naturalCompare(a.name || "", b.name || ""));
         // Selected-pane text filter — find specific accounts inside a big selection
@@ -6588,12 +6697,17 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
                 </div>
               </div>
 
-              {/* Footer: over-allocation warning / run error (only when active) + action buttons */}
+              {/* Footer: allocation, preview and run errors + action buttons */}
               <div className="flex-shrink-0 border-t border-[#27272a] mt-4 pt-4 flex flex-wrap items-center gap-3">
                 <div className="flex-1 min-w-[220px] space-y-1.5">
                   {overAllocated && (
                     <div className="text-[10px] text-red-500 font-bold bg-red-500/10 py-1.5 px-3 rounded-lg border border-red-500/20 flex items-center gap-1.5">
                       <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" /> Over-allocation warning: You have assigned more videos than available. Please reduce folder counts.
+                    </div>
+                  )}
+                  {exportPreviewError && (
+                    <div className="text-[10px] text-red-500 font-bold bg-red-500/10 py-1.5 px-3 rounded-lg border border-red-500/20 flex items-center gap-1.5">
+                      <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" /> Preview error: {exportPreviewError}
                     </div>
                   )}
                   {exportRunError && (
@@ -6616,10 +6730,15 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
                   </button>
                   <button
                     onClick={handleStartSmartExport}
-                    disabled={cannotExport || loadingPreview}
+                    disabled={cannotExport || loadingPreview || startingSmartExport}
                     className="px-5 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-30 disabled:cursor-not-allowed text-white text-xs font-bold rounded-lg transition-all shadow-md flex items-center gap-1.5 cursor-pointer"
                   >
-                    {loadingPreview ? (
+                    {startingSmartExport ? (
+                      <>
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        Queueing...
+                      </>
+                    ) : loadingPreview ? (
                       <>
                         <Loader2 className="w-3.5 h-3.5 animate-spin" />
                         Validating...
@@ -6641,10 +6760,10 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
       {/* Smart Export Progress & Retry Modal */}
       {exportingJobId && exportJobDetails && (() => {
         const job = exportJobDetails;
-        const totalAssigned = job.assignments?.length || 0;
-        const done = job.assignments?.filter((a: any) => a.status === "done").length || 0;
-        const failed = job.assignments?.filter((a: any) => a.status === "failed").length || 0;
-        const pending = job.assignments?.filter((a: any) => a.status === "pending" || a.status === "uploading").length || 0;
+        const totalAssigned = job.assignmentCounts?.total ?? 0;
+        const done = job.assignmentCounts?.done ?? 0;
+        const failed = job.assignmentCounts?.failed ?? 0;
+        const pending = job.assignmentCounts?.pending ?? 0;
         const percent = totalAssigned > 0 ? Math.round(((done + failed) / totalAssigned) * 100) : 0;
         // Partial success reads "Done (N failed)" (amber), not "failed".
         const jobMeta = smartExportJobStatusMeta({ status: job.status, summary: { failedCount: failed } });
@@ -6708,48 +6827,55 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
               </div>
 
               <div className="flex-1 overflow-y-auto space-y-2.5 pr-1 custom-scrollbar">
-                <h4 className="font-bold text-[#fafafa] uppercase tracking-wider text-[10px] text-[#71717a] sticky top-0 bg-[#18181b] py-1">Assignments List</h4>
-                {job.assignments?.map((ass: any) => {
-                  const hookText = ass.video?.hook?.text || "Unknown video";
-                  const grpName = ass.video?.group?.name || "Unknown group";
-                  return (
-                    <div key={ass.id} className="p-3 bg-[#09090b] border border-[#27272a] rounded-xl flex items-center justify-between text-xs">
-                      <div className="truncate flex-1 mr-3 space-y-1">
-                        <p className="font-bold text-gray-200 truncate" title={hookText}>“{hookText}”</p>
-                        <p className="text-[10px] text-[#71717a] truncate font-medium">
-                          From: <span className="text-[#fafafa]">{grpName}</span> • Dest Folder: <span className="font-mono text-gray-300">{ass.driveFolderId.substring(0, 12)}...</span>
-                        </p>
-                        {ass.error && (
-                          <p className="text-[10px] text-red-400 font-medium leading-normal bg-red-500/5 p-2 rounded-lg border border-red-500/10">
-                            Error: {ass.error}
+                <h4 className="font-bold text-[#fafafa] uppercase tracking-wider text-[10px] text-[#71717a] sticky top-0 bg-[#18181b] py-1">Failed Assignments ({failed})</h4>
+                {job.assignments?.length > 0 && failed > job.assignments.length && (
+                  <p className="text-[10px] text-[#71717a]">Showing the latest {job.assignments.length} of {failed} failed assignments.</p>
+                )}
+                {!job.assignments || job.assignments.length === 0 ? (
+                  <p className="text-xs text-[#71717a] text-center py-6">No failed assignments.</p>
+                ) : (
+                  job.assignments.map((ass: SmartExportAssignmentDetail) => {
+                    const hookText = ass.video?.hook?.text || "Unknown video";
+                    const grpName = ass.video?.group?.name || "Unknown group";
+                    return (
+                      <div key={ass.id} className="p-3 bg-[#09090b] border border-[#27272a] rounded-xl flex items-center justify-between text-xs">
+                        <div className="truncate flex-1 mr-3 space-y-1">
+                          <p className="font-bold text-gray-200 truncate" title={hookText}>“{hookText}”</p>
+                          <p className="text-[10px] text-[#71717a] truncate font-medium">
+                            From: <span className="text-[#fafafa]">{grpName}</span> • Dest Folder: <span className="font-mono text-gray-300">{ass.driveFolderId.substring(0, 12)}...</span>
                           </p>
-                        )}
-                      </div>
-                      <div className="flex items-center gap-3 flex-shrink-0">
-                        <span className={`px-2.5 py-1 rounded-full text-[10px] font-bold ${
-                          ass.status === "done"
-                            ? "bg-green-500/10 text-green-400"
-                            : ass.status === "failed"
-                            ? "bg-red-500/10 text-red-500"
-                            : ass.status === "uploading"
-                            ? "bg-blue-500/10 text-blue-400 animate-pulse"
-                            : "bg-gray-500/10 text-gray-400"
-                        }`}>
-                          {ass.status}
-                        </span>
+                          {ass.error && (
+                            <p className="text-[10px] text-red-400 font-medium leading-normal bg-red-500/5 p-2 rounded-lg border border-red-500/10">
+                              Error: {ass.error}
+                            </p>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-3 flex-shrink-0">
+                          <span className={`px-2.5 py-1 rounded-full text-[10px] font-bold ${
+                            ass.status === "done"
+                              ? "bg-green-500/10 text-green-400"
+                              : ass.status === "failed"
+                              ? "bg-red-500/10 text-red-500"
+                              : ass.status === "uploading"
+                              ? "bg-blue-500/10 text-blue-400 animate-pulse"
+                              : "bg-gray-500/10 text-gray-400"
+                          }`}>
+                            {ass.status}
+                          </span>
 
-                        {ass.status === "failed" && (
-                          <button
-                            onClick={() => handleRetryAssignment(ass.id)}
-                            className="px-2.5 py-1 bg-red-500/20 hover:bg-red-500/30 text-red-400 text-[10px] font-bold rounded-lg border border-red-500/20 transition-all cursor-pointer"
-                          >
-                            Retry
-                          </button>
-                        )}
+                          {ass.status === "failed" && (
+                            <button
+                              onClick={() => handleRetryAssignment(ass.id)}
+                              className="px-2.5 py-1 bg-red-500/20 hover:bg-red-500/30 text-red-400 text-[10px] font-bold rounded-lg border border-red-500/20 transition-all cursor-pointer"
+                            >
+                              Retry
+                            </button>
+                          )}
+                        </div>
                       </div>
-                    </div>
-                  );
-                })}
+                    );
+                  })
+                )}
               </div>
 
               {isTerminal && (

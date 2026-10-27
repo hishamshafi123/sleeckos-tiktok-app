@@ -3,6 +3,8 @@ import fs from "fs";
 import path from "path";
 
 let cachedBundleLocation: string | null = null;
+let cacheGeneration = 0;
+let inFlightBundle: { generation: number; promise: Promise<string> } | null = null;
 
 /**
  * Shared Remotion bundle for every render service (Style Lab, Style Studio,
@@ -17,9 +19,27 @@ export async function getRemotionBundle(): Promise<string> {
   if (cachedBundleLocation && fs.existsSync(cachedBundleLocation)) {
     return cachedBundleLocation;
   }
+  if (inFlightBundle?.generation === cacheGeneration) {
+    return inFlightBundle.promise;
+  }
+
+  const generation = cacheGeneration;
   const entryPoint = path.join(process.cwd(), "src", "remotion", "index.ts");
-  cachedBundleLocation = await bundle(entryPoint, undefined, { symlinkPublicDir: true });
-  return cachedBundleLocation;
+  const promise = bundle(entryPoint, undefined, { symlinkPublicDir: true }).then((location) => {
+    if (generation === cacheGeneration) {
+      cachedBundleLocation = location;
+    }
+    return location;
+  });
+  const current = { generation, promise };
+  inFlightBundle = current;
+  try {
+    return await promise;
+  } finally {
+    if (inFlightBundle === current) {
+      inFlightBundle = null;
+    }
+  }
 }
 
 /** Current cached bundle dir, or null when nothing is cached. Never bundles. */
@@ -38,4 +58,5 @@ export function getCachedRemotionBundleLocation(): string | null {
  */
 export function invalidateRemotionBundleCache(): void {
   cachedBundleLocation = null;
+  cacheGeneration++;
 }

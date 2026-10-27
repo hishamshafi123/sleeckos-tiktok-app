@@ -21,7 +21,7 @@ BEGIN
   END IF;
 END $$;
 
--- ─── Preservation tables (survive the Group drop; used by down.sql + admin report) ───
+-- ─── Legacy preservation snapshots (kept by databases that already applied this migration) ───
 -- Every AccountGroup column, stored as plain text for a lossless, type-agnostic snapshot.
 CREATE TABLE "_MigrationBackup_Group" (
   "id"                 TEXT PRIMARY KEY,
@@ -71,3 +71,9 @@ SELECT "id", "groupId" FROM "ManagedAccount";
 
 -- Backfill verified above — make the column required.
 ALTER TABLE "ManagedAccount" ALTER COLUMN "sectionId" SET NOT NULL;
+
+-- Clean up replay-only snapshots; already-migrated databases keep them for
+-- the legacy rollback and reporting workflow.
+DROP TABLE IF EXISTS "_MigrationBackup_AccountGroup";
+DROP TABLE IF EXISTS "_MigrationBackup_Group";
+DROP TABLE IF EXISTS "_MigrationBackup_SectionFixedText";

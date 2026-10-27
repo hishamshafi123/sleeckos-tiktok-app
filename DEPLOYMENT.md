@@ -147,6 +147,53 @@ curl https://example.com/tiktokiMpmDesGbaBtUe2sHO7yWqchZbpRo9HC.txt
 
 ---
 
+## KVM8 runtime tuning
+
+The Compose defaults target KVM8 with one app/worker container and no replicas. The KVM8-tuned Multiplier/Smart Export knobs and their KVM4 rollback values are listed in `.env.example`. Changing these values requires recreating the containers; `docker compose restart` does not apply them.
+
+GitHub Actions auto-deploys only pushes to `main`; other branches are not deployed automatically.
+
+### Apply
+
+Review or override the defaults in `.env`, then recreate both services so the new limits and environment take effect:
+
+```bash
+cd /home/ubuntu/<project-name>
+docker compose up -d --build --force-recreate app db
+```
+
+### Verify
+
+Inspect the limits Docker actually applied to each container, rather than only reading `.env`:
+
+```bash
+docker inspect --format '{{.Name}} NanoCPUs={{.HostConfig.NanoCpus}} MemoryBytes={{.HostConfig.Memory}}' $(docker compose ps -q app db)
+docker stats $(docker compose ps -q app db)
+```
+
+With the KVM8 defaults, app should report `NanoCPUs=7000000000` and `MemoryBytes=12884901888`; db should report `NanoCPUs=1000000000` and `MemoryBytes=1073741824`.
+
+Check host capacity and, during an active render/export, confirm that FFmpeg or Chromium child processes are present:
+
+```bash
+df -h /
+free -h
+ps -eo pid,comm,args | grep -E '[f]fmpeg|[c]hromium'
+```
+
+The process check can be empty when no render/export work is active.
+
+### Roll back to KVM4
+
+Replace the runtime settings in `.env` with the KVM4 rollback values from `.env.example`, then recreate both containers and repeat the inspection and stats checks:
+
+```bash
+cd /home/ubuntu/<project-name>
+docker compose up -d --build --force-recreate app db
+```
+
+---
+
 ## Updating the app
 
 ```bash

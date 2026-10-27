@@ -17,9 +17,12 @@ services:
     deploy:
       resources:
         limits:
-          memory: 512m
-          cpus: "0.5"
+          # KVM8 defaults; KVM4 rollback: DB_CPU_LIMIT=0.5 DB_MEM_LIMIT=512m.
+          memory: ${DB_MEM_LIMIT:-1g}
+          cpus: "${DB_CPU_LIMIT:-1.0}"
 
+  # Run one app/worker container on KVM8 (no replicas); Next.js and all queue
+  # workers run together. Tune the concurrency variables below instead.
   app:
     build: .
     restart: unless-stopped
@@ -30,14 +33,15 @@ services:
     environment:
       # Constructed from the individual POSTGRES_* vars so password is set once.
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
-      # Render pipeline parallelism — tuned per box size (defaults are safe for
-      # the current 4-vCPU box; raise after the KVM8 upgrade):
-      #   KVM4 (now):   RENDER_CONCURRENCY=2 FFMPEG_THREADS=2 REMOTION_STILL_CONCURRENCY=2 TRANSCRIBE_CONCURRENCY=2
-      #   KVM8 (target): RENDER_CONCURRENCY=4 FFMPEG_THREADS=2 REMOTION_STILL_CONCURRENCY=3 TRANSCRIBE_CONCURRENCY=2
-      RENDER_CONCURRENCY: ${RENDER_CONCURRENCY:-2}
+      # Render pipeline parallelism — defaults tuned for the KVM8 8-vCPU box.
+      # KVM4 rollback: RENDER_CONCURRENCY=2 FFMPEG_THREADS=2
+      #   REMOTION_STILL_CONCURRENCY=2 TRANSCRIBE_CONCURRENCY=2
+      #   EXPORT_WORKER_CONCURRENCY=4
+      RENDER_CONCURRENCY: ${RENDER_CONCURRENCY:-4}
       FFMPEG_THREADS: ${FFMPEG_THREADS:-2}
-      REMOTION_STILL_CONCURRENCY: ${REMOTION_STILL_CONCURRENCY:-2}
+      REMOTION_STILL_CONCURRENCY: ${REMOTION_STILL_CONCURRENCY:-3}
       TRANSCRIBE_CONCURRENCY: ${TRANSCRIBE_CONCURRENCY:-2}
+      EXPORT_WORKER_CONCURRENCY: ${EXPORT_WORKER_CONCURRENCY:-8}
     ports:
       # Bind to localhost only — nginx terminates TLS and proxies here.
       - "127.0.0.1:${PORT:-3000}:${PORT:-3000}"
@@ -49,13 +53,11 @@ services:
     deploy:
       resources:
         limits:
-          # Caps are validated against the host's actual cores — keep them
-          # env-driven so the KVM8 upgrade is a .env change, not a code change.
-          #   KVM4 (now):    APP_CPU_LIMIT=3.5 APP_MEM_LIMIT=6g
-          #   KVM8 (target): APP_CPU_LIMIT=6.0 APP_MEM_LIMIT=14g
+          # KVM8 defaults; override in .env for rollback or other host sizes.
+          # KVM4 rollback: APP_CPU_LIMIT=3.5 APP_MEM_LIMIT=6g.
           # Render parallelism envs are documented above (environment: block).
-          memory: ${APP_MEM_LIMIT:-6g}
-          cpus: "${APP_CPU_LIMIT:-3.5}"
+          memory: ${APP_MEM_LIMIT:-12g}
+          cpus: "${APP_CPU_LIMIT:-7.0}"
 
 volumes:
   pgdata:

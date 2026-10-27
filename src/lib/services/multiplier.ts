@@ -1,13 +1,14 @@
 import prisma from "@/lib/db";
 import { getMultiplierDriveClient } from "@/app/api/managed/multiplier/google/drive-helper";
 import { GoogleGenAI } from "@google/genai";
+import type { Prisma } from "@prisma/client";
 import crypto from "crypto";
 import { spawn, execFile } from "child_process";
 import { promisify } from "util";
 import fs from "fs";
 import path from "path";
 import os from "os";
-import { renderStill, selectComposition } from "@remotion/renderer";
+import { openBrowser, renderStill, selectComposition } from "@remotion/renderer";
 import { getRemotionBundle } from "../remotion-bundle";
 import { enqueueRender } from "./style-lab";
 import { LAYERED_TEMPLATE_KEY, coerceLayers } from "../style-lab/layers";
@@ -617,6 +618,8 @@ export async function renderCaptionStill(
   });
 }
 
+const captionStillCacheRenders = new Map<string, Promise<void>>();
+
 /**
  * Remotion still path for styles Pillow can't render (layered styles, Style
  * Lab templates like brat-lyrics/imported/ai_*). Hook text is wired the way
@@ -628,8 +631,7 @@ export async function renderCaptionStill(
  * don't read).
  *
  * Renders the mid-composition frame (entry animations completed) through the
- * shared style-lab serial render queue (Remotion renders are heavy — one at
- * a time on the 2-core VPS). Results are cached by content hash in
+ * shared style-lab render lanes. Results are cached by content hash in
  * STILLS_DIR: repeated hooks across groups/outputs reuse the rendered PNG
  * ("render once, composite many"). The returned path is always a per-output
  * COPY — the render worker deletes it after compositing; the cache file
@@ -663,48 +665,86 @@ async function renderCaptionStillRemotion(opts: {
     .digest("hex");
   const cachePath = path.join(STILLS_DIR, `still_cache_${hash}.png`);
 
-  const reuseCache = (): boolean => {
+  const cacheIsReady = (): boolean => {
     try {
-      if (fs.existsSync(cachePath) && fs.statSync(cachePath).size > 1024) {
-        fs.copyFileSync(cachePath, stillPath);
-        return true;
-      }
-    } catch {}
-    return false;
+      return fs.statSync(cachePath).size > 1024;
+    } catch {
+      return false;
+    }
+  };
+  const reuseCache = (): boolean => {
+    if (!cacheIsReady()) return false;
+    try {
+      fs.copyFileSync(cachePath, stillPath);
+      return true;
+    } catch {
+      return false;
+    }
   };
 
   if (reuseCache()) return stillPath;
 
-  return enqueueRender(async () => {
-    if (reuseCache()) return stillPath; // another queued render may have produced it
-    try {
-      const bundleLocation = await getRemotionBundle();
-      const composition = await selectComposition({
-        serveUrl: bundleLocation,
-        id: compositionId,
-        inputProps,
-      });
-      const frame = Math.max(0, Math.floor(composition.durationInFrames / 2));
-      await renderStill({
-        composition,
-        serveUrl: bundleLocation,
-        output: cachePath,
-        inputProps,
-        frame,
-        browserExecutable: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
-      });
-      if (!fs.existsSync(cachePath) || fs.statSync(cachePath).size === 0) {
-        throw new Error("renderer finished but produced no output");
+  const existingRender = captionStillCacheRenders.get(cachePath);
+  if (existingRender) {
+    await existingRender;
+  } else {
+    const tempPath = path.join(
+      STILLS_DIR,
+      `still_cache_${hash}.${process.pid}.${crypto.randomUUID()}.tmp.png`
+    );
+    const renderPromise = enqueueRender(async () => {
+      if (cacheIsReady()) return;
+      try {
+        const bundleLocation = await getRemotionBundle();
+        const browserExecutable = process.env.PUPPETEER_EXECUTABLE_PATH || undefined;
+        const browser = await openBrowser("chrome", { browserExecutable });
+        try {
+          const composition = await selectComposition({
+            serveUrl: bundleLocation,
+            id: compositionId,
+            inputProps,
+            browserExecutable,
+            puppeteerInstance: browser,
+          });
+          const frame = Math.max(0, Math.floor(composition.durationInFrames / 2));
+          await renderStill({
+            composition,
+            serveUrl: bundleLocation,
+            output: tempPath,
+            inputProps,
+            frame,
+            browserExecutable,
+            puppeteerInstance: browser,
+          });
+        } finally {
+          await browser.close({ silent: true });
+        }
+        if (!fs.existsSync(tempPath) || fs.statSync(tempPath).size <= 1024) {
+          throw new Error("renderer finished but produced no usable output");
+        }
+        await fs.promises.rename(tempPath, cachePath);
+      } catch (err: any) {
+        throw new Error(
+          `[Multiplier] Remotion caption-still render failed for style ${styleLabel}: ${err?.message || err}`
+        );
+      } finally {
+        try { await fs.promises.unlink(tempPath); } catch {}
       }
-      fs.copyFileSync(cachePath, stillPath);
-      return stillPath;
-    } catch (err: any) {
-      try { fs.unlinkSync(cachePath); } catch {}
-      throw new Error(
-        `[Multiplier] Remotion caption-still render failed for style ${styleLabel}: ${err?.message || err}`
-      );
+    });
+    captionStillCacheRenders.set(cachePath, renderPromise);
+    try {
+      await renderPromise;
+    } finally {
+      if (captionStillCacheRenders.get(cachePath) === renderPromise) {
+        captionStillCacheRenders.delete(cachePath);
+      }
     }
-  });
+  }
+
+  if (!reuseCache()) {
+    throw new Error(`[Multiplier] Remotion caption-still cache was not published for style ${styleLabel}`);
+  }
+  return stillPath;
 }
 
 export async function composeOutput(
@@ -846,18 +886,26 @@ export async function composeOutputPlain(
 
 let isQueueProcessing = false;
 let isRenderPaused = false;
+let queueWakeupRequested = false;
 
 export function getRenderQueueState() {
   return { paused: isRenderPaused, processing: isQueueProcessing };
 }
 
 // Outputs left in RENDERING by a crash/restart are never picked up again
-// (the loop only fetches PENDING) — reset them so the queue can move.
+// (the loop only fetches PENDING) — reset them so the queue can move. Legacy
+// claims predate renderHeartbeatAt, so updatedAt is their fallback only.
 export async function recoverStaleRenderingOutputs(staleMinutes = 2): Promise<number> {
   const staleBefore = new Date(Date.now() - staleMinutes * 60 * 1000);
   const reset = await prisma.multiplierOutput.updateMany({
-    where: { status: "RENDERING", updatedAt: { lt: staleBefore } },
-    data: { status: "PENDING" },
+    where: {
+      status: "RENDERING",
+      OR: [
+        { renderHeartbeatAt: { lt: staleBefore } },
+        { renderHeartbeatAt: null, updatedAt: { lt: staleBefore } },
+      ],
+    },
+    data: { status: "PENDING", renderLeaseId: null, renderHeartbeatAt: null },
   });
   if (reset.count > 0) {
     console.log(`[Multiplier Worker] Recovered ${reset.count} output(s) stuck in RENDERING`);
@@ -878,11 +926,24 @@ export async function resumeRenderQueue() {
 }
 
 export async function triggerQueueWorker() {
-  if (isQueueProcessing || isRenderPaused) return;
+  if (isRenderPaused) return;
+  if (isQueueProcessing) {
+    queueWakeupRequested = true;
+    return;
+  }
   isQueueProcessing = true;
-  processRenderQueue().finally(() => {
-    isQueueProcessing = false;
-  });
+  queueWakeupRequested = false;
+  processRenderQueue()
+    .catch((err) => {
+      console.error("[Multiplier Worker] Queue processing failed:", err);
+    })
+    .finally(() => {
+      isQueueProcessing = false;
+      if (queueWakeupRequested) {
+        queueWakeupRequested = false;
+        triggerQueueWorker();
+      }
+    });
 }
 
 // Boot/cron resume: a restart strands PENDING outputs (the in-memory worker
@@ -897,10 +958,12 @@ export async function resumeRenderQueueIfWorkPending(): Promise<{ recovered: num
 
 // Render worker count and ffmpeg thread pinning are env-tunable so a bigger
 // VPS (or a dedicated render box) is a config change, not a code change.
-// KVM8 target: 4 workers × 2 threads = 8 ffmpeg threads across 8 vCPUs.
-// On the current 4-core box, keep RENDER_CONCURRENCY=2 in the env to avoid
-// starving the web server — more workers than CPU threads doesn't help.
-const RENDER_CONCURRENCY = Math.max(1, parseInt(process.env.RENDER_CONCURRENCY || "2", 10) || 2);
+// The default matches 8 vCPUs at 2 ffmpeg threads per worker; cap the worker
+// count so a malformed environment cannot create an unbounded process pool.
+const RENDER_CONCURRENCY = Math.min(
+  16,
+  Math.max(1, parseInt(process.env.RENDER_CONCURRENCY || "4", 10) || 4)
+);
 const FFMPEG_THREADS = Math.max(1, parseInt(process.env.FFMPEG_THREADS || "2", 10) || 2);
 
 async function processRenderQueue() {
@@ -932,6 +995,13 @@ async function processRenderQueue() {
   } catch (err) {
     console.error("[Multiplier Worker] Group status sweep failed:", err);
   }
+
+  try {
+    const pending = await prisma.multiplierOutput.count({ where: { status: "PENDING" } });
+    if (pending > 0) queueWakeupRequested = true;
+  } catch (err) {
+    console.error("[Multiplier Worker] Final queue recheck failed:", err);
+  }
 }
 
 async function renderWorkerLoop(workerId: number) {
@@ -942,7 +1012,8 @@ async function renderWorkerLoop(workerId: number) {
     }
 
     // Atomic claim: flip exactly one PENDING output so two workers never
-    // render the same video.
+    // render the same video. The dedicated lease fences off an older worker
+    // without being invalidated by unrelated output metadata updates.
     const candidate = await prisma.multiplierOutput.findFirst({
       where: { status: "PENDING" },
       orderBy: { createdAt: "asc" },
@@ -954,124 +1025,166 @@ async function renderWorkerLoop(workerId: number) {
       break;
     }
 
+    const renderLeaseId = crypto.randomUUID();
+    const claimedAt = new Date();
     const claimed = await prisma.multiplierOutput.updateMany({
       where: { id: candidate.id, status: "PENDING" },
-      data: { status: "RENDERING" },
+      data: { status: "RENDERING", renderLeaseId, renderHeartbeatAt: claimedAt },
     });
     if (claimed.count === 0) continue; // another worker claimed it first
 
-    const output = await prisma.multiplierOutput.findUnique({
-      where: { id: candidate.id },
-      include: {
-        group: true,
-        variation: true,
-        hook: true,
-      },
-    });
-    if (!output) continue;
+    let leaseLost = false;
+    let terminalTransitionStarted = false;
+    const reportLeaseLost = (operation: string) => {
+      leaseLost = true;
+      console.warn(
+        `[Multiplier Worker ${workerId}] Render lease lost for output ${candidate.id} during ${operation}; ` +
+        "skipping further external side effects"
+      );
+    };
 
-    // Update parent group status to RENDERING
-    await prisma.multiplierGroup.update({
-      where: { id: output.groupId },
-      data: { status: "RENDERING" },
-    });
+    let leaseOperation: Promise<void> = Promise.resolve();
+    const updateOwnedOutput = (data: Prisma.MultiplierOutputUpdateManyMutationInput) => {
+      const result = leaseOperation.then(() => prisma.multiplierOutput.updateMany({
+        where: { id: candidate.id, status: "RENDERING", renderLeaseId },
+        data,
+      }));
+      leaseOperation = result.then(() => undefined, () => undefined);
+      return result;
+    };
 
-    let stillPath = "";
-    try {
-      const settings = typeof output.group.settings === "string" 
-        ? JSON.parse(output.group.settings) 
-        : (output.group.settings || {});
-
-      const hookText = output.hook.text.trim();
-      let relativeVideoUrl: string;
-      if (hookText) {
-        // 1. Render transparent PNG still in Remotion
-        // Per-variation preset (multi-preset split) wins over the group style.
-        const outputStyleId = output.variation.styleId || output.group.styleId;
-        console.log(`[Multiplier Worker] Rendering still for Hook: "${output.hook.text.substring(0, 30)}..."`);
-        stillPath = await renderCaptionStill(outputStyleId, output.hook.text, settings, output.id);
-
-        // 2. Composite variation with still overlay in FFmpeg
-        console.log(`[Multiplier Worker] Compositing still on video: ${output.variation.videoRef}`);
-        relativeVideoUrl = await composeOutput(output.variation.videoRef, stillPath, output.id, settings);
-
-        // Delete the still PNG after success
-        try {
-          fs.unlinkSync(stillPath);
-        } catch {}
-      } else {
-        // Hooks-off bulk mode: empty hook text means NO caption overlay —
-        // re-encode the source video as-is.
-        console.log(`[Multiplier Worker] No hook text — rendering plain output for: ${output.variation.videoRef}`);
-        relativeVideoUrl = await composeOutputPlain(output.variation.videoRef, output.id);
-      }
-
-      // 3. Auto-upload to Google Drive if connected
-      let driveFolderId: string | null = null;
+    let heartbeatInFlight = false;
+    const heartbeat = async () => {
+      if (heartbeatInFlight || terminalTransitionStarted || leaseLost) return;
+      heartbeatInFlight = true;
+      const heartbeatAt = new Date();
       try {
-        const drive = await getMultiplierDriveClient();
-        const targetFolder = output.group.campaignId // can fall back to campaign default folders or group settings
-          ? (await prisma.campaign.findUnique({ where: { id: output.group.campaignId } }))?.coverImageUrl // placeholder checks
-          : null;
-
-        const mainDriveFolder = settings?.driveFolderId || null;
-        const finalFolderId = output.driveFolderId || mainDriveFolder;
-
-        if (drive && finalFolderId) {
-          const localFilePath = path.join(process.cwd(), "public", relativeVideoUrl);
-          const cleanHookSlug = output.hook.text.replace(/[^a-zA-Z0-9 ]/g, "").trim().replace(/\s+/g, "_").substring(0, 40);
-          const fileName = `multi_${output.id}_${cleanHookSlug || "plain"}.mp4`;
-
-          console.log(`[Multiplier Worker] Uploading output ${output.id} to Drive Folder ${finalFolderId}`);
-          const fileStream = fs.createReadStream(localFilePath);
-          await drive.files.create({
-            requestBody: {
-              name: fileName,
-              parents: [finalFolderId],
-            },
-            media: {
-              mimeType: "video/mp4",
-              body: fileStream,
-            },
-            fields: "id",
-            supportsAllDrives: true,
-          });
-          driveFolderId = finalFolderId;
-        }
-      } catch (driveErr: any) {
-        console.error(`[Multiplier Worker] Drive upload failed for output ${output.id}:`, driveErr?.message || driveErr);
+        const updated = await updateOwnedOutput({ renderHeartbeatAt: heartbeatAt });
+        if (updated.count === 0) reportLeaseLost("heartbeat");
+      } catch (err) {
+        console.error(`[Multiplier Worker ${workerId}] Heartbeat failed for output ${candidate.id}:`, err);
+      } finally {
+        heartbeatInFlight = false;
       }
+    };
+    const heartbeatTimer = setInterval(() => { void heartbeat(); }, 30000);
 
-      // Update output row
-      await prisma.multiplierOutput.update({
-        where: { id: output.id },
-        data: {
+    try {
+      const output = await prisma.multiplierOutput.findUnique({
+        where: { id: candidate.id },
+        include: {
+          group: true,
+          variation: true,
+          hook: true,
+        },
+      });
+      if (!output || leaseLost) continue;
+
+      let stillPath = "";
+      try {
+        await prisma.multiplierGroup.update({
+          where: { id: output.groupId },
+          data: { status: "RENDERING" },
+        });
+        if (leaseLost) continue;
+
+        const settings = typeof output.group.settings === "string"
+          ? JSON.parse(output.group.settings)
+          : (output.group.settings || {});
+
+        const hookText = output.hook.text.trim();
+        let relativeVideoUrl: string;
+        if (hookText) {
+          // 1. Render transparent PNG still in Remotion
+          // Per-variation preset (multi-preset split) wins over the group style.
+          const outputStyleId = output.variation.styleId || output.group.styleId;
+          console.log(`[Multiplier Worker] Rendering still for Hook: "${output.hook.text.substring(0, 30)}..."`);
+          stillPath = await renderCaptionStill(outputStyleId, output.hook.text, settings, output.id);
+
+          // 2. Composite variation with still overlay in FFmpeg
+          console.log(`[Multiplier Worker] Compositing still on video: ${output.variation.videoRef}`);
+          relativeVideoUrl = await composeOutput(output.variation.videoRef, stillPath, output.id, settings);
+
+          // Delete the still PNG after success
+          try {
+            fs.unlinkSync(stillPath);
+          } catch {}
+        } else {
+          // Hooks-off bulk mode: empty hook text means NO caption overlay —
+          // re-encode the source video as-is.
+          console.log(`[Multiplier Worker] No hook text — rendering plain output for: ${output.variation.videoRef}`);
+          relativeVideoUrl = await composeOutputPlain(output.variation.videoRef, output.id);
+        }
+
+        // 3. Auto-upload to Google Drive if connected
+        let driveFolderId: string | null = null;
+        const finalFolderId = output.driveFolderId || settings?.driveFolderId || null;
+        if (finalFolderId && !leaseLost) {
+          try {
+            const drive = await getMultiplierDriveClient();
+            if (drive && !leaseLost) {
+              const localFilePath = path.join(process.cwd(), "public", relativeVideoUrl);
+              const cleanHookSlug = output.hook.text.replace(/[^a-zA-Z0-9 ]/g, "").trim().replace(/\s+/g, "_").substring(0, 40);
+              const fileName = `multi_${output.id}_${cleanHookSlug || "plain"}.mp4`;
+
+              console.log(`[Multiplier Worker] Uploading output ${output.id} to Drive Folder ${finalFolderId}`);
+              const fileStream = fs.createReadStream(localFilePath);
+              await drive.files.create({
+                requestBody: {
+                  name: fileName,
+                  parents: [finalFolderId],
+                },
+                media: {
+                  mimeType: "video/mp4",
+                  body: fileStream,
+                },
+                fields: "id",
+                supportsAllDrives: true,
+              });
+              driveFolderId = finalFolderId;
+            }
+          } catch (driveErr: any) {
+            console.error(`[Multiplier Worker] Drive upload failed for output ${output.id}:`, driveErr?.message || driveErr);
+          }
+        }
+
+        terminalTransitionStarted = true;
+        const completed = await updateOwnedOutput({
           status: "COMPLETED",
           outputRef: relativeVideoUrl,
           driveFolderId,
           errorMessage: null,
-        },
-      });
+          renderLeaseId: null,
+          renderHeartbeatAt: null,
+        });
+        if (completed.count === 1) {
+          await updateParentGroupStatus(output.groupId);
+        } else {
+          reportLeaseLost("completion");
+        }
+      } catch (err: any) {
+        console.error(`[Multiplier Worker] Output ${output.id} failed:`, err);
+        // Clean still path if stuck on disk
+        if (stillPath && fs.existsSync(stillPath)) {
+          try { fs.unlinkSync(stillPath); } catch {}
+        }
 
-      // Update group overall status check
-      await updateParentGroupStatus(output.groupId);
-
-    } catch (err: any) {
-      console.error(`[Multiplier Worker] Output ${output.id} failed:`, err);
-      // Clean still path if stuck on disk
-      if (stillPath && fs.existsSync(stillPath)) {
-        try { fs.unlinkSync(stillPath); } catch {}
-      }
-
-      await prisma.multiplierOutput.update({
-        where: { id: output.id },
-        data: {
+        terminalTransitionStarted = true;
+        const failed = await updateOwnedOutput({
           status: "FAILED",
           errorMessage: err.message || String(err),
-        },
-      });
-
-      await updateParentGroupStatus(output.groupId);
+          renderLeaseId: null,
+          renderHeartbeatAt: null,
+        });
+        if (failed.count === 1) {
+          await updateParentGroupStatus(output.groupId);
+        } else {
+          reportLeaseLost("failure");
+        }
+      }
+    } finally {
+      clearInterval(heartbeatTimer);
+      await leaseOperation;
     }
   }
 }
@@ -1126,6 +1239,7 @@ export async function startGroupRender(groupId: string, opts?: { fresh?: boolean
   // Map outputs. fixedCaption snapshots the group's custom caption (bulk
   // intake) so the posting pipeline can key the TikTok caption off the output.
   const fixedCaption = group.caption || null;
+  const outputRows: Prisma.MultiplierOutputCreateManyInput[] = [];
   if (group.mappingMode === "distribute") {
     // round-robin hooks across variations
     for (let i = 0; i < group.hooks.length; i++) {
@@ -1133,14 +1247,12 @@ export async function startGroupRender(groupId: string, opts?: { fresh?: boolean
       const variation = group.variations[i % group.variations.length];
 
       if (completedCombos.has(`${hook.id}:${variation.id}`)) continue;
-      await prisma.multiplierOutput.create({
-        data: {
-          groupId,
-          hookId: hook.id,
-          variationId: variation.id,
-          fixedCaption,
-          status: "PENDING",
-        },
+      outputRows.push({
+        groupId,
+        hookId: hook.id,
+        variationId: variation.id,
+        fixedCaption,
+        status: "PENDING",
       });
     }
   } else {
@@ -1148,17 +1260,18 @@ export async function startGroupRender(groupId: string, opts?: { fresh?: boolean
     for (const hook of group.hooks) {
       for (const variation of group.variations) {
         if (completedCombos.has(`${hook.id}:${variation.id}`)) continue;
-        await prisma.multiplierOutput.create({
-          data: {
-            groupId,
-            hookId: hook.id,
-            variationId: variation.id,
-            fixedCaption,
-            status: "PENDING",
-          },
+        outputRows.push({
+          groupId,
+          hookId: hook.id,
+          variationId: variation.id,
+          fixedCaption,
+          status: "PENDING",
         });
       }
     }
+  }
+  if (outputRows.length > 0) {
+    await prisma.multiplierOutput.createMany({ data: outputRows });
   }
 
   // Update status to QUEUED
@@ -1176,7 +1289,12 @@ export async function startGroupRender(groupId: string, opts?: { fresh?: boolean
 export async function retryOutput(outputId: string) {
   const output = await prisma.multiplierOutput.update({
     where: { id: outputId },
-    data: { status: "PENDING", errorMessage: null },
+    data: {
+      status: "PENDING",
+      errorMessage: null,
+      renderLeaseId: null,
+      renderHeartbeatAt: null,
+    },
   });
 
   await prisma.multiplierGroup.update({
@@ -1451,13 +1569,30 @@ export async function processBulkBatch(jobId: string) {
 
     const pendingItems = job.items.filter((i) => i.status !== "READY" && i.status !== "FAILED");
 
-    // Pipeline: Whisper transcription is CPU-bound → strictly sequential.
     // Gemini hook generation is network-bound → small concurrent pool that
-    // picks up each video as soon as its transcript lands.
+    // picks up each AI-hook video as soon as its transcript lands. Custom-hook
+    // and hooks-off items do not need a transcript and join this pool directly.
     const HOOK_CONCURRENCY = 2; // keep 429 pressure low; transcription is the long pole
     type HookTask = { itemId: string; groupId: string; fileName: string };
     const hookQueue: HookTask[] = [];
     let transcriptionDone = false;
+
+    const pendingGroupIds = pendingItems.flatMap((item) => item.groupId ? [item.groupId] : []);
+    const customHookGroups = job.hooksEnabled && pendingGroupIds.length > 0
+      ? await prisma.multiplierGroup.findMany({
+          where: { id: { in: pendingGroupIds } },
+          select: { id: true, customHooks: true },
+        })
+      : [];
+    const customHookGroupIds = new Set(
+      customHookGroups.filter((group) => group.customHooks.length > 0).map((group) => group.id)
+    );
+    const transcriptionQueue = pendingItems.filter((item) => {
+      if (!item.groupId) return true;
+      if (job.hooksEnabled && !customHookGroupIds.has(item.groupId)) return true;
+      hookQueue.push({ itemId: item.id, groupId: item.groupId, fileName: item.fileName });
+      return false;
+    });
 
     const hookWorker = async () => {
       while (true) {
@@ -1493,10 +1628,14 @@ export async function processBulkBatch(jobId: string) {
           });
         } catch (err: any) {
           console.error(`[Multiplier Bulk Batch] Hook generation failed for ${task.fileName}:`, err);
-          await prisma.multiplierBatchJobItem.update({
-            where: { id: task.itemId },
-            data: { status: "FAILED", error: err?.message || String(err) },
-          });
+          try {
+            await prisma.multiplierBatchJobItem.update({
+              where: { id: task.itemId },
+              data: { status: "FAILED", error: err?.message || String(err) },
+            });
+          } catch (markErr) {
+            console.error(`[Multiplier Bulk Batch] Could not mark item ${task.itemId} FAILED:`, markErr);
+          }
         }
       }
     };
@@ -1506,7 +1645,6 @@ export async function processBulkBatch(jobId: string) {
     // process I/O, so 2 parallel transcriptions roughly halve batch intake time
     // without starving renders (env-tunable for bigger boxes).
     const TRANSCRIBE_CONCURRENCY = Math.max(1, parseInt(process.env.TRANSCRIBE_CONCURRENCY || "2", 10) || 2);
-    const transcriptionQueue = [...pendingItems];
     const transcribeWorker = async () => {
       for (;;) {
         const item = transcriptionQueue.shift();
