@@ -2,7 +2,11 @@ export const dynamic = "force-dynamic";
 import { NextRequest, NextResponse } from "next/server";
 import { getSession } from "@/lib/session";
 import { can } from "@/lib/services/permissions";
-import { getPriorityOrder, setPriorityOrder } from "@/lib/services/campaign-priority";
+import {
+  getPriorityDailyTargetTotal,
+  getPriorityOrder,
+  setPriorityOrder,
+} from "@/lib/services/campaign-priority";
 
 // GET /api/campaigns/priority-order — the standing priority pool, ordered by
 // rank, with today's posts and rank-weighted daily share per campaign.
@@ -16,7 +20,11 @@ export async function GET() {
   }
 
   try {
-    return NextResponse.json({ pool: await getPriorityOrder() });
+    const [pool, dailyTargetTotal] = await Promise.all([
+      getPriorityOrder(),
+      getPriorityDailyTargetTotal(),
+    ]);
+    return NextResponse.json({ pool, dailyTargetTotal });
   } catch (err: any) {
     console.error("[Campaign Priority Order GET] Error:", err);
     return NextResponse.json({ error: err.message || "Failed to load priority order" }, { status: 500 });

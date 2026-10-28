@@ -3,9 +3,12 @@ import { NextRequest, NextResponse } from "next/server";
 import { getSession } from "@/lib/session";
 import { can } from "@/lib/services/permissions";
 import prisma from "@/lib/db";
-import { setCampaignPriority } from "@/lib/services/campaign-priority";
+import {
+  getCampaignPostsToday,
+  setCampaignPriority,
+} from "@/lib/services/campaign-priority";
 
-// POST /api/campaigns/[id]/priority — set or clear the posting priority quota
+// POST /api/campaigns/[id]/priority — set or clear the daily posting target
 export async function POST(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -32,11 +35,16 @@ export async function POST(
       return NextResponse.json({ error: "quota must be a non-negative number or null" }, { status: 400 });
     }
 
-    const { priorityQuota, priorityUsed } = await setCampaignPriority(id, quota);
+    const { priorityQuota, priorityUsed, priorityRank } = await setCampaignPriority(id, quota);
+    const postsTodayById = await getCampaignPostsToday([id]);
+    const postsToday = postsTodayById.get(id) ?? 0;
     return NextResponse.json({
       priorityQuota,
       priorityUsed,
-      active: priorityQuota !== null && priorityUsed < priorityQuota,
+      priorityRank,
+      postsToday,
+      targetComplete: priorityQuota !== null && postsToday >= priorityQuota,
+      active: priorityRank !== null,
     });
   } catch (err: any) {
     console.error("[Campaign Priority POST] Error:", err);

@@ -280,14 +280,14 @@ export default function CampaignsClient({ initialCampaigns }: CampaignsClientPro
                           )}
                         </div>
                         {c.priorityQuota != null && c.priorityQuota > 0 && (
-                          (c.priorityUsed ?? 0) >= c.priorityQuota ? (
-                            <span className="text-[10px] font-semibold px-2 py-0.5 rounded border text-zinc-500 bg-zinc-500/10 border-zinc-600/20">
-                              Priority done
+                          (c.postsToday ?? 0) >= c.priorityQuota ? (
+                            <span className="text-[10px] font-semibold px-2 py-0.5 rounded border text-emerald-400 bg-emerald-400/10 border-emerald-500/20">
+                              Daily target reached · still prioritized
                             </span>
                           ) : (
                             <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded border text-[#E11D48] bg-[#E11D48]/10 border-[#E11D48]/20">
                               <Zap size={9} />
-                              Priority · {(c.priorityUsed ?? 0).toLocaleString()}/{c.priorityQuota.toLocaleString()}
+                              Target · {(c.postsToday ?? 0).toLocaleString()}/{c.priorityQuota.toLocaleString()}
                             </span>
                           )
                         )}

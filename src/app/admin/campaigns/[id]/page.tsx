@@ -7,6 +7,7 @@ import { redirect, notFound } from "next/navigation";
 import AccessDenied from "@/components/AccessDenied";
 import CampaignDetailClient from "./CampaignDetailClient";
 import { formatCampaignBracketPrefix } from "@/lib/services/multiplier-export";
+import { getCampaignPostsToday } from "@/lib/services/campaign-priority";
 
 interface PageProps {
   params: Promise<{ id: string }>;
@@ -220,6 +221,11 @@ export default async function AdminCampaignDetailPage({ params }: PageProps) {
     recentExports,
     groupsBreakdown,
   };
+  const postsTodayById = await getCampaignPostsToday([id]);
+  const campaignWithDailyProgress = {
+    ...campaign,
+    postsToday: postsTodayById.get(id) ?? 0,
+  };
 
-  return <CampaignDetailClient campaign={campaign} exportAnalytics={exportAnalytics} />;
+  return <CampaignDetailClient campaign={campaignWithDailyProgress} exportAnalytics={exportAnalytics} />;
 }

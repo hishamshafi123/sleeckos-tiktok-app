@@ -168,12 +168,12 @@ model Campaign {
   failedCount           Int            @default(0)
   exportedCount         Int            @default(0)
 
-  // Posting priority: when priorityQuota is set, this campaign's AVAILABLE jobs
-  // are claimed before all others until priorityUsed reaches the quota (auto-off).
-  // priorityRank (1 = highest) marks membership in the standing, drag-ordered
-  // priority pool: pool campaigns claim after quota campaigns, with today's
-  // posts divided among ACTIVE members by rank-weighted share (see
-  // claimNextVideo in posting-pipeline.ts). null = not in the pool.
+  // Posting priority: priorityQuota is an informational daily target; progress
+  // comes from PostJob postsToday in the org timezone and resets naturally each
+  // day. Targets never affect claim order. priorityUsed is a legacy lifetime
+  // counter, not daily progress. priorityRank (1 = highest) marks membership in
+  // the standing, drag-ordered pool: ranked ACTIVE campaigns claim before normal
+  // jobs, with today's posts divided by rank-weighted share. null = not ranked.
   priorityQuota         Int?
   priorityUsed          Int            @default(0)
   priorityRank          Int?

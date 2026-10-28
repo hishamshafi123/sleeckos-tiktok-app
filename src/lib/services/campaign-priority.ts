@@ -3,20 +3,43 @@ import { fromZonedTime } from "date-fns-tz";
 import { deleteDriveFile, getServiceAccountDriveClient } from "@/lib/google";
 import { parseCampaignBracket, canonicalDriveFileName } from "@/lib/services/posting-pipeline";
 import { getOrgTimezone, getZonedDateString } from "@/lib/services/timezone";
+import { allocatePriorityTargets, computePriorityWeights } from "@/lib/utils/priority-targets";
 import { CampaignStatus } from "@prisma/client";
 
 export const PAUSED_REMOVAL_NOTE = "Campaign paused — file removed from Drive";
+export const PRIORITY_DAILY_TARGET_TOTAL_KEY = "campaign.priorityDailyTargetTotal";
 
 /**
- * Set (or clear) a campaign's posting priority quota.
- * quota null/0 clears the priority; setting a new quota resets priorityUsed.
+ * Set (or clear) a campaign's daily target. Setting a target on an unranked
+ * campaign appends it to the pool; clearing a target preserves its rank.
  */
 export async function setCampaignPriority(campaignId: string, quota: number | null) {
   const normalized = quota && quota > 0 ? Math.floor(quota) : null;
-  return prisma.campaign.update({
-    where: { id: campaignId },
-    data: { priorityQuota: normalized, priorityUsed: 0 },
-    select: { priorityQuota: true, priorityUsed: true },
+  return prisma.$transaction(async (tx) => {
+    const campaign = await tx.campaign.findUnique({
+      where: { id: campaignId },
+      select: { priorityRank: true },
+    });
+    if (!campaign) throw new Error("Campaign not found");
+
+    let priorityRank = campaign.priorityRank;
+    if (normalized !== null && priorityRank === null) {
+      const last = await tx.campaign.findFirst({
+        where: { priorityRank: { not: null } },
+        orderBy: { priorityRank: "desc" },
+        select: { priorityRank: true },
+      });
+      priorityRank = (last?.priorityRank ?? 0) + 1;
+    }
+
+    return tx.campaign.update({
+      where: { id: campaignId },
+      data: {
+        priorityQuota: normalized,
+        ...(normalized !== null ? { priorityRank } : {}),
+      },
+      select: { priorityQuota: true, priorityUsed: true, priorityRank: true },
+    });
   });
 }
 
@@ -360,10 +383,10 @@ export async function startPausedFilesRescan(campaignId: string): Promise<Paused
 
 // ── Standing priority pool (drag-ordered, rank-weighted daily division) ─────
 // Campaigns with priorityRank set form the pool; rank 1 is highest. Claims
-// prefer pool campaigns (after quota campaigns), dividing today's posts among
-// ACTIVE members by weight: position i (1-based) of M active members gets
-// weight M - i + 1, and the member with the lowest postsToday/weight ratio is
-// claimed next (see claimNextVideo in posting-pipeline.ts).
+// prefer pool campaigns, dividing today's posts among ACTIVE members by weight:
+// position i (1-based) of M active members gets weight M - i + 1, and the
+// member with the lowest postsToday/weight ratio is claimed next. Daily targets
+// are informational and never affect claim order (see claimNextVideo).
 
 const POOL_COUNTED_STATES = ["PUBLISHED", "PENDING_DELETION", "DELETED"];
 
@@ -372,7 +395,7 @@ async function getStartOfTodayOrgTz(): Promise<Date> {
   return fromZonedTime(`${getZonedDateString(new Date(), tz)}T00:00:00`, tz);
 }
 
-async function getPoolPostsToday(campaignIds: string[]): Promise<Map<string, number>> {
+export async function getCampaignPostsToday(campaignIds: string[]): Promise<Map<string, number>> {
   const counts = new Map<string, number>();
   if (campaignIds.length === 0) return counts;
   const grouped = await prisma.postJob.groupBy({
@@ -395,6 +418,8 @@ export interface PriorityPoolEntry {
   title: string;
   status: CampaignStatus;
   priorityRank: number;
+  priorityQuota: number | null;
+  priorityUsed: number;
   postsToday: number;
   weight: number;
   sharePct: number;
@@ -430,25 +455,97 @@ export async function getPriorityOrder(): Promise<PriorityPoolEntry[]> {
   const campaigns = await prisma.campaign.findMany({
     where: { priorityRank: { not: null } },
     orderBy: { priorityRank: "asc" },
-    select: { id: true, title: true, status: true, priorityRank: true },
+    select: {
+      id: true,
+      title: true,
+      status: true,
+      priorityRank: true,
+      priorityQuota: true,
+      priorityUsed: true,
+    },
   });
-  const postsTodayById = await getPoolPostsToday(campaigns.map((c) => c.id));
-
-  const active = campaigns.filter((c) => c.status === CampaignStatus.ACTIVE);
-  const M = active.length;
-  const totalWeight = (M * (M + 1)) / 2;
-  const weightById = new Map(active.map((c, i) => [c.id, M - i]));
+  const postsTodayById = await getCampaignPostsToday(campaigns.map((c) => c.id));
+  const weights = computePriorityWeights(
+    campaigns.map((campaign) => ({
+      ...campaign,
+      priorityRank: campaign.priorityRank as number,
+    }))
+  );
+  const activeCount = campaigns.filter((c) => c.status === CampaignStatus.ACTIVE).length;
+  const totalWeight = (activeCount * (activeCount + 1)) / 2;
 
   return campaigns.map((c) => {
-    const weight = weightById.get(c.id) ?? 0;
+    const weight = weights.get(c.id) ?? 0;
     return {
       id: c.id,
       title: c.title,
       status: c.status,
       priorityRank: c.priorityRank as number,
+      priorityQuota: c.priorityQuota,
+      priorityUsed: c.priorityUsed,
       postsToday: postsTodayById.get(c.id) ?? 0,
       weight,
       sharePct: weight > 0 ? Math.round((weight / totalWeight) * 1000) / 10 : 0,
     };
   });
+}
+
+export async function getPriorityDailyTargetTotal(): Promise<number | null> {
+  const setting = await prisma.appSetting.findUnique({
+    where: { key: PRIORITY_DAILY_TARGET_TOTAL_KEY },
+    select: { value: true },
+  });
+  const value = Number(setting?.value);
+  return Number.isSafeInteger(value) && value > 0 ? value : null;
+}
+
+export class NoActivePriorityPoolError extends Error {
+  constructor() {
+    super("No active campaigns in the priority pool");
+    this.name = "NoActivePriorityPoolError";
+  }
+}
+
+export async function splitPriorityTargets(totalPosts: number): Promise<PriorityPoolEntry[]> {
+  if (!Number.isSafeInteger(totalPosts) || totalPosts <= 0) {
+    throw new RangeError("totalPosts must be a positive safe integer");
+  }
+
+  await prisma.$transaction(async (tx) => {
+    const campaigns = await tx.campaign.findMany({
+      where: { priorityRank: { not: null } },
+      orderBy: { priorityRank: "asc" },
+      select: { id: true, status: true, priorityRank: true },
+    });
+    if (!campaigns.some((campaign) => campaign.status === CampaignStatus.ACTIVE)) {
+      throw new NoActivePriorityPoolError();
+    }
+
+    const targets = allocatePriorityTargets(
+      campaigns.map((campaign) => ({
+        ...campaign,
+        priorityRank: campaign.priorityRank as number,
+      })),
+      totalPosts
+    );
+    for (const campaign of campaigns) {
+      if (campaign.status !== CampaignStatus.ACTIVE) continue;
+      const target = targets.get(campaign.id) ?? 0;
+      await tx.campaign.update({
+        where: { id: campaign.id },
+        data: { priorityQuota: target > 0 ? target : null },
+      });
+    }
+    await tx.campaign.updateMany({
+      where: { priorityRank: { not: null }, status: CampaignStatus.PAUSED },
+      data: { priorityQuota: null },
+    });
+    await tx.appSetting.upsert({
+      where: { key: PRIORITY_DAILY_TARGET_TOTAL_KEY },
+      update: { value: String(totalPosts) },
+      create: { key: PRIORITY_DAILY_TARGET_TOTAL_KEY, value: String(totalPosts) },
+    });
+  });
+
+  return getPriorityOrder();
 }

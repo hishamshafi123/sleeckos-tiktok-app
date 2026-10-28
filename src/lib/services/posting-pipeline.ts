@@ -237,8 +237,7 @@ export function parseCampaignBracket(fileName: string | null | undefined): strin
  */
 export async function claimNextVideo(accountId: string, workerId = "worker-default") {
   // Standing priority pool (rank-weighted daily division), loaded before the
-  // transaction so the locking SELECT stays short. When the pool is empty the
-  // query below keeps the exact quota-only ordering.
+  // transaction so the locking SELECT stays short. Targets never affect order.
   const pool = await prisma.campaign.findMany({
     where: { priorityRank: { not: null }, status: "ACTIVE" },
     orderBy: { priorityRank: "asc" },
@@ -271,12 +270,9 @@ export async function claimNextVideo(accountId: string, workerId = "worker-defau
 
   return await prisma.$transaction(async (tx) => {
     // Select first AVAILABLE job with pessimistic locking, skipping locked rows.
-    // LEFT JOIN Campaign (plain column, no FK) to:
-    //  - exclude jobs whose campaign is PAUSED (null campaignId is never paused)
-    //  - order quota campaigns first (priorityQuota set and not yet exhausted),
-    //    then priority-pool campaigns (lowest postsToday/weight ratio first,
-    //    dividing the day by rank weight), then everything else — oldest-first
-    //    within each tier.
+    // Campaign-attributed jobs require an ACTIVE campaign; unattributed jobs
+    // remain eligible. Ranked-pool jobs claim before normal jobs by lowest
+    // postsToday/weight ratio, then oldest-first. Targets never affect order.
     // NOT EXISTS: never claim a file whose canonical name (Drive "Copy of "
     // prefixes stripped) was already published on this account — the same
     // video must never go out twice, even if it was re-added to the folder.
@@ -286,7 +282,7 @@ export async function claimNextVideo(accountId: string, workerId = "worker-defau
       WHERE j."accountId" = ${accountId}
         AND j."state" = 'AVAILABLE'
         AND (j."lockedAt" IS NULL OR j."lockedAt" < ${new Date(Date.now() - 15 * 60 * 1000)})
-        AND (c."id" IS NULL OR c."status" <> 'PAUSED')
+        AND (j."campaignId" IS NULL OR c."status" = 'ACTIVE')
         AND NOT EXISTS (
           SELECT 1 FROM "PostJob" p
           WHERE p."accountId" = j."accountId"
@@ -295,9 +291,7 @@ export async function claimNextVideo(accountId: string, workerId = "worker-defau
               = regexp_replace(j."driveFileName", '^\s*([Cc]opy [Oo]f\s+)+', '')
         )
       ORDER BY
-        CASE WHEN c."priorityQuota" IS NOT NULL AND c."priorityUsed" < c."priorityQuota" THEN 0
-             WHEN c."priorityRank" IS NOT NULL THEN 1
-             ELSE 2 END ASC,
+        CASE WHEN c."priorityRank" IS NOT NULL THEN 0 ELSE 1 END ASC,
         ${ratioOrderSql}
         j."createdAt" ASC
       LIMIT 1
@@ -763,8 +757,7 @@ export async function confirmPublished(jobId: string, tiktokVideoId?: string, pl
       where: { id: job.campaignId },
       data: { postedCount: { increment: 1 } },
     });
-    // Count against the priority quota when one is set. Once priorityUsed
-    // reaches priorityQuota the claim ordering stops matching (auto-off).
+    // Legacy lifetime counter only; daily target progress uses postsToday.
     await prisma.campaign.updateMany({
       where: { id: job.campaignId, priorityQuota: { not: null } },
       data: { priorityUsed: { increment: 1 } },

@@ -57,7 +57,7 @@ type CampaignAutoPostFields = {
 // Posting priority fields (added to the Campaign model concurrently with this UI)
 type CampaignPriorityFields = {
   priorityQuota?: number | null;
-  priorityUsed?: number | null;
+  postsToday?: number | null;
 };
 
 // Files of a paused campaign still sitting in Drive folders (GET paused-files)
@@ -486,7 +486,7 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
     campaign.priorityQuota != null ? String(campaign.priorityQuota) : "100"
   );
   const [priorityQuota, setPriorityQuota] = useState<number | null>(campaign.priorityQuota ?? null);
-  const [priorityUsed, setPriorityUsed] = useState<number>(campaign.priorityUsed ?? 0);
+  const [postsToday, setPostsToday] = useState<number>(campaign.postsToday ?? 0);
   const [isSavingPriority, setIsSavingPriority] = useState(false);
 
   // Pause / resume + paused-campaign Drive files
@@ -563,11 +563,11 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
     }
   };
 
-  // Save the priority post target (quota in posts)
+  // Save the daily post target (quota in posts per org-tz day)
   const handleSavePriority = async () => {
     const quota = Number(priorityQuotaInput);
     if (!Number.isFinite(quota) || quota <= 0) {
-      toast.error("Priority post target must be a positive number");
+      toast.error("Daily post target must be a positive number");
       return;
     }
 
@@ -581,15 +581,16 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
 
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
-        throw new Error(err.error || "Failed to save posting priority");
+        throw new Error(err.error || "Failed to save daily post target");
       }
 
       const data = await res.json();
+      const nextPostsToday = typeof data.postsToday === "number" ? data.postsToday : postsToday;
       setPriorityQuota(data.priorityQuota);
-      setPriorityUsed(data.priorityUsed);
+      setPostsToday(nextPostsToday);
       setPriorityEnabled(data.priorityQuota != null && data.priorityQuota > 0);
-      setCampaign((prev) => ({ ...prev, priorityQuota: data.priorityQuota, priorityUsed: data.priorityUsed }));
-      toast.success("Posting priority saved");
+      setCampaign((prev) => ({ ...prev, priorityQuota: data.priorityQuota, postsToday: nextPostsToday }));
+      toast.success("Daily post target saved");
     } catch (err: any) {
       toast.error(err.message);
     } finally {
@@ -597,7 +598,7 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
     }
   };
 
-  // Clear priority (quota null) — back to normal posting order
+  // Clear the daily target without changing ranked pool membership
   const handleClearPriority = async () => {
     setIsSavingPriority(true);
     try {
@@ -609,15 +610,16 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
 
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
-        throw new Error(err.error || "Failed to clear posting priority");
+        throw new Error(err.error || "Failed to clear daily post target");
       }
 
       const data = await res.json();
+      const nextPostsToday = typeof data.postsToday === "number" ? data.postsToday : postsToday;
       setPriorityQuota(data.priorityQuota);
-      setPriorityUsed(data.priorityUsed);
+      setPostsToday(nextPostsToday);
       setPriorityEnabled(false);
-      setCampaign((prev) => ({ ...prev, priorityQuota: data.priorityQuota, priorityUsed: data.priorityUsed }));
-      toast.success("Posting priority cleared");
+      setCampaign((prev) => ({ ...prev, priorityQuota: data.priorityQuota, postsToday: nextPostsToday }));
+      toast.success("Daily post target cleared");
     } catch (err: any) {
       toast.error(err.message);
     } finally {
@@ -2246,12 +2248,12 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
             <Zap className="w-4 h-4 text-[#E11D48]" />
             Posting Priority
           </h3>
-          {/* High priority toggle */}
+          {/* Daily target toggle */}
           <button
             type="button"
             role="switch"
             aria-checked={priorityEnabled}
-            aria-label="High priority"
+            aria-label="Daily post target"
             disabled={isSavingPriority}
             onClick={() => {
               if (priorityEnabled) {
@@ -2272,18 +2274,20 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
           </button>
         </div>
 
-        {/* Priority quota config + progress */}
+        {/* Daily target config + progress */}
         {priorityEnabled ? (
           <div className="space-y-3 text-xs">
             <div className="flex flex-col sm:flex-row sm:items-end gap-3">
               <div className="space-y-1.5">
-                <label className="text-zinc-400 font-medium">Priority post target</label>
+                <label className="text-zinc-400 font-medium">Daily post target</label>
                 <input
                   type="number"
                   min={1}
+                  step={1}
                   value={priorityQuotaInput}
                   onChange={(e) => setPriorityQuotaInput(e.target.value)}
-                  className="w-full sm:w-40 bg-[#09090b] border border-[#27272a] rounded px-3 py-1.5 text-zinc-100 font-mono focus:border-zinc-500 focus:outline-none"
+                  disabled={isSavingPriority}
+                  className="w-full sm:w-40 bg-[#09090b] border border-[#27272a] rounded px-3 py-1.5 text-zinc-100 font-mono focus:border-zinc-500 focus:outline-none disabled:opacity-50"
                 />
               </div>
               <button
@@ -2309,33 +2313,34 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
                   disabled={isSavingPriority}
                   className="text-[11px] text-zinc-400 hover:text-zinc-100 transition disabled:opacity-50 px-1 py-1.5"
                 >
-                  Clear priority
+                  Clear target
                 </button>
               )}
             </div>
 
             {priorityQuota != null && priorityQuota > 0 && (
-              priorityUsed >= priorityQuota ? (
+              postsToday >= priorityQuota ? (
                 <div className="flex items-start gap-2.5 bg-emerald-500/5 border border-emerald-500/20 text-emerald-400 rounded p-3">
                   <CheckCircle2 size={15} className="mt-0.5 flex-shrink-0" />
                   <div>
-                    <span className="font-semibold">Priority complete</span> — normal posting resumed. {priorityUsed.toLocaleString("en-US")}/{priorityQuota.toLocaleString("en-US")} priority posts delivered.
+                    <span className="font-semibold">Daily target reached · still prioritized</span>
+                    <span className="text-emerald-400/80"> — {postsToday.toLocaleString("en-US")}/{priorityQuota.toLocaleString("en-US")} posts delivered today.</span>
                   </div>
                 </div>
               ) : (
                 <div className="space-y-1.5">
                   <div className="flex items-center justify-between text-[11px]">
                     <span className="text-zinc-400">
-                      <span className="font-mono font-semibold text-zinc-100">{priorityUsed.toLocaleString("en-US")}</span>
+                      <span className="font-mono font-semibold text-zinc-100">{postsToday.toLocaleString("en-US")}</span>
                       {" / "}
-                      <span className="font-mono text-zinc-300">{priorityQuota.toLocaleString("en-US")}</span> priority posts
+                      <span className="font-mono text-zinc-300">{priorityQuota.toLocaleString("en-US")}</span> posts today
                     </span>
-                    <span className="text-zinc-500">auto-turns off when reached</span>
+                    <span className="text-zinc-500">daily progress only</span>
                   </div>
                   <div className="h-1.5 w-full bg-zinc-800 rounded-full overflow-hidden">
                     <div
                       className="h-full bg-[#E11D48] rounded-full transition-all"
-                      style={{ width: `${Math.min(100, (priorityUsed / priorityQuota) * 100)}%` }}
+                      style={{ width: `${Math.min(100, (postsToday / priorityQuota) * 100)}%` }}
                     />
                   </div>
                 </div>
@@ -2344,9 +2349,12 @@ export default function CampaignDetailClient({ campaign: initialCampaign, export
           </div>
         ) : (
           <p className="text-[11px] text-zinc-500">
-            High priority is off. Turn it on to front-load a set number of posts from this campaign before others.
+            No daily post target is set. Turn it on to track a per-day posting goal.
           </p>
         )}
+        <p className="text-[11px] text-zinc-500">
+          Daily targets track progress only and reset automatically each org-tz day; priority never turns off. Actual scheduling and pool membership are controlled in Posting priority. Clearing the target does not remove ranked priority.
+        </p>
 
         {/* Pause campaign + parked Drive files */}
         <div className="border-t border-[#27272a] pt-4 space-y-3">
