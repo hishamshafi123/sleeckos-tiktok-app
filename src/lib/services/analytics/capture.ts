@@ -1,9 +1,10 @@
 /**
- * Campaign link capture — links a published PostJob back to its TikTok video
- * by scraping the account's latest videos via the analytics provider (Apify)
- * and matching on publish time.
+ * Campaign link capture — links a published PostJob back to its TikTok video.
+ * An authoritative PostJob video ID (or /video/<id> URL) is captured directly
+ * without a provider call. Otherwise the fallback scrapes the account's latest
+ * videos via the analytics provider and matches on publish time.
  *
- * Capture is PER-ACCOUNT and DEEP: one latest-videos fetch (depth
+ * Fallback capture is PER-ACCOUNT and DEEP: one latest-videos fetch (depth
  * CAPTURE_DEPTH, default 20) is shared by every uncaptured post of the
  * account, so posts several days old on busy accounts still match and a
  * batch of missing posts on one account costs a single scrape. The fetch
@@ -86,6 +87,21 @@ type CaptureJob = {
   driveFileId: string;
   account: { tiktokUsername: string } | null;
 };
+
+type DirectCaptureJob = CaptureJob & {
+  tiktokPostId: string | null;
+  tiktokPostUrl: string | null;
+};
+
+/** Prefer PostPeer's authoritative ID, then recover an ID from its post URL. */
+export function directTikTokVideoId(job: {
+  tiktokPostId?: string | null;
+  tiktokPostUrl?: string | null;
+}): string | null {
+  const postId = job.tiktokPostId?.trim();
+  if (postId && /^\d+$/.test(postId)) return postId;
+  return job.tiktokPostUrl?.match(/\/video\/(\d+)(?=[/?#]|$)/)?.[1] ?? null;
+}
 
 /**
  * Match one job against an ALREADY-FETCHED latest-videos list and persist the
@@ -250,8 +266,9 @@ async function matchAndPersistCapture(
  * already carries current stats, so every fetched video that is ALREADY
  * captured (any account/post) is updated for free — views/likes/comments/
  * shares + lastRefreshedAt + unchangedViewsStreak (same semantics as
- * applyStatsUpdate in refresh.ts). A VideoStatSnapshot is written ONLY when
- * the numbers actually changed, so a second identical run adds zero
+ * applyStatsUpdate in refresh.ts). lastViewsChangedAt advances only when the
+ * view count moves and is otherwise preserved. A VideoStatSnapshot is written
+ * ONLY when the numbers actually changed, so a second identical run adds zero
  * snapshots. Videos captured moments ago in this same run are skipped (they
  * already carry these stats and a fresh snapshot). Returns rows updated.
  */
@@ -277,6 +294,7 @@ async function refreshFetchedStats(
       comments: true,
       shares: true,
       unchangedViewsStreak: true,
+      lastViewsChangedAt: true,
     },
   });
   const byId = new Map(rows.map((r) => [r.tiktokVideoId, r]));
@@ -299,6 +317,7 @@ async function refreshFetchedStats(
         shares: v.shares,
         lastRefreshedAt: now,
         unchangedViewsStreak: row.views === v.views ? row.unchangedViewsStreak + 1 : 0,
+        ...(row.views !== v.views ? { lastViewsChangedAt: now } : {}),
         ...(provider ? { statsProvider: provider } : {}),
       },
     });
@@ -318,10 +337,94 @@ async function refreshFetchedStats(
   return refreshed;
 }
 
+/** Persist an authoritative video identity without inventing stats. */
+async function persistDirectCapture(
+  job: DirectCaptureJob,
+  tiktokVideoId: string,
+  now: Date
+): Promise<CaptureResult> {
+  const username = job.account?.tiktokUsername.trim().replace(/^@+/, "");
+  if (!username) return { status: "skipped", reason: "account has no tiktokUsername" };
+  const canonicalUrl = `https://www.tiktok.com/@${username}/video/${tiktokVideoId}`;
+
+  const conflict = await prisma.trackedVideo.findUnique({
+    where: { tiktokVideoId },
+    select: { id: true, postJobId: true },
+  });
+  if (conflict) {
+    console.warn(
+      `[Capture] Direct video ${tiktokVideoId} for job ${job.id} is already tracked by ${conflict.postJobId || conflict.id}; ownership left unchanged`
+    );
+    return { status: "skipped", reason: "video ID is already attributed" };
+  }
+
+  const placeholderId = unresolvedPlaceholderId(job.id);
+  // Identity only: real stats and their first snapshot must come from a later
+  // provider refresh, not a fabricated zero-view observation at publish time.
+  const row = await prisma.trackedVideo.upsert({
+    where: { tiktokVideoId: placeholderId },
+    create: {
+      tiktokVideoId,
+      url: canonicalUrl,
+      accountId: job.accountId,
+      campaignId: job.campaignId,
+      postJobId: job.id,
+      publishedAt: job.publishedAt,
+      capturedAt: now,
+      captureMethod: "postpeer_direct",
+      confidence: "high",
+      status: "captured",
+      captureAttempts: 0,
+      views: 0,
+      likes: 0,
+      comments: 0,
+      shares: 0,
+      unchangedViewsStreak: 0,
+      lastRefreshedAt: null,
+      statsProvider: null,
+    },
+    update: {
+      tiktokVideoId,
+      url: canonicalUrl,
+      campaignId: job.campaignId,
+      capturedAt: now,
+      captureMethod: "postpeer_direct",
+      confidence: "high",
+      status: "captured",
+      captureAttempts: { increment: 1 },
+      views: 0,
+      likes: 0,
+      comments: 0,
+      shares: 0,
+      unchangedViewsStreak: 0,
+      lastRefreshedAt: null,
+      statsProvider: null,
+    },
+  });
+
+  await prisma.postJob.update({
+    where: { id: job.id },
+    data: { tiktokPostUrl: canonicalUrl },
+  });
+  await prisma.scheduledPost.updateMany({
+    where: {
+      accountId: job.accountId,
+      OR: [
+        { tiktokPublishId: job.tiktokPublishId ?? undefined },
+        { driveFileId: job.driveFileId },
+      ],
+    },
+    data: { tiktokPostUrl: canonicalUrl },
+  });
+
+  console.log(`[Capture] Job ${job.id} → direct video ${tiktokVideoId} (provider-free)`);
+  return { status: "captured", trackedVideoId: row.id, tiktokVideoId, confidence: "high" };
+}
+
 /**
  * Attempt to capture the TikTok video for a terminal-published PostJob.
- * Idempotent: an already-captured row for this job is returned as-is.
- * All errors are caught and logged — this never throws.
+ * Idempotent: a real captured, dormant, or unavailable row for this job is
+ * returned as-is. All errors are caught and logged — this never throws.
  */
 export async function captureVideoLink(
   postJobId: string,
@@ -341,9 +444,13 @@ export async function captureVideoLink(
       return { status: "skipped", reason: "account has no tiktokUsername" };
     }
 
-    // Idempotency: already captured for this job → done.
+    const placeholderId = unresolvedPlaceholderId(job.id);
     const existing = await prisma.trackedVideo.findFirst({
-      where: { postJobId: job.id, status: "captured" },
+      where: {
+        postJobId: job.id,
+        status: { not: "unresolved" },
+        tiktokVideoId: { not: placeholderId },
+      },
     });
     if (existing) {
       return {
@@ -354,11 +461,21 @@ export async function captureVideoLink(
       };
     }
 
+    const directId = directTikTokVideoId(job);
+    if (directId) {
+      // Identity-only capture writes no stats/snapshot, so no per-post rollup
+      // is needed; the first real stats refresh performs the relevant rollups.
+      return persistDirectCapture(
+        { ...job, publishedAt: job.publishedAt },
+        directId,
+        new Date()
+      );
+    }
+
     // Placeholder-first: persist an unresolved row BEFORE the provider call.
     // If the scrape throws (provider outage, credits exhausted, profile gone),
     // the row survives and retryUnresolvedCaptures picks it up later — without
     // this, scrape failures left no trace and the post leaked permanently.
-    const placeholderId = unresolvedPlaceholderId(job.id);
     await prisma.trackedVideo.upsert({
       where: { tiktokVideoId: placeholderId },
       create: {

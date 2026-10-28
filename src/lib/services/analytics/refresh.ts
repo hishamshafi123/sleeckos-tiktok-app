@@ -1,9 +1,11 @@
 /**
- * 24h analytics refresh — pulls current stats for captured TrackedVideos via
- * the analytics provider (Apify), writes per-day snapshots, and records
- * resumable AnalyticsRun rows so a crashed run continues on the next trigger.
+ * Automatic analytics refresh — pulls current stats for captured TrackedVideos
+ * via the analytics provider, writes per-day snapshots, and records resumable
+ * AnalyticsRun rows so a crashed run continues on the next trigger.
  *
- * Statuses: "captured" = in the paid refresh rotation; "dormant" = views have
+ * Automatic paid refreshes are due every 12 hours and stop after 72 hours
+ * without a view-count change. Manual campaign refreshes override both rules.
+ * Statuses: "captured" = eligible for paid refresh; "dormant" = views have
  * stayed ≤ ZERO_VIEW_THRESHOLD for ZERO_VIEW_CONSEC_DAYS consecutive org-tz
  * days (and the video is past the ZERO_VIEW_MIN_AGE_DAYS grace period) —
  * excluded from the paid rotation to save spend, but still refreshed for free
@@ -19,34 +21,16 @@ import { analyticsProvider } from "./resilient";
 import { rollupAccountsToday } from "./account-stats";
 import { getOrgTimezone, getZonedDateString } from "@/lib/services/timezone";
 
-// ── Tier config (env-overridable) ────────────────────────────────────────────
-// Tier is based on video age (publishedAt); staleness on lastRefreshedAt.
-// EXCEPTION: videos whose view count has not moved across
-// STATIC_VIEW_STREAK_DAYS consecutive checks drop out of these tiers onto the
-// 5-day slow cadence (STATIC_VIEW_STALE_HOURS) until views move again — see
-// the slow-cadence block below.
-const TIER1_MAX_AGE_DAYS = Number(process.env.ANALYTICS_TIER1_MAX_AGE_DAYS) || 7;
-const TIER1_STALE_HOURS = Number(process.env.ANALYTICS_TIER1_STALE_HOURS) || 24;
-const TIER2_MAX_AGE_DAYS = Number(process.env.ANALYTICS_TIER2_MAX_AGE_DAYS) || 30;
-const TIER2_STALE_HOURS = Number(process.env.ANALYTICS_TIER2_STALE_HOURS) || 72;
-const TIER3_STALE_HOURS = Number(process.env.ANALYTICS_TIER3_STALE_HOURS) || 24 * 7;
+// ── Automatic paid refresh policy (env-overridable) ─────────────────────────
+export const AUTOMATIC_REFRESH_STALE_HOURS =
+  Number(process.env.ANALYTICS_REFRESH_STALE_HOURS) || 12;
+export const UNCHANGED_VIEWS_STOP_HOURS =
+  Number(process.env.ANALYTICS_UNCHANGED_VIEWS_STOP_HOURS) || 72;
 
 const BATCH_SIZE = Number(process.env.ANALYTICS_BATCH_SIZE) || 25;
 const SLEEP_BETWEEN_CALLS_MS = Number(process.env.ANALYTICS_SLEEP_MS) || 500;
 // A run still "running" after this long is treated as crashed and resumed.
 const STALE_RUN_MINUTES = Number(process.env.ANALYTICS_STALE_RUN_MINUTES) || 30;
-
-// ── Static-view slow cadence (cost saving) ───────────────────────────────────
-// A captured video whose view count has not changed across
-// STATIC_VIEW_STREAK_DAYS consecutive daily checks leaves the age tiers and is
-// refreshed only once every STATIC_VIEW_STALE_HOURS instead. Any view change
-// resets the streak (applyStatsUpdate) and normal cadence resumes immediately.
-// Paid rotation only — the free sweep keeps its daily cadence (and maintains
-// the streak signal). Manual/spot-check runs ignore tiers, so operators can
-// always force-refresh slow-cadence videos. Dormant/unavailable/removed rules
-// are unchanged and still take precedence over everything above.
-export const STATIC_VIEW_STREAK_DAYS = Number(process.env.STATIC_VIEW_STREAK_DAYS) || 3;
-export const STATIC_VIEW_STALE_HOURS = Number(process.env.STATIC_VIEW_STALE_HOURS) || 120;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const HOUR_MS = 60 * 60 * 1000;
@@ -56,40 +40,40 @@ const HOUR_MS = 60 * 60 * 1000;
 // drops out of the paid rotation (see header comment).
 export const ZERO_VIEW_THRESHOLD = Number(process.env.ZERO_VIEW_THRESHOLD) || 1;
 export const ZERO_VIEW_MIN_AGE_DAYS = Number(process.env.ZERO_VIEW_MIN_AGE_DAYS) || 2;
-export const ZERO_VIEW_CONSEC_DAYS = Number(process.env.ZERO_VIEW_CONSEC_DAYS) || 2;
+export const ZERO_VIEW_CONSEC_DAYS = Number(process.env.ZERO_VIEW_CONSEC_DAYS) || 3;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-/** Staleness threshold (hours) for a video of the given age in days. */
-export function staleThresholdHours(ageDays: number): number {
-  if (ageDays < TIER1_MAX_AGE_DAYS) return TIER1_STALE_HOURS;
-  if (ageDays < TIER2_MAX_AGE_DAYS) return TIER2_STALE_HOURS;
-  return TIER3_STALE_HOURS;
+type RefreshPolicyVideo = {
+  publishedAt: Date;
+  capturedAt?: Date | null;
+  lastRefreshedAt: Date | null;
+  lastViewsChangedAt?: Date | null;
+};
+
+/** True when automatic paid refreshes have stopped after 72h without a view change. */
+export function hasStoppedAutomaticRefresh(video: RefreshPolicyVideo, now: Date): boolean {
+  const baseline = video.lastViewsChangedAt ?? video.capturedAt ?? video.publishedAt;
+  return now.getTime() - baseline.getTime() >= UNCHANGED_VIEWS_STOP_HOURS * HOUR_MS;
 }
 
-/** True when the video is due for a refresh under the tier rules. */
-export function isDueForRefresh(
-  video: { publishedAt: Date; lastRefreshedAt: Date | null; unchangedViewsStreak?: number },
-  now: Date
-): boolean {
+/** True when an automatic paid refresh is both active and at least 12h stale. */
+export function isDueForRefresh(video: RefreshPolicyVideo, now: Date): boolean {
+  if (hasStoppedAutomaticRefresh(video, now)) return false;
   const basis = video.lastRefreshedAt ?? video.publishedAt;
-  // Static-view slow cadence overrides the age tiers (see header comment).
-  if ((video.unchangedViewsStreak ?? 0) >= STATIC_VIEW_STREAK_DAYS) {
-    return now.getTime() - basis.getTime() > STATIC_VIEW_STALE_HOURS * HOUR_MS;
-  }
-  const staleHours = staleThresholdHours((now.getTime() - video.publishedAt.getTime()) / DAY_MS);
-  return now.getTime() - basis.getTime() > staleHours * HOUR_MS;
+  return now.getTime() - basis.getTime() >= AUTOMATIC_REFRESH_STALE_HOURS * HOUR_MS;
 }
 
 /**
  * THE stats-write path for TrackedVideo: writes stats + lastRefreshedAt,
  * maintains unchangedViewsStreak (increment when the view count matches the
- * previously stored one, reset to 0 on any change), and records the per-day
- * snapshot. Used by every refresh path (paid rotation, free sweep, spot-check)
- * so the slow-cadence signal stays accurate no matter which path saw the
- * video. Capture (first link creation) is the exception — a fresh link starts
- * at streak 0. Status transitions (dormant wake, maybeMarkDormant,
- * unavailable) stay with the callers.
+ * previously stored one, reset to 0 on any change), advances
+ * lastViewsChangedAt only when views change, and records the per-day snapshot.
+ * Used by every refresh path (paid rotation, free sweep, spot-check) so the
+ * view-change signal stays accurate no matter which path saw the video.
+ * Capture (first link creation) is the exception — a fresh link starts at
+ * streak 0. Status transitions (dormant wake, maybeMarkDormant, unavailable)
+ * stay with the callers.
  */
 export async function applyStatsUpdate(
   trackedVideoId: string,
@@ -112,13 +96,15 @@ export async function applyStatsUpdate(
     where: { id: trackedVideoId },
     select: { views: true, unchangedViewsStreak: true },
   });
+  const viewsChanged = !prev || prev.views !== countersOnly.views;
   const streak =
-    prev && prev.views === countersOnly.views ? prev.unchangedViewsStreak + 1 : 0;
+    prev && !viewsChanged ? prev.unchangedViewsStreak + 1 : 0;
   await prisma.trackedVideo.update({
     where: { id: trackedVideoId },
     data: {
       ...countersOnly,
       lastRefreshedAt: now,
+      ...(viewsChanged ? { lastViewsChangedAt: now } : {}),
       unchangedViewsStreak: streak,
       ...(provider ? { statsProvider: provider } : {}),
     },
@@ -211,8 +197,9 @@ export interface RefreshOptions {
 
 /**
  * Run an analytics refresh pass. Returns the AnalyticsRun id.
- * - Tiered selection for daily runs (see staleThresholdHours); manual runs
- *   with a campaignId ignore tiers and refresh every captured video.
+ * - Automatic scheduled runs select videos at least 12h stale, excluding those
+ *   stopped after 72h without a view change. Manual campaign runs override
+ *   both rules and refresh every captured video in the campaign.
  * - Oldest-refreshed-first; batched provider calls; per-item error isolation.
  * - A previous crashed run (status "running", stale) is resumed automatically
  *   on daily triggers; resumeRunId forces a specific resume.
@@ -251,7 +238,7 @@ export async function runAnalyticsRefresh(opts: RefreshOptions = {}): Promise<{ 
   }
 
   // ── Select due videos ─────────────────────────────────────────────────────
-  const ignoreTiers = type === "manual" && !!campaignId;
+  const overrideAutomaticPolicy = type === "manual" && !!campaignId;
   // Paused campaigns are never refreshed — pausing is the operator's "stop
   // spending on this campaign" switch (posting already respects it).
   const paused = await prisma.campaign.findMany({
@@ -261,20 +248,33 @@ export async function runAnalyticsRefresh(opts: RefreshOptions = {}): Promise<{ 
   const pausedIds = paused.map((p) => p.id);
   const all = await prisma.trackedVideo.findMany({
     where: {
-      // Dormant (0-view) links are excluded from ALL paid refreshes — daily
-      // tiered runs and manual campaign refreshes alike (operator decision).
+      // Dormant (0-view) links are excluded from ALL paid refreshes — automatic
+      // scheduled runs and manual campaign refreshes alike (operator decision).
       // They are still updated for free by the daily sweep.
       status: "captured",
       // Non-campaign videos are never refreshed (operator decision: refresh
       // budget goes to campaign-attributed videos only).
       campaignId: campaignId ? campaignId : { not: null, notIn: pausedIds },
     },
-    select: { id: true, tiktokVideoId: true, url: true, accountId: true, publishedAt: true, lastRefreshedAt: true, unchangedViewsStreak: true },
+    select: {
+      id: true,
+      tiktokVideoId: true,
+      url: true,
+      accountId: true,
+      publishedAt: true,
+      capturedAt: true,
+      lastRefreshedAt: true,
+      lastViewsChangedAt: true,
+    },
   });
+
+  const stoppedAutomatic = overrideAutomaticPolicy
+    ? 0
+    : all.filter((v) => hasStoppedAutomaticRefresh(v, now)).length;
 
   // Oldest-refreshed-first (never refreshed first).
   let due = all
-    .filter((v) => ignoreTiers || isDueForRefresh(v, now))
+    .filter((v) => overrideAutomaticPolicy || isDueForRefresh(v, now))
     .sort((a, b) => (a.lastRefreshedAt?.getTime() ?? 0) - (b.lastRefreshedAt?.getTime() ?? 0));
 
   // Resume: skip everything up to and including the cursor video.
@@ -282,12 +282,6 @@ export async function runAnalyticsRefresh(opts: RefreshOptions = {}): Promise<{ 
     const idx = due.findIndex((v) => v.id === run.cursor);
     if (idx >= 0) due = due.slice(idx + 1);
   }
-
-  // Cost-visibility: how many of this run's due videos are on the static-view
-  // slow cadence (unchangedViewsStreak >= STATIC_VIEW_STREAK_DAYS) vs normal.
-  const slowCadenceDue = due.filter(
-    (v) => v.unchangedViewsStreak >= STATIC_VIEW_STREAK_DAYS
-  ).length;
 
   // Accounts whose videos got fresh stats — rolled up at the end so the
   // Account Performance bars reflect this run immediately.
@@ -384,7 +378,7 @@ export async function runAnalyticsRefresh(opts: RefreshOptions = {}): Promise<{ 
 
   await saveProgress(due.length > 0 ? due[due.length - 1].id : run.cursor, "done");
   console.log(
-    `[Analytics] Run ${run.id} (${type}) done: attempted=${counters.attempted} succeeded=${counters.succeeded} failed=${counters.failed} skipped=${counters.skipped} cadence: slow=${slowCadenceDue} normal=${due.length - slowCadenceDue}`
+    `[Analytics] Run ${run.id} (${type}) done: attempted=${counters.attempted} succeeded=${counters.succeeded} failed=${counters.failed} skipped=${counters.skipped} selection: stopped=${stoppedAutomatic} due=${due.length}`
   );
 
   // Move the Account Performance bars now — don't wait for the daily rollup cron.
@@ -395,7 +389,7 @@ export async function runAnalyticsRefresh(opts: RefreshOptions = {}): Promise<{ 
   return { runId: run.id };
 }
 
-/** Manual subset: refresh every captured video of a campaign, ignoring tiers. */
+/** Manual subset: refresh every captured video of a campaign, overriding the automatic policy. */
 export async function refreshCampaignNow(
   campaignId: string,
   provider?: AnalyticsProvider

@@ -25,8 +25,8 @@
  *     TrackedVideo gets its stats + lastRefreshedAt updated and a per-IST-day
  *     snapshot. This costs nothing extra (the data is already in the
  *     payload), so fresh videos effectively get a daily stats update for free.
- *     Older videos that scrolled past the N-deep profile window are still
- *     handled by the tiered analytics-refresh cron.
+ *     Older videos that scrolled past the N-deep profile window are handled
+ *     by the 12-hour analytics refresh while their views remain active.
  *     DORMANT LINKS — videos whose views stayed ≤ ZERO_VIEW_THRESHOLD across
  *     consecutive daily checks are excluded from the PAID refresh rotation,
  *     but still refreshed here for free. A dormant row whose views rise above

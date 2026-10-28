@@ -1945,7 +1945,7 @@ model TrackedVideo {
   postJobId      String?
   publishedAt    DateTime
   capturedAt     DateTime @default(now())
-  captureMethod  String   // "recent_match" (apify only)
+  captureMethod  String   // e.g. "postpeer_direct" | "recent_match" | "daily_sweep"
   confidence     String   @default("high") // high | medium | low
   status         String   @default("captured") // captured | unresolved | unavailable
   captureAttempts Int     @default(0) // capture retry count — drives 1h/6h/24h backoff
@@ -1953,13 +1953,13 @@ model TrackedVideo {
   likes          BigInt   @default(0)
   comments       BigInt   @default(0)
   shares         BigInt   @default(0)
-  // Consecutive daily checks with no view-count change. >= STATIC_VIEW_STREAK_DAYS
-  // (default 3) drops the video to a 5-day refresh cadence in the PAID tiered
-  // rotation (refresh.ts); any view change resets to 0. Maintained by every
-  // stats-write path via applyStatsUpdate (refresh, sweep free refresh,
-  // spot-check). Does not affect dormant/unavailable/removed exclusions.
+  // Consecutive successful checks with no view-count change; diagnostic only.
+  // Any view change resets it to 0. Automatic cadence uses lastViewsChangedAt.
   unchangedViewsStreak Int  @default(0)
   lastRefreshedAt DateTime?
+  // Last observed view-count change. Automatic paid refreshes stop after 72h
+  // with no change; a later change observed by any stats path re-enables them.
+  lastViewsChangedAt DateTime?
   // Which scraper last wrote this row's stats ("TikLiveAPI" | "Apify") —
   // shown as a badge in the campaign video list.
   statsProvider   String?

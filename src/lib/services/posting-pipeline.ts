@@ -9,7 +9,7 @@ import {
 } from "@/lib/google";
 import { getMultiplierDriveClient } from "@/app/api/managed/multiplier/google/drive-helper";
 import { postViaPostPeer, driveDirectUrl } from "@/lib/postpeer";
-import { captureVideoLink } from "@/lib/services/analytics/capture";
+import { captureVideoLink, directTikTokVideoId } from "@/lib/services/analytics/capture";
 import { getOrgTimezone, getZonedDateString } from "@/lib/services/timezone";
 import fs from "fs";
 import path from "path";
@@ -775,20 +775,18 @@ export async function confirmPublished(jobId: string, tiktokVideoId?: string, pl
     });
   }
 
-  // Fire-and-forget campaign link capture (Apify). TikTok takes ~1-2 min to
-  // surface a new video on the profile, so delay 90s. Capture is fully
-  // self-contained — it catches its own errors and never affects posting.
-  //
-  // OFF by default: the daily account sweep (cron /api/cron/account-sweep) is
-  // the primary capture path — one Apify call per account per day instead of
-  // one per post. Set CAPTURE_ON_PUBLISH=true to also capture instantly.
-  if (process.env.CAPTURE_ON_PUBLISH === "true") {
-    setTimeout(() => {
-      captureVideoLink(jobId).catch((err) =>
-        console.error(`[Posting Pipeline] Link capture failed for job ${jobId}:`, err)
-      );
-    }, 90_000);
-  }
+  // Direct IDs can be linked immediately without a provider call. Otherwise
+  // wait 90s for TikTok to surface the video on the latest-profile fallback.
+  // Capture catches its own errors and never affects posting.
+  const hasDirectId = directTikTokVideoId({
+    tiktokPostId: tiktokVideoId,
+    tiktokPostUrl: platformPostUrl,
+  }) !== null;
+  setTimeout(() => {
+    captureVideoLink(jobId).catch((err) =>
+      console.error(`[Posting Pipeline] Link capture failed for job ${jobId}:`, err)
+    );
+  }, hasDirectId ? 0 : 90_000);
 }
 
 /**

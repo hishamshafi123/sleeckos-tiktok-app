@@ -10,12 +10,13 @@ function verifyCronSecret(req: NextRequest) {
   return secret === process.env.CRON_SECRET;
 }
 
-// Daily Apify analytics pass: retry unresolved link captures (50 accounts),
-// reconcile published jobs that have no capture row at all (40 accounts —
-// covers captures that died at the provider call before writing a row),
-// then refresh stats for due tracked videos (tiered 24h/72h/7d). Runs in the
-// background — a crashed pass resumes from its cursor on the next trigger.
-// Manual backfill knobs (cron-secret guarded): ?retryLimit=&accounts=&skipRefresh=1
+// Scheduled analytics pass: refresh stats for due tracked videos (12-hour
+// cadence) before optional capture maintenance, so slow recovery cannot delay
+// the refresh. The daily full pass retries unresolved links (50 accounts) and
+// reconciles missing rows (40 accounts). Hourly cron uses ?refreshOnly=1 to
+// skip capture work. Runs in the background — a crashed refresh resumes from
+// its cursor on the next trigger.
+// Manual backfill knobs (cron-secret guarded): ?retryLimit=&accounts=&skipRefresh=1&refreshOnly=1
 export async function GET(req: NextRequest) {
   if (!verifyCronSecret(req)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -27,12 +28,15 @@ export async function GET(req: NextRequest) {
   const retryLimit = clamp(sp.get("retryLimit"), 50, 200);
   const accounts = clamp(sp.get("accounts"), 40, 300);
   const skipRefresh = sp.get("skipRefresh") === "1";
+  const refreshOnly = sp.get("refreshOnly") === "1";
 
   (async () => {
     try {
-      await retryUnresolvedCaptures(retryLimit);
-      await reconcileMissingCaptures(accounts);
       if (!skipRefresh) await runAnalyticsRefresh({ type: "daily" });
+      if (!refreshOnly) {
+        await retryUnresolvedCaptures(retryLimit);
+        await reconcileMissingCaptures(accounts);
+      }
     } catch (err) {
       console.error("[Cron analytics-refresh] Background pass failed:", err);
     }
