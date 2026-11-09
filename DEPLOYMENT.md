@@ -251,8 +251,10 @@ keeps its last successful stats and is retried on the next run.
 
 The hourly job uses the existing `APIFY_TOKEN` and Apify actor configuration.
 Only non-revoked managed accounts with the case-insensitive `state` label, or in
-sections named `state` / `state accounts`, are queried. Ordinary accounts are
-excluded. Discovery starts with the latest 100 public videos per account; optional
+sections named `state` / `state accounts`, or linked to a verified Guardian state
+phone, are queried. Guardian phones tagged `State` are matched uniquely against
+account names or Drive folders such as `POL ACC Arizona`. Ordinary accounts are
+excluded; a username merely containing “state” is not sufficient. Discovery starts with the latest 100 public videos per account; optional
 `STATE_SYNC_MAX_VIDEOS` changes this depth (20–1000). Every already-discovered
 public video is refreshed too, including videos outside that newest window.
 This is a paid provider call schedule; its calls appear under `state_accounts`
@@ -264,7 +266,7 @@ Guardian integration:
 - State phones must have the `state` tag and report through the existing Guardian
   integration. No new phone credentials or changes to stopping rules are needed.
 - A unique exact match between the phone name and an account's display name,
-  username or Drive folder name links it on first discovery. Otherwise use the
+  username or Drive folder name (ignoring the existing `POL ACC ` prefix) links it on first discovery. Otherwise use the
   account's **Manage → Guardian phone** selector. Each phone links to one account.
 - New incoming cycles retain state-phone runtime observations independently of
   Guardian's 30-day cycle pruning. Daily minutes are the union of observed runtime

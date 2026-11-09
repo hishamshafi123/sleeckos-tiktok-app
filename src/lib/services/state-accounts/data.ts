@@ -19,6 +19,8 @@ export const STATE_WHERE: Prisma.ManagedAccountWhereInput = {
     },
     { section: { name: { equals: "state", mode: "insensitive" } } },
     { section: { name: { equals: "state accounts", mode: "insensitive" } } },
+    // A verified Guardian state-phone link also identifies a state account.
+    { stateAccount: { is: { guardianProfileId: { not: null } } } },
   ],
 };
 const TZ_KEY = "state_accounts_timezone";
@@ -59,8 +61,13 @@ export async function ensureStateDay(now = new Date()) {
         });
         await seedDay(tx, day.id);
       }
-      const accounts = await tx.managedAccount.findMany({
+      const labeledAccounts = await tx.managedAccount.findMany({
         where: STATE_WHERE,
+        select: { id: true },
+      });
+      const labeledIds = new Set(labeledAccounts.map((account) => account.id));
+      const accounts = await tx.managedAccount.findMany({
+        where: { revokedAt: null },
         select: {
           id: true,
           tiktokUsername: true,
@@ -74,7 +81,12 @@ export async function ensureStateDay(now = new Date()) {
       });
       const used = new Set(existing.map((a) => a.guardianProfileId));
       const normalize = (value: string) =>
-        value.trim().replace(/^@/, "").toLowerCase();
+        value
+          .trim()
+          .replace(/^@/, "")
+          .replace(/^pol\s+acc\s+/i, "")
+          .trim()
+          .toLowerCase();
       for (const account of accounts) {
         if (existing.some((a) => a.accountId === account.id)) continue;
         const names = [
@@ -98,6 +110,7 @@ export async function ensureStateDay(now = new Date()) {
         );
         // Only a unique exact name match is safe; otherwise the admin links it.
         const phone = matches.length === 1 ? matches[0] : undefined;
+        if (!labeledIds.has(account.id) && !phone) continue;
         await tx.stateAccount.create({
           data: { accountId: account.id, guardianProfileId: phone?.profileId },
         });

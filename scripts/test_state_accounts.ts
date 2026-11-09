@@ -446,6 +446,46 @@ async function main() {
     "Member responses do not expose the user directory",
   );
   assert.equal(dashboard.teams.length, 1);
+  const arizona = await prisma.managedAccount.create({
+    data: {
+      sectionId: section.id,
+      tiktokUsername: "arizonaafterhourss",
+      driveFolderName: "POL ACC Arizona",
+    },
+  });
+  await prisma.guardianPhone.create({
+    data: {
+      profileId: "arizona-phone",
+      name: "Arizona",
+      tags: ["State"],
+      lastSeenAt: now,
+    },
+  });
+  const unrelated = await prisma.managedAccount.create({
+    data: {
+      sectionId: section.id,
+      tiktokUsername: "globalstatecraft32",
+      driveFolderName: "POL ACC 664",
+    },
+  });
+  await ensureStateDay();
+  assert.equal(
+    (
+      await prisma.stateAccount.findUniqueOrThrow({
+        where: { accountId: arizona.id },
+      })
+    ).guardianProfileId,
+    "arizona-phone",
+    "Guardian State tags and POL ACC state folder names discover accounts without app labels",
+  );
+  assert.equal(
+    await prisma.stateAccount.findUnique({
+      where: { accountId: unrelated.id },
+    }),
+    null,
+    "State-like usernames do not expand the scope",
+  );
+  assert.equal((await getStateDashboard(false)).accounts.length, 2);
   await updateStateConfig({ action: "timezone", timezone: "Asia/Qatar" });
   assert.equal((await ensureStateDay()).timezone, "Asia/Kolkata");
   const nextDay = await ensureStateDay(new Date(today.endsAt.getTime() + 1));
