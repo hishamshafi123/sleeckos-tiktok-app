@@ -373,3 +373,36 @@ This suite uses mocked paid providers. It checks deduplication, source access,
 team ownership, conflicting edits, spend reservations, asynchronous social
 polling, failure retention, grounded brief structure, SSRF restrictions, and cron
 authorization. `--live-feed` additionally reads a public RSS endpoint.
+
+### AI viral potential ranking
+
+The Content Desk time filter supports 1–168 hours (plus all-time browsing).
+“Rank by viral potential” creates a shared snapshot for the current state,
+category, team, search and status filters, across every matching page. Up to 300
+stories are allowed; larger sets require narrower filters, never silent sampling.
+Publication time is used when known; otherwise discovery time is used. A recent
+reference can make an older developing story eligible. Future dates are excluded.
+
+`ContentRanking` stores immutable input snapshots and incremental results. The
+POST response starts work with Next.js `after`; host cron resumes queued work or
+jobs interrupted for more than five minutes. Atomic claims prevent duplicate
+workers. Each invocation scores up to 50 stories in batches of ten, preserving
+completed batches. Errors appear in the ranking panel and Activity; retry creates
+a fresh snapshot. A run uses up to six recent source excerpts per story. Rankings
+never change approvals, assignments, notes, or editorial versions. AI sort shows
+scored stories from the selected snapshot; default relevance shows live results.
+
+Scores are heuristic estimates, not calibrated probabilities. The prompt uses a
+fixed rubric (timeliness 25, novelty 20, human interest 20, explanatory/visual
+potential 15, measured momentum 20); it forbids invented metrics and sensational
+or partisan persuasion. No measured momentum means no momentum points and caps
+confidence at medium. The UI shows reasons, a factual opening, caveats, and the
+actual metric observations supplied to AI. Source data remains untrusted input.
+
+Admin settings allow 0–100 ranking runs per business day (default 20); failures
+count toward the limit. At most three jobs may be active globally. API key/model
+use the same Gemini configuration as briefs. No additional cron entry is needed.
+
+```sh
+DATABASE_URL=postgresql://hishamshafi@localhost:5432/sleeckos_state_accounts_verify npx tsx scripts/test_content_rankings.ts
+```

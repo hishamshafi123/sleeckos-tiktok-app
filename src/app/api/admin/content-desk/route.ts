@@ -1,4 +1,5 @@
-import { NextResponse } from "next/server";
+import { processRanking } from "@/lib/services/content-desk/ranking";
+import { after, NextResponse } from "next/server";
 import { getSession } from "@/lib/session";
 import { stateAccess } from "@/lib/services/state-accounts/data";
 import { deskData, mutateDesk } from "@/lib/services/content-desk/data";
@@ -27,6 +28,8 @@ export async function GET(request: Request) {
   try {
     return json(await deskData(new URL(request.url).searchParams, session));
   } catch (error) {
+    if (error instanceof DeskError)
+      return json({ error: error.message, code: error.code }, error.status);
     console.error("[Content Desk] Read failed", error);
     return json(
       {
@@ -61,7 +64,18 @@ export async function POST(request: Request) {
     }
     if (!body || typeof body !== "object" || Array.isArray(body))
       throw new DeskError("INVALID", "Invalid request.");
-    return json(await mutateDesk(body, session));
+    const result = await mutateDesk(body, session);
+    if ("rankingId" in result && typeof result.rankingId === "string") {
+      const id = result.rankingId;
+      after(async () => {
+        try {
+          await processRanking(id);
+        } catch (error) {
+          console.error("[Content Desk] Ranking worker failed", error);
+        }
+      });
+    }
+    return json(result);
   } catch (error) {
     if (error instanceof DeskError)
       return json({ error: error.message, code: error.code }, error.status);

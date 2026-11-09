@@ -32,6 +32,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import type { deskData } from "@/lib/services/content-desk/data";
+import type { RankingResult } from "@/lib/services/content-desk/ranking";
 import type { Brief } from "@/lib/services/content-desk/worker";
 import {
   CATEGORIES,
@@ -132,6 +133,8 @@ export default function ClientPage() {
     [q, setQ] = useState(""),
     [page, setPage] = useState(0),
     [storyFilter, setStoryFilter] = useState("");
+  const [hours, setHours] = useState("24"),
+    [sort, setSort] = useState("freshness");
   const [selected, setSelected] = useState<string[]>([]),
     [detailId, setDetailId] = useState(""),
     [bulkTeam, setBulkTeam] = useState("");
@@ -167,6 +170,8 @@ export default function ClientPage() {
         q,
         page: String(page),
         story: storyFilter,
+        hours,
+        sort,
       });
       const res = await fetch(`/api/admin/content-desk?${params}`, {
         signal: controller.signal,
@@ -186,7 +191,7 @@ export default function ClientPage() {
     } finally {
       if (!controller.signal.aborted) setLoading(false);
     }
-  }, [state, status, category, team, q, page, storyFilter]);
+  }, [state, status, category, team, q, page, storyFilter, hours, sort]);
   useEffect(() => {
     const initial = setTimeout(() => void load(), 0);
     const timer = setInterval(() => void load(), 60000);
@@ -196,6 +201,20 @@ export default function ClientPage() {
       request.current?.abort();
     };
   }, [load]);
+  const ranking = data?.ranking;
+  const rankingActive =
+    ranking?.status === "QUEUED" || ranking?.status === "RUNNING";
+  useEffect(() => {
+    if (!rankingActive) return;
+    const timer = setInterval(() => void load(), 5000);
+    return () => clearInterval(timer);
+  }, [rankingActive, load]);
+  const ranks = new Map(
+    ((ranking?.results || []) as unknown as RankingResult[]).map((r) => [
+      r.id,
+      r,
+    ]),
+  );
   const detail = data?.stories.find((s) => s.id === detailId);
   useEffect(() => {
     // Preserve unsaved notes during background refreshes of the same story.
@@ -267,6 +286,8 @@ export default function ClientPage() {
     setDetailId(id);
     detailVersion.current = "";
     if (!data?.stories.some((s) => s.id === id)) {
+      setHours("");
+      setSort("freshness");
       setStoryFilter(id);
       setPage(0);
       setStatus("");
@@ -467,6 +488,158 @@ export default function ClientPage() {
             )}
             {tab === "stories" && (
               <>
+                <section
+                  className="space-y-3 border-l-2 border-blue-500 bg-zinc-900/50 p-4"
+                  aria-label="Viral potential ranking"
+                >
+                  <div className="flex flex-wrap items-end gap-3">
+                    <Field title="Published in the last">
+                      <select
+                        className={field}
+                        value={
+                          ["6", "12", "24", "48", "168", ""].includes(hours)
+                            ? hours
+                            : "custom"
+                        }
+                        onChange={(e) => {
+                          setHours(
+                            e.target.value === "custom" ? "72" : e.target.value,
+                          );
+                          setPage(0);
+                          setSelected([]);
+                        }}
+                      >
+                        <option value="">All time</option>
+                        {[6, 12, 24, 48, 168].map((h) => (
+                          <option key={h} value={h}>
+                            {h === 168 ? "7 days" : `${h} hours`}
+                          </option>
+                        ))}
+                        <option value="custom">Custom hours</option>
+                      </select>
+                    </Field>
+                    {hours && (
+                      <Field title="Hours (1–168)">
+                        <input
+                          className={`${field} max-w-28`}
+                          type="number"
+                          min={1}
+                          max={168}
+                          value={hours}
+                          onChange={(e) => {
+                            setHours(e.target.value);
+                            setPage(0);
+                          }}
+                        />
+                      </Field>
+                    )}
+                    <button
+                      className={primary}
+                      disabled={
+                        busy ||
+                        rankingActive ||
+                        !hours ||
+                        !data.providers.ai ||
+                        Number(hours) < 1 ||
+                        Number(hours) > 168
+                      }
+                      onClick={async () => {
+                        setStoryFilter("");
+                        setPage(0);
+                        setSelected([]);
+                        if (
+                          await save({
+                            action: "ranking.start",
+                            state,
+                            status,
+                            category,
+                            team,
+                            q,
+                            hours: Number(hours),
+                          })
+                        )
+                          setSort("viral");
+                      }}
+                    >
+                      {rankingActive && (
+                        <Loader2 size={16} className="animate-spin" />
+                      )}
+                      {rankingActive
+                        ? "Ranking stories…"
+                        : ranking?.status === "ERROR"
+                          ? "Retry AI ranking"
+                          : "Rank by viral potential"}
+                    </button>
+                    <Field title="Sort stories">
+                      <select
+                        className={field}
+                        value={sort}
+                        onChange={(e) => {
+                          setSort(e.target.value);
+                          setPage(0);
+                        }}
+                      >
+                        <option value="freshness">Default relevance</option>
+                        <option value="viral">AI viral potential</option>
+                      </select>
+                    </Field>
+                  </div>
+                  <p className="text-xs leading-relaxed text-zinc-400">
+                    Ranks stories matching the state and filters above. Scores
+                    are comparative estimates, not a probability or guarantee.
+                    Unknown publication dates use discovery time. New references
+                    can bring an older story into the window.
+                  </p>
+                  {!data.providers.ai && (
+                    <p className="text-sm text-amber-300">
+                      AI is not configured. Ask an admin to set GEMINI_API_KEY.
+                    </p>
+                  )}
+                  <div
+                    role="status"
+                    aria-live="polite"
+                    className="text-sm text-zinc-300"
+                  >
+                    {ranking ? (
+                      <>
+                        <span>
+                          {ranking.processed} / {ranking.total} stories ranked ·{" "}
+                          {label(ranking.status)} · Snapshot{" "}
+                          <When value={ranking.createdAt} timezone={timezone} />
+                        </span>
+                        {rankingActive && (
+                          <>
+                            <progress
+                              className="mt-2 h-2 w-full accent-blue-500"
+                              value={ranking.processed}
+                              max={ranking.total}
+                            />
+                            <p className="mt-1 text-xs text-zinc-400">
+                              You can leave this page. Large batches continue on
+                              the five-minute worker schedule.
+                            </p>
+                          </>
+                        )}
+                        {ranking.error && (
+                          <p className="mt-2 text-amber-300">
+                            {ranking.error} Completed results remain available.
+                            Retry uses a fresh snapshot.
+                          </p>
+                        )}
+                        {sort === "viral" && ranking.processed > 0 && (
+                          <p className="mt-1 text-xs text-zinc-400">
+                            Showing scored stories from this snapshot. Run again
+                            to include new stories or updated engagement.
+                          </p>
+                        )}
+                      </>
+                    ) : sort === "viral" ? (
+                      "No AI ranking for these filters yet. Choose a time window and click Rank by viral potential."
+                    ) : (
+                      ""
+                    )}
+                  </div>
+                </section>
                 <div className="grid gap-3 md:grid-cols-4">
                   <div className="relative">
                     <Search
@@ -656,6 +829,56 @@ export default function ClientPage() {
                                 story.items[0]?.excerpt ||
                                 "Open the source and add your notes."}
                             </p>
+                            {ranks.has(story.id) && (
+                              <div className="mt-3 space-y-1 border-l-2 border-blue-700 pl-3 text-sm">
+                                <p className="font-medium text-blue-200">
+                                  {ranks.get(story.id)!.score}/100 potential ·{" "}
+                                  {label(ranks.get(story.id)!.confidence)}{" "}
+                                  confidence
+                                </p>
+                                <p className="text-zinc-300">
+                                  {ranks.get(story.id)!.reason}
+                                </p>
+                                <p className="text-zinc-400">
+                                  Opening: {ranks.get(story.id)!.hook}
+                                </p>
+                                <p className="text-amber-200/80">
+                                  {ranks.get(story.id)!.caveat}
+                                </p>
+                                {ranks
+                                  .get(story.id)!
+                                  .evidence.filter(
+                                    (e) => e.views !== null || e.likes !== null,
+                                  )
+                                  .map((e) => (
+                                    <p
+                                      key={e.id}
+                                      className="text-xs text-zinc-400"
+                                    >
+                                      {e.platform}: {num(e.views)} views ·{" "}
+                                      {num(e.likes)} likes ·{" "}
+                                      {e.viewsPerHour === null
+                                        ? "Growth not measured"
+                                        : `${num(e.viewsPerHour)} views/hour between observations`}{" "}
+                                      · Observed{" "}
+                                      <When
+                                        value={e.observedAt}
+                                        timezone={timezone}
+                                      />
+                                    </p>
+                                  ))}
+                                {!ranks
+                                  .get(story.id)!
+                                  .evidence.some(
+                                    (e) => e.views !== null || e.likes !== null,
+                                  ) && (
+                                  <p className="text-xs text-zinc-500">
+                                    No measured engagement available; estimate
+                                    uses supplied reporting.
+                                  </p>
+                                )}
+                              </div>
+                            )}
                             <div className="mt-3 flex flex-wrap gap-x-3 gap-y-1 text-xs text-zinc-500">
                               <span>
                                 {story.items.length} reference
@@ -1420,6 +1643,7 @@ export default function ClientPage() {
                       action: "settings.save",
                       dailySocialRuns: Number(f.get("dailySocialRuns")),
                       dailyAiBriefs: Number(f.get("dailyAiBriefs")),
+                      dailyAiRankings: Number(f.get("dailyAiRankings")),
                       shortlistHour: Number(f.get("shortlistHour")),
                     });
                   }}
@@ -1451,6 +1675,16 @@ export default function ClientPage() {
                       defaultValue={data.settings.dailyAiBriefs}
                       className={field}
                       required
+                    />
+                  </Field>
+                  <Field title="Daily AI ranking runs">
+                    <input
+                      className={field}
+                      name="dailyAiRankings"
+                      type="number"
+                      min={0}
+                      max={100}
+                      defaultValue={data.settings.dailyAiRankings}
                     />
                   </Field>
                   <Field title="Daily shortlist starts at (hour, 0–23)">

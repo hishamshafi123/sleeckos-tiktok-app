@@ -1,3 +1,4 @@
+import { resumeRankings } from "./ranking";
 import { randomUUID } from "node:crypto";
 import { Prisma, type ContentSource } from "@prisma/client";
 import prisma from "@/lib/db";
@@ -496,6 +497,7 @@ export async function runDesk() {
           "The worker restarted before this job finished. The source is eligible for retry.",
       },
     });
+    await resumeRankings();
     const sources = await prisma.contentSource.findMany({
       where: {
         OR: [

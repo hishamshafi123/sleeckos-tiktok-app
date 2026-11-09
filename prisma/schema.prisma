@@ -2423,3 +2423,22 @@ model ContentRun {
   @@index([startedAt])
   @@index([kind, startedAt])
 }
+
+model ContentRanking {
+  id String @id @default(uuid())
+  scope String
+  requestedBy String
+  hours Int
+  status String @default("QUEUED")
+  candidates Json
+  results Json @default("[]")
+  total Int
+  processed Int @default(0)
+  error String?
+  model String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  finishedAt DateTime?
+  @@index([scope, createdAt])
+  @@index([status, updatedAt])
+}

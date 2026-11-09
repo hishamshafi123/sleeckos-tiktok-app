@@ -14,11 +14,18 @@ import {
   text,
 } from "./rules";
 import { ingest } from "./ingest";
+import {
+  queueRanking,
+  rankingScope,
+  storyWhere,
+  type RankingResult,
+} from "./ranking";
 
 export type Actor = { userId: string; role: string };
 export const DEFAULT_SETTINGS = {
   dailySocialRuns: 30,
   dailyAiBriefs: 100,
+  dailyAiRankings: 20,
   shortlistHour: 9,
 };
 // Stable IDs verified against the YouTube channel API.
@@ -160,26 +167,37 @@ export async function businessStart(now = new Date()) {
 }
 export async function deskData(params: URLSearchParams, actor: Actor) {
   await ensureDesk();
-  const state = params.get("state"),
-    status = params.get("status"),
-    cat = params.get("category"),
-    q = (params.get("q") || "").slice(0, 150),
-    team = params.get("team");
   const page = Math.max(0, Math.min(10000, Number(params.get("page")) || 0));
+  const ranking = params.get("hours")
+    ? await prisma.contentRanking.findFirst({
+        where: { scope: rankingScope(params) },
+        orderBy: { createdAt: "desc" },
+        select: {
+          id: true,
+          status: true,
+          hours: true,
+          total: true,
+          processed: true,
+          error: true,
+          results: true,
+          createdAt: true,
+          updatedAt: true,
+          finishedAt: true,
+        },
+      })
+    : null;
+  const rankResults = (ranking?.results || []) as unknown as RankingResult[];
+  const rankedIds = [...rankResults]
+    .sort((a, b) => b.score - a.score || a.id.localeCompare(b.id))
+    .map((r) => r.id);
+  const ranked =
+    params.get("sort") === "viral" && !!ranking && rankedIds.length > 0;
+  const listParams = new URLSearchParams(params);
+  if (ranked) listParams.delete("hours"); // Snapshot IDs already fix time-window membership.
   const where: Prisma.ContentStoryWhereInput = {
+    ...storyWhere(listParams),
+    ...(ranked ? { id: { in: rankedIds } } : {}),
     ...(params.get("story") ? { id: params.get("story")! } : {}),
-    ...(state ? { stateCode: state } : {}),
-    ...(status ? { status } : { status: { notIn: ["REJECTED", "OUTDATED"] } }),
-    ...(cat ? { category: cat } : {}),
-    ...(team ? { teamId: team } : {}),
-    ...(q
-      ? {
-          OR: [
-            { title: { contains: q, mode: "insensitive" } },
-            { notes: { contains: q, mode: "insensitive" } },
-          ],
-        }
-      : {}),
   };
   const [
     stories,
@@ -198,8 +216,8 @@ export async function deskData(params: URLSearchParams, actor: Actor) {
     prisma.contentStory.findMany({
       where,
       orderBy: [{ score: "desc" }, { createdAt: "desc" }],
-      take: 50,
-      skip: Math.floor(page) * 50,
+      take: ranked ? 300 : 50,
+      skip: ranked ? 0 : Math.floor(page) * 50,
       include: {
         items: { orderBy: { firstSeenAt: "asc" } },
         selectedBy: { select: { id: true, name: true, email: true } },
@@ -256,7 +274,12 @@ export async function deskData(params: URLSearchParams, actor: Actor) {
     _sum: { costUsd: true },
   });
   return {
-    stories,
+    stories: ranked
+      ? stories
+          .sort((a, b) => rankedIds.indexOf(a.id) - rankedIds.indexOf(b.id))
+          .slice(Math.floor(page) * 50, (Math.floor(page) + 1) * 50)
+      : stories,
+    ranking,
     total,
     states,
     sources,
@@ -300,6 +323,7 @@ function admin(actor: Actor) {
 export async function mutateDesk(body: Record<string, unknown>, actor: Actor) {
   await ensureDesk();
   const action = body.action;
+  if (action === "ranking.start") return queueRanking(body, actor);
   if (action === "source.save") {
     const state = await knownState(body.stateCode),
       kind = required(body.kind, 20, "Source type");
@@ -459,6 +483,11 @@ export async function mutateDesk(body: Record<string, unknown>, actor: Actor) {
     const value = JSON.stringify({
       dailySocialRuns: integer(body.dailySocialRuns, 0, 500),
       dailyAiBriefs: integer(body.dailyAiBriefs, 0, 1000),
+      dailyAiRankings: integer(
+        body.dailyAiRankings ?? DEFAULT_SETTINGS.dailyAiRankings,
+        0,
+        100,
+      ),
       shortlistHour: integer(body.shortlistHour, 0, 23),
     });
     await prisma.appSetting.upsert({
