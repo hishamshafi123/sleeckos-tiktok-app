@@ -80,6 +80,11 @@ function toBigInt(v: unknown): bigint {
   return BigInt(0);
 }
 
+function optionalCounter(value: unknown): bigint | null {
+  return (typeof value === "number" && Number.isFinite(value) && value >= 0) ||
+    (typeof value === "string" && /^\d+$/.test(value)) ? toBigInt(value) : null;
+}
+
 /** Extract the numeric TikTok video id from a video URL. */
 export function extractVideoIdFromUrl(url: string): string | null {
   const m = url.match(/\/video\/(\d+)/);
@@ -209,6 +214,9 @@ async function runActor(input: Record<string, unknown>, log: ActorLogContext): P
     if (run.chargedEventCounts && typeof run.chargedEventCounts === "object") {
       chargedEventCounts = run.chargedEventCounts as Record<string, number>;
     }
+    if (run.status !== "SUCCEEDED" && log.source === "state_accounts") {
+      throw new ProviderError("transient", `State account scrape ended with ${run.status}`);
+    }
     if (run.status !== "SUCCEEDED") {
       // Partial results can still exist in the dataset — keep going (matches
       // the old endpoint, which returned whatever items were collected).
@@ -272,6 +280,13 @@ export class ApifyProvider implements AnalyticsProvider {
     max: number,
     ctx?: ProviderCallContext
   ): Promise<ProviderVideo[]> {
+    return (await this.fetchAccountSnapshot(username, max, ctx)).videos;
+  }
+
+  /** Profile counters and videos from the same paid scrape. Missing counters stay null. */
+  async fetchAccountSnapshot(username: string, max: number, ctx?: ProviderCallContext): Promise<{
+    videos: ProviderVideo[]; followers: bigint | null; likes: bigint | null;
+  }> {
     const profilesField = process.env.APIFY_PROFILES_FIELD || "profiles";
     const clean = username.replace(/^@/, "");
     const items = await runActor(
@@ -289,6 +304,8 @@ export class ApifyProvider implements AnalyticsProvider {
       }
     );
 
+    let followers: bigint | null = null;
+    let likes: bigint | null = null;
     const videos: ProviderVideo[] = [];
     for (const item of items) {
       if (item?.errorCode) {
@@ -297,15 +314,20 @@ export class ApifyProvider implements AnalyticsProvider {
         console.warn(
           `[Apify] Profile scrape error for @${clean}: ${item.errorCode} (classified ${kind})`
         );
-        if (kind === "not_found") {
-          throw new ProviderError("not_found", `Profile @${clean}: ${item.errorCode}`);
+        if (kind === "not_found" || ctx?.source === "state_accounts") {
+          throw new ProviderError(kind, `Profile @${clean}: ${item.errorCode}`);
         }
         continue;
       }
+      followers = optionalCounter(item?.authorMeta?.fans) ?? followers;
+      likes = optionalCounter(item?.authorMeta?.heart) ?? likes;
       const videoId = item?.id != null ? String(item.id) : null;
       const createTimeISO = item?.createTimeISO || item?.createTime;
-      const createTime = createTimeISO ? new Date(createTimeISO) : null;
+      const createTime = createTimeISO ? new Date(typeof createTimeISO === "number" ? createTimeISO * 1000 : createTimeISO) : null;
       if (!videoId || !createTime || isNaN(createTime.getTime())) continue;
+      if (ctx?.source === "state_accounts" && (optionalCounter(item.playCount) === null || optionalCounter(item.diggCount) === null)) {
+        throw new ProviderError("transient", `Incomplete video metrics for @${clean}`);
+      }
 
       videos.push({
         videoId,
@@ -322,7 +344,10 @@ export class ApifyProvider implements AnalyticsProvider {
     }
 
     videos.sort((a, b) => b.createTime.getTime() - a.createTime.getTime());
-    return videos.slice(0, max);
+    if (ctx?.source === "state_accounts" && videos.length === 0 && followers === null) {
+      throw new ProviderError("transient", `No usable profile data for @${clean}`);
+    }
+    return { videos: videos.slice(0, max), followers, likes };
   }
 
   /** Current stats for specific video URLs, keyed by video id. */
@@ -401,6 +426,9 @@ export class ApifyProvider implements AnalyticsProvider {
 
       const createTimeISO = item?.createTimeISO || item?.createTime;
       const createTime = createTimeISO ? new Date(createTimeISO) : undefined;
+      if (ctx?.source === "state_accounts" && (optionalCounter(item.playCount) === null || optionalCounter(item.diggCount) === null)) {
+        throw new ProviderError("transient", `Incomplete metrics for video ${videoId}`);
+      }
       result.set(videoId, {
         views: toBigInt(item.playCount),
         likes: toBigInt(item.diggCount),

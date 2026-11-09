@@ -39,6 +39,7 @@ model User {
   lastSeenAt   DateTime?
   entitlements UserEntitlement[]
   sessions     Session[]
+  stateTeamMemberships StateTeamMember[]
 
   // Telegram integration
   telegramChatId     String?   @unique
@@ -352,6 +353,7 @@ model ManagedAccount {
   createdByUserId       String?
   createdBy             User?        @relation("AccountCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
 
+  stateAccount          StateAccount?
   scheduledPosts        ScheduledPost[]
   postJobs              PostJob[]
   dailyAnalytics        AccountDailyAnalytics[]
@@ -2152,6 +2154,7 @@ model GuardianCycle {
 }
 
 model GuardianPhone {
+  stateAccount StateAccount?
   profileId       String   @id
   name            String
   tags            Json
@@ -2191,4 +2194,107 @@ model GuardianStopEvent {
   @@index([occurredAt])
   @@index([profileId, occurredAt])
   @@index([result, occurredAt])
+}
+
+// State account operations. Daily rows freeze ownership, targets and timezone.
+model StateTeam {
+  id String @id @default(uuid())
+  name String @unique
+  postsTarget Int @default(3)
+  warmupTarget Int @default(35)
+  members StateTeamMember[]
+  accounts StateAccount[]
+  days StateAccountDay[]
+  createdAt DateTime @default(now())
+}
+
+model StateTeamMember {
+  teamId String
+  userId String
+  team StateTeam @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  @@id([teamId, userId])
+  @@index([userId])
+}
+
+model StateAccount {
+  accountId String @id
+  account ManagedAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  teamId String?
+  team StateTeam? @relation(fields: [teamId], references: [id])
+  stateName String?
+  guardianProfileId String? @unique
+  guardianPhone GuardianPhone? @relation(fields: [guardianProfileId], references: [profileId])
+  postsTarget Int?
+  warmupTarget Int?
+  lastSyncAt DateTime?
+  lastAttemptAt DateTime?
+  syncError String?
+  followers BigInt?
+  profileLikes BigInt?
+  days StateAccountDay[]
+  videos StateVideo[]
+  createdAt DateTime @default(now())
+}
+
+model StateReportingDay {
+  id String @id @default(uuid())
+  label String
+  timezone String
+  startsAt DateTime @unique
+  endsAt DateTime
+  accounts StateAccountDay[]
+  @@index([endsAt])
+}
+
+model StateAccountDay {
+  id String @id @default(uuid())
+  accountId String
+  account StateAccount @relation(fields: [accountId], references: [accountId], onDelete: Cascade)
+  guardianProfileId String?
+  dayId String
+  day StateReportingDay @relation(fields: [dayId], references: [id], onDelete: Cascade)
+  teamId String?
+  team StateTeam? @relation(fields: [teamId], references: [id])
+  postsTarget Int @default(0)
+  warmupTarget Int @default(0)
+  posts Int @default(0)
+  warmupMinutes Int @default(0)
+  views BigInt @default(0)
+  likes BigInt @default(0)
+  followerGrowth BigInt @default(0)
+  followersObserved Boolean @default(false)
+  metricsObserved Boolean @default(false)
+  lastSyncAt DateTime?
+  @@unique([accountId, dayId])
+  @@index([dayId, teamId])
+}
+
+model StateVideo {
+  videoId String @id
+  accountId String
+  account StateAccount @relation(fields: [accountId], references: [accountId], onDelete: Cascade)
+  url String
+  publishedAt DateTime
+  views BigInt
+  likes BigInt
+  lastObservedAt DateTime
+  unavailable Boolean @default(false)
+  @@index([accountId, publishedAt])
+}
+
+model StateSyncLease {
+  id String @id
+  owner String
+  expiresAt DateTime
+}
+
+// Runtime observations are retained independently of Guardian cycle pruning.
+model GuardianRuntimeSample {
+  cycleId String
+  profileId String
+  observedAt DateTime
+  runtimeSecs Int
+  @@id([cycleId, profileId])
+  @@index([profileId, observedAt])
 }

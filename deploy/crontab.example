@@ -23,3 +23,6 @@ CRON_SECRET=replace-with-your-cron-secret
 7    *   *  *  *  curl -fsS -H "x-cron-secret: $CRON_SECRET" "http://127.0.0.1:3000/api/cron/analytics-refresh?refreshOnly=1" >> /var/log/sleeckos-cron.log 2>&1
 17   3   *  *  *  curl -fsS -H "x-cron-secret: $CRON_SECRET" http://127.0.0.1:3000/api/cron/analytics-refresh >> /var/log/sleeckos-cron.log 2>&1
 43   2   *  *  *  curl -fsS -H "x-cron-secret: $CRON_SECRET" http://127.0.0.1:3000/api/cron/prune >> /var/log/sleeckos-cron.log 2>&1
+
+# Hourly discovery + post/view/like/follower sync for state accounts only.
+23   *   *  *  *  curl --max-time 7000 -fsS -H "x-cron-secret: $CRON_SECRET" http://127.0.0.1:3000/api/cron/state-accounts >> /var/log/sleeckos-cron.log 2>&1

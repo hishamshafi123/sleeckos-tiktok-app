@@ -2,6 +2,7 @@ import prisma from "@/lib/db";
 
 export const ALL_TOOLS = [
   "overview",
+  "state_accounts",
   "accounts",
   "multilogin_guardian",
   "analytics",
@@ -136,6 +137,10 @@ export async function getEffectiveAccess(userId: string): Promise<Set<string>> {
     }
   }
 
+  // Team membership grants shared state statistics without granting unrelated analytics.
+  if (await prisma.stateTeamMember.findFirst({ where: { userId }, select: { teamId: true } })) {
+    allowed.add("state_accounts");
+  }
   return allowed;
 }
 

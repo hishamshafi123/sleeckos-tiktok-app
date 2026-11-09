@@ -228,3 +228,71 @@ tail -f /var/log/sleeckos-cron.log
 - `vercel.json` is kept in the repo for reference/rollback but is **not used** on the VPS. Cron schedules are defined in `deploy/crontab.example` instead.
 - The app port (3000) is bound to `127.0.0.1` only — it is not reachable from the internet directly; all traffic goes through nginx.
 - `DATABASE_URL` uses `db` as the hostname, which resolves to the postgres container inside docker-compose. Do not change this to `localhost`.
+
+## State Accounts and team KPIs
+
+The State Accounts section is `/admin/state-accounts`. Admins manage teams,
+people, account assignments and targets. Membership in any state team grants
+read access to every team's stats without granting general analytics or Guardian
+control permissions.
+
+Deploy the included Prisma migration before starting the updated app (the Docker
+entrypoint already runs `prisma migrate deploy`). This feature builds on Phone
+Guardian and must be deployed from a branch containing that integration.
+
+Add the new hourly `/api/cron/state-accounts` line from `deploy/crontab.example`
+to the **host crontab**. Updating that example file does not install a host cron.
+Use the actual localhost port for this installation (the example uses 3000;
+Guardian's existing installation may use 3001). The endpoint requires the
+`x-cron-secret` header and fails closed when `CRON_SECRET` is missing. It awaits
+completion and reports failed account syncs as HTTP 503. A database lease prevents
+overlapping runs; an abandoned lease expires after two hours. An account failure
+keeps its last successful stats and is retried on the next run.
+
+The hourly job uses the existing `APIFY_TOKEN` and Apify actor configuration.
+Only non-revoked managed accounts with the case-insensitive `state` label, or in
+sections named `state` / `state accounts`, are queried. Ordinary accounts are
+excluded. Discovery starts with the latest 100 public videos per account; optional
+`STATE_SYNC_MAX_VIDEOS` changes this depth (20–1000). Every already-discovered
+public video is refreshed too, including videos outside that newest window.
+This is a paid provider call schedule; its calls appear under `state_accounts`
+in the existing Apify ledger. Historical videos outside the discovery window
+are not included in the charts until discovered by increasing the depth.
+
+Guardian integration:
+
+- State phones must have the `state` tag and report through the existing Guardian
+  integration. No new phone credentials or changes to stopping rules are needed.
+- A unique exact match between the phone name and an account's display name,
+  username or Drive folder name links it on first discovery. Otherwise use the
+  account's **Manage → Guardian phone** selector. Each phone links to one account.
+- New incoming cycles retain state-phone runtime observations independently of
+  Guardian's 30-day cycle pruning. Daily minutes are the union of observed runtime
+  intervals, clipped to the reporting day's boundaries. Repeated polls, retried
+  cycles and stop events do not multiply minutes. Existing stop events contribute
+  where available; earlier manually stopped sessions cannot be reconstructed.
+- Minutes measure observed phone runtime, not proof of activity inside TikTok.
+  Stale Guardian heartbeats are shown separately from TikTok sync freshness.
+
+Reporting uses a single timezone for this section, initially `Asia/Kolkata`.
+Admins can select India, Qatar or London in the UI; the API accepts validated IANA
+zones. Target, team and phone changes are effective on the next reporting day,
+except a first team assignment can start today. Daily rows freeze targets,
+ownership, phone IDs and timezone boundaries. A timezone transition starts at the
+old day's end and ends at the next midnight in the new zone, so the transition day
+can be short. DST is handled by timezone-aware boundaries. The existing global
+app timezone and other sections' reports are not rewritten.
+
+Views/likes show observed increases, not lifetime totals. An old video's first
+observation establishes a baseline; a newly published video's initial counts
+contribute on its posting day. Follower changes are signed, so losses are shown.
+The first follower observation is a baseline, not growth. No metrics are invented
+for dates before tracking starts. Late-discovered posts are credited to their
+publication day (the hourly rollup revisits the last 35 reporting days). Team
+consistency counts completed account-days meeting both configured targets;
+overposting never compensates for another missed account-day. Days lacking a
+post sync or required phone link are shown as awaiting data.
+
+Verification: `scripts/test_state_accounts.ts` exercises the feature against a
+separate migrated database whose name ends in `state_accounts_verify`. Never run
+it against the application database: it resets fixtures in the verification DB.

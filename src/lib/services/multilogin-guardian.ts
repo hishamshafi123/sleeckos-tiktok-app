@@ -436,6 +436,17 @@ export async function ingestGuardianCycle(value: unknown): Promise<{ ok: true; d
         });
         ingested = true;
 
+        // Keep observations for state-account warm-up KPIs, including partial
+        // inventory reports. Duplicate cycles already return above.
+        await tx.guardianRuntimeSample.createMany({
+          data: report.profiles.filter(p => p.status === 0 && p.runningTimeSecs !== null &&
+            p.tags.some(tag => tag.toLowerCase() === "state")).map(p => ({
+              cycleId: report.cycleId, profileId: p.profileId,
+              observedAt: report.finishedAt, runtimeSecs: p.runningTimeSecs!,
+            })),
+          skipDuplicates: true,
+        });
+
         if (report.stops.length > 0) {
           await tx.guardianStopEvent.createMany({
             data: report.stops.map((stop) => ({

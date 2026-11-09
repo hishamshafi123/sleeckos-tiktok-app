@@ -39,6 +39,7 @@ const PRODUCTION_NAV = [
 ];
 
 const OPERATIONS_NAV = [
+  { href: "/admin/state-accounts", label: "State Accounts", icon: BarChart3, toolKey: "state_accounts" },
   { href: "/admin", label: "Overview", icon: LayoutDashboard, exact: true, toolKey: "overview" },
   { href: "/admin/multilogin-guardian", label: "Phone Guardian", icon: ShieldCheck, toolKey: "multilogin_guardian" },
   { href: "/admin/accounts", label: "Managed Accounts", icon: MonitorPlay, exact: true, toolKey: "accounts" },
