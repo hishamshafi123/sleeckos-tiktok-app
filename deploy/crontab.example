@@ -26,3 +26,7 @@ CRON_SECRET=replace-with-your-cron-secret
 
 # Hourly discovery + post/view/like/follower sync for state accounts only.
 23   *   *  *  *  curl --max-time 7000 -fsS -H "x-cron-secret: $CRON_SECRET" http://127.0.0.1:3000/api/cron/state-accounts >> /var/log/sleeckos-cron.log 2>&1
+
+# Content Desk: bounded durable collection queue, every five minutes.
+# Install deploy/content-desk-sync.py as /usr/local/sbin/sleeckos-content-desk-sync (root, mode 700).
+*/5 * * * * /usr/local/sbin/sleeckos-content-desk-sync >> /var/log/sleeckos-content-desk.log 2>&1

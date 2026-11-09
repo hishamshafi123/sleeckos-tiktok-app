@@ -3,6 +3,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import {
   LayoutDashboard,
+  Newspaper,
   LogOut,
   MonitorPlay,
   BarChart3,
@@ -39,6 +40,7 @@ const PRODUCTION_NAV = [
 ];
 
 const OPERATIONS_NAV = [
+  { href: "/admin/content-desk", label: "Content Desk", icon: Newspaper, toolKey: "state_accounts" },
   { href: "/admin/state-accounts", label: "State Accounts", icon: BarChart3, toolKey: "state_accounts" },
   { href: "/admin", label: "Overview", icon: LayoutDashboard, exact: true, toolKey: "overview" },
   { href: "/admin/multilogin-guardian", label: "Phone Guardian", icon: ShieldCheck, toolKey: "multilogin_guardian" },

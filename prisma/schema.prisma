@@ -40,6 +40,7 @@ model User {
   entitlements UserEntitlement[]
   sessions     Session[]
   stateTeamMemberships StateTeamMember[]
+  contentSelections ContentStory[]
 
   // Telegram integration
   telegramChatId     String?   @unique
@@ -2198,6 +2199,7 @@ model GuardianStopEvent {
 
 // State account operations. Daily rows freeze ownership, targets and timezone.
 model StateTeam {
+  contentStories ContentStory[]
   id String @id @default(uuid())
   name String @unique
   postsTarget Int @default(3)
@@ -2218,6 +2220,7 @@ model StateTeamMember {
 }
 
 model StateAccount {
+  contentStories ContentStory[]
   accountId String @id
   account ManagedAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
   teamId String?
@@ -2297,4 +2300,126 @@ model GuardianRuntimeSample {
   runtimeSecs Int
   @@id([cycleId, profileId])
   @@index([profileId, observedAt])
+}
+
+// State content research and editorial workflow.
+model ContentState {
+  code String @id
+  name String @unique
+  keywords String
+  excludedKeywords String @default("")
+  enabled Boolean @default(true)
+  dailyTarget Int @default(6)
+  sources ContentSource[]
+  stories ContentStory[]
+}
+
+model ContentSource {
+  id String @id @default(uuid())
+  stateCode String
+  state ContentState @relation(fields: [stateCode], references: [code], onDelete: Cascade)
+  kind String
+  name String
+  url String
+  enabled Boolean @default(true)
+  intervalMinutes Int @default(60)
+  category String @default("AUTO")
+  createdBy String?
+  lastAttemptAt DateTime?
+  lastSuccessAt DateTime?
+  nextRunAt DateTime @default(now())
+  errorCode String?
+  errorMessage String?
+  failureCount Int @default(0)
+  pendingRunId String?
+  pendingSince DateTime?
+  createdAt DateTime @default(now())
+  items ContentItem[]
+  runs ContentRun[]
+  @@unique([stateCode, kind, url])
+  @@index([enabled, nextRunAt])
+}
+
+model ContentStory {
+  id String @id @default(uuid())
+  stateCode String
+  state ContentState @relation(fields: [stateCode], references: [code], onDelete: Cascade)
+  title String
+  category String @default("LOCAL")
+  status String @default("NEW")
+  score Int @default(0)
+  brief Json?
+  briefError String?
+  briefAttempts Int @default(0)
+  briefNextAt DateTime @default(now())
+  evidenceHash String @default("")
+  needsReview Boolean @default(false)
+  teamId String?
+  team StateTeam? @relation(fields: [teamId], references: [id], onDelete: SetNull)
+  accountId String?
+  account StateAccount? @relation(fields: [accountId], references: [accountId], onDelete: SetNull)
+  selectedById String?
+  selectedBy User? @relation(fields: [selectedById], references: [id], onDelete: SetNull)
+  notes String @default("")
+  publishedUrl String?
+  postedAt DateTime?
+  version Int @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  items ContentItem[]
+  events ContentEvent[]
+  @@index([stateCode, status, createdAt])
+  @@index([teamId, status])
+}
+
+model ContentItem {
+  id String @id @default(uuid())
+  stateCode String
+  sourceId String?
+  source ContentSource? @relation(fields: [sourceId], references: [id], onDelete: SetNull)
+  storyId String
+  story ContentStory @relation(fields: [storyId], references: [id], onDelete: Cascade)
+  url String
+  title String
+  excerpt String
+  publisher String
+  platform String
+  publishedAt DateTime?
+  coverage String @default("EXCERPT")
+  views BigInt?
+  likes BigInt?
+  previousViews BigInt?
+  previousObservedAt DateTime?
+  firstSeenAt DateTime @default(now())
+  lastSeenAt DateTime @default(now())
+  @@unique([stateCode, url])
+  @@index([storyId])
+}
+
+model ContentEvent {
+  id String @id @default(uuid())
+  storyId String
+  story ContentStory @relation(fields: [storyId], references: [id], onDelete: Cascade)
+  userId String?
+  actorName String
+  action String
+  detail String
+  createdAt DateTime @default(now())
+  @@index([storyId, createdAt])
+}
+
+model ContentRun {
+  id String @id @default(uuid())
+  sourceId String?
+  source ContentSource? @relation(fields: [sourceId], references: [id], onDelete: SetNull)
+  kind String
+  status String @default("RUNNING")
+  items Int @default(0)
+  message String?
+  providerRunId String?
+  costUsd Float?
+  startedAt DateTime @default(now())
+  finishedAt DateTime?
+  @@index([startedAt])
+  @@index([kind, startedAt])
 }

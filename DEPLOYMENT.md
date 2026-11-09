@@ -298,3 +298,78 @@ post sync or required phone link are shown as awaiting data.
 Verification: `scripts/test_state_accounts.ts` exercises the feature against a
 separate migrated database whose name ends in `state_accounts_verify`. Never run
 it against the application database: it resets fixtures in the verification DB.
+
+## State Content Desk
+
+`/admin/content-desk` is available to admins and state-team members. Members can
+browse every state, add links and sources, select stories for their own teams,
+approve briefs, add production notes, and record manually published URLs. Only
+admins control state preferences and usage limits. Source creators and admins
+can edit, pause, resume, and retry sources. Concurrent editorial edits use a
+version check; another team's selections cannot be overwritten by a member.
+
+The migration `20261109063245_state_content_desk` adds the research tables. The
+first dashboard request or worker cycle idempotently seeds the ten states and
+40 starter sources: local RSS, broader news discovery, culture discovery, and a
+local YouTube channel for each state. Feed endpoints were smoke-tested during
+implementation; publisher availability can change. Google News RSS discovery
+is a public-feed dependency without an availability guarantee. Sources expose
+last success, next attempt, provider errors, and retry controls.
+
+Install and schedule the worker on the **host**, after deploying the app:
+
+```sh
+install -m 700 deploy/content-desk-sync.py /usr/local/sbin/sleeckos-content-desk-sync
+# Add to the root crontab, preserving all existing entries:
+# */5 * * * * /usr/local/sbin/sleeckos-content-desk-sync >> /var/log/sleeckos-content-desk.log 2>&1
+/usr/local/sbin/sleeckos-content-desk-sync
+```
+
+The helper reads `PORT` and `CRON_SECRET` from the app container in memory and
+passes the secret to curl through stdin. The deployed app uses port 3001; the
+helper follows the container configuration. Set `SLEECKOS_CONTAINER` if the
+Compose container name differs. Never use a secret in the URL or shell args.
+
+Provider settings (existing app integrations):
+
+- `YOUTUBE_API_KEY`: read channel uploads and video metadata/statistics.
+- `APIFY_TOKEN`: track public TikTok and Instagram profiles. Runs are persisted
+  and polled in later cycles; profile content is limited to 20 requested items.
+  Each run requests `maxTotalChargeUsd=0.50`; provider pricing/minimums may cause
+  a run to fail. Content Desk caps are separate from other app Apify usage.
+- `GEMINI_API_KEY`: evidence-linked brief drafts. Without it, collected source
+  material remains usable and missing-key feedback is displayed.
+- `CONTENT_DESK_AI_MODEL`: optional, defaults to `gemini-2.5-flash`.
+
+Admin Settings default to 30 social run starts and 100 AI brief attempts per
+business day, and a shortlist beginning at 09:00 in the State Accounts business
+timezone. A zero provider limit stops new work of that type. Limits count failed
+attempts too. Social run reservations are transactional. Source polling normally
+runs hourly, social tracking at least four-hourly, with exponential retry backoff.
+The worker processes at most 12 due sources (concurrency two) and four briefs per
+cycle, with a database lease to avoid overlapping cycles. Daily shortlist targets
+are separately adjustable per state. Activity retains 30 days of completed jobs.
+
+The system stores publisher excerpts, descriptions, captions, and team notes;
+it does not claim to have read paywalled articles or watched videos. It groups
+similar recent headlines conservatively and looks for related reporting when
+drafting. Users can open YouTube/TikTok searches for additional video references.
+Multiple references are not automatically labeled independently verified. AI
+briefs cite stored source IDs and require human review. Rights to reuse source
+media are not inferred. No automatic video generation or publishing is enabled.
+
+RSS and web-page fetching pins public IPv4 DNS results, revalidates redirects,
+limits response sizes, and times out slow requests. A web-page source watches
+that page's title/description; use RSS to discover new articles from a website.
+Existing data and briefs are retained on collection/generation failures.
+
+Validation on the isolated migration database:
+
+```sh
+DATABASE_URL=postgresql://hishamshafi@localhost:5432/sleeckos_state_accounts_verify npx tsx scripts/test_content_desk.ts --live-feed
+```
+
+This suite uses mocked paid providers. It checks deduplication, source access,
+team ownership, conflicting edits, spend reservations, asynchronous social
+polling, failure retention, grounded brief structure, SSRF restrictions, and cron
+authorization. `--live-feed` additionally reads a public RSS endpoint.
