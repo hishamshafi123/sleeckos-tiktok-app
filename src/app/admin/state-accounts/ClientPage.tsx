@@ -153,6 +153,10 @@ function TeamChart({
   teams: Team[];
   weekly: boolean;
 }) {
+  const [activeBar, setActiveBar] = useState<{
+    pointKey: string;
+    teamId: string;
+  } | null>(null);
   const groups = new Map<string, { label: string; days: Day[] }>();
   for (const day of days) {
     const key = weekly ? weekLabel(day.label) : day.id;
@@ -191,74 +195,128 @@ function TeamChart({
     inner = width - left - 15;
   const slot = inner / Math.max(1, points.length),
     barWidth = Math.min(22, (slot - 12) / Math.max(1, teams.length));
+  const activePointIndex = points.findIndex(
+    (p) => p.key === activeBar?.pointKey,
+  );
+  const activeTeamIndex = teams.findIndex((t) => t.id === activeBar?.teamId);
+  const activePoint = points[activePointIndex];
+  const activeValue = activePoint?.values[activeTeamIndex];
+  const activeX =
+    left +
+    slot * activePointIndex +
+    (slot - teams.length * barWidth) / 2 +
+    (activeTeamIndex + 0.5) * barWidth;
   return (
     <div className="overflow-x-auto">
-      <svg
-        viewBox={`0 0 ${width} ${height}`}
-        className="w-full min-w-[640px]"
-        role="img"
-        aria-label={`${weekly ? "Weekly" : "Daily"} observed views gained by team`}
-      >
-        {[0, 0.25, 0.5, 0.75, 1].map((f) => (
-          <g key={f}>
-            <line
-              x1={left}
-              x2={width - 10}
-              y1={180 - 155 * f}
-              y2={180 - 155 * f}
-              stroke="#27272a"
-            />
-            <text
-              x={left - 10}
-              y={184 - 155 * f}
-              fill="#a1a1aa"
-              textAnchor="end"
-              fontSize="10"
-            >
-              {Intl.NumberFormat("en", { notation: "compact" }).format(max * f)}
-            </text>
-          </g>
-        ))}
-        {points.map((point, i) => (
-          <g key={point.key}>
-            {point.values.map(
-              (value, j) =>
-                value !== null && (
-                  <rect
-                    key={teams[j].id}
-                    x={
-                      left +
-                      slot * i +
-                      (slot - teams.length * barWidth) / 2 +
-                      j * barWidth
-                    }
-                    y={180 - (value / max) * 155}
-                    width={Math.max(1, barWidth - 2)}
-                    height={Math.max(1, (value / max) * 155)}
-                    rx="2"
-                    fill={COLORS[j % COLORS.length]}
-                  >
-                    <title>
-                      {teams[j].name}: {fmt(value)} views, {point.label}
-                      {weekly ? " week" : ""}
-                    </title>
-                  </rect>
-                ),
-            )}
-            {(points.length < 12 || i % 3 === 0 || i === points.length - 1) && (
+      <div className="relative min-w-[640px]">
+        <svg
+          viewBox={`0 0 ${width} ${height}`}
+          className="w-full min-w-[640px]"
+          role="group"
+          aria-label={`${weekly ? "Weekly" : "Daily"} observed views gained by team`}
+        >
+          {[0, 0.25, 0.5, 0.75, 1].map((f) => (
+            <g key={f}>
+              <line
+                x1={left}
+                x2={width - 10}
+                y1={180 - 155 * f}
+                y2={180 - 155 * f}
+                stroke="#27272a"
+              />
               <text
-                x={left + slot * (i + 0.5)}
-                y={205}
+                x={left - 10}
+                y={184 - 155 * f}
                 fill="#a1a1aa"
-                textAnchor="middle"
+                textAnchor="end"
                 fontSize="10"
               >
-                {point.label.slice(5)}
+                {Intl.NumberFormat("en", { notation: "compact" }).format(
+                  max * f,
+                )}
               </text>
-            )}
-          </g>
-        ))}
-      </svg>
+            </g>
+          ))}
+          {points.map((point, i) => (
+            <g key={point.key}>
+              {point.values.map(
+                (value, j) =>
+                  value !== null && (
+                    <rect
+                      key={teams[j].id}
+                      x={
+                        left +
+                        slot * i +
+                        (slot - teams.length * barWidth) / 2 +
+                        j * barWidth
+                      }
+                      y={180 - (value / max) * 155}
+                      width={Math.max(1, barWidth - 2)}
+                      height={Math.max(1, (value / max) * 155)}
+                      rx="2"
+                      fill={COLORS[j % COLORS.length]}
+                      tabIndex={0}
+                      role="img"
+                      aria-label={`${teams[j].name}: ${fmt(value)} views, ${weekly ? "week of " : ""}${point.label}`}
+                      className="cursor-pointer outline-none hover:brightness-125 focus:stroke-white focus:stroke-2"
+                      onPointerEnter={() =>
+                        setActiveBar({
+                          pointKey: point.key,
+                          teamId: teams[j].id,
+                        })
+                      }
+                      onPointerLeave={() => setActiveBar(null)}
+                      onFocus={() =>
+                        setActiveBar({
+                          pointKey: point.key,
+                          teamId: teams[j].id,
+                        })
+                      }
+                      onBlur={() => setActiveBar(null)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Escape") setActiveBar(null);
+                      }}
+                    />
+                  ),
+              )}
+              {(points.length < 12 ||
+                i % 3 === 0 ||
+                i === points.length - 1) && (
+                <text
+                  x={left + slot * (i + 0.5)}
+                  y={205}
+                  fill="#a1a1aa"
+                  textAnchor="middle"
+                  fontSize="10"
+                >
+                  {point.label.slice(5)}
+                </text>
+              )}
+            </g>
+          ))}
+        </svg>
+        {activePoint && activeValue != null && activeTeamIndex >= 0 && (
+          <div
+            role="tooltip"
+            className="pointer-events-none absolute z-10 w-56 -translate-x-1/2 rounded-lg border border-zinc-600 bg-zinc-950 px-3 py-2 text-xs text-zinc-100 shadow-xl"
+            style={{
+              left: `clamp(120px, ${(activeX / width) * 100}%, calc(100% - 120px))`,
+              top: `max(4px, calc(${((180 - (activeValue / max) * 155) / height) * 100}% - 88px))`,
+            }}
+          >
+            <div className="truncate font-medium">
+              {teams[activeTeamIndex].name}
+            </div>
+            <div className="mt-1 text-zinc-400">
+              {weekly ? "Week of " : ""}
+              {activePoint.label}
+            </div>
+            <div className="mt-1 text-sm font-semibold">
+              {fmt(activeValue)} views
+            </div>
+          </div>
+        )}
+      </div>
       <div className="flex flex-wrap gap-x-5 gap-y-2 px-4 text-xs text-zinc-400">
         {teams.map((t, i) => (
           <span key={t.id} className="flex items-center gap-2">
