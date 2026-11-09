@@ -324,6 +324,7 @@ export async function processRanking(id: string) {
             },
           }),
         },
+        60000,
       );
       let parsed: unknown;
       try {

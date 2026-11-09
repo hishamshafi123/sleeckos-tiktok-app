@@ -136,10 +136,14 @@ export async function safeText(
     );
   });
 }
-export async function providerJson(url: string, init: RequestInit = {}) {
+export async function providerJson(
+  url: string,
+  init: RequestInit = {},
+  timeoutMs = 20000,
+) {
   let res: Response;
   try {
-    res = await fetch(url, { ...init, signal: AbortSignal.timeout(20000) });
+    res = await fetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
   } catch {
     throw new DeskError(
       "PROVIDER_TIMEOUT",
