@@ -183,10 +183,11 @@ export function sourceUrl(kind: string, value: string) {
       "INVALID_URL",
       "Enter a YouTube channel or playlist URL.",
     );
+  if (kind === "YOUTUBE") parsed.pathname = parsed.pathname.replace(/\/$/, "");
   if (["TIKTOK", "INSTAGRAM"].includes(kind)) {
     parsed.search = "";
     parsed.hostname = `www.${host}`;
-    parsed.pathname = parsed.pathname.replace(/\/$/, "");
+    parsed.pathname = parsed.pathname.replace(/\/$/, "").toLowerCase();
   }
   return parsed.toString();
 }

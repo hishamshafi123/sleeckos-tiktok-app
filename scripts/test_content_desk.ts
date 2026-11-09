@@ -339,6 +339,27 @@ async function main() {
     }),
     1,
   );
+  const originalEvidence = await prisma.contentItem.findUniqueOrThrow({
+    where: { stateCode_url: { stateCode: "AZ", url: candidate.url } },
+  });
+  await mutateDesk(
+    {
+      action: "manual.add",
+      stateCode: "AZ",
+      url: candidate.url,
+      title: "My personal interpretation",
+      notes: "Unverified personal notes",
+    },
+    member,
+  );
+  const retainedEvidence = await prisma.contentItem.findUniqueOrThrow({
+    where: { stateCode_url: { stateCode: "AZ", url: candidate.url } },
+  });
+  assert.equal(
+    retainedEvidence.excerpt,
+    originalEvidence.excerpt,
+    "Manual notes cannot overwrite publisher evidence",
+  );
   const payload = await deskData(new URLSearchParams({ state: "AZ" }), member);
   assert.ok(payload.stories.length >= 2);
   assert.equal(payload.states.length, 10);

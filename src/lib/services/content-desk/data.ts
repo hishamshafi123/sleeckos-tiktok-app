@@ -21,6 +21,12 @@ export const DEFAULT_SETTINGS = {
   dailyAiBriefs: 100,
   shortlistHour: 9,
 };
+// Stable IDs verified against the YouTube channel API.
+const VERIFIED_CHANNEL_IDS: Record<string, string> = {
+  NM: "UCJnpF9oROFPvd7wWbPUDdGA",
+  MI: "UCqMdEOPBZbGPykVOhUqWqfA",
+  PA: "UCw77677G3EAODp61b0izs7w",
+};
 const LOCAL_FEEDS: Record<string, string> = {
   SC: "https://www.wltx.com/feeds/syndication/rss/news",
   NV: "https://www.8newsnow.com/feed/",
@@ -95,7 +101,9 @@ export async function ensureDesk() {
           {
             name: `${state.channel} on YouTube`,
             kind: "YOUTUBE",
-            url: `https://www.youtube.com/@${state.channel}`,
+            url: VERIFIED_CHANNEL_IDS[state.code]
+              ? `https://www.youtube.com/channel/${VERIFIED_CHANNEL_IDS[state.code]}`
+              : `https://www.youtube.com/@${state.channel}`,
             category: "AUTO",
             intervalMinutes: 60,
           },
@@ -420,7 +428,7 @@ export async function mutateDesk(body: Record<string, unknown>, actor: Actor) {
             (await prisma.user.findUnique({ where: { id: actor.userId } }))
               ?.name || "Team member",
           action: "SUBMITTED",
-          detail: "Added a link and team notes. Original claims need review.",
+          detail: `Added a link. Original claims need review.${notes ? ` Team notes: ${notes}` : ""}`,
         },
       });
     return { message: "Content added to the review queue.", storyId };
@@ -465,7 +473,7 @@ export async function mutateDesk(body: Record<string, unknown>, actor: Actor) {
       where: { id },
       data: {
         briefAttempts: 0,
-        briefNextAt: new Date(),
+        briefNextAt: new Date(0),
         briefError: null,
         evidenceHash: "",
       },

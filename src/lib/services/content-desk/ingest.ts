@@ -35,6 +35,8 @@ export async function ingest(
       where: { stateCode_url: { stateCode: state.code, url } },
     });
     if (old) {
+      // Team submissions must never replace publisher evidence with user notes.
+      if (manual) return old.storyId;
       const changed =
         old.title !== candidate.title || old.excerpt !== candidate.excerpt;
       await tx.contentItem.update({
@@ -42,6 +44,10 @@ export async function ingest(
         data: {
           title: candidate.title,
           excerpt: candidate.excerpt,
+          publisher: candidate.publisher,
+          coverage: candidate.coverage,
+          platform: candidate.platform,
+          sourceId: source?.id ?? old.sourceId,
           lastSeenAt: now,
           views: candidate.views ?? old.views,
           likes: candidate.likes ?? old.likes,

@@ -536,18 +536,29 @@ export async function runDesk() {
           evidenceHash: { not: "" },
         },
       });
-      if (ready >= state.dailyTarget) continue;
-      const story = await prisma.contentStory.findFirst({
+      const requested = await prisma.contentStory.findFirst({
         where: {
           stateCode: state.code,
-          status: { notIn: ["REJECTED", "OUTDATED", "POSTED"] },
           evidenceHash: "",
-          briefNextAt: { lte: new Date() },
-          briefAttempts: { lt: 4 },
-          createdAt: { gte: new Date(now.getTime() - 7 * 86400000) },
+          briefNextAt: new Date(0),
+          status: { notIn: ["POSTED", "REJECTED", "OUTDATED"] },
         },
-        orderBy: [{ score: "desc" }, { createdAt: "desc" }],
+        orderBy: { updatedAt: "asc" },
       });
+      if (ready >= state.dailyTarget && !requested) continue;
+      const story =
+        requested ||
+        (await prisma.contentStory.findFirst({
+          where: {
+            stateCode: state.code,
+            status: { notIn: ["REJECTED", "OUTDATED", "POSTED"] },
+            evidenceHash: "",
+            briefNextAt: { lte: new Date() },
+            briefAttempts: { lt: 4 },
+            createdAt: { gte: new Date(now.getTime() - 7 * 86400000) },
+          },
+          orderBy: [{ score: "desc" }, { createdAt: "desc" }],
+        }));
       if (story) {
         await generateBrief(story.id);
         slots--;
