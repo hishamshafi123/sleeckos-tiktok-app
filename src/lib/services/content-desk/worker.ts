@@ -528,14 +528,13 @@ export async function runDesk() {
     const ordered = [...states.slice(rotation), ...states.slice(0, rotation)];
     for (const state of ordered) {
       if (!slots) break;
-      const ready = await prisma.contentStory.count({
-        where: {
-          stateCode: state.code,
-          brief: { not: Prisma.DbNull },
-          createdAt: { gte: await businessStart() },
-          evidenceHash: { not: "" },
-        },
-      });
+      // Count briefs produced today, including stories discovered on an earlier day.
+      const today = (await businessStart()).toISOString();
+      const [daily] = await prisma.$queryRaw<Array<{ count: number }>>`
+        SELECT count(*)::int AS count FROM "ContentStory"
+        WHERE "stateCode" = ${state.code} AND "evidenceHash" <> ''
+          AND "brief"->>'generatedAt' >= ${today}`;
+      const ready = daily.count;
       const requested = await prisma.contentStory.findFirst({
         where: {
           stateCode: state.code,

@@ -23,6 +23,7 @@ export const DEFAULT_SETTINGS = {
 };
 // Stable IDs verified against the YouTube channel API.
 const VERIFIED_CHANNEL_IDS: Record<string, string> = {
+  SC: "UCVaXclURQZlakiTMzuwHvRw",
   NM: "UCJnpF9oROFPvd7wWbPUDdGA",
   MI: "UCqMdEOPBZbGPykVOhUqWqfA",
   PA: "UCw77677G3EAODp61b0izs7w",

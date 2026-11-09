@@ -520,6 +520,40 @@ async function main() {
   });
   assert.equal((await runDesk()).skipped, true);
   await prisma.stateSyncLease.delete({ where: { id: "content-desk-worker" } });
+  // A brief generated today for an older story still consumes today's state target.
+  await prisma.contentSource.updateMany({
+    data: { enabled: false, pendingRunId: null, pendingSince: null },
+  });
+  await prisma.contentState.updateMany({ data: { enabled: false } });
+  await prisma.contentState.update({
+    where: { code: "AZ" },
+    data: { enabled: true, dailyTarget: 1 },
+  });
+  await prisma.contentStory.update({
+    where: { id },
+    data: {
+      createdAt: new Date(Date.now() - 2 * 86400000),
+      evidenceHash: "counted",
+      briefError: null,
+    },
+  });
+  const beforeDailyCheck = await prisma.contentRun.count({
+    where: { kind: "AI_BRIEF" },
+  });
+  const fetchBeforeDailyCheck = globalThis.fetch;
+  globalThis.fetch = async () => {
+    throw new Error("Daily target should prevent another generation");
+  };
+  try {
+    await runDesk();
+  } finally {
+    globalThis.fetch = fetchBeforeDailyCheck;
+  }
+  assert.equal(
+    await prisma.contentRun.count({ where: { kind: "AI_BRIEF" } }),
+    beforeDailyCheck,
+    "Older stories with briefs generated today count toward today's target",
+  );
   assert.equal(
     (await cron(new Request("https://example.com/api/cron/content-desk")))
       .status,
