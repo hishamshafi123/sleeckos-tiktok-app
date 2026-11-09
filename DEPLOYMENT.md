@@ -406,3 +406,25 @@ use the same Gemini configuration as briefs. No additional cron entry is needed.
 ```sh
 DATABASE_URL=postgresql://hishamshafi@localhost:5432/sleeckos_state_accounts_verify npx tsx scripts/test_content_rankings.ts
 ```
+
+### State Accounts combined views and growth
+
+State Accounts defaults to Combined views, including unassigned accounts when
+All teams is selected. Compare teams retains separate series. Daily/weekly
+aggregation and the team filter apply to the chart; hover/focus reveals exact
+observed gains. The growth panel uses the same team scope and shows today's
+partial total, last/prior seven-day averages and week-over-week change.
+
+Forecasts estimate additional views over 7 and 30 days from the recent usable
+daily average; lower/upper scenarios are fixed 0.7x/1.3x, not confidence limits.
+At least three usable completed days in the last week are required. Onboarding
+days, differing timezones, short/long transition days, missing account metrics,
+and days without a sync in their final two hours are excluded. Account mixes
+must match today's scope; percentage growth additionally requires three usable
+prior-week days and a nonzero prior average. Missing days are never zero-filled.
+These are observed sync-day gains, not reconstructed historical platform views.
+No schema change or new cron is needed. Test with:
+
+```sh
+npx tsx scripts/test_state_trajectory.ts
+```

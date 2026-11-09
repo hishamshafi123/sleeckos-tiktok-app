@@ -10,6 +10,7 @@ import {
   Clock3,
 } from "lucide-react";
 import { toast } from "sonner";
+import GrowthPanel from "./GrowthPanel";
 import {
   Dialog,
   DialogContent,
@@ -26,6 +27,7 @@ type Team = {
 };
 type Account = {
   accountId: string;
+  createdAt: string;
   teamId: string | null;
   stateName: string;
   guardianProfileId: string | null;
@@ -148,11 +150,21 @@ function TeamChart({
   days,
   teams,
   weekly,
+  combined,
 }: {
   days: Day[];
-  teams: Team[];
+  teams: Pick<Team, "id" | "name">[];
+  combined: boolean;
   weekly: boolean;
 }) {
+  const series = combined
+    ? [
+        {
+          id: "combined",
+          name: teams.length === 1 ? teams[0].name : "All state accounts",
+        },
+      ]
+    : teams;
   const [activeBar, setActiveBar] = useState<{
     pointKey: string;
     teamId: string;
@@ -170,9 +182,13 @@ function TeamChart({
   const points = [...groups].map(([key, { label, days: group }]) => ({
     key,
     label,
-    values: teams.map((t) => {
+    values: series.map((t) => {
       const rows = group.flatMap((d) =>
-        d.accounts.filter((a) => a.teamId === t.id),
+        d.accounts.filter(
+          (a) =>
+            combined ||
+            (t.id === "__unassigned" ? a.teamId === null : a.teamId === t.id),
+        ),
       );
       return rows.some((r) => r.metricsObserved)
         ? rows.reduce((sum, r) => sum + Number(r.views), 0)
@@ -194,17 +210,17 @@ function TeamChart({
     left = 65,
     inner = width - left - 15;
   const slot = inner / Math.max(1, points.length),
-    barWidth = Math.min(22, (slot - 12) / Math.max(1, teams.length));
+    barWidth = Math.min(22, (slot - 12) / Math.max(1, series.length));
   const activePointIndex = points.findIndex(
     (p) => p.key === activeBar?.pointKey,
   );
-  const activeTeamIndex = teams.findIndex((t) => t.id === activeBar?.teamId);
+  const activeTeamIndex = series.findIndex((t) => t.id === activeBar?.teamId);
   const activePoint = points[activePointIndex];
   const activeValue = activePoint?.values[activeTeamIndex];
   const activeX =
     left +
     slot * activePointIndex +
-    (slot - teams.length * barWidth) / 2 +
+    (slot - series.length * barWidth) / 2 +
     (activeTeamIndex + 0.5) * barWidth;
   return (
     <div className="overflow-x-auto">
@@ -213,7 +229,7 @@ function TeamChart({
           viewBox={`0 0 ${width} ${height}`}
           className="w-full min-w-[640px]"
           role="group"
-          aria-label={`${weekly ? "Weekly" : "Daily"} observed views gained by team`}
+          aria-label={`${weekly ? "Weekly" : "Daily"} observed views gained ${combined ? "combined" : "by team"}`}
         >
           {[0, 0.25, 0.5, 0.75, 1].map((f) => (
             <g key={f}>
@@ -243,11 +259,11 @@ function TeamChart({
                 (value, j) =>
                   value !== null && (
                     <rect
-                      key={teams[j].id}
+                      key={series[j].id}
                       x={
                         left +
                         slot * i +
-                        (slot - teams.length * barWidth) / 2 +
+                        (slot - series.length * barWidth) / 2 +
                         j * barWidth
                       }
                       y={180 - (value / max) * 155}
@@ -257,19 +273,19 @@ function TeamChart({
                       fill={COLORS[j % COLORS.length]}
                       tabIndex={0}
                       role="img"
-                      aria-label={`${teams[j].name}: ${fmt(value)} views, ${weekly ? "week of " : ""}${point.label}`}
+                      aria-label={`${series[j].name}: ${fmt(value)} views, ${weekly ? "week of " : ""}${point.label}`}
                       className="cursor-pointer outline-none hover:brightness-125 focus:stroke-white focus:stroke-2"
                       onPointerEnter={() =>
                         setActiveBar({
                           pointKey: point.key,
-                          teamId: teams[j].id,
+                          teamId: series[j].id,
                         })
                       }
                       onPointerLeave={() => setActiveBar(null)}
                       onFocus={() =>
                         setActiveBar({
                           pointKey: point.key,
-                          teamId: teams[j].id,
+                          teamId: series[j].id,
                         })
                       }
                       onBlur={() => setActiveBar(null)}
@@ -305,7 +321,7 @@ function TeamChart({
             }}
           >
             <div className="truncate font-medium">
-              {teams[activeTeamIndex].name}
+              {series[activeTeamIndex].name}
             </div>
             <div className="mt-1 text-zinc-400">
               {weekly ? "Week of " : ""}
@@ -318,7 +334,7 @@ function TeamChart({
         )}
       </div>
       <div className="flex flex-wrap gap-x-5 gap-y-2 px-4 text-xs text-zinc-400">
-        {teams.map((t, i) => (
+        {series.map((t, i) => (
           <span key={t.id} className="flex items-center gap-2">
             <span
               className="h-2 w-2 rounded-full"
@@ -340,6 +356,7 @@ export default function ClientPage() {
   const [selected, setSelected] = useState("all");
   const [period, setPeriod] = useState(7);
   const [weekly, setWeekly] = useState(false);
+  const [combined, setCombined] = useState(true);
   const [sort, setSort] = useState<
     "views" | "likes" | "followers" | "consistency"
   >("views");
@@ -609,14 +626,24 @@ export default function ClientPage() {
         <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
           <div>
             <h2 id="views-heading" className="font-medium">
-              Views gained by team
+              {combined ? "Combined views gained" : "Views gained by team"}
             </h2>
             <p className="mt-1 text-xs text-zinc-500">
               Observed growth since tracking began. Current day and week are
-              partial.
+              partial. Totals may be incomplete when an account’s collection is
+              missing.
             </p>
           </div>
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
+            <select
+              aria-label="View aggregation"
+              className={input}
+              value={combined ? "combined" : "teams"}
+              onChange={(e) => setCombined(e.target.value === "combined")}
+            >
+              <option value="combined">Combined views</option>
+              <option value="teams">Compare teams</option>
+            </select>
             <select
               aria-label="Chart grouping"
               className={input}
@@ -638,15 +665,41 @@ export default function ClientPage() {
           </div>
         </div>
         <TeamChart
-          days={data.days.slice(-period)}
-          teams={selectedTeams}
+          days={data.days
+            .slice(-period)
+            .map((d) => ({
+              ...d,
+              accounts: d.accounts.filter(
+                (r) => selected === "all" || r.teamId === selected,
+              ),
+            }))}
+          teams={[
+            ...selectedTeams,
+            ...(selected === "all" &&
+            data.days.some((d) => d.accounts.some((r) => r.teamId === null))
+              ? [{ id: "__unassigned", name: "Unassigned" }]
+              : []),
+          ]}
           weekly={weekly}
+          combined={combined}
         />
         <p className="mt-4 text-xs text-zinc-500">
           Views and likes cover discovered public videos. Initial discovery
           includes up to {data.discoveryLimit} recent posts per account; all
           discovered videos are refreshed hourly.
         </p>
+        <GrowthPanel
+          days={data.days}
+          accounts={data.accounts}
+          todayId={data.todayId}
+          team={selected}
+          name={
+            selected === "all"
+              ? "All state accounts"
+              : data.teams.find((t) => t.id === selected)?.name ||
+                "Selected team"
+          }
+        />
       </section>
       {!!data.teams.length && (
         <section>
