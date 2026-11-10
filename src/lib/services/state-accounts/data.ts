@@ -356,11 +356,7 @@ export async function refreshActivityCounts(daysBack = 2) {
   });
   if (!days.length) return;
   const since = days[days.length - 1].startsAt;
-  const [videos, samples, stops, phones, rows] = await Promise.all([
-    prisma.stateVideo.findMany({
-      where: { publishedAt: { gte: since } },
-      select: { accountId: true, publishedAt: true },
-    }),
+  const [samples, stops, phones, rows] = await Promise.all([
     prisma.guardianRuntimeSample.findMany({
       where: { observedAt: { gte: since } },
     }),
@@ -408,10 +404,7 @@ export async function refreshActivityCounts(daysBack = 2) {
   await prisma.$transaction(
     rows.map((row) => {
       const day = dayMap.get(row.dayId)!;
-      const inside = (date: Date) => date >= day.startsAt && date < day.endsAt;
-      const posts = videos.filter(
-        (v) => v.accountId === row.accountId && inside(v.publishedAt),
-      ).length;
+
       const profileId = row.guardianProfileId;
       const observations = profileId
         ? observationsByPhone.get(profileId) || []
@@ -424,10 +417,27 @@ export async function refreshActivityCounts(daysBack = 2) {
       // Concurrent dashboard reads must not overwrite a newer rollup.
       return prisma.$executeRaw`
         UPDATE "StateAccountDay"
-        SET "posts" = GREATEST("posts", ${posts}),
-            "warmupMinutes" = GREATEST("warmupMinutes", ${warmupMinutes})
+        SET "warmupMinutes" = GREATEST("warmupMinutes", ${warmupMinutes})
         WHERE "id" = ${row.id}
       `;
     }),
+  );
+  // Recount from the current persisted publication timestamps in one statement.
+  // This repairs both sides of corrections and late discoveries, including old
+  // reporting days outside the dashboard window. Do not use a stale JS snapshot.
+  await prisma.$transaction(
+    async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(893281)`;
+      await tx.$executeRaw`
+        WITH totals AS (
+          SELECT a."id", count(v."videoId")::int AS posts
+          FROM "StateAccountDay" a JOIN "StateReportingDay" d ON a."dayId" = d."id"
+          LEFT JOIN "StateVideo" v ON v."accountId" = a."accountId"
+            AND v."publishedAt" >= d."startsAt" AND v."publishedAt" < d."endsAt"
+          GROUP BY a."id"
+        ) UPDATE "StateAccountDay" a SET "posts" = totals.posts
+          FROM totals WHERE a."id" = totals."id" AND a."posts" <> totals.posts`;
+    },
+    { timeout: 60000 },
   );
 }

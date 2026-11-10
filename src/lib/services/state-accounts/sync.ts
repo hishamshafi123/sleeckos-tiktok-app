@@ -54,7 +54,9 @@ export async function syncStateAccounts(
         });
         const byId = new Map(previous.map((v) => [v.videoId, v]));
         const latestIds = new Set(snapshot.videos.map((v) => v.videoId));
-        const updates: ProviderVideo[] = [...snapshot.videos];
+        const updates: ProviderVideo[] = [
+          ...new Map(snapshot.videos.map((v) => [v.videoId, v])).values(),
+        ];
         const unavailable: string[] = [];
         // Refresh ALL previously discovered public videos, not just the latest
         // profile window; otherwise older posts' new views would disappear.
@@ -85,7 +87,7 @@ export async function syncStateAccounts(
               ...stat,
               videoId: video.videoId,
               url: video.url,
-              createTime: video.publishedAt,
+              createTime: stat.createTime ?? video.publishedAt,
               text: "",
             });
           }
@@ -94,6 +96,8 @@ export async function syncStateAccounts(
         const day = await ensureStateDay(observedAt);
         await prisma.$transaction(
           async (tx) => {
+            // Serialize timestamp writes with exact daily post recounts.
+            await tx.$executeRaw`SELECT pg_advisory_xact_lock(893281)`;
             const lease = await tx.stateSyncLease.findUnique({
               where: { id: "hourly" },
             });
@@ -105,6 +109,16 @@ export async function syncStateAccounts(
               likes = BigInt(0),
               hasBaseline = false;
             for (const video of updates) {
+              if (
+                !(video.createTime instanceof Date) ||
+                !Number.isFinite(video.createTime.getTime()) ||
+                video.createTime.getTime() < Date.UTC(2010, 0, 1) ||
+                video.createTime > observedAt
+              ) {
+                throw new Error(
+                  "Invalid publication timestamp returned by provider",
+                );
+              }
               const old = byId.get(video.videoId);
               const newToday =
                 video.createTime >= day.startsAt &&
@@ -135,7 +149,11 @@ export async function syncStateAccounts(
                   publishedAt: video.createTime,
                   ...counters,
                 },
-                update: counters,
+                update: {
+                  ...counters,
+                  publishedAt: video.createTime,
+                  url: video.url,
+                },
               });
             }
             await tx.stateVideo.updateMany({
@@ -194,7 +212,10 @@ export async function syncStateAccounts(
           where: { accountId: account.accountId },
           data: {
             syncError:
-              "Hourly sync failed. Previous data is retained; the next hourly run will retry.",
+              error instanceof Error &&
+              /publication timestamp/.test(error.message)
+                ? "The provider returned an invalid posting time. Previous records are retained; the next hourly sync will retry."
+                : "Hourly sync failed. Previous data is retained; the next hourly run will retry.",
           },
         });
       }

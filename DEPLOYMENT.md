@@ -428,3 +428,32 @@ No schema change or new cron is needed. Test with:
 ```sh
 npx tsx scripts/test_state_trajectory.ts
 ```
+
+### State posting history and daily accuracy
+
+State Accounts → Posting history lists recorded posts by reporting day and
+account, with publication time (seconds and UTC offset), post link, team on that
+reporting day, and last successful observation. The main team filter applies;
+results paginate at 50 posts. History uses the same frozen reporting-day
+[start, end) boundaries as KPIs, including India/Qatar/London transitions and
+London DST. Deleted/private videos retain historical posting credit.
+
+The hourly state sync updates verified publication timestamps on existing
+videos, including old videos refreshed by URL. State-scoped provider timestamps
+accept explicit-offset ISO or Unix seconds/milliseconds; missing, invalid, or
+future publication times never become discovery times. Invalid state snapshots
+retain existing data and show a sync error. Missing dates in stats-only refresh
+retain the previously recorded publication time.
+
+Daily post counts are recomputed exactly from unique stored videos for every
+persisted reporting day, including older days outside the warm-up refresh
+window. Corrections may decrease the old day's count and increase the new day's
+count. A shared transaction advisory lock serializes timestamp writes and
+recounts. Pre-tracking posts are stored but never reassigned to today's KPI.
+The initial discovery limit and public-provider availability still apply;
+collection errors and Last sync must be checked before interpreting zero posts.
+
+No schema change is required: StateVideo already stores publication timestamps.
+Run `scripts/test_state_accounts.ts` against the isolated verification database
+for late discovery, corrections, daily history/KPI agreement, invalid timestamps,
+midnight, India/Qatar and both London DST boundaries.

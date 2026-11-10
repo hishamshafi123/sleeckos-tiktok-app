@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import GrowthPanel from "./GrowthPanel";
+import PostHistory from "./PostHistory";
 import {
   Dialog,
   DialogContent,
@@ -665,14 +666,12 @@ export default function ClientPage() {
           </div>
         </div>
         <TeamChart
-          days={data.days
-            .slice(-period)
-            .map((d) => ({
-              ...d,
-              accounts: d.accounts.filter(
-                (r) => selected === "all" || r.teamId === selected,
-              ),
-            }))}
+          days={data.days.slice(-period).map((d) => ({
+            ...d,
+            accounts: d.accounts.filter(
+              (r) => selected === "all" || r.teamId === selected,
+            ),
+          }))}
           teams={[
             ...selectedTeams,
             ...(selected === "all" &&
@@ -796,6 +795,14 @@ export default function ClientPage() {
           </p>
         </section>
       )}
+      <PostHistory
+        key={selected}
+        days={data.days}
+        todayId={data.todayId}
+        team={selected}
+        accounts={data.accounts}
+        refreshKey={data.generatedAt}
+      />
       <section>
         <h2 className="mb-3 font-medium">Today’s account progress</h2>
         {!accounts.length ? (

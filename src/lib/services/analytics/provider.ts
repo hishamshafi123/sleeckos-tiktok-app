@@ -30,7 +30,11 @@ export type ProviderVideoStats =
     }
   | { unavailable: true };
 
-export type ProviderErrorKind = "auth" | "rate_limited" | "not_found" | "transient";
+export type ProviderErrorKind =
+  | "auth"
+  | "rate_limited"
+  | "not_found"
+  | "transient";
 
 export class ProviderError extends Error {
   kind: ProviderErrorKind;
@@ -46,12 +50,12 @@ export interface AnalyticsProvider {
   fetchLatestVideosForAccount(
     username: string,
     max: number,
-    ctx?: ProviderCallContext
+    ctx?: ProviderCallContext,
   ): Promise<ProviderVideo[]>;
   /** Current stats for specific video URLs, keyed by video id. */
   fetchStatsForVideoUrls(
     urls: string[],
-    ctx?: ProviderCallContext
+    ctx?: ProviderCallContext,
   ): Promise<Map<string, ProviderVideoStats>>;
 }
 
@@ -66,4 +70,25 @@ export interface ProviderCallContext {
   refId?: string;
   /** Set by the resilient provider after a call: "TikLiveAPI" | "Apify". */
   usedProvider?: string;
+}
+
+/** Parse platform timestamps without substituting discovery time or local timezone. */
+export function publicationTime(value: unknown): Date | undefined {
+  let parsed: Date;
+  if (
+    typeof value === "number" ||
+    (typeof value === "string" && /^\d{10}(?:\d{3})?$/.test(value))
+  ) {
+    const n = Number(value);
+    parsed = new Date(n < 1e12 ? n * 1000 : n);
+  } else if (
+    typeof value === "string" &&
+    /T.*(?:Z|[+-]\d{2}:?\d{2})$/i.test(value)
+  ) {
+    parsed = new Date(value);
+  } else return undefined;
+  return Number.isFinite(parsed.getTime()) &&
+    parsed.getTime() >= Date.UTC(2010, 0, 1)
+    ? parsed
+    : undefined;
 }

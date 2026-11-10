@@ -1,3 +1,4 @@
+import { publicationTime } from "./provider";
 /**
  * Apify analytics provider — clockworks/tiktok-scraper via Apify API v2.
  * Raw fetch, no npm deps.
@@ -323,7 +324,10 @@ export class ApifyProvider implements AnalyticsProvider {
       likes = optionalCounter(item?.authorMeta?.heart) ?? likes;
       const videoId = item?.id != null ? String(item.id) : null;
       const createTimeISO = item?.createTimeISO || item?.createTime;
-      const createTime = createTimeISO ? new Date(typeof createTimeISO === "number" ? createTimeISO * 1000 : createTimeISO) : null;
+      const createTime = ctx?.source === "state_accounts" ? publicationTime(createTimeISO) : (createTimeISO ? new Date(typeof createTimeISO === "number" ? createTimeISO * 1000 : createTimeISO) : undefined);
+      if (videoId && ctx?.source === "state_accounts" && (!createTime || createTime.getTime() > Date.now())) {
+        throw new ProviderError("transient", `Invalid publication timestamp for @${clean}`);
+      }
       if (!videoId || !createTime || isNaN(createTime.getTime())) continue;
       if (ctx?.source === "state_accounts" && (optionalCounter(item.playCount) === null || optionalCounter(item.diggCount) === null)) {
         throw new ProviderError("transient", `Incomplete video metrics for @${clean}`);
@@ -425,7 +429,10 @@ export class ApifyProvider implements AnalyticsProvider {
       }
 
       const createTimeISO = item?.createTimeISO || item?.createTime;
-      const createTime = createTimeISO ? new Date(createTimeISO) : undefined;
+      const createTime = ctx?.source === "state_accounts" ? publicationTime(createTimeISO) : (createTimeISO ? new Date(createTimeISO) : undefined);
+      if (ctx?.source === "state_accounts" && createTimeISO && (!createTime || createTime.getTime() > Date.now())) {
+        throw new ProviderError("transient", `Invalid publication timestamp for video ${videoId}`);
+      }
       if (ctx?.source === "state_accounts" && (optionalCounter(item.playCount) === null || optionalCounter(item.diggCount) === null)) {
         throw new ProviderError("transient", `Incomplete metrics for video ${videoId}`);
       }

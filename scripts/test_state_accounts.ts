@@ -1,3 +1,5 @@
+import { publicationTime } from "../src/lib/services/analytics/provider";
+import { statePosts } from "../src/lib/services/state-accounts/posts";
 /** Run only against a disposable migrated database:
  * DATABASE_URL=postgresql://localhost/sleeckos_state_accounts_verify npx tsx scripts/test_state_accounts.ts
  */
@@ -321,6 +323,8 @@ async function main() {
     "Guardian polls do not double-count",
   );
 
+  let postTime = now;
+  let late = false;
   let views = BigInt(100),
     followers = BigInt(50),
     omitOld = false,
@@ -345,11 +349,21 @@ async function main() {
         likes: BigInt(100),
         videos: [
           ...(omitOld ? [] : [old]),
+          ...(late
+            ? [
+                {
+                  ...old,
+                  videoId: "10003",
+                  url: "https://www.tiktok.com/@state_test/video/10003",
+                  createTime: new Date(today.startsAt.getTime() - 7200000),
+                },
+              ]
+            : []),
           {
             ...old,
             videoId: "10002",
             url: "https://www.tiktok.com/@state_test/video/10002",
-            createTime: now,
+            createTime: postTime,
             views,
             likes: BigInt(5),
           },
@@ -416,6 +430,114 @@ async function main() {
     BigInt(155),
     "Counter corrections do not double-count recovery",
   );
+  const prior = await prisma.stateReportingDay.create({
+    data: {
+      label: "prior-test",
+      timezone: today.timezone,
+      startsAt: new Date(today.startsAt.getTime() - 86400000),
+      endsAt: today.startsAt,
+    },
+  });
+  await prisma.stateAccountDay.create({
+    data: {
+      accountId: account.id,
+      dayId: prior.id,
+      teamId: team.id,
+      postsTarget: 2,
+    },
+  });
+  postTime = new Date(today.startsAt.getTime() - 1);
+  await syncStateAccounts(provider);
+  assert.equal(
+    (await prisma.stateAccountDay.findUniqueOrThrow({ where: { id: row.id } }))
+      .posts,
+    0,
+    "timestamp correction removes the old day's count",
+  );
+  assert.equal(
+    (
+      await prisma.stateAccountDay.findUniqueOrThrow({
+        where: { accountId_dayId: { accountId: account.id, dayId: prior.id } },
+      })
+    ).posts,
+    2,
+    "corrected post counts on its publication day",
+  );
+  postTime = new Date(today.startsAt);
+  late = true;
+  await syncStateAccounts(provider);
+  await refreshActivityCounts(1);
+  const history = await statePosts(
+    new URLSearchParams({ day: today.id, account: account.id }),
+  );
+  assert.equal(
+    history?.total,
+    1,
+    "midnight belongs to the new day exactly once",
+  );
+  assert.equal(history?.posts[0].publishedAt, today.startsAt.toISOString());
+  assert.equal(
+    (await statePosts(new URLSearchParams({ day: prior.id, team: team.id })))
+      ?.total,
+    2,
+    "late discovery goes to its original day",
+  );
+  assert.equal(
+    (
+      await prisma.stateAccountDay.findUniqueOrThrow({
+        where: { accountId_dayId: { accountId: account.id, dayId: prior.id } },
+      })
+    ).posts,
+    2,
+    "recounts include days outside requested warmup window",
+  );
+  assert.equal(
+    (
+      await statePosts(
+        new URLSearchParams({ day: prior.id, team: "another-team" }),
+      )
+    )?.total,
+    0,
+  );
+  assert.equal(
+    await statePosts(new URLSearchParams({ day: "missing-day" })),
+    null,
+  );
+  await prisma.stateVideo.update({
+    where: { videoId: "10003" },
+    data: { unavailable: true },
+  });
+  await refreshActivityCounts(1);
+  assert.equal(
+    (await statePosts(new URLSearchParams({ day: prior.id })))?.total,
+    2,
+    "deleted/private posts retain historical posting credit",
+  );
+  postTime = new Date(Date.now() + 86400000);
+  assert.equal(
+    (await syncStateAccounts(provider)).failed,
+    1,
+    "future timestamps are rejected atomically",
+  );
+  assert.equal(
+    (
+      await prisma.stateVideo.findUniqueOrThrow({ where: { videoId: "10002" } })
+    ).publishedAt.toISOString(),
+    today.startsAt.toISOString(),
+  );
+  postTime = new Date(today.startsAt);
+  late = false;
+  for (const value of [
+    1700000000,
+    "1700000000",
+    1700000000000,
+    "1700000000000",
+    "2023-11-14T22:13:20Z",
+    "2023-11-15T01:13:20+03:00",
+  ])
+    assert.equal(publicationTime(value)?.getTime(), 1700000000000);
+  for (const value of [null, "", "invalid", "2023-11-14T22:13:20", 0])
+    assert.equal(publicationTime(value), undefined);
   fail = true;
   assert.equal((await syncStateAccounts(provider)).failed, 1);
   assert.equal(
@@ -505,8 +627,67 @@ async function main() {
       .postsTarget,
     2,
   );
+  for (const [zone, start] of [
+    ["Asia/Kolkata", "2026-01-02T18:30:00Z"],
+    ["Asia/Qatar", "2026-01-05T21:00:00Z"],
+    ["Europe/London", "2026-03-29T00:00:00Z"],
+    ["Europe/London", "2026-10-24T23:00:00Z"],
+  ]) {
+    const startsAt = new Date(start),
+      endsAt = nextMidnight(startsAt, zone);
+    const firstDay = await prisma.stateReportingDay.create({
+      data: { label: start.slice(0, 10), timezone: zone, startsAt, endsAt },
+    });
+    const secondDay = await prisma.stateReportingDay.create({
+      data: {
+        label: endsAt.toISOString().slice(0, 10),
+        timezone: zone,
+        startsAt: endsAt,
+        endsAt: nextMidnight(endsAt, zone),
+      },
+    });
+    for (const d of [firstDay, secondDay])
+      await prisma.stateAccountDay.create({
+        data: {
+          accountId: account.id,
+          dayId: d.id,
+          teamId: team.id,
+          posts: 99,
+        },
+      });
+    for (const at of [new Date(endsAt.getTime() - 1), endsAt])
+      await prisma.stateVideo.create({
+        data: {
+          videoId: randomUUID(),
+          accountId: account.id,
+          url: old.url,
+          publishedAt: at,
+          views: BigInt(0),
+          likes: BigInt(0),
+          lastObservedAt: now,
+        },
+      });
+    await refreshActivityCounts(1);
+    for (const d of [firstDay, secondDay]) {
+      assert.equal(
+        (
+          await prisma.stateAccountDay.findUniqueOrThrow({
+            where: { accountId_dayId: { accountId: account.id, dayId: d.id } },
+          })
+        ).posts,
+        1,
+        `${zone} historical boundary recount`,
+      );
+      assert.equal(
+        (await statePosts(new URLSearchParams({ day: d.id, team: team.id })))
+          ?.total,
+        1,
+        `${zone} history agrees with KPI count`,
+      );
+    }
+  }
   console.log(
-    "PASS: state scope, access, history, hourly sync, deduplication, failures, Guardian minutes and timezone/DST transitions",
+    "PASS: state scope, access, post history, corrected timestamps, late discovery, midnight/DST attribution, hourly sync, deduplication, failures and Guardian minutes",
   );
 }
 main()
