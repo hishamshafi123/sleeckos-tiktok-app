@@ -8,6 +8,7 @@ import {
   type ReactNode,
 } from "react";
 import Link from "next/link";
+import ClipStudio from "./ClipStudio";
 import {
   AlertCircle,
   ArrowUpRight,
@@ -966,6 +967,9 @@ export default function ClientPage() {
                         >
                           <X size={16} />
                         </button>
+                      </div>
+                      <div className="border-b border-zinc-800 pb-4">
+                        <ClipStudio key={detail.id} story={detail} />
                       </div>
                       {detail.needsReview && (
                         <p

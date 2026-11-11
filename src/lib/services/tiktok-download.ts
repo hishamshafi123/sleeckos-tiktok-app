@@ -1,3 +1,5 @@
+import { Readable, Transform } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import fs from "fs";
 import path from "path";
 
@@ -56,7 +58,8 @@ async function apiFetch(url: string, init?: RequestInit): Promise<Response> {
 export async function downloadTikTokVideo(
   url: string,
   destDir: string,
-  destBaseName: string
+  destBaseName: string,
+  maxBytes?: number
 ): Promise<TikTokDownloadResult> {
   const tk = token();
 
@@ -126,8 +129,22 @@ export async function downloadTikTokVideo(
   if (!fileRes.ok) {
     throw new TikTokDownloadError("transient", `KV record download failed (${fileRes.status})`);
   }
-  const buf = Buffer.from(await fileRes.arrayBuffer());
-  await fs.promises.writeFile(localPath, buf);
+  if (maxBytes !== undefined && fileRes.body) {
+    let bytes = 0;
+    const limit = new Transform({ transform(chunk, _encoding, callback) {
+      bytes += chunk.length;
+      callback(bytes > maxBytes ? new TikTokDownloadError("unavailable", "Video exceeds the download size limit") : null, chunk);
+    } });
+    try {
+      await pipeline(Readable.fromWeb(fileRes.body as never), limit, fs.createWriteStream(localPath), { signal: AbortSignal.timeout(120000) });
+    } catch (error) {
+      await fs.promises.rm(localPath, { force: true });
+      throw error;
+    }
+  } else {
+    const buf = Buffer.from(await fileRes.arrayBuffer());
+    await fs.promises.writeFile(localPath, buf);
+  }
   const stat = await fs.promises.stat(localPath);
   if (stat.size < 50 * 1024) {
     try { fs.unlinkSync(localPath); } catch {}

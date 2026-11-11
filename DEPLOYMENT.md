@@ -457,3 +457,40 @@ No schema change is required: StateVideo already stores publication timestamps.
 Run `scripts/test_state_accounts.ts` against the isolated verification database
 for late discovery, corrections, daily history/KPI agreement, invalid timestamps,
 midnight, India/Qatar and both London DST boundaries.
+
+## Content Desk Clip Studio
+
+Open a story and choose **Open Clip Studio**. Import a public YouTube/TikTok/
+Instagram video or direct MP4/MOV/WebM URL, or upload a file. Sources are limited
+to 20 minutes / 500 MB; each export is one continuous 1–180 second clip, with an
+optional 3-second outro. Source-platform restrictions can require manual upload.
+Transcription uses the existing Python environment (`faster-whisper`, default
+`base`, CPU/int8); AI suggestions use `GEMINI_API_KEY`. The first transcription
+may download the speech model. Optional settings: `CONTENT_CLIP_WHISPER_MODEL`,
+`CONTENT_CLIP_AI_MODEL` (default `gemini-2.5-flash`), `CONTENT_CLIP_PYTHON`,
+`CONTENT_CLIP_YTDLP`, and `CONTENT_CLIP_DIR`.
+
+The new `content-clips-data` Docker volume stores private source/export files at
+`/app/data/content-clips`. Back it up with Postgres; do not delete this volume on
+redeploy. The app creates it with the container user's ownership. Media is served
+through authenticated routes with byte-range support, not through public uploads.
+Ensure nginx allows `client_max_body_size 510m` on this app's virtual host for
+uploads. The upload endpoint streams to disk. Render and transcription work runs
+in the background; it does not require a long-lived browser connection.
+
+Jobs start after API responses and recover through the existing five-minute
+Content Desk cron endpoint. No additional cron entry is needed. One Clip Studio
+job runs at a time across app processes, with a renewable database lease and
+bounded process timeouts. Interrupted jobs recover once, then show an explicit
+retry action. Draft saves use optimistic versions; exports retain their own
+immutable draft/transcript snapshots. Exporting never sets a story to POSTED or
+increments posting KPIs. Account branding defaults are saved only after the
+story has an assigned account. Existing team edit permissions apply.
+
+QA: run `scripts/test_content_clips.ts` only against the isolated migrated
+`state_accounts_verify` database. It creates synthetic footage and performs a
+real Remotion/FFmpeg export, along with access, retry, recovery, transcript
+version, and draft-conflict checks. Set `PUPPETEER_EXECUTABLE_PATH` for a local
+Chrome executable when needed. Deployment smoke checks should cover the new
+migration, private volume write permissions, ffmpeg/Python/yt-dlp availability,
+authenticated video ranges, and a short exported fixture.

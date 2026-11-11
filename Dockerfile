@@ -89,15 +89,20 @@ RUN mkdir -p /usr/local/share/fonts && \
     cp public/fonts/*.ttf /usr/local/share/fonts/ && \
     fc-cache -f -v
 
+# Video imports need the current extractor and its JavaScript challenge helpers.
+RUN ./venv/bin/pip install --no-cache-dir "yt-dlp[default]>=2026.10.26" && chown -R nextjs:nodejs venv
+
 # ── Source code (changes every build — placed LAST for max cache reuse) ──────
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 COPY --from=builder --chown=nextjs:nodejs /app/public ./public
 COPY --from=builder --chown=nextjs:nodejs /app/scripts ./scripts
+COPY --from=builder --chown=nextjs:nodejs /app/src/remotion/content-clips ./src/remotion/content-clips
+COPY --from=builder --chown=nextjs:nodejs /app/src/lib/content-clips ./src/lib/content-clips
 
 # Ensure uploads, fonts, and scripts directories exist and have proper permissions
-RUN mkdir -p public/uploads public/fonts && \
-    chown -R nextjs:nodejs public scripts
+RUN mkdir -p public/uploads public/fonts data/content-clips && \
+    chown -R nextjs:nodejs public scripts data
 
 # Prisma: config + schema + migrations + generated client
 COPY --from=builder --chown=nextjs:nodejs /app/prisma.config.ts ./

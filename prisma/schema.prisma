@@ -2366,6 +2366,7 @@ model ContentStory {
   version Int @default(0)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+  clips ContentClip[]
   items ContentItem[]
   events ContentEvent[]
   @@index([stateCode, status, createdAt])
@@ -2441,4 +2442,44 @@ model ContentRanking {
   finishedAt DateTime?
   @@index([scope, createdAt])
   @@index([status, updatedAt])
+}
+
+// Content Desk media stays separate from publishing and account KPI records.
+model ContentClip {
+  id String @id @default(uuid())
+  storyId String
+  story ContentStory @relation(fields: [storyId], references: [id], onDelete: Cascade)
+  sourceUrl String?
+  sourceName String
+  sourcePath String?
+  duration Float?
+  transcript Json?
+  transcriptVersion Int @default(0)
+  suggestions Json?
+  draft Json
+  version Int @default(0)
+  createdById String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  jobs ContentClipJob[]
+  @@index([storyId, createdAt])
+}
+
+model ContentClipJob {
+  id String @id @default(uuid())
+  clipId String
+  clip ContentClip @relation(fields: [clipId], references: [id], onDelete: Cascade)
+  kind String
+  status String @default("QUEUED")
+  stage String @default("Waiting for a worker")
+  error String?
+  payload Json
+  outputPath String?
+  owner String?
+  leaseUntil DateTime?
+  attempts Int @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@index([status, createdAt])
+  @@index([clipId, createdAt])
 }

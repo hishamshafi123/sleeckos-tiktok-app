@@ -49,6 +49,7 @@ services:
       - "127.0.0.1:${PORT:-3000}:${PORT:-3000}"
     volumes:
       - uploads-data:/app/public/uploads
+      - content-clips-data:/app/data/content-clips
     depends_on:
       db:
         condition: service_healthy
@@ -64,3 +65,4 @@ services:
 volumes:
   pgdata:
   uploads-data:
+  content-clips-data:

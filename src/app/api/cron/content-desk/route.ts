@@ -1,5 +1,6 @@
+import { runClipJobs } from "@/lib/services/content-clips/worker";
 import { timingSafeEqual } from "node:crypto";
-import { NextResponse } from "next/server";
+import { after, NextResponse } from "next/server";
 import { runDesk } from "@/lib/services/content-desk/worker";
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -15,6 +16,9 @@ export async function GET(request: Request) {
   )
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   try {
+    after(async () => {
+      await runClipJobs(2);
+    });
     const result = await runDesk();
     return NextResponse.json(result, { status: result.failed ? 207 : 200 });
   } catch (error) {

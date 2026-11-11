@@ -26,3 +26,8 @@ multilogin-guardian/
 .vscode
 .idea
 *.swp
+
+# Host-only media, verification artifacts and Python environment
+venv
+data
+scratch
