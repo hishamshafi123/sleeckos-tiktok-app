@@ -2,6 +2,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
+import os from "node:os";
 import prisma from "../src/lib/db";
 import {
   defaultDraft,
@@ -322,7 +323,25 @@ async function main() {
       draft.hook,
       "export must use immutable draft snapshot",
     );
+    const publicSentinel = `clip-qa-upload-${clip.id}.txt`;
+    const sentinelPath = path.join(process.cwd(), "public", publicSentinel);
+    await fs.promises.writeFile(sentinelPath, "Existing app upload must not be bundled");
+    paths.push(sentinelPath);
+    const bundlesBefore = new Set(await fs.promises.readdir(os.tmpdir()));
     await runClipJobs(1, { ...mocked, renderClip });
+    const newBundles = (await fs.promises.readdir(os.tmpdir())).filter(
+      (name) => name.startsWith("remotion-webpack-bundle-") && !bundlesBefore.has(name),
+    );
+    assert.ok(newBundles.length, "a real render bundle must be generated");
+    for (const name of newBundles) {
+      const directory = path.join(os.tmpdir(), name);
+      paths.push(directory);
+      assert.equal(
+        fs.existsSync(path.join(directory, "public", publicSentinel)),
+        false,
+        "Clip Studio must not copy the app uploads into its render bundle",
+      );
+    }
     const result = await prisma.contentClipJob.findUniqueOrThrow({
       where: { id: exported.id },
     });

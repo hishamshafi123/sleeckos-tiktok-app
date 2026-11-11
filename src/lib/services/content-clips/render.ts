@@ -60,7 +60,9 @@ export async function renderClip(
         process.cwd(),
         "src/remotion/content-clips/index.tsx",
       ),
-      publicDir: null,
+      // Remotion treats null as the app's public directory, which contains
+      // the production uploads volume. Bundle only Clip Studio assets.
+      publicDir: path.join(process.cwd(), "src/remotion/content-clips/assets"),
     }).catch((e) => {
       bundlePromise = undefined;
       throw e;
