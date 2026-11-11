@@ -1,3 +1,5 @@
+import { observedSessions } from "../src/lib/services/state-accounts/sessions";
+import { stateWarmup } from "../src/lib/services/state-accounts/warmup";
 import { publicationTime } from "../src/lib/services/analytics/provider";
 import { statePosts } from "../src/lib/services/state-accounts/posts";
 /** Run only against a disposable migrated database:
@@ -686,6 +688,69 @@ async function main() {
       );
     }
   }
+  const sessionStart = new Date("2026-11-11T00:00:00Z");
+  const sessionEnd = new Date("2026-11-12T00:00:00Z");
+  const sessions = observedSessions(
+    [
+      { observedAt: new Date("2026-11-11T00:05:00Z"), runtimeSecs: 600 },
+      { observedAt: new Date("2026-11-11T00:10:00Z"), runtimeSecs: 900 },
+      { observedAt: new Date("2026-11-11T01:05:00Z"), runtimeSecs: 300 },
+      { observedAt: new Date("2026-11-11T01:05:00Z"), runtimeSecs: 300 },
+      { observedAt: new Date("2026-11-12T00:05:00Z"), runtimeSecs: 600 },
+    ],
+    sessionStart,
+    sessionEnd,
+  );
+  assert.equal(
+    sessions.length,
+    3,
+    "Repeated samples do not create extra sessions",
+  );
+  assert.equal(
+    sessions.reduce((n, s) => n + s.seconds, 0),
+    1200,
+    "Sessions clipped at both day boundaries",
+  );
+  assert.equal(sessions.filter((s) => s.carriedOver).length, 1);
+  const latestDay = await prisma.stateReportingDay.findFirstOrThrow({
+    orderBy: { startsAt: "desc" },
+  });
+  const cutoff = new Date(latestDay.endsAt.getTime() - 1);
+  const rolling = await statePosts(
+    new URLSearchParams({
+      day: latestDay.id,
+      account: account.id,
+      window: "24h",
+      asOf: cutoff.toISOString(),
+    }),
+    latestDay.endsAt,
+  );
+  const expectedRolling = await prisma.stateVideo.count({
+    where: {
+      accountId: account.id,
+      publishedAt: { gte: new Date(cutoff.getTime() - 86400000), lt: cutoff },
+    },
+  });
+  assert.equal(rolling?.total, expectedRolling);
+  assert.equal(
+    await statePosts(new URLSearchParams({ day: latestDay.id, window: "24h" })),
+    null,
+    "Rolling history requires an account",
+  );
+  assert.equal(
+    await stateWarmup(
+      new URLSearchParams({ day: latestDay.id, account: "unrelated" }),
+    ),
+    null,
+  );
+  const detail = await stateWarmup(
+    new URLSearchParams({ day: latestDay.id, account: account.id }),
+  );
+  assert.ok(detail);
+  assert.equal(
+    detail.totalSeconds,
+    detail.sessions.reduce((n, s) => n + s.seconds, 0),
+  );
   console.log(
     "PASS: state scope, access, post history, corrected timestamps, late discovery, midnight/DST attribution, hourly sync, deduplication, failures and Guardian minutes",
   );

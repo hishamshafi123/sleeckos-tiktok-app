@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import {
   Plus,
   RefreshCw,
@@ -11,7 +11,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import GrowthPanel from "./GrowthPanel";
-import PostHistory from "./PostHistory";
+import AccountActivity from "./AccountActivity";
 import {
   Dialog,
   DialogContent,
@@ -355,6 +355,19 @@ export default function ClientPage() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [selected, setSelected] = useState("all");
+  const [expanded, setExpanded] = useState<{
+    account: string;
+    kind: "posts" | "warmup";
+    team: string;
+  } | null>(null);
+  const toggleActivity = (account: string, kind: "posts" | "warmup") =>
+    setExpanded((current) =>
+      current?.account === account &&
+      current.kind === kind &&
+      current.team === selected
+        ? null
+        : { account, kind, team: selected },
+    );
   const [period, setPeriod] = useState(7);
   const [weekly, setWeekly] = useState(false);
   const [combined, setCombined] = useState(true);
@@ -795,14 +808,6 @@ export default function ClientPage() {
           </p>
         </section>
       )}
-      <PostHistory
-        key={selected}
-        days={data.days}
-        todayId={data.todayId}
-        team={selected}
-        accounts={data.accounts}
-        refreshKey={data.generatedAt}
-      />
       <section>
         <h2 className="mb-3 font-medium">Today’s account progress</h2>
         {!accounts.length ? (
@@ -839,80 +844,133 @@ export default function ClientPage() {
                     (r) => r.accountId === a.accountId,
                   );
                   return (
-                    <tr key={a.accountId}>
-                      <td className="px-4 py-4">
-                        <p className="font-medium">{a.stateName}</p>
-                        <a
-                          className="text-xs text-zinc-500 hover:text-blue-300"
-                          href={`https://www.tiktok.com/@${encodeURIComponent(a.account.tiktokUsername.replace(/^@/, ""))}`}
-                          target="_blank"
-                          rel="noreferrer"
-                        >
-                          @{a.account.tiktokUsername.replace(/^@/, "")}
-                        </a>
-                        <p className="mt-1 text-xs text-zinc-500">
-                          {a.phoneName || "Guardian phone not linked"}
-                        </p>
-                      </td>
-                      <td className="px-4 text-xs">
-                        {teamName(row?.teamId ?? null)}
-                        {row?.teamId !== a.teamId && (
-                          <p className="mt-1 text-amber-300">
-                            Next day: {teamName(a.teamId)}
-                          </p>
-                        )}
-                      </td>
-                      <td className="px-4">
-                        {row && (
-                          <Progress
-                            value={row.posts}
-                            target={row.postsTarget}
-                          />
-                        )}
-                      </td>
-                      <td className="px-4">
-                        {row?.guardianProfileId ? (
-                          <Progress
-                            value={row.warmupMinutes}
-                            target={row.warmupTarget}
-                            suffix=" min"
-                          />
-                        ) : (
-                          <span className="text-xs text-amber-300">
-                            Link Guardian phone
-                          </span>
-                        )}
-                      </td>
-                      <td className="px-4 tabular-nums">
-                        {a.followers === null ? "—" : fmt(a.followers)}
-                      </td>
-                      <td className="px-4 text-xs text-zinc-400">
-                        {a.lastSyncAt
-                          ? new Date(a.lastSyncAt).toLocaleString("en-GB", {
-                              timeZone: data.timezone,
-                              month: "short",
-                              day: "numeric",
-                              hour: "2-digit",
-                              minute: "2-digit",
-                            })
-                          : "Awaiting sync"}
-                        {a.syncError && (
-                          <p className="mt-1 max-w-44 text-amber-300">
-                            {a.syncError}
-                          </p>
-                        )}
-                      </td>
-                      <td className="px-4">
-                        {data.isAdmin && (
-                          <button
-                            className={button}
-                            onClick={() => setAccountEdit(a)}
+                    <Fragment key={a.accountId}>
+                      <tr>
+                        <td className="px-4 py-4">
+                          <p className="font-medium">{a.stateName}</p>
+                          <a
+                            className="text-xs text-zinc-500 hover:text-blue-300"
+                            href={`https://www.tiktok.com/@${encodeURIComponent(a.account.tiktokUsername.replace(/^@/, ""))}`}
+                            target="_blank"
+                            rel="noreferrer"
                           >
-                            Manage
-                          </button>
+                            @{a.account.tiktokUsername.replace(/^@/, "")}
+                          </a>
+                          <p className="mt-1 text-xs text-zinc-500">
+                            {a.phoneName || "Guardian phone not linked"}
+                          </p>
+                        </td>
+                        <td className="px-4 text-xs">
+                          {teamName(row?.teamId ?? null)}
+                          {row?.teamId !== a.teamId && (
+                            <p className="mt-1 text-amber-300">
+                              Next day: {teamName(a.teamId)}
+                            </p>
+                          )}
+                        </td>
+                        <td className="px-4">
+                          {row && (
+                            <button
+                              className="min-w-24 text-left hover:text-blue-300 focus-visible:ring-2 focus-visible:ring-blue-400 rounded"
+                              aria-label={`Posting details for ${a.stateName}`}
+                              aria-expanded={
+                                expanded?.account === a.accountId &&
+                                expanded.kind === "posts" &&
+                                expanded.team === selected
+                              }
+                              aria-controls={`activity-${a.accountId}`}
+                              onClick={() =>
+                                toggleActivity(a.accountId, "posts")
+                              }
+                            >
+                              <Progress
+                                value={row.posts}
+                                target={row.postsTarget}
+                              />
+                              <span className="text-[11px] text-blue-300">
+                                Posts ▾
+                              </span>
+                            </button>
+                          )}
+                        </td>
+                        <td className="px-4">
+                          {row?.guardianProfileId ? (
+                            <button
+                              className="min-w-24 text-left hover:text-blue-300 focus-visible:ring-2 focus-visible:ring-blue-400 rounded"
+                              aria-label={`Warm-up details for ${a.stateName}`}
+                              aria-expanded={
+                                expanded?.account === a.accountId &&
+                                expanded.kind === "warmup" &&
+                                expanded.team === selected
+                              }
+                              aria-controls={`activity-${a.accountId}`}
+                              onClick={() =>
+                                toggleActivity(a.accountId, "warmup")
+                              }
+                            >
+                              <Progress
+                                value={row.warmupMinutes}
+                                target={row.warmupTarget}
+                                suffix=" min"
+                              />
+                              <span className="text-[11px] text-blue-300">
+                                Sessions ▾
+                              </span>
+                            </button>
+                          ) : (
+                            <span className="text-xs text-amber-300">
+                              Link Guardian phone
+                            </span>
+                          )}
+                        </td>
+                        <td className="px-4 tabular-nums">
+                          {a.followers === null ? "—" : fmt(a.followers)}
+                        </td>
+                        <td className="px-4 text-xs text-zinc-400">
+                          {a.lastSyncAt
+                            ? new Date(a.lastSyncAt).toLocaleString("en-GB", {
+                                timeZone: data.timezone,
+                                month: "short",
+                                day: "numeric",
+                                hour: "2-digit",
+                                minute: "2-digit",
+                              })
+                            : "Awaiting sync"}
+                          {a.syncError && (
+                            <p className="mt-1 max-w-44 text-amber-300">
+                              {a.syncError}
+                            </p>
+                          )}
+                        </td>
+                        <td className="px-4">
+                          {data.isAdmin && (
+                            <button
+                              className={button}
+                              onClick={() => setAccountEdit(a)}
+                            >
+                              Manage
+                            </button>
+                          )}
+                        </td>
+                      </tr>
+                      {expanded?.account === a.accountId &&
+                        expanded.team === selected && (
+                          <tr
+                            id={`activity-${a.accountId}`}
+                            className="bg-zinc-900/40"
+                          >
+                            <td colSpan={7}>
+                              <AccountActivity
+                                key={`${a.accountId}-${expanded.kind}-${today.id}`}
+                                account={a.accountId}
+                                day={today.id}
+                                kind={expanded.kind}
+                                refreshKey={data.generatedAt}
+                              />
+                            </td>
+                          </tr>
                         )}
-                      </td>
-                    </tr>
+                    </Fragment>
                   );
                 })}
               </tbody>

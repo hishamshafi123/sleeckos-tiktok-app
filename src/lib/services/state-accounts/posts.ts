@@ -1,6 +1,6 @@
 import prisma from "@/lib/db";
 
-export async function statePosts(params: URLSearchParams) {
+export async function statePosts(params: URLSearchParams, now = new Date()) {
   const dayId = params.get("day") || "";
   const team = params.get("team") || "all";
   const accountId = params.get("account") || "";
@@ -13,6 +13,17 @@ export async function statePosts(params: URLSearchParams) {
     include: { accounts: { include: { team: { select: { name: true } } } } },
   });
   if (!day) return null;
+  const rolling = params.get("window") === "24h";
+  if (rolling && !accountId) return null;
+  const requestedEnd = new Date(params.get("asOf") || now);
+  const windowEnd =
+    Number.isFinite(requestedEnd.getTime()) && requestedEnd <= now
+      ? requestedEnd
+      : now;
+  const startsAt = rolling
+    ? new Date(windowEnd.getTime() - 24 * 3600000)
+    : day.startsAt;
+  const endsAt = rolling ? windowEnd : day.endsAt;
   const rows = day.accounts.filter(
     (r) =>
       (team === "all" || r.teamId === team) &&
@@ -20,7 +31,7 @@ export async function statePosts(params: URLSearchParams) {
   );
   const where = {
     accountId: { in: rows.map((r) => r.accountId) },
-    publishedAt: { gte: day.startsAt, lt: day.endsAt },
+    publishedAt: { gte: startsAt, lt: endsAt },
   };
   const [posts, total] = await prisma.$transaction(
     [
@@ -54,8 +65,8 @@ export async function statePosts(params: URLSearchParams) {
       id: day.id,
       label: day.label,
       timezone: day.timezone,
-      startsAt: day.startsAt.toISOString(),
-      endsAt: day.endsAt.toISOString(),
+      startsAt: startsAt.toISOString(),
+      endsAt: endsAt.toISOString(),
     },
     total,
     page,
