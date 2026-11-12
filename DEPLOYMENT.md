@@ -494,3 +494,27 @@ version, and draft-conflict checks. Set `PUPPETEER_EXECUTABLE_PATH` for a local
 Chrome executable when needed. Deployment smoke checks should cover the new
 migration, private volume write permissions, ffmpeg/Python/yt-dlp availability,
 authenticated video ranges, and a short exported fixture.
+
+### Clip Studio YouTube downloads through RapidAPI
+
+Set `RAPIDAPI_YOUTUBE_KEY` in the server `.env` and recreate the app container.
+The key is used only by the backend for APIHubCloud's **Cloud Api Hub - Youtube
+Downloader** at `cloud-api-hub-youtube-downloader.p.rapidapi.com`.
+Each YouTube import calls `/info` to validate duration/live status, then `/download`
+to resolve fresh Google Video links. The worker selects up to 1080p, downloads
+video and audio separately when needed, and merges them locally with FFmpeg.
+The provider's separately metered `/mux` endpoint is not used. Short sources may
+only offer lower resolutions. Downloads retain the 20-minute / 500 MB limits.
+
+Both the documented and current format responses are supported. Signed links
+are used immediately and not saved in story data. API credentials never accompany
+media downloads. Missing credentials, denied access/subscription, quota limits,
+provider errors, expired/blocked media, and unsupported formats produce clear
+retry/upload feedback in the existing Clip Studio job panel. YouTube uses this
+provider directly; Instagram keeps yt-dlp and TikTok keeps its existing provider.
+No schema migration or additional cron is required.
+
+Run `npx tsx scripts/test_youtube_rapidapi.ts` for format-selection and provider-error
+regressions, plus the existing Clip Studio suite. Live verification should import
+a YouTube URL through the authenticated Clip Studio API and confirm video and
+audio are both present in its downloadable source.

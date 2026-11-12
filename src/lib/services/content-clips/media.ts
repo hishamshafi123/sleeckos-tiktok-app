@@ -11,6 +11,11 @@ import { isPublicIPv4 } from "../content-desk/network";
 import { publicUrl } from "../content-desk/rules";
 import { MAX_BYTES, MAX_SECONDS } from "../../content-clips/schema";
 import { downloadTikTokVideo } from "../tiktok-download";
+import {
+  checkYouTubeInfo,
+  rapidYouTubeRequest,
+  selectYouTubeFormats,
+} from "./youtube-rapidapi";
 export const MEDIA_ROOT = path.resolve(
   process.env.CONTENT_CLIP_DIR || "data/content-clips",
 );
@@ -77,6 +82,7 @@ async function downloadPublic(
   dest: string,
   signal: AbortSignal,
   redirects = 0,
+  options: { maxBytes?: number; userAgent?: string } = {},
 ): Promise<void> {
   const url = new URL(publicUrl(raw));
   const ips = isIP(url.hostname)
@@ -90,6 +96,7 @@ async function downloadPublic(
       {
         signal,
         family: 4,
+        headers: { "User-Agent": options.userAgent || "Sleeckos/1.0" },
         lookup: (_host, options, cb) => {
           if (options.all) cb(null, [{ address: ips[0], family: 4 }]);
           else cb(null, ips[0], 4);
@@ -114,6 +121,7 @@ async function downloadPublic(
             dest,
             signal,
             redirects + 1,
+            options,
           ).then(resolve, reject);
           return;
         }
@@ -126,12 +134,20 @@ async function downloadPublic(
           );
           return;
         }
+        if (
+          Number(res.headers["content-length"]) >
+          (options.maxBytes ?? MAX_BYTES)
+        ) {
+          res.destroy();
+          reject(new Error("Video exceeds the 500 MB limit."));
+          return;
+        }
         let size = 0;
         const limit = new Transform({
           transform(chunk, _encoding, cb) {
             size += chunk.length;
             cb(
-              size > MAX_BYTES
+              size > (options.maxBytes ?? MAX_BYTES)
                 ? new Error("Video exceeds the 500 MB limit.")
                 : null,
               chunk,
@@ -161,7 +177,73 @@ export async function importVideo(
   await fs.promises.mkdir(dir, { recursive: true });
   const file = path.join(dir, "input.mp4");
   if (source.kind === "direct") await downloadPublic(source.url, file, signal);
-  else if (source.kind === "tiktok") {
+  else if (source.kind === "youtube") {
+    const id = new URL(source.url).searchParams.get("v")!;
+    checkYouTubeInfo(await rapidYouTubeRequest("info", id, signal));
+    const selected = selectYouTubeFormats(
+      await rapidYouTubeRequest("download", id, signal),
+    );
+    const video = path.join(dir, "youtube-video.bin");
+    const audio = path.join(dir, "youtube-audio.bin");
+    const downloadSignal = AbortSignal.any([
+      signal,
+      AbortSignal.timeout(300000),
+    ]);
+    try {
+      await downloadPublic(selected.video.url, video, downloadSignal, 0, {
+        userAgent: selected.video.userAgent,
+      });
+      if (selected.audio) {
+        const remaining = MAX_BYTES - (await fs.promises.stat(video)).size;
+        await downloadPublic(selected.audio.url, audio, downloadSignal, 0, {
+          maxBytes: remaining,
+          userAgent: selected.audio.userAgent,
+        });
+        await command(
+          "ffmpeg",
+          [
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-protocol_whitelist",
+            "file,pipe",
+            "-i",
+            video,
+            "-protocol_whitelist",
+            "file,pipe",
+            "-i",
+            audio,
+            "-map",
+            "0:v:0",
+            "-map",
+            "1:a:0",
+            "-c:v",
+            "copy",
+            "-c:a",
+            "aac",
+            "-threads",
+            "2",
+            "-movflags",
+            "+faststart",
+            file,
+          ],
+          300000,
+          signal,
+        );
+      } else await fs.promises.rename(video, file);
+    } catch (error) {
+      if (error instanceof Error && error.message.includes("500 MB"))
+        throw error;
+      throw new Error(
+        "The RapidAPI video could not be downloaded or merged. Its link may have expired or been blocked. Retry to request fresh links, or upload the file.",
+      );
+    } finally {
+      await Promise.all(
+        [video, audio].map((p) => fs.promises.rm(p, { force: true })),
+      );
+    }
+  } else if (source.kind === "tiktok") {
     try {
       await downloadTikTokVideo(source.url, dir, "input", MAX_BYTES);
     } catch {
@@ -208,6 +290,10 @@ export async function importVideo(
   }
   if ((await fs.promises.stat(file)).size > MAX_BYTES)
     throw new Error("Video exceeds the 500 MB limit.");
+  if (source.kind === "youtube" && !(await probe(file)).audio)
+    throw new Error(
+      "RapidAPI returned a video without sound. Retry or upload a video with audio.",
+    );
   return file;
 }
 export async function probe(file: string) {
