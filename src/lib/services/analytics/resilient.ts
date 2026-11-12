@@ -106,6 +106,27 @@ export class FallbackProvider implements AnalyticsProvider {
     }
   }
 
+  async fetchAccountSnapshot(username: string, max: number, ctx?: ProviderCallContext) {
+    const snapshot = (provider: AnalyticsProvider) => {
+      if (!provider.fetchAccountSnapshot) throw new ProviderError("transient", "Provider does not support profile snapshots");
+      return provider.fetchAccountSnapshot(username, max, ctx);
+    };
+    if (this.primaryAllowed()) {
+      try {
+        const result = await snapshot(this.primary);
+        this.onPrimarySuccess();
+        if (ctx) ctx.usedProvider = "TikLiveAPI";
+        return result;
+      } catch (error) {
+        if (error instanceof ProviderError && error.kind === "not_found") throw error;
+        this.onPrimaryFailure(error);
+      }
+    }
+    const result = await this.callFallback(`profile snapshot @${username}`, snapshot);
+    if (ctx) ctx.usedProvider = "Apify";
+    return result;
+  }
+
   async fetchLatestVideosForAccount(
     username: string,
     max: number,

@@ -28,7 +28,7 @@
  */
 
 import prisma from "@/lib/db";
-import { ProviderError } from "./provider";
+import { ProviderError, publicationTime } from "./provider";
 import type {
   AnalyticsProvider,
   ProviderCallContext,
@@ -75,6 +75,11 @@ function toBigInt(v: unknown): bigint {
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+function validCounter(value: unknown): boolean {
+  return (typeof value === "number" && Number.isFinite(value) && value >= 0) ||
+    (typeof value === "string" && /^\d+$/.test(value));
+}
 
 /**
  * Global request pacer — every TikLiveAPI HTTP call starts at least
@@ -249,11 +254,41 @@ function logTikliveCall(
 }
 
 export class TikLiveProvider implements AnalyticsProvider {
+  async fetchAccountSnapshot(username: string, max: number, ctx?: ProviderCallContext) {
+    const clean = username.replace(/^@/, "");
+    const startedAt = Date.now();
+    let status: "ok" | "error" = "ok";
+    let errorKind: string | null = null;
+    let profile: any;
+    try {
+      // Profile counters must be fetched every sync, never served from the ID cache.
+      profile = await tikliveGet(`/userinfo-by-username/?username=${encodeURIComponent(clean)}`);
+      if (isErrorEnvelope(profile)) throw new ProviderError(envelopeKind(profile), "TikLiveAPI profile is unavailable");
+      if (profile?.user?.privateAccount) throw new ProviderError("not_found", "TikTok profile is private");
+      if (!profile?.user?.id || String(profile.user.uniqueId || "").toLowerCase() !== clean.toLowerCase())
+        throw new ProviderError("transient", "TikLiveAPI returned an incomplete or mismatched profile");
+      if (!validCounter(profile?.stats?.followerCount) || !validCounter(profile?.stats?.heartCount ?? profile?.stats?.heart))
+        throw new ProviderError("transient", "TikLiveAPI returned incomplete profile counters");
+    } catch (error) {
+      status = "error";
+      errorKind = error instanceof ProviderError ? error.kind : "transient";
+      throw error;
+    } finally {
+      logTikliveCall({source:ctx?.source ?? "unknown",inputType:"account",inputSummary:`@${clean}`,inputCount:1},
+        {resultCount:status === "ok" ? 1 : 0,apiCalls:1,durationMs:Date.now()-startedAt,status,errorKind});
+    }
+    const videos = await this.fetchLatestVideosForAccount(clean, max, ctx, String(profile.user.id));
+    if (Number(profile.stats.videoCount) > 0 && videos.length === 0)
+      throw new ProviderError("transient", "TikLiveAPI returned no videos for a profile with posts");
+    return {videos,followers:toBigInt(profile.stats.followerCount),likes:toBigInt(profile.stats.heartCount ?? profile.stats.heart)};
+  }
+
   /** Latest videos for a TikTok profile, newest first. */
   async fetchLatestVideosForAccount(
     username: string,
     max: number,
-    ctx?: ProviderCallContext
+    ctx?: ProviderCallContext,
+    knownUserId?: string,
   ): Promise<ProviderVideo[]> {
     const clean = username.replace(/^@/, "");
     const startedAt = Date.now();
@@ -262,15 +297,16 @@ export class TikLiveProvider implements AnalyticsProvider {
     let status: "ok" | "error" = "ok";
     let errorKind: string | null = null;
     try {
-      apiCalls++; // userinfo-by-username (served from local cache when warm)
-      const userId = await resolveUserId(clean);
+      if (!knownUserId) apiCalls++; // userinfo-by-username (served from local cache when warm)
+      const userId = knownUserId || await resolveUserId(clean);
 
       // user-posts pages at 35/call — paginate with the cursor when the
       // caller asks for more (recovery fetches 50–150 deep).
       const wanted = Math.max(1, Math.floor(max));
+      const pageLimit = ctx?.source === "state_accounts" ? Math.min(29, Math.ceil(wanted / MAX_POSTS_PER_CALL)) : MAX_PAGES;
       const items: any[] = [];
       let cursor: string | null = null;
-      for (let page = 0; page < MAX_PAGES && items.length < wanted; page++) {
+      for (let page = 0; page < pageLimit && items.length < wanted; page++) {
         apiCalls++;
         const count = Math.min(wanted - items.length, MAX_POSTS_PER_CALL);
         const data = await tikliveGet(
@@ -280,6 +316,8 @@ export class TikLiveProvider implements AnalyticsProvider {
         if (isErrorEnvelope(data)) {
           throw new ProviderError(envelopeKind(data), `TikLiveAPI user-posts @${clean}: ${data.message}`);
         }
+        if (ctx?.source === "state_accounts" && !Array.isArray(data?.videos))
+          throw new ProviderError("transient", "TikLiveAPI returned an incomplete video list");
         const batch: any[] = Array.isArray(data?.videos) ? data.videos : [];
         items.push(...batch);
         if (!data?.hasMore || batch.length === 0) break;
@@ -291,7 +329,11 @@ export class TikLiveProvider implements AnalyticsProvider {
       for (const item of items) {
         const videoId = item?.video_id != null ? String(item.video_id) : item?.id != null ? String(item.id) : null;
         const ts = Number(item?.create_time);
-        const createTime = Number.isFinite(ts) && ts > 0 ? new Date(ts * 1000) : null;
+        const createTime = ctx?.source === "state_accounts" ? publicationTime(item?.create_time) : (Number.isFinite(ts) && ts > 0 ? new Date(ts * 1000) : null);
+        if (ctx?.source === "state_accounts" && (!videoId || !publicationTime(item?.create_time) || !createTime || createTime.getTime() > Date.now()))
+          throw new ProviderError("transient", "Invalid publication timestamp returned by TikLiveAPI");
+        if (ctx?.source === "state_accounts" && (!validCounter(item.play_count) || !validCounter(item.digg_count)))
+          throw new ProviderError("transient", "TikLiveAPI returned incomplete video metrics");
         if (!videoId || !createTime) continue;
         videos.push({
           videoId,
@@ -373,7 +415,11 @@ export class TikLiveProvider implements AnalyticsProvider {
           return;
         }
         const ts = Number(data?.create_time);
-        const createTime = Number.isFinite(ts) && ts > 0 ? new Date(ts * 1000) : undefined;
+        const createTime = ctx?.source === "state_accounts" ? publicationTime(data?.create_time) : (Number.isFinite(ts) && ts > 0 ? new Date(ts * 1000) : undefined);
+        if (ctx?.source === "state_accounts" && data.create_time != null && (!publicationTime(data.create_time) || !createTime || createTime.getTime() > Date.now()))
+          throw new ProviderError("transient", "Invalid publication timestamp returned by TikLiveAPI");
+        if (ctx?.source === "state_accounts" && (!validCounter(data.play_count) || !validCounter(data.digg_count)))
+          throw new ProviderError("transient", "TikLiveAPI returned incomplete video metrics");
         result.set(videoId, {
           views: toBigInt(data.play_count),
           likes: toBigInt(data.digg_count),

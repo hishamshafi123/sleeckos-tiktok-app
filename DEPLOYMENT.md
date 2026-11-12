@@ -231,6 +231,16 @@ tail -f /var/log/sleeckos-cron.log
 
 ## State Accounts and team KPIs
 
+Hourly state syncing uses the same TikLiveAPI primary / Apify fallback as other
+analytics. `TIKLIVE_API_KEY` supplies fresh profile counters and post statistics;
+`APIFY_TOKEN` is needed only if that primary fails. Invalid fallback credentials
+do not block a healthy primary. A 401/403 requires credential repair, not repeated
+hourly retries. The account row now distinguishes authentication, quota, unavailable
+profile, incomplete response, and invalid posting-time failures while retaining
+previous data. Both providers must satisfy the same posting-date and metric checks.
+No schema migration is needed. Run `scripts/test_state_provider.ts` and
+`scripts/test_state_accounts.ts` against the isolated verification database.
+
 The State Accounts section is `/admin/state-accounts`. Admins manage teams,
 people, account assignments and targets. Membership in any state team grants
 read access to every team's stats without granting general analytics or Guardian
@@ -249,7 +259,7 @@ completion and reports failed account syncs as HTTP 503. A database lease preven
 overlapping runs; an abandoned lease expires after two hours. An account failure
 keeps its last successful stats and is retried on the next run.
 
-The hourly job uses the existing `APIFY_TOKEN` and Apify actor configuration.
+The hourly job uses `TIKLIVE_API_KEY`, with the existing Apify configuration as fallback.
 Only non-revoked managed accounts with the case-insensitive `state` label, or in
 sections named `state` / `state accounts`, or linked to a verified Guardian state
 phone, are queried. Guardian phones tagged `State` are matched uniquely against

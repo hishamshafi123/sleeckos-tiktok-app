@@ -46,6 +46,12 @@ export class ProviderError extends Error {
 }
 
 export interface AnalyticsProvider {
+  /** Fresh profile counters plus latest videos, used for state-account KPIs. */
+  fetchAccountSnapshot?(
+    username: string,
+    max: number,
+    ctx?: ProviderCallContext,
+  ): Promise<{ videos: ProviderVideo[]; followers: bigint | null; likes: bigint | null }>;
   /** Latest videos for a TikTok profile (newest first). */
   fetchLatestVideosForAccount(
     username: string,

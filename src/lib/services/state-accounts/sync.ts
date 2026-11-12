@@ -1,17 +1,53 @@
 import { randomUUID } from "crypto";
 import prisma from "@/lib/db";
-import { apifyProvider } from "@/lib/services/analytics/apify";
+import { analyticsProvider } from "@/lib/services/analytics/resilient";
+import { ProviderError } from "@/lib/services/analytics/provider";
 import type { ProviderVideo } from "@/lib/services/analytics/provider";
 import { ensureStateDay, refreshActivityCounts, STATE_WHERE } from "./data";
 import { observedGain, discoveryLimit } from "./rules";
 
 export interface StateProvider {
-  fetchAccountSnapshot: typeof apifyProvider.fetchAccountSnapshot;
-  fetchStatsForVideoUrls: typeof apifyProvider.fetchStatsForVideoUrls;
+  fetchAccountSnapshot: typeof analyticsProvider.fetchAccountSnapshot;
+  fetchStatsForVideoUrls: typeof analyticsProvider.fetchStatsForVideoUrls;
+}
+
+export function stateSyncError(error: unknown): string {
+  const retained = " Previous data is retained.";
+  if (error instanceof ProviderError) {
+    if (error.kind === "auth")
+      return (
+        "Analytics provider authentication failed. An admin must check the TikLiveAPI / Apify credentials; hourly retries cannot fix an invalid key." +
+        retained
+      );
+    if (error.kind === "rate_limited")
+      return (
+        "Analytics provider rate or quota limit reached. Check the provider balance or quota; the next hourly run will retry." +
+        retained
+      );
+    if (error.kind === "not_found")
+      return (
+        "TikTok account is private, unavailable, or renamed. Check its username and visibility." +
+        retained
+      );
+  }
+  if (error instanceof Error && /publication timestamp/.test(error.message))
+    return "The provider returned an invalid posting time. Previous records are retained; the next hourly sync will retry.";
+  if (
+    error instanceof Error &&
+    /incomplete|not returned|No usable|no videos/i.test(error.message)
+  )
+    return (
+      "The provider returned incomplete account or video data. The next hourly run will retry." +
+      retained
+    );
+  return (
+    "Analytics provider request failed or timed out. The next hourly run will retry." +
+    retained
+  );
 }
 
 export async function syncStateAccounts(
-  provider: StateProvider = apifyProvider,
+  provider: StateProvider = analyticsProvider,
 ) {
   const owner = randomUUID();
   const now = new Date();
@@ -211,11 +247,7 @@ export async function syncStateAccounts(
         await prisma.stateAccount.update({
           where: { accountId: account.accountId },
           data: {
-            syncError:
-              error instanceof Error &&
-              /publication timestamp/.test(error.message)
-                ? "The provider returned an invalid posting time. Previous records are retained; the next hourly sync will retry."
-                : "Hourly sync failed. Previous data is retained; the next hourly run will retry.",
+            syncError: stateSyncError(error),
           },
         });
       }

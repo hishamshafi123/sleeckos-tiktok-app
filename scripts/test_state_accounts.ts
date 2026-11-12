@@ -1,6 +1,6 @@
 import { observedSessions } from "../src/lib/services/state-accounts/sessions";
 import { stateWarmup } from "../src/lib/services/state-accounts/warmup";
-import { publicationTime } from "../src/lib/services/analytics/provider";
+import { publicationTime, ProviderError } from "../src/lib/services/analytics/provider";
 import { statePosts } from "../src/lib/services/state-accounts/posts";
 /** Run only against a disposable migrated database:
  * DATABASE_URL=postgresql://localhost/sleeckos_state_accounts_verify npx tsx scripts/test_state_accounts.ts
@@ -554,6 +554,11 @@ async function main() {
       })
     ).syncError,
   );
+  assert.equal((await syncStateAccounts({ ...provider, fetchAccountSnapshot: async () => { throw new ProviderError("auth", "invalid-secret-token"); } })).failed, 1);
+  const authFailure = await prisma.stateAccount.findUniqueOrThrow({where:{accountId:account.id}});
+  assert.match(authFailure.syncError || "", /credentials/);
+  assert.ok(!authFailure.syncError?.includes("invalid-secret-token"));
+  assert.equal((await prisma.stateAccountDay.findUniqueOrThrow({where:{id:row.id}})).views, BigInt(155));
   await prisma.stateSyncLease.create({
     data: {
       id: "hourly",
