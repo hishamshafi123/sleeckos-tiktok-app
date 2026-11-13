@@ -10,9 +10,9 @@ function verifyCronSecret(req: NextRequest) {
   return secret === process.env.CRON_SECRET;
 }
 
-// Daily per-account sweep: one Apify profile call per active account captures
+// Daily per-account sweep: one TikLive profile fetch per active account captures
 // links for yesterday's posts and refreshes stats of the latest videos —
-// replaces the old one-Apify-call-per-post capture. Runs in the background.
+// replaces the old per-post capture. Runs in the background.
 export async function GET(req: NextRequest) {
   if (!verifyCronSecret(req)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });

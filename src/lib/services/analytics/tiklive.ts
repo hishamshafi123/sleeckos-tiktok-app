@@ -1,6 +1,6 @@
 /**
  * TikLiveAPI analytics provider — https://api.tikliveapi.com
- * Primary analytics provider; Apify is the automatic fallback (resilient.ts).
+ * Only production analytics provider; failures propagate to scheduled retries.
  * Raw fetch, no npm deps.
  *
  * Endpoints used:
@@ -159,7 +159,7 @@ async function tikliveGetOnce(path: string): Promise<any> {
   // Auth/quota failures come back as HTTP 200 + a bare {"message": "..."}
   // (e.g. "Api-Key is not available", "Please sign up to tikliveapi.com") —
   // NOT the {"status":"error"} envelope missing entities use. Catch them
-  // here so a dead key escalates to the fallback instead of passing as an
+  // here so a dead key surfaces as an authentication error instead of passing as an
   // empty success.
   if (data && typeof data === "object" && !Array.isArray(data)) {
     const keys = Object.keys(data);
@@ -430,7 +430,7 @@ export class TikLiveProvider implements AnalyticsProvider {
         });
       } catch (err) {
         // Per-URL failure must not nuke the whole batch — record it and move
-        // on. Only if NOTHING succeeds do we escalate to the fallback.
+        // on. Only if NOTHING succeeds do we fail the whole provider call.
         if (!firstError) firstError = err;
         console.warn(
           `[TikLive] post-detail failed for ${videoId}: ${err instanceof Error ? err.message : err}`
