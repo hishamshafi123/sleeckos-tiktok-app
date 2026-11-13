@@ -21,7 +21,7 @@
  *   TIKLIVE_API_KEY      (required)
  *   TIKLIVE_TIMEOUT_MS   per-HTTP-call timeout, default 30000
  *   TIKLIVE_RETRIES      retries on transient/rate-limit failures, default 2
- *                        (3 attempts total) before the Apify fallback engages
+ *                        (3 attempts total), then propagate the error to the caller
  *   TIKLIVE_MIN_INTERVAL_MS  min spacing between HTTP calls, default 350
  *                            (keeps the process under the 200 req/min plan cap)
  *   TIKLIVE_COST_PER_CALL estimated USD per request, default 0.000099

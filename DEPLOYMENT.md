@@ -231,13 +231,13 @@ tail -f /var/log/sleeckos-cron.log
 
 ## State Accounts and team KPIs
 
-Hourly state syncing uses the same TikLiveAPI primary / Apify fallback as other
-analytics. `TIKLIVE_API_KEY` supplies fresh profile counters and post statistics;
-`APIFY_TOKEN` is needed only if that primary fails. Invalid fallback credentials
-do not block a healthy primary. A 401/403 requires credential repair, not repeated
+Hourly state syncing and other account analytics use **TikLiveAPI only**.
+`TIKLIVE_API_KEY` supplies fresh profile counters and post statistics. No Apify
+fallback is called on failure. A 401/403 requires credential repair, not repeated
 hourly retries. The account row now distinguishes authentication, quota, unavailable
 profile, incomplete response, and invalid posting-time failures while retaining
-previous data. Both providers must satisfy the same posting-date and metric checks.
+previous data. TikLive responses must pass posting-date and metric checks.
+The admin bell also reports provider failures without exposing raw provider errors.
 No schema migration is needed. Run `scripts/test_state_provider.ts` and
 `scripts/test_state_accounts.ts` against the isolated verification database.
 
@@ -259,7 +259,7 @@ completion and reports failed account syncs as HTTP 503. A database lease preven
 overlapping runs; an abandoned lease expires after two hours. An account failure
 keeps its last successful stats and is retried on the next run.
 
-The hourly job uses `TIKLIVE_API_KEY`, with the existing Apify configuration as fallback.
+The hourly job requires `TIKLIVE_API_KEY`.
 Only non-revoked managed accounts with the case-insensitive `state` label, or in
 sections named `state` / `state accounts`, or linked to a verified Guardian state
 phone, are queried. Guardian phones tagged `State` are matched uniquely against
@@ -268,7 +268,7 @@ excluded; a username merely containing “state” is not sufficient. Discovery 
 `STATE_SYNC_MAX_VIDEOS` changes this depth (20–1000). Every already-discovered
 public video is refreshed too, including videos outside that newest window.
 This is a paid provider call schedule; its calls appear under `state_accounts`
-in the existing Apify ledger. Historical videos outside the discovery window
+as TikLiveAPI in the existing provider ledger. Historical videos outside the discovery window
 are not included in the charts until discovered by increasing the depth.
 
 Guardian integration:

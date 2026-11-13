@@ -16,7 +16,7 @@ export function stateSyncError(error: unknown): string {
   if (error instanceof ProviderError) {
     if (error.kind === "auth")
       return (
-        "Analytics provider authentication failed. An admin must check the TikLiveAPI / Apify credentials; hourly retries cannot fix an invalid key." +
+        "Analytics provider authentication failed. An admin must check the TikLiveAPI credentials; hourly retries cannot fix an invalid key." +
         retained
       );
     if (error.kind === "rate_limited")

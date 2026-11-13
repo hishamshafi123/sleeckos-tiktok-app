@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import prisma from "../src/lib/db";
 import { TikLiveProvider } from "../src/lib/services/analytics/tiklive";
-import { FallbackProvider } from "../src/lib/services/analytics/resilient";
+import { TikLiveOnlyProvider } from "../src/lib/services/analytics/resilient";
 import {
   ProviderError,
   type ProviderCallContext,
@@ -112,52 +112,72 @@ async function main() {
       /private/,
     );
     privateAccount = false;
-    let fallbackCalls = 0;
-    const fallback = {
-      fetchAccountSnapshot: async () => {
-        fallbackCalls++;
-        return snapshot;
-      },
-      fetchLatestVideosForAccount: async () => [],
-      fetchStatsForVideoUrls: async () => new Map(),
+    const notices: { title: string; body: string }[] = [];
+    const notify = async (notice: { title: string; body: string }) => {
+      notices.push(notice);
     };
-    const provider = new FallbackProvider(tik, fallback);
+    const provider = new TikLiveOnlyProvider(tik, notify);
     await provider.fetchAccountSnapshot("state_qa", 50, ctx);
-    assert.equal(
-      fallbackCalls,
-      0,
-      "healthy primary bypasses invalid Apify credentials",
-    );
     assert.equal(ctx.usedProvider, "TikLiveAPI");
-    const failing = {
-      ...fallback,
-      fetchAccountSnapshot: async () => {
-        throw new ProviderError("auth", "invalid primary key");
-      },
-    };
-    await new FallbackProvider(failing, fallback).fetchAccountSnapshot(
-      "state_qa",
-      50,
+    await provider.fetchLatestVideosForAccount("state_qa", 1, ctx);
+    assert.equal(ctx.usedProvider, "TikLiveAPI");
+    await provider.fetchStatsForVideoUrls(
+      ["https://www.tiktok.com/@state_qa/video/123"],
       ctx,
     );
-    assert.equal(fallbackCalls, 1);
-    assert.equal(ctx.usedProvider, "Apify");
-    await assert.rejects(
-      new FallbackProvider(
-        {
-          ...failing,
-          fetchAccountSnapshot: async () => {
-            throw new ProviderError("not_found", "private");
-          },
+    assert.equal(ctx.usedProvider, "TikLiveAPI");
+    let calls = 0;
+    let failure: ProviderError | null = new ProviderError(
+      "auth",
+      "secret-token",
+    );
+    const response = async () => {
+      calls++;
+      if (failure) throw failure;
+      return snapshot;
+    };
+    const failing = new TikLiveOnlyProvider(
+      {
+        fetchAccountSnapshot: response,
+        fetchLatestVideosForAccount: async () => (await response()).videos,
+        fetchStatsForVideoUrls: async () => {
+          await response();
+          return new Map();
         },
-        fallback,
-      ).fetchAccountSnapshot("state_qa", 50, ctx),
+      },
+      notify,
+    );
+    for (const operation of [
+      () => failing.fetchAccountSnapshot("state_qa", 50, ctx),
+      () => failing.fetchLatestVideosForAccount("state_qa", 50, ctx),
+      () => failing.fetchStatsForVideoUrls([], ctx),
+    ]) {
+      const before = calls;
+      ctx.usedProvider = "Apify"; // An old attribution must never survive a failed call.
+      await assert.rejects(operation(), /secret-token/);
+      assert.equal(
+        calls,
+        before + 1,
+        "only the configured TikLive provider is called",
+      );
+      assert.equal(ctx.usedProvider, undefined);
+    }
+    assert.ok(notices.every((n) => !n.body.includes("secret-token")));
+    assert.ok(notices.some((n) => n.body.includes("TIKLIVE_API_KEY")));
+    failure = null;
+    await failing.fetchAccountSnapshot("state_qa", 50, ctx);
+    assert.equal(ctx.usedProvider, "TikLiveAPI");
+    assert.equal(notices.at(-1)?.title, "TikLiveAPI responding again");
+    const noticeCount = notices.length;
+    failure = new ProviderError("not_found", "private");
+    await assert.rejects(
+      failing.fetchAccountSnapshot("state_qa", 50, ctx),
       /private/,
     );
     assert.equal(
-      fallbackCalls,
-      1,
-      "private profiles should not trigger another paid scrape",
+      notices.length,
+      noticeCount,
+      "private accounts do not trigger outage alerts",
     );
     assert.match(
       stateSyncError(new ProviderError("auth", "secret-token")),
@@ -177,7 +197,7 @@ async function main() {
       /username/,
     );
     console.log(
-      "PASS: fresh followers, profile identity, strict timestamps/metrics, primary/fallback snapshots and actionable sanitized errors",
+      "PASS: fresh followers, profile identity, strict timestamps/metrics, TikLive-only calls, failure propagation and actionable sanitized errors",
     );
   } finally {
     globalThis.fetch = previousFetch;

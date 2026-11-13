@@ -1,8 +1,8 @@
 /**
  * Analytics provider abstraction.
  *
- * Apify (clockworks/tiktok-scraper) is the only provider today, but everything
- * above this layer talks to this interface so another provider can drop in.
+ * Production analytics uses TikLiveAPI only. Callers use this interface so
+ * providers can be substituted in isolated verification tests.
  */
 
 export interface ProviderVideo {
@@ -51,7 +51,11 @@ export interface AnalyticsProvider {
     username: string,
     max: number,
     ctx?: ProviderCallContext,
-  ): Promise<{ videos: ProviderVideo[]; followers: bigint | null; likes: bigint | null }>;
+  ): Promise<{
+    videos: ProviderVideo[];
+    followers: bigint | null;
+    likes: bigint | null;
+  }>;
   /** Latest videos for a TikTok profile (newest first). */
   fetchLatestVideosForAccount(
     username: string,
@@ -74,7 +78,7 @@ export interface AnalyticsProvider {
 export interface ProviderCallContext {
   source: string;
   refId?: string;
-  /** Set by the resilient provider after a call: "TikLiveAPI" | "Apify". */
+  /** Set to "TikLiveAPI" after a successful production analytics call. */
   usedProvider?: string;
 }
 

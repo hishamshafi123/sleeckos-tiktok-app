@@ -1,179 +1,96 @@
 /**
- * Resilient analytics provider — TikLiveAPI primary, Apify fallback.
- *
- * Every call tries TikLiveAPI first (cheap: ~$0.0001/request). If it throws
- * (auth, rate limit, timeout, outage), the same call is retried against the
- * Apify provider so analytics never stop flowing.
- *
- * A small in-memory circuit breaker keeps a TikLive outage from slowing
- * everything down: after BREAKER_THRESHOLD consecutive primary failures the
- * primary is skipped for BREAKER_COOLDOWN_MS, then probed again. The breaker
- * is per-process (single app container) and resets on the first success.
- *
- * Partial results are NOT escalated: if TikLive returns a partial stats map,
- * the missing ids are treated by callers as failed refreshes (their normal
- * retry path) rather than being double-fetched via Apify.
+ * TikLive-only analytics. Retry pacing lives in TikLiveProvider; failed calls
+ * propagate to the caller so saved data is retained and scheduled runs retry.
+ * There is deliberately no secondary paid provider or circuit that skips calls.
  */
-
-import { ProviderError } from "./provider";
-import type {
-  AnalyticsProvider,
-  ProviderCallContext,
-  ProviderVideo,
-  ProviderVideoStats,
+import {
+  ProviderError,
+  type AnalyticsProvider,
+  type ProviderCallContext,
 } from "./provider";
-import { apifyProvider } from "./apify";
 import { tikliveProvider } from "./tiklive";
 import { notifyAdmin } from "@/lib/services/notifications";
 
-const BREAKER_THRESHOLD = 3;
-const BREAKER_COOLDOWN_MS = 10 * 60 * 1000;
-const NOTIFY_SOURCE = "analytics_provider";
-
-export class FallbackProvider implements AnalyticsProvider {
-  private consecutiveFailures = 0;
-  private openedAt = 0;
+export class TikLiveOnlyProvider implements AnalyticsProvider {
+  private failing = false;
 
   constructor(
-    private primary: AnalyticsProvider,
-    private fallback: AnalyticsProvider
+    private provider: AnalyticsProvider = tikliveProvider,
+    private notify: typeof notifyAdmin = notifyAdmin,
   ) {}
 
-  private primaryAllowed(): boolean {
-    if (this.consecutiveFailures < BREAKER_THRESHOLD) return true;
-    if (Date.now() - this.openedAt >= BREAKER_COOLDOWN_MS) return true; // probe again
-    return false;
-  }
-
-  private onPrimarySuccess(): void {
-    if (this.consecutiveFailures >= BREAKER_THRESHOLD) {
-      void notifyAdmin({
-        level: "info",
-        title: "TikLiveAPI recovered",
-        body: "The primary analytics provider is responding again — scraping has switched back from the Apify fallback to TikLiveAPI.",
-        source: NOTIFY_SOURCE,
-        dedupeMinutes: 60,
-      });
-    }
-    this.consecutiveFailures = 0;
-  }
-
-  private onPrimaryFailure(err: unknown): void {
-    this.consecutiveFailures++;
-    this.openedAt = Date.now();
-    const kind = err instanceof ProviderError ? err.kind : "transient";
-    const msg = err instanceof Error ? err.message : String(err);
-    console.warn(
-      `[Provider] TikLive failed (${kind}: ${msg}) — ` +
-        (this.consecutiveFailures >= BREAKER_THRESHOLD
-          ? `circuit open for ${BREAKER_COOLDOWN_MS / 60000}min, using Apify`
-          : "falling back to Apify")
-    );
-    if (this.consecutiveFailures === BREAKER_THRESHOLD) {
-      void notifyAdmin({
-        level: "warning",
-        title: "TikLiveAPI failing — using Apify fallback",
-        body: `The primary analytics provider failed ${BREAKER_THRESHOLD} times in a row (latest: ${kind}: ${msg}). Analytics calls are being served by Apify at the higher per-call cost until TikLiveAPI recovers.`,
-        source: NOTIFY_SOURCE,
-        dedupeMinutes: 60,
-      });
-    }
-  }
-
-  /** Run a call on the fallback; if BOTH providers are down, alert + rethrow. */
-  private async callFallback<T>(
-    what: string,
-    call: (p: AnalyticsProvider) => Promise<T>
+  private async call<T>(
+    ctx: ProviderCallContext | undefined,
+    operation: () => Promise<T>,
   ): Promise<T> {
+    if (ctx) delete ctx.usedProvider;
     try {
-      return await call(this.fallback);
-    } catch (err) {
-      const kind = err instanceof ProviderError ? err.kind : "transient";
-      const msg = err instanceof Error ? err.message : String(err);
-      // not_found from the fallback too = the profile/video genuinely doesn't
-      // exist on TikTok (dead or renamed account) — a data problem to surface
-      // in the failed-profiles report, NOT a provider outage alert.
+      const result = await operation();
+      if (ctx) ctx.usedProvider = "TikLiveAPI";
+      if (this.failing) {
+        void this.notify({
+          level: "info",
+          title: "TikLiveAPI responding again",
+          body: "An analytics request succeeded. Failed accounts will retry on their next scheduled run.",
+          source: "analytics_provider",
+          dedupeMinutes: 60,
+        });
+      }
+      this.failing = false;
+      return result;
+    } catch (error) {
+      const kind = error instanceof ProviderError ? error.kind : "transient";
+      // Missing/private accounts are account problems, not provider outages.
       if (kind !== "not_found") {
-        void notifyAdmin({
+        this.failing = true;
+        const action =
+          kind === "auth"
+            ? "An admin must check TIKLIVE_API_KEY; retries cannot repair invalid credentials."
+            : kind === "rate_limited"
+              ? "Check the TikLiveAPI balance or quota. Scheduled runs will retry."
+              : "TikLiveAPI returned an incomplete response or was unavailable. Scheduled runs will retry.";
+        void this.notify({
           level: "error",
-          title: "Analytics providers both failing",
-          body: `TikLiveAPI and the Apify fallback both failed for ${what} (fallback error: ${kind}: ${msg}). Campaign stats and link capture are stalled until a provider recovers.`,
-          source: NOTIFY_SOURCE,
+          title: "TikLiveAPI analytics request failed",
+          body: `${action} Existing saved stats are retained. No Apify fallback is used.`,
+          source: "analytics_provider",
           dedupeMinutes: 30,
         });
       }
-      throw err;
+      throw error;
     }
   }
 
-  async fetchAccountSnapshot(username: string, max: number, ctx?: ProviderCallContext) {
-    const snapshot = (provider: AnalyticsProvider) => {
-      if (!provider.fetchAccountSnapshot) throw new ProviderError("transient", "Provider does not support profile snapshots");
-      return provider.fetchAccountSnapshot(username, max, ctx);
-    };
-    if (this.primaryAllowed()) {
-      try {
-        const result = await snapshot(this.primary);
-        this.onPrimarySuccess();
-        if (ctx) ctx.usedProvider = "TikLiveAPI";
-        return result;
-      } catch (error) {
-        if (error instanceof ProviderError && error.kind === "not_found") throw error;
-        this.onPrimaryFailure(error);
-      }
-    }
-    const result = await this.callFallback(`profile snapshot @${username}`, snapshot);
-    if (ctx) ctx.usedProvider = "Apify";
-    return result;
-  }
-
-  async fetchLatestVideosForAccount(
+  fetchAccountSnapshot(
     username: string,
     max: number,
-    ctx?: ProviderCallContext
-  ): Promise<ProviderVideo[]> {
-    if (this.primaryAllowed()) {
-      try {
-        const videos = await this.primary.fetchLatestVideosForAccount(username, max, ctx);
-        this.onPrimarySuccess();
-        if (ctx) ctx.usedProvider = "TikLiveAPI";
-        return videos;
-      } catch (err) {
-        // A profile that doesn't exist on TikTok is a data problem, not a
-        // provider problem — no fallback (Apify would 404 too, at 100× the
-        // price), no circuit-breaker count, no alert.
-        if (err instanceof ProviderError && err.kind === "not_found") throw err;
-        this.onPrimaryFailure(err);
-      }
-    }
-    const out = await this.callFallback(`latest-videos @${username}`, (p) =>
-      p.fetchLatestVideosForAccount(username, max, ctx)
-    );
-    if (ctx) ctx.usedProvider = "Apify";
-    return out;
+    ctx?: ProviderCallContext,
+  ) {
+    return this.call(ctx, () => {
+      if (!this.provider.fetchAccountSnapshot)
+        throw new ProviderError(
+          "transient",
+          "Provider does not support profile snapshots",
+        );
+      return this.provider.fetchAccountSnapshot(username, max, ctx);
+    });
   }
 
-  async fetchStatsForVideoUrls(
-    urls: string[],
-    ctx?: ProviderCallContext
-  ): Promise<Map<string, ProviderVideoStats>> {
-    if (this.primaryAllowed()) {
-      try {
-        const stats = await this.primary.fetchStatsForVideoUrls(urls, ctx);
-        this.onPrimarySuccess();
-        if (ctx) ctx.usedProvider = "TikLiveAPI";
-        return stats;
-      } catch (err) {
-        if (err instanceof ProviderError && err.kind === "not_found") throw err;
-        this.onPrimaryFailure(err);
-      }
-    }
-    const out = await this.callFallback(`stats for ${urls.length} video URL(s)`, (p) =>
-      p.fetchStatsForVideoUrls(urls, ctx)
+  fetchLatestVideosForAccount(
+    username: string,
+    max: number,
+    ctx?: ProviderCallContext,
+  ) {
+    return this.call(ctx, () =>
+      this.provider.fetchLatestVideosForAccount(username, max, ctx),
     );
-    if (ctx) ctx.usedProvider = "Apify";
-    return out;
+  }
+
+  fetchStatsForVideoUrls(urls: string[], ctx?: ProviderCallContext) {
+    return this.call(ctx, () =>
+      this.provider.fetchStatsForVideoUrls(urls, ctx),
+    );
   }
 }
 
-export const analyticsProvider = new FallbackProvider(tikliveProvider, apifyProvider);
+export const analyticsProvider = new TikLiveOnlyProvider();
