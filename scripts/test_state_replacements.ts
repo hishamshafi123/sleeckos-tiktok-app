@@ -178,6 +178,33 @@ async function main() {
       /another active/,
     );
 
+    const preAdded = await create(
+      "pre-added-georgia-",
+      "POL ACC Georgia",
+      old.driveFolderId!,
+    );
+    await ensureStateDay();
+    assert.equal(
+      (
+        await prisma.stateAccountDay.findUniqueOrThrow({
+          where: { accountId_dayId: { accountId: preAdded.id, dayId: day.id } },
+        })
+      ).teamId,
+      null,
+    );
+    await prisma.managedAccount.delete({ where: { id: replacement.id } });
+    await ensureStateDay();
+    const preAddedDay = await prisma.stateAccountDay.findUniqueOrThrow({
+      where: { accountId_dayId: { accountId: preAdded.id, dayId: day.id } },
+    });
+    assert.equal(
+      preAddedDay.teamId,
+      team.id,
+      "add-before-delete replacement enters the inherited team filter immediately",
+    );
+    assert.equal(preAddedDay.postsTarget, 0);
+    assert.equal(preAddedDay.guardianProfileId, null);
+
     const unknown = await create("unrelated-", "Unrelated folder");
     await ensureStateDay();
     assert.equal(

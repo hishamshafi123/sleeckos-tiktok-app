@@ -71,33 +71,49 @@ async function seedDay(tx: Prisma.TransactionClient, dayId: string) {
     include: { team: true },
   });
   const existingRows = await tx.stateAccountDay.findMany({ where: { dayId } });
-  await tx.stateAccountDay.createMany({
-    data: accounts.map((a) => {
-      const replacementToday =
-        !!a.replacementOfAccountId &&
-        existingRows.some((r) => r.accountId === a.replacementOfAccountId);
-      const phoneCredited =
-        !!a.guardianProfileId &&
-        existingRows.some(
-          (r) =>
-            r.accountId !== a.accountId &&
-            r.guardianProfileId === a.guardianProfileId,
-        );
-      return {
-        dayId,
-        accountId: a.accountId,
-        teamId: a.teamId,
-        guardianProfileId: phoneCredited ? null : a.guardianProfileId,
-        postsTarget: replacementToday
-          ? 0
-          : (a.postsTarget ?? a.team?.postsTarget ?? 0),
-        warmupTarget: replacementToday
-          ? 0
-          : (a.warmupTarget ?? a.team?.warmupTarget ?? 0),
-      };
-    }),
-    skipDuplicates: true,
+  const seeds = accounts.map((a) => {
+    const replacementToday =
+      !!a.replacementOfAccountId &&
+      existingRows.some((r) => r.accountId === a.replacementOfAccountId);
+    const phoneCredited =
+      !!a.guardianProfileId &&
+      existingRows.some(
+        (r) =>
+          r.accountId !== a.accountId &&
+          r.guardianProfileId === a.guardianProfileId,
+      );
+    return {
+      dayId,
+      accountId: a.accountId,
+      teamId: a.teamId,
+      guardianProfileId: phoneCredited ? null : a.guardianProfileId,
+      postsTarget: replacementToday
+        ? 0
+        : (a.postsTarget ?? a.team?.postsTarget ?? 0),
+      warmupTarget: replacementToday
+        ? 0
+        : (a.warmupTarget ?? a.team?.warmupTarget ?? 0),
+    };
   });
+  await tx.stateAccountDay.createMany({ data: seeds, skipDuplicates: true });
+  // A replacement may have been added before its predecessor was deleted.
+  // Complete its first assignment immediately once the predecessor is known.
+  for (const a of accounts.filter(
+    (a) => a.replacementOfAccountId && a.teamId,
+  )) {
+    if (!existingRows.some((r) => r.accountId === a.accountId && !r.teamId))
+      continue;
+    const seed = seeds.find((s) => s.accountId === a.accountId)!;
+    await tx.stateAccountDay.updateMany({
+      where: { dayId, accountId: a.accountId, teamId: null },
+      data: {
+        teamId: seed.teamId,
+        guardianProfileId: seed.guardianProfileId,
+        postsTarget: seed.postsTarget,
+        warmupTarget: seed.warmupTarget,
+      },
+    });
+  }
 }
 
 export async function stateAccess(userId: string, role: string) {
