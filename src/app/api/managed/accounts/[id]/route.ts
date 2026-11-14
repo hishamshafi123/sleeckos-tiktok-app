@@ -157,7 +157,19 @@ export async function DELETE(
     console.warn(`[Accounts] Force-deleting @${account.tiktokUsername} which held Google OAuth tokens`);
   }
 
-  await prisma.managedAccount.delete({ where: { id } });
+  // Preserve the state identity/history before removing its replaceable login.
+  await prisma.$transaction(async tx => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(893271)`;
+    await tx.stateAccount.updateMany({
+      where: { managedAccountId: id },
+      data: {
+        usernameSnapshot: account.tiktokUsername,
+        driveFolderIdSnapshot: account.driveFolderId,
+        driveFolderNameSnapshot: account.driveFolderName,
+      },
+    });
+    await tx.managedAccount.delete({ where: { id } });
+  });
 
   // Lifecycle audit — username snapshotted so deletion reporting survives
   // the hard delete.

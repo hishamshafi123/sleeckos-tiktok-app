@@ -9,20 +9,16 @@ import {
   discoveryLimit,
 } from "./rules";
 
-export const STATE_WHERE: Prisma.ManagedAccountWhereInput = {
-  revokedAt: null,
-  OR: [
-    {
-      labelAssignments: {
-        some: { label: { name: { equals: "state", mode: "insensitive" } } },
-      },
-    },
-    { section: { name: { equals: "state", mode: "insensitive" } } },
-    { section: { name: { equals: "state accounts", mode: "insensitive" } } },
-    // A verified Guardian state-phone link also identifies a state account.
-    { stateAccount: { is: { guardianProfileId: { not: null } } } },
-  ],
-};
+import { STATES } from "../content-desk/rules";
+import {
+  STATE_WHERE,
+  isStatePhone,
+  normalizeStateName,
+  reconcileStateAccounts,
+  registerStateAccount,
+} from "./registry";
+export { STATE_WHERE, isStatePhone } from "./registry";
+
 const TZ_KEY = "state_accounts_timezone";
 
 export async function ensureStateDay(now = new Date()) {
@@ -61,61 +57,7 @@ export async function ensureStateDay(now = new Date()) {
         });
         await seedDay(tx, day.id);
       }
-      const labeledAccounts = await tx.managedAccount.findMany({
-        where: STATE_WHERE,
-        select: { id: true },
-      });
-      const labeledIds = new Set(labeledAccounts.map((account) => account.id));
-      const accounts = await tx.managedAccount.findMany({
-        where: { revokedAt: null },
-        select: {
-          id: true,
-          tiktokUsername: true,
-          tiktokDisplayName: true,
-          driveFolderName: true,
-        },
-      });
-      const phones = (await tx.guardianPhone.findMany()).filter(isStatePhone);
-      const existing = await tx.stateAccount.findMany({
-        select: { accountId: true, guardianProfileId: true },
-      });
-      const used = new Set(existing.map((a) => a.guardianProfileId));
-      const normalize = (value: string) =>
-        value
-          .trim()
-          .replace(/^@/, "")
-          .replace(/^pol\s+acc\s+/i, "")
-          .trim()
-          .toLowerCase();
-      for (const account of accounts) {
-        if (existing.some((a) => a.accountId === account.id)) continue;
-        const names = [
-          account.tiktokUsername,
-          account.tiktokDisplayName,
-          account.driveFolderName,
-        ]
-          .filter((s): s is string => !!s)
-          .map(normalize);
-        const matches = phones.filter(
-          (p) =>
-            !used.has(p.profileId) &&
-            names.includes(normalize(p.name)) &&
-            accounts.filter((candidate) =>
-              [
-                candidate.tiktokUsername,
-                candidate.tiktokDisplayName,
-                candidate.driveFolderName,
-              ].some((name) => name && normalize(name) === normalize(p.name)),
-            ).length === 1,
-        );
-        // Only a unique exact name match is safe; otherwise the admin links it.
-        const phone = matches.length === 1 ? matches[0] : undefined;
-        if (!labeledIds.has(account.id) && !phone) continue;
-        await tx.stateAccount.create({
-          data: { accountId: account.id, guardianProfileId: phone?.profileId },
-        });
-        if (phone) used.add(phone.profileId);
-      }
+      await reconcileStateAccounts(tx, now);
       await seedDay(tx, day.id);
       return day;
     },
@@ -128,15 +70,32 @@ async function seedDay(tx: Prisma.TransactionClient, dayId: string) {
     where: { account: STATE_WHERE },
     include: { team: true },
   });
+  const existingRows = await tx.stateAccountDay.findMany({ where: { dayId } });
   await tx.stateAccountDay.createMany({
-    data: accounts.map((a) => ({
-      dayId,
-      accountId: a.accountId,
-      teamId: a.teamId,
-      guardianProfileId: a.guardianProfileId,
-      postsTarget: a.postsTarget ?? a.team?.postsTarget ?? 0,
-      warmupTarget: a.warmupTarget ?? a.team?.warmupTarget ?? 0,
-    })),
+    data: accounts.map((a) => {
+      const replacementToday =
+        !!a.replacementOfAccountId &&
+        existingRows.some((r) => r.accountId === a.replacementOfAccountId);
+      const phoneCredited =
+        !!a.guardianProfileId &&
+        existingRows.some(
+          (r) =>
+            r.accountId !== a.accountId &&
+            r.guardianProfileId === a.guardianProfileId,
+        );
+      return {
+        dayId,
+        accountId: a.accountId,
+        teamId: a.teamId,
+        guardianProfileId: phoneCredited ? null : a.guardianProfileId,
+        postsTarget: replacementToday
+          ? 0
+          : (a.postsTarget ?? a.team?.postsTarget ?? 0),
+        warmupTarget: replacementToday
+          ? 0
+          : (a.warmupTarget ?? a.team?.warmupTarget ?? 0),
+      };
+    }),
     skipDuplicates: true,
   });
 }
@@ -148,6 +107,48 @@ export async function stateAccess(userId: string, role: string) {
 
 export async function updateStateConfig(body: Record<string, unknown>) {
   const day = await ensureStateDay();
+  if (body.action === "link") {
+    if (
+      typeof body.accountId !== "string" ||
+      typeof body.stateName !== "string" ||
+      !STATES.some((s) => s.name === body.stateName)
+    )
+      throw new Error("Choose an account and state.");
+    const phoneId =
+      typeof body.guardianProfileId === "string" && body.guardianProfileId
+        ? body.guardianProfileId
+        : null;
+    await prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(893271)`;
+      if (phoneId) {
+        const phone = await tx.guardianPhone.findUnique({
+          where: { profileId: phoneId },
+        });
+        if (!phone || !isStatePhone(phone))
+          throw new Error("Choose a Guardian phone tagged state.");
+      }
+      const existing = await tx.stateAccount.findUnique({
+        where: { accountId: body.accountId as string },
+      });
+      if (
+        existing?.stateName &&
+        normalizeStateName(existing.stateName) !==
+          normalizeStateName(body.stateName as string)
+      )
+        throw new Error(
+          "This account is already registered to another state. Edit its existing assignment first.",
+        );
+      await registerStateAccount(
+        tx,
+        body.accountId as string,
+        body.stateName as string,
+        phoneId,
+        true,
+      );
+      await seedDay(tx, day.id);
+    });
+    return;
+  }
   if (body.action === "timezone") {
     if (!validTimezone(body.timezone))
       throw new Error("Choose a valid business timezone.");
@@ -256,18 +257,6 @@ export async function updateStateConfig(body: Record<string, unknown>) {
   throw new Error("Unknown action.");
 }
 
-export function isStatePhone(phone: {
-  tags: unknown;
-  matchedTag: string | null;
-}) {
-  return (
-    Array.isArray(phone.tags) &&
-    phone.tags.some(
-      (tag) => typeof tag === "string" && tag.toLowerCase() === "state",
-    )
-  );
-}
-
 export async function getStateDashboard(isAdmin: boolean) {
   const today = await ensureStateDay();
   await refreshActivityCounts();
@@ -313,7 +302,28 @@ export async function getStateDashboard(isAdmin: boolean) {
         select: { finishedAt: true },
       }),
     ]);
+  const candidateAccounts = isAdmin
+    ? await prisma.managedAccount.findMany({
+        where: { revokedAt: null },
+        orderBy: { tiktokUsername: "asc" },
+        select: { id: true, tiktokUsername: true, driveFolderName: true },
+      })
+    : [];
+  const missingStates = STATES.filter(
+    (s) =>
+      !accounts.some(
+        (a) =>
+          normalizeStateName(
+            a.stateName ||
+              a.guardianPhone?.name ||
+              a.account?.driveFolderName ||
+              "",
+          ) === normalizeStateName(s.name),
+      ),
+  ).map((s) => s.name);
   return {
+    candidateAccounts,
+    missingStates,
     generatedAt: new Date(),
     discoveryLimit: discoveryLimit(),
     isAdmin,
@@ -331,12 +341,18 @@ export async function getStateDashboard(isAdmin: boolean) {
     accounts: accounts.map((a) => ({
       ...a,
       phoneName: a.guardianPhone?.name ?? null,
+      account: a.account || {
+        tiktokUsername: a.usernameSnapshot,
+        isActive: false,
+      },
+      replacementOfAccountId: a.replacementOfAccountId,
       stateName:
         a.stateName ||
         a.guardianPhone?.name ||
-        a.account.driveFolderName ||
-        a.account.tiktokDisplayName ||
-        a.account.tiktokUsername,
+        a.account?.driveFolderName ||
+        a.account?.tiktokDisplayName ||
+        a.account?.tiktokUsername ||
+        a.usernameSnapshot,
     })),
     days: days.reverse(),
     users,

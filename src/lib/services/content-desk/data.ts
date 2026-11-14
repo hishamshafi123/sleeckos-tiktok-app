@@ -611,6 +611,7 @@ export async function mutateDesk(body: Record<string, unknown>, actor: Actor) {
           });
           if (
             !account ||
+            !account.account ||
             account.account.revokedAt ||
             account.teamId !== teamId ||
             accountStateName(account).toLowerCase() !==

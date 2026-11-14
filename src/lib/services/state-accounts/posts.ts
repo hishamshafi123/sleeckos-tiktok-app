@@ -44,6 +44,8 @@ export async function statePosts(params: URLSearchParams, now = new Date()) {
           account: {
             select: {
               stateName: true,
+              usernameSnapshot: true,
+              driveFolderNameSnapshot: true,
               guardianPhone: { select: { name: true } },
               account: {
                 select: {
@@ -80,10 +82,12 @@ export async function statePosts(params: URLSearchParams, now = new Date()) {
       accountName:
         p.account.stateName ||
         p.account.guardianPhone?.name ||
-        p.account.account.driveFolderName ||
-        p.account.account.tiktokDisplayName ||
-        p.account.account.tiktokUsername,
-      username: p.account.account.tiktokUsername,
+        p.account.account?.driveFolderName ||
+        p.account.driveFolderNameSnapshot ||
+        p.account.account?.tiktokDisplayName ||
+        p.account.account?.tiktokUsername ||
+        p.account.usernameSnapshot,
+      username: p.account.account?.tiktokUsername || p.account.usernameSnapshot,
       teamName:
         rows.find((r) => r.accountId === p.accountId)?.team?.name ||
         "Unassigned",

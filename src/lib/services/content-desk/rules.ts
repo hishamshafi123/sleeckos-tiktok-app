@@ -314,7 +314,7 @@ export function accountStateName(a: {
     driveFolderName?: string | null;
     tiktokDisplayName?: string;
     tiktokUsername?: string;
-  };
+  } | null;
 }) {
   return (
     a.stateName ||

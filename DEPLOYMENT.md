@@ -260,9 +260,9 @@ overlapping runs; an abandoned lease expires after two hours. An account failure
 keeps its last successful stats and is retried on the next run.
 
 The hourly job requires `TIKLIVE_API_KEY`.
-Only non-revoked managed accounts with the case-insensitive `state` label, or in
-sections named `state` / `state accounts`, or linked to a verified Guardian state
-phone, are queried. Guardian phones tagged `State` are matched uniquely against
+Only registered, non-revoked state accounts are queried. Registration follows the
+case-insensitive `state` label, sections named `state` / `state accounts`, exact
+recognized state names/folders, Guardian state-phone matches, or explicit admin linking. Guardian phones tagged `State` are matched uniquely against
 account names or Drive folders such as `POL ACC Arizona`. Ordinary accounts are
 excluded; a username merely containing “state” is not sufficient. Discovery starts with the latest 100 public videos per account; optional
 `STATE_SYNC_MAX_VIDEOS` changes this depth (20–1000). Every already-discovered
@@ -270,6 +270,31 @@ public video is refreshed too, including videos outside that newest window.
 This is a paid provider call schedule; its calls appear under `state_accounts`
 as TikLiveAPI in the existing provider ledger. Historical videos outside the discovery window
 are not included in the charts until discovered by increasing the depth.
+
+State-account replacements:
+
+- The migration `20261114074003_preserve_state_account_replacements` separates a
+  permanent state tracking record from its managed login. Deleting a managed
+  account now detaches that login and preserves state videos, daily history,
+  the username snapshot, team, and KPI overrides. It cannot recover history
+  already removed by hard deletions before this migration.
+- A recognized exact state name in an account/display name or `POL ACC <State>`
+  folder registers the account even if its Guardian phone is ambiguous. A
+  unique previous Drive folder ID or Guardian phone ID transfers team/targets
+  to the replacement. Never infer a replacement from a partial username.
+- Duplicate phone names only auto-resolve when exactly one matching phone was
+  seen within 24 hours. Otherwise the account stays visible without a phone;
+  use its settings to select the phone by ID and last-seen time.
+- **Link state account** lets admins explicitly map otherwise unrecognized
+  accounts. **States awaiting an account** makes missing states visible. State
+  team members see these notices but cannot change assignments or access the
+  full managed-account picker.
+- Each login retains its own follower baseline and post history. If the old
+  login has a row today, replacement targets start next business day. A phone
+  already credited to another row today is not counted again. Hourly sync and
+  dashboard refresh both discover replacements.
+- Verify with `scripts/test_state_replacements.ts` and the existing state-account
+  suite, using the disposable `state_accounts_verify` database only.
 
 Guardian integration:
 

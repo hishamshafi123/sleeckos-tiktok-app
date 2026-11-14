@@ -1214,7 +1214,7 @@ export default function ClientPage() {
                               )
                               .map((a) => (
                                 <option key={a.accountId} value={a.accountId}>
-                                  @{a.account.tiktokUsername}
+                                  @{a.account?.tiktokUsername}
                                 </option>
                               ))}
                           </select>

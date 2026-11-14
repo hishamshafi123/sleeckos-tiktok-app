@@ -70,6 +70,7 @@ export async function syncStateAccounts(
       include: { account: { select: { tiktokUsername: true } } },
     });
     for (const account of accounts) {
+      if (!account.account) continue;
       await prisma.stateSyncLease.updateMany({
         where: { id: "hourly", owner },
         data: { expiresAt: expiry() },

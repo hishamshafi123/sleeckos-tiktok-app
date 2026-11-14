@@ -33,6 +33,7 @@ type Account = {
   stateName: string;
   guardianProfileId: string | null;
   phoneName: string | null;
+  replacementOfAccountId: string | null;
   postsTarget: number | null;
   warmupTarget: number | null;
   lastSyncAt: string | null;
@@ -65,6 +66,12 @@ type Day = {
   accounts: DayRow[];
 };
 type Data = {
+  missingStates: string[];
+  candidateAccounts: {
+    id: string;
+    tiktokUsername: string;
+    driveFolderName: string | null;
+  }[];
   generatedAt: string;
   discoveryLimit: number;
   isAdmin: boolean;
@@ -375,6 +382,7 @@ export default function ClientPage() {
     "views" | "likes" | "followers" | "consistency"
   >("views");
   const [teamEdit, setTeamEdit] = useState<Team | "new" | null>(null);
+  const [linkState, setLinkState] = useState<string | null>(null);
   const [accountEdit, setAccountEdit] = useState<Account | null>(null);
   const [timezoneOpen, setTimezoneOpen] = useState(false);
   const load = useCallback(async () => {
@@ -418,6 +426,7 @@ export default function ClientPage() {
       if (!res.ok) throw new Error(body.error);
       setTeamEdit(null);
       setAccountEdit(null);
+      setLinkState(null);
       setTimezoneOpen(false);
       toast.success("Changes saved");
       await load();
@@ -530,6 +539,12 @@ export default function ClientPage() {
           </button>
           {data.isAdmin && (
             <>
+              <button
+                className={button}
+                onClick={() => setLinkState(data.missingStates[0] || "Georgia")}
+              >
+                <Plus size={15} /> Link state account
+              </button>
               <button className={button} onClick={() => setTimezoneOpen(true)}>
                 <Settings2 size={15} />
                 Timezone
@@ -545,6 +560,33 @@ export default function ClientPage() {
           )}
         </div>
       </header>
+      {!!data.missingStates.length && (
+        <section
+          className="rounded-lg border border-amber-800/70 bg-amber-950/20 p-4"
+          aria-label="States awaiting an account"
+        >
+          <p className="font-medium text-amber-200">
+            States awaiting an account
+          </p>
+          <p className="mt-1 text-sm text-zinc-400">
+            {data.missingStates.join(", ")}. Add a replacement to the same state
+            Drive folder, or link it here.
+          </p>
+          {data.isAdmin && (
+            <div className="mt-3 flex flex-wrap gap-2">
+              {data.missingStates.map((name) => (
+                <button
+                  key={name}
+                  className={button}
+                  onClick={() => setLinkState(name)}
+                >
+                  Link {name}
+                </button>
+              ))}
+            </div>
+          )}
+        </section>
+      )}
       {error && (
         <p
           role="alert"
@@ -812,8 +854,9 @@ export default function ClientPage() {
         <h2 className="mb-3 font-medium">Today’s account progress</h2>
         {!accounts.length ? (
           <p className="rounded-lg border border-zinc-800 p-6 text-sm text-zinc-400">
-            No state accounts found. Add the “state” label to existing managed
-            accounts, then refresh this page.
+            No state accounts found. Link an existing account or use a Drive
+            folder named “POL ACC Georgia” (with the relevant state name), then
+            refresh.
           </p>
         ) : (
           <div className="overflow-x-auto rounded-lg border border-zinc-800">
@@ -857,8 +900,14 @@ export default function ClientPage() {
                             @{a.account.tiktokUsername.replace(/^@/, "")}
                           </a>
                           <p className="mt-1 text-xs text-zinc-500">
-                            {a.phoneName || "Guardian phone not linked"}
+                            {a.phoneName ||
+                              "Phone needs linking — open account settings"}
                           </p>
+                          {a.replacementOfAccountId && (
+                            <p className="mt-1 text-xs text-zinc-500">
+                              Replacement account · earlier history retained
+                            </p>
+                          )}
                         </td>
                         <td className="px-4 text-xs">
                           {teamName(row?.teamId ?? null)}
@@ -983,6 +1032,108 @@ export default function ClientPage() {
           assignments start today.
         </p>
       </section>
+      <Dialog
+        open={linkState !== null}
+        onOpenChange={(open) => !open && setLinkState(null)}
+      >
+        <DialogContent className="max-h-[85vh] overflow-y-auto border-zinc-800 bg-zinc-950 text-zinc-100">
+          <DialogHeader>
+            <DialogTitle>Link a state account</DialogTitle>
+          </DialogHeader>
+          {linkState && (
+            <form
+              className="space-y-4"
+              onSubmit={(e) => {
+                e.preventDefault();
+                const form = new FormData(e.currentTarget);
+                void save({
+                  action: "link",
+                  stateName: form.get("state"),
+                  accountId: form.get("account"),
+                  guardianProfileId: form.get("phone"),
+                });
+              }}
+            >
+              <p className="text-sm text-zinc-400">
+                Choose the replacement login. A unique saved folder or phone
+                match carries over team and targets. Old account statistics stay
+                separate.
+              </p>
+              <label className="block text-sm">
+                State
+                <select
+                  name="state"
+                  className={`${input} mt-1`}
+                  defaultValue={linkState}
+                  required
+                >
+                  {[
+                    "South Carolina",
+                    "Nevada",
+                    "New Hampshire",
+                    "New Mexico",
+                    "Michigan",
+                    "Virginia",
+                    "Georgia",
+                    "Arizona",
+                    "Ohio",
+                    "Pennsylvania",
+                  ].map((name) => (
+                    <option key={name}>{name}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="block text-sm">
+                Managed account
+                <select
+                  name="account"
+                  className={`${input} mt-1`}
+                  defaultValue=""
+                  required
+                >
+                  <option value="" disabled>
+                    Choose an account
+                  </option>
+                  {data.candidateAccounts.map((a) => (
+                    <option key={a.id} value={a.id}>
+                      @{a.tiktokUsername}
+                      {a.driveFolderName ? ` · ${a.driveFolderName}` : ""}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="block text-sm">
+                Guardian phone
+                <select
+                  name="phone"
+                  className={`${input} mt-1`}
+                  defaultValue=""
+                >
+                  <option value="">Link later</option>
+                  {data.phones.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name} · {p.id.slice(-6)} · seen{" "}
+                      {new Date(p.lastSeenAt).toLocaleString()}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <p className="text-xs text-zinc-400">
+                If today already includes the previous account, its targets and
+                phone minutes stay there. The replacement’s targets start next
+                reporting day.
+              </p>
+              <button
+                type="submit"
+                disabled={busy}
+                className={`${button} bg-blue-600`}
+              >
+                {busy ? "Linking…" : "Link account"}
+              </button>
+            </form>
+          )}
+        </DialogContent>
+      </Dialog>
       <Dialog
         open={teamEdit !== null}
         onOpenChange={(open) => !open && setTeamEdit(null)}
@@ -1251,7 +1402,8 @@ function AccountForm({
                   a.guardianProfileId === p.id,
               )}
             >
-              {p.name}
+              {p.name} · {p.id.slice(-6)} · seen{" "}
+              {new Date(p.lastSeenAt).toLocaleString()}
             </option>
           ))}
         </select>

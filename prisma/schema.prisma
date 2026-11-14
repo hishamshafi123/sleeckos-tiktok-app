@@ -2222,7 +2222,13 @@ model StateTeamMember {
 model StateAccount {
   contentStories ContentStory[]
   accountId String @id
-  account ManagedAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  managedAccountId String? @unique
+  account ManagedAccount? @relation(fields: [managedAccountId], references: [id], onDelete: SetNull)
+  usernameSnapshot String @default("")
+  driveFolderIdSnapshot String?
+  driveFolderNameSnapshot String?
+  replacedByAccountId String? @unique
+  replacementOfAccountId String?
   teamId String?
   team StateTeam? @relation(fields: [teamId], references: [id])
   stateName String?
