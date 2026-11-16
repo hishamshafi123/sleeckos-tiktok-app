@@ -32,6 +32,7 @@ import Image from "next/image";
 import {
   MIXER_API,
   mixerRequest,
+  mixerOutputUrl,
   buttonClass,
   fieldClass,
   primaryClass,
@@ -831,7 +832,7 @@ export default function CampaignMixer({
                     <div className="mt-3 flex gap-3 text-xs">
                       <a
                         className="text-rose-300 underline"
-                        href={r.output.outputRef}
+                        href={mixerOutputUrl(r.output.outputRef)}
                         target="_blank"
                         rel="noreferrer"
                       >
@@ -840,7 +841,7 @@ export default function CampaignMixer({
                       <a
                         className="text-rose-300 underline"
                         download
-                        href={r.output.outputRef}
+                        href={mixerOutputUrl(r.output.outputRef)}
                       >
                         Download
                       </a>

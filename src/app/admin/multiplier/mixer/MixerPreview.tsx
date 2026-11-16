@@ -9,7 +9,7 @@ import {
   type MixerRecipeSnapshot,
   type MixerSettings,
 } from "@/lib/campaign-mixer/schema";
-import { MIXER_API, type Asset } from "./types";
+import { MIXER_API, mixerOutputUrl, type Asset } from "./types";
 
 export default function MixerPreview({
   recipe,
@@ -106,7 +106,7 @@ export default function MixerPreview({
             <video
               key={key}
               ref={video}
-              src={renderedSample || sourceUrl}
+              src={renderedSample ? mixerOutputUrl(renderedSample) : sourceUrl}
               controls
               playsInline
               preload="metadata"

@@ -236,6 +236,15 @@ async function main() {
         ),
       { timeout: 120000 },
     );
+    await page.waitForFunction(
+      () => {
+        const sample = document.querySelector<HTMLVideoElement>(
+          'video[src^="/api/uploads/multiplier/outputs/mix_sample_"]',
+        );
+        return sample && !sample.error && sample.readyState >= 1 && sample.videoWidth > 0;
+      },
+      { timeout: 30000 },
+    );
     await click("Confirm and render 2 videos");
     await waitText("Batch queued");
     await page.waitForFunction(
@@ -250,6 +259,18 @@ async function main() {
       include: { recipes: { include: { output: true } } },
     });
     assert(batch.recipes.every((r) => r.output?.status === "COMPLETED"));
+    const videoLinks = await page.evaluate(async () => {
+      const links = Array.from(document.querySelectorAll<HTMLAnchorElement>(
+        'section[aria-label="Campaign Mixer"] a',
+      )).filter((link) => link.textContent?.trim() === "Watch");
+      return Promise.all(links.map(async (link) => {
+        const response = await fetch(link.href, { headers: { Range: "bytes=0-99" } });
+        return { status: response.status, bytes: (await response.arrayBuffer()).byteLength };
+      }));
+    });
+    assert.equal(videoLinks.length, 2);
+    assert(videoLinks.every((video) => video.status === 206 && video.bytes === 100),
+      "Freshly rendered Watch/Download URLs serve playable files without an app restart");
     const zipResponse = await fetch(
       `http://localhost:3101/api/multiplier/mixer/batches/${batch.id}/download`,
       { headers: { cookie: `session=${token}` } },

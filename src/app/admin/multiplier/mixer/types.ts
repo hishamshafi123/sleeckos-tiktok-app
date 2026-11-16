@@ -50,6 +50,13 @@ export type BatchData = Omit<BatchSummary, "counts"> & {
   }[];
 };
 export const MIXER_API = "/api/multiplier/mixer";
+// Rendered files are created after startup, so serve them through the runtime
+// upload handler rather than Next.js's startup snapshot of public files.
+export function mixerOutputUrl(outputRef: string): string {
+  return outputRef.startsWith("/uploads/")
+    ? outputRef.replace("/uploads/", "/api/uploads/")
+    : outputRef;
+}
 export async function mixerRequest<T>(
   url: string,
   method = "GET",
