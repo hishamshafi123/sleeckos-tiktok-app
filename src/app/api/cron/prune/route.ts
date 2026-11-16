@@ -4,6 +4,7 @@ import prisma from "@/lib/db";
 import { cleanupOrphanTempFiles } from "@/lib/services/sourcing";
 import fs from "fs";
 import path from "path";
+import { cleanupMixerTemporaryFiles } from "@/lib/services/campaign-mixer/media";
 
 function verifyCronSecret(req: NextRequest) {
   const secret =
@@ -107,6 +108,8 @@ export async function GET(req: NextRequest) {
     console.error("[Prune Cron] Sourcing temp cleanup failed:", err);
     results["public/uploads/sourcing/temp"] = { deleted: 0, failed: 0, skipped: 0 };
   }
+
+  results["campaign-mixer temporary files"] = await cleanupMixerTemporaryFiles().catch(() => ({ deleted: 0, failed: 1, skipped: 0 }));
 
   const guardianCycleCutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
   const guardianStopEventCutoff = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000);

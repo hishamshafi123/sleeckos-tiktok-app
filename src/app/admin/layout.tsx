@@ -21,8 +21,8 @@ export default async function AdminLayout({ children }: { children: React.ReactN
   return (
     <div className="min-h-screen flex bg-[#0a0a0f]">
       <AdminSidebar allowedTools={allowedToolsArray} />
-      <main className="flex-1 ml-64 min-h-screen">
-        <div className="max-w-6xl mx-auto px-8 py-8">
+      <main className="flex-1 min-w-0 md:ml-64 min-h-screen">
+        <div className="max-w-6xl mx-auto px-4 pt-16 pb-8 sm:px-8 md:py-8">
           {children}
         </div>
       </main>
@@ -30,4 +30,3 @@ export default async function AdminLayout({ children }: { children: React.ReactN
     </div>
   );
 }
-

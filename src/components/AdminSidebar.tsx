@@ -1,5 +1,6 @@
 "use client";
 import Link from "next/link";
+import { useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import {
   LayoutDashboard,
@@ -27,7 +28,9 @@ import {
   DollarSign,
   UserPlus,
   TicketCheck,
-  ShieldCheck
+  ShieldCheck,
+  Menu,
+  X
 } from "lucide-react";
 import { toast } from "sonner";
 import NotificationBell from "@/components/NotificationBell";
@@ -78,6 +81,7 @@ interface AdminSidebarProps {
 export default function AdminSidebar({ allowedTools = [] }: AdminSidebarProps) {
   const pathname = usePathname();
   const router = useRouter();
+  const [mobileOpen, setMobileOpen] = useState(false);
 
   const logout = async () => {
     await fetch("/api/auth/logout", { method: "POST" });
@@ -101,6 +105,7 @@ export default function AdminSidebar({ allowedTools = [] }: AdminSidebarProps) {
       <Link
         key={item.href}
         href={item.href}
+        onClick={() => setMobileOpen(false)}
         className={`flex items-center gap-3 px-3 py-2 rounded-md text-xs font-medium border transition-all ${
           active
             ? "bg-[#2563eb]/10 text-[#2563eb] border-[#2563eb]/20"
@@ -114,7 +119,10 @@ export default function AdminSidebar({ allowedTools = [] }: AdminSidebarProps) {
   };
 
   return (
-    <aside className="fixed left-0 top-0 h-screen w-60 border-r border-[#27272a] bg-[#09090b] flex flex-col z-30">
+    <>
+    <button type="button" aria-label={mobileOpen ? "Close navigation" : "Open navigation"} aria-expanded={mobileOpen} aria-controls="admin-navigation" onClick={() => setMobileOpen(v => !v)} className="fixed left-4 top-3 z-[60] rounded-lg border border-zinc-700 bg-zinc-950 p-2 text-zinc-200 md:hidden">{mobileOpen ? <X size={20} /> : <Menu size={20} />}</button>
+    {mobileOpen && <button aria-label="Close navigation backdrop" onClick={() => setMobileOpen(false)} className="fixed inset-0 z-40 bg-black/70 md:hidden" />}
+    <aside id="admin-navigation" onKeyDown={event => { if (event.key === "Escape") setMobileOpen(false); }} className={`fixed left-0 top-0 h-screen w-60 border-r border-[#27272a] bg-[#09090b] flex flex-col z-50 pt-14 md:pt-0 md:z-30 transition-transform ${mobileOpen ? "translate-x-0 visible" : "-translate-x-full invisible md:translate-x-0 md:visible"}`}>
       <div className="p-4 border-b border-[#27272a]">
         <div className="flex items-center justify-between">
           <Link href="/admin" className="flex items-center gap-2">
@@ -176,5 +184,6 @@ export default function AdminSidebar({ allowedTools = [] }: AdminSidebarProps) {
         </button>
       </div>
     </aside>
+    </>
   );
 }

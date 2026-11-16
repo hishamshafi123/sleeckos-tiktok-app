@@ -228,6 +228,8 @@ export async function previewSmartExport(
       exportStatus: true,
       exportedAt: true,
       hook: { select: { text: true } },
+      group: { select: { sourceKind: true } },
+      mixerRecipe: { select: { workspaceId: true, recipeKey: true, clipId: true } },
     },
     orderBy: { createdAt: "asc" },
   });
@@ -282,12 +284,25 @@ export async function previewSmartExport(
     (priorGroupsByFolder[a.driveFolderId] ??= []).push(a.sourceGroupId);
   }
 
+  const mixerOutputs = completedOutputs.filter(o => o.group.sourceKind === "mixer");
+  if (mixerOutputs.some(o => !o.mixerRecipe)) throw new Error("A Mixer output is missing its recipe. Restore the batch data before exporting.");
+  const deliveries = mixerOutputs.length ? await prisma.mixerDelivery.findMany({
+    where: { workspaceId: { in: [...new Set(mixerOutputs.map(o => o.mixerRecipe!.workspaceId))] }, driveFolderId: { in: activeFolderCounts.map(f => f.id) } },
+    select: { workspaceId: true, recipeKey: true, driveFolderId: true },
+  }) : [];
+  const deliveryKeys = new Set(deliveries.map(d => `${d.driveFolderId}:${d.workspaceId}:${d.recipeKey}`));
+  const blockedVideosByFolder: Record<string, string[]> = {};
+  for (const f of activeFolderCounts) blockedVideosByFolder[f.id] = mixerOutputs.filter(o => deliveryKeys.has(`${f.id}:${o.mixerRecipe!.workspaceId}:${o.mixerRecipe!.recipeKey}`)).map(o => o.id);
   const { assignments, unfulfillable } = assignVideosFairRoundRobin(
     groupIds,
     videoIdsByGroup,
     activeFolderCounts,
-    priorGroupsByFolder
+    priorGroupsByFolder,
+    { groupIds: [...new Set(mixerOutputs.map(o => o.groupId))], blockedVideosByFolder, clipByVideo: Object.fromEntries(mixerOutputs.map(o => [o.id, o.mixerRecipe!.clipId])) }
   );
+
+  videoBudget.assigned = assignments.reduce((sum, a) => sum + a.videoIds.length, 0);
+  videoBudget.videosLeft = totalAvailable - videoBudget.assigned;
 
   return {
     videoBudget,
@@ -394,7 +409,7 @@ export async function runSmartExport(
 
       const videos = await tx.multiplierOutput.findMany({
         where: { id: { in: [...uniqueVideoIds] } },
-        select: { id: true, groupId: true },
+        select: { id: true, groupId: true, group: { select: { sourceKind: true } }, mixerRecipe: { select: { workspaceId: true, recipeKey: true } } },
       });
       if (videos.length !== uniqueVideoIds.size) {
         throw new SmartExportReservationError(
@@ -404,6 +419,8 @@ export async function runSmartExport(
 
       const selectedGroupIds = new Set(groupIds);
       const videoGroupMap = new Map(videos.map((v) => [v.id, v.groupId]));
+      const mixerVideos = new Map(videos.filter(v => v.group.sourceKind === "mixer").map(v => [v.id, v.mixerRecipe]));
+      if ([...mixerVideos.values()].some(v => !v)) throw new SmartExportReservationError("A Mixer output is missing its recipe.");
       const flatAssignments = plan.flatMap((p) => p.videoIds.map((videoId) => {
         const sourceGroupId = videoGroupMap.get(videoId);
         if (!sourceGroupId || !selectedGroupIds.has(sourceGroupId)) {
@@ -425,6 +442,7 @@ export async function runSmartExport(
         sourceGroupId: string;
       }>();
       for (const assignment of flatAssignments) {
+        if (mixerVideos.has(assignment.videoId)) continue;
         const pairKey = JSON.stringify([assignment.driveFolderId, assignment.sourceGroupId]);
         if (pairsByKey.has(pairKey)) {
           throw new SmartExportReservationError(
@@ -440,6 +458,13 @@ export async function runSmartExport(
       const folderGroupPairs = [...pairsByKey.values()].sort((a, b) =>
         a.pairKey < b.pairKey ? -1 : a.pairKey > b.pairKey ? 1 : 0
       );
+      // Mixer provenance is server-owned. Distinct recipes may share a batch,
+      // while a recipe must never be delivered twice to the same destination.
+      const mixerReservations = flatAssignments.filter(a => mixerVideos.has(a.videoId)).map(a => ({ ...mixerVideos.get(a.videoId)!, driveFolderId: a.driveFolderId }));
+      for (const reservation of [...mixerReservations].sort((a, b) => `${a.driveFolderId}:${a.recipeKey}`.localeCompare(`${b.driveFolderId}:${b.recipeKey}`))) {
+        await tx.$queryRaw`SELECT 1 AS locked FROM pg_advisory_xact_lock(hashtextextended(${`mixer-export:${reservation.workspaceId}:${reservation.recipeKey}:${reservation.driveFolderId}`}, 0))`;
+      }
+      if (mixerReservations.length && await tx.mixerDelivery.count({ where: { OR: mixerReservations } })) throw new SmartExportReservationError("One of these accounts already received this Mixer recipe. Refresh the export preview.");
 
       const created = await tx.smartExportJob.create({
         data: {
@@ -958,6 +983,7 @@ const assignmentClaimInclude = {
   video: {
     include: {
       hook: { select: { text: true } },
+      mixerRecipe: { select: { workspaceId: true, recipeKey: true } },
       group: {
         include: {
           campaign: {
@@ -1141,6 +1167,14 @@ async function workerLoop(workerIndex: number) {
             data: { status: "done", error: null, uploadLeaseId: null, uploadHeartbeatAt: null },
           });
           if (transitioned.count === 0) return false;
+
+          if (video.group.sourceKind === "mixer" && video.mixerRecipe) {
+            await tx.mixerDelivery.upsert({
+              where: { workspaceId_recipeKey_driveFolderId: { workspaceId: video.mixerRecipe.workspaceId, recipeKey: video.mixerRecipe.recipeKey, driveFolderId: assignment.driveFolderId } },
+              create: { workspaceId: video.mixerRecipe.workspaceId, recipeKey: video.mixerRecipe.recipeKey, driveFolderId: assignment.driveFolderId, accountId: feedAccount?.id ?? null, driveFileId: uploadResult.fileId, outputId: video.id, assignmentId: assignment.id },
+              update: {},
+            });
+          }
 
           await tx.accountFeedEvent.create({
             data: {

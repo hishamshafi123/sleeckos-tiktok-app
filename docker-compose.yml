@@ -50,6 +50,7 @@ services:
     volumes:
       - uploads-data:/app/public/uploads
       - content-clips-data:/app/data/content-clips
+      - campaign-mixer-data:/app/data/campaign-mixer
     depends_on:
       db:
         condition: service_healthy
@@ -66,3 +67,4 @@ volumes:
   pgdata:
   uploads-data:
   content-clips-data:
+  campaign-mixer-data:

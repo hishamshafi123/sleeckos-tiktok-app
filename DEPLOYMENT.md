@@ -553,3 +553,34 @@ Run `npx tsx scripts/test_youtube_rapidapi.ts` for format-selection and provider
 regressions, plus the existing Clip Studio suite. Live verification should import
 a YouTube URL through the authenticated Clip Studio API and confirm video and
 audio are both present in its downloadable source.
+
+## Campaign Mixer
+
+The additive `20261116065821_campaign_mixer` migration runs on container start.
+`campaign-mixer-data` persists private original clips, normalized previews, music
+and caption caches at `/app/data/campaign-mixer` (override: `MIXER_STORAGE_DIR`).
+Back up this volume alongside Postgres and `uploads-data`; do not remove volumes
+on redeploy. The image creates these paths for UID 1001. The existing nginx
+510 MB upload limit supports 500 MB clips and 100 MB music uploads.
+
+Rendering shares Multiplier's admission controller and leased queue. Boot and
+the existing post-scheduler cron recover interrupted work. No new cron is needed.
+The prune cron removes abandoned uploads after one day, caption caches after
+seven days and explicit sample renders after one day. It retains campaign media,
+completed batch files and recipe/destination history. Cleanup/clear actions in
+Multiplier retain the durable Mixer usage ledger.
+
+`MIXER_ENABLED=false` blocks new mutations and new Mixer claims while preserving
+read access, history and legacy rendering. Restart the app after setting it.
+For rollback to code predating Mixer, first pause all Mixer batches, including
+any in-flight claims, in one database transaction, then stop the app container.
+Set pending/rendering Mixer outputs to `PAUSED` and clear their `renderLeaseId`
+and `renderHeartbeatAt`; set their recipes/batches/groups to `PAUSED`. Leave
+active recipe keys, source volumes, migration tables and completed deliveries
+intact. Only then start the older image: an older worker must not see a Mixer
+output in `PENDING`. To restore the new image, resume batches in Campaign Mixer.
+
+Smoke checks: migration applied; private volume writable; all bundled Mixer
+fonts present; Pillow/FFmpeg available; authenticated range requests; a small
+real batch; ZIP integrity; maintenance/recovery paths. QA commands, evidence and
+known limits are in `docs/campaign-mixer-qa.md`.

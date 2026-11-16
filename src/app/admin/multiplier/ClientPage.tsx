@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import { toast } from "sonner";
 import { naturalCompare } from "@/lib/utils/sorting";
+import CampaignMixer from "./mixer/CampaignMixer";
 import {
   Layers,
   Video,
@@ -94,6 +95,7 @@ interface MultiplierOutput {
 interface MultiplierGroup {
   id: string;
   name: string;
+  sourceKind?: "legacy" | "mixer";
   campaignId: string;
   campaign: { id: string; title: string } | null;
   transcript: string | null;
@@ -262,7 +264,7 @@ export default function ClientPage({ session }: ClientPageProps = {}) {
     return path;
   };
 
-  const [activeTab, setActiveTab] = useState<"builder" | "queue" | "bulk">("builder");
+  const [activeTab, setActiveTab] = useState<"builder" | "queue" | "bulk" | "mixer">("builder");
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [groups, setGroups] = useState<MultiplierGroup[]>([]);
   const [loadingCampaigns, setLoadingCampaigns] = useState(true);
@@ -802,9 +804,12 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
     return colKey === "red" || hex === COLOR_MAP.red || (f.defaultPostCount ?? 1) <= 0;
   };
 
-  // Standard count prefill: default posts/day × days, clamped to the selected group count.
+  // Legacy groups contribute one eligible video per account; a Mixer group
+  // contributes its distinct completed recipes. The server revalidates supply.
+  const selectedMixerGroups = groups.filter(g => selectedGroupIds.has(g.id) && g.sourceKind === "mixer");
+  const exportPerAccountCap = Math.max(1, selectedGroupIds.size - selectedMixerGroups.length + selectedMixerGroups.reduce((sum, g) => sum + g.outputs.filter(o => o.status === "COMPLETED").length, 0));
   const prefillExportCount = (defaultPostCount?: number) =>
-    Math.max(1, Math.min((defaultPostCount ?? 1) * exportDays, Math.max(1, selectedGroupIds.size)));
+    Math.max(1, Math.min((defaultPostCount ?? 1) * exportDays, exportPerAccountCap));
 
   const exportDisplayName = (f: { name: string; mappedAccount?: { tiktokUsername: string } | null }) =>
     f.mappedAccount && f.name === f.mappedAccount.tiktokUsername ? `@${f.name}` : f.name;
@@ -850,9 +855,9 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
       toast.error("Enter a valid count (0 or more)");
       return;
     }
-    const cap = selectedGroupIds.size;
+    const cap = exportPerAccountCap;
     if (n > cap) {
-      toast.error(`Per-account count cannot exceed selected groups (${cap})!`);
+      toast.error(`Per-account count cannot exceed available selections (${cap}).`);
       return;
     }
     setSelectedExportFolders((prev) =>
@@ -1394,7 +1399,7 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
     setSelectedExportFolders((prev) =>
       prev.map((f) => ({
         ...f,
-        count: Math.max(1, Math.min((f.defaultPostCount ?? 1) * d, selectedGroupIds.size)),
+        count: Math.max(1, Math.min((f.defaultPostCount ?? 1) * d, exportPerAccountCap)),
       }))
     );
   };
@@ -3337,9 +3342,9 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
   };
 
   return (
-    <div className="flex-1 bg-[#09090b] text-[#fafafa] min-h-screen p-8 flex flex-col font-sans select-none">
+    <div className="flex-1 min-w-0 bg-[#09090b] text-[#fafafa] min-h-screen p-0 md:p-8 flex flex-col font-sans select-none">
       {/* Header section */}
-      <div className="flex justify-between items-center mb-8 border-b border-[#27272a] pb-6">
+      <div className="flex flex-wrap gap-4 justify-between items-center mb-8 border-b border-[#27272a] pb-6">
         <div>
           <h1 className="text-3xl font-extrabold tracking-tight flex items-center gap-3">
             <Layers className="text-[#E11D48] w-8 h-8" />
@@ -3351,7 +3356,8 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
         </div>
 
         {/* Tab Selection */}
-        <div className="bg-[#18181b] p-1 rounded-lg border border-[#27272a] flex gap-1">
+        <div className="bg-[#18181b] p-1 rounded-lg border border-[#27272a] flex flex-wrap gap-1">
+          <button onClick={() => setActiveTab("mixer")} className={`px-4 py-2 text-sm font-semibold rounded-md transition-all ${activeTab === "mixer" ? "bg-[#E11D48] text-white" : "text-[#a1a1aa] hover:text-white"}`}>Campaign Mixer</button>
           <button
             onClick={() => setActiveTab("builder")}
             className={`px-4 py-2 text-sm font-semibold rounded-md transition-all ${
@@ -3385,7 +3391,16 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
         </div>
       </div>
 
-      {activeTab === "builder" ? (
+      {activeTab === "mixer" ? <CampaignMixer onSmartExport={async groupId => {
+        const response = await fetch(`/api/multiplier/mixer/export-group/${groupId}`);
+        const group = await response.json();
+        if (!response.ok) throw new Error(group.error || "Could not load this batch for export.");
+        setGroups(previous => [...previous.filter(g => g.id !== groupId), group]);
+        setSelectedGroupIds(new Set([groupId]));
+        setSelectedExportFolders([]);
+        setExportPreview(null);
+        setShowSmartExport(true);
+      }} /> : activeTab === "builder" ? (
         <div className="grid grid-cols-1 lg:grid-cols-4 gap-8">
           {/* Sidebar list of existing groups */}
           <div className="lg:col-span-1 bg-[#18181b] rounded-xl border border-[#27272a] p-6 flex flex-col h-[calc(100vh-220px)] overflow-hidden">
@@ -3416,9 +3431,10 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
             ) : (() => {
               const query = builderGroupSearch.trim().toLowerCase();
               // Groups arrive newest-first — filtering preserves that order
+              const builderGroups = groups.filter(g => g.sourceKind !== "mixer");
               const filteredGroups = query
-                ? groups.filter((g) => g.name.toLowerCase().includes(query))
-                : groups;
+                ? builderGroups.filter((g) => g.name.toLowerCase().includes(query))
+                : builderGroups;
               const allFilteredSelected =
                 filteredGroups.length > 0 && filteredGroups.every((g) => builderSelectedIds.has(g.id));
               return (
@@ -5873,7 +5889,7 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
       )}
 
       {/* Floating Smart Download Action Bar */}
-      {selectedGroupIds.size > 0 && (() => {
+      {activeTab !== "mixer" && selectedGroupIds.size > 0 && (() => {
         let total = 0;
         let renderReadyCount = 0;
         groups.forEach((g) => {
@@ -6137,7 +6153,7 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
                   {/* Slim toolbar: mix info, days stepper, include-exported toggle (fixed) */}
                   <div className="flex-shrink-0 flex items-center gap-x-3 gap-y-1.5 flex-wrap">
                     <span className="text-[10px] text-[#71717a] leading-snug">
-                      Mixing <span className="text-[#fafafa] font-bold">{selectedGroupIds.size} groups</span> — no folder gets two videos from the same group. Counts = default posts/day × days.
+                      {selectedMixerGroups.length ? <>Selected batches can supply multiple distinct Mixer videos per account. Counts = posts/day × days.</> : <>Mixing <span className="text-[#fafafa] font-bold">{selectedGroupIds.size} groups</span> — no folder gets two videos from the same group. Counts = default posts/day × days.</>}
                     </span>
                     <div className="flex items-center gap-1.5 flex-shrink-0">
                       <span className="text-[#e4e4e7] font-medium">Days</span>
@@ -6587,7 +6603,7 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
                     </h4>
                     <p
                       className="text-[10px] font-semibold text-[#a1a1aa] mt-0.5"
-                      title={`Per-account count capped at ${selectedGroupIds.size} selected groups`}
+                      title={`Up to ${exportPerAccountCap} distinct videos per account, subject to available supply`}
                     >
                       {selectedExportFolders.length} selected · {assignedCount} total videos
                     </p>
@@ -6704,8 +6720,8 @@ Do not add any other markdown wrapper like \`\`\`json or text blocks. Generate o
                                 <button
                                   type="button"
                                   onClick={() => {
-                                    if (folder.count >= selectedGroupIds.size) {
-                                      toast.error(`Per-folder count cannot exceed selected groups (${selectedGroupIds.size})!`);
+                                    if (folder.count >= exportPerAccountCap) {
+                                      toast.error(`Per-account count cannot exceed available selections (${exportPerAccountCap}).`);
                                       return;
                                     }
                                     if (origIndex !== -1) {

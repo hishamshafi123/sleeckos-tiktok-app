@@ -892,6 +892,7 @@ export async function composeOutputPlain(
 let isQueueProcessing = false;
 let isRenderPaused = false;
 let queueWakeupRequested = false;
+const pendingRenderWhere = () => ({ status: "PENDING", ...(process.env.MIXER_ENABLED === "false" ? { group: { sourceKind: { not: "mixer" } } } : {}) });
 
 export function getRenderQueueState() {
   return { paused: isRenderPaused, processing: isQueueProcessing };
@@ -902,20 +903,37 @@ export function getRenderQueueState() {
 // claims predate renderHeartbeatAt, so updatedAt is their fallback only.
 export async function recoverStaleRenderingOutputs(staleMinutes = 2): Promise<number> {
   const staleBefore = new Date(Date.now() - staleMinutes * 60 * 1000);
-  const reset = await prisma.multiplierOutput.updateMany({
-    where: {
+  const staleWhere = {
       status: "RENDERING",
       OR: [
         { renderHeartbeatAt: { lt: staleBefore } },
         { renderHeartbeatAt: null, updatedAt: { lt: staleBefore } },
       ],
-    },
+  };
+  // A persisted Mixer pause survives process restarts. Legacy outputs retain
+  // their existing recovery behavior; Mixer claims also reconcile the ledger.
+  const reset = await prisma.multiplierOutput.updateMany({
+    where: { ...staleWhere, mixerRecipe: null },
     data: { status: "PENDING", renderLeaseId: null, renderHeartbeatAt: null },
   });
-  if (reset.count > 0) {
-    console.log(`[Multiplier Worker] Recovered ${reset.count} output(s) stuck in RENDERING`);
+  let recovered = reset.count;
+  const mixerOutputs = await prisma.multiplierOutput.findMany({
+    where: { ...staleWhere, mixerRecipe: { isNot: null } },
+    select: { id: true, mixerRecipe: { select: { workspaceId: true, batchId: true } } },
+  });
+  for (const output of mixerOutputs) {
+    const recipe = output.mixerRecipe!;
+    recovered += await prisma.$transaction(async tx => {
+      await tx.$queryRaw`SELECT 1 AS locked FROM pg_advisory_xact_lock(hashtextextended(${`mixer:${recipe.workspaceId}`}, 0))`;
+      const batch = await tx.mixerBatch.findUnique({ where: { id: recipe.batchId } });
+      const status = batch?.status === "PAUSED" ? "PAUSED" : batch?.status === "CANCELED" ? "CANCELED" : "PENDING";
+      const changed = await tx.multiplierOutput.updateMany({ where: { ...staleWhere, id: output.id }, data: { status, renderLeaseId: null, renderHeartbeatAt: null } });
+      if (changed.count) await tx.mixerRecipe.updateMany({ where: { outputId: output.id, completedAt: null }, data: { status, ...(status === "CANCELED" ? { activeKey: null } : {}) } });
+      return changed.count;
+    });
   }
-  return reset.count;
+  if (recovered > 0) console.log(`[Multiplier Worker] Recovered ${recovered} output(s) stuck in RENDERING`);
+  return recovered;
 }
 
 export async function pauseRenderQueue() {
@@ -956,7 +974,9 @@ export async function triggerQueueWorker() {
 // an operator pause — triggerQueueWorker itself stays paused.
 export async function resumeRenderQueueIfWorkPending(): Promise<{ recovered: number; pending: number }> {
   const recovered = await recoverStaleRenderingOutputs();
-  const pending = await prisma.multiplierOutput.count({ where: { status: "PENDING" } });
+  const unfinished = await prisma.mixerBatch.findMany({ where: { status: { in: ["QUEUED", "RENDERING"] }, groupId: { not: null } }, select: { groupId: true } });
+  for (const batch of unfinished) await updateParentGroupStatus(batch.groupId!);
+  const pending = await prisma.multiplierOutput.count({ where: pendingRenderWhere() });
   if (pending > 0) triggerQueueWorker();
   return { recovered, pending };
 }
@@ -992,18 +1012,14 @@ async function processRenderQueue() {
     for (const g of stuckGroups) {
       const anyActive = g.outputs.some((o) => o.status === "PENDING" || o.status === "RENDERING");
       if (anyActive) continue;
-      const hasFailed = g.outputs.some((o) => o.status === "FAILED");
-      await prisma.multiplierGroup.update({
-        where: { id: g.id },
-        data: { status: hasFailed ? "FAILED" : "COMPLETED" },
-      });
+      await updateParentGroupStatus(g.id);
     }
   } catch (err) {
     console.error("[Multiplier Worker] Group status sweep failed:", err);
   }
 
   try {
-    const pending = await prisma.multiplierOutput.count({ where: { status: "PENDING" } });
+    const pending = await prisma.multiplierOutput.count({ where: pendingRenderWhere() });
     if (pending > 0) queueWakeupRequested = true;
   } catch (err) {
     console.error("[Multiplier Worker] Final queue recheck failed:", err);
@@ -1028,7 +1044,7 @@ async function renderWorkerLoop(workerId: number) {
       // render the same video. The dedicated lease fences off an older worker
       // without being invalidated by unrelated output metadata updates.
       const candidate = await prisma.multiplierOutput.findFirst({
-        where: { status: "PENDING" },
+        where: pendingRenderWhere(),
         orderBy: { createdAt: "asc" },
         select: { id: true },
       });
@@ -1058,9 +1074,18 @@ async function renderWorkerLoop(workerId: number) {
 
       let leaseOperation: Promise<void> = Promise.resolve();
       const updateOwnedOutput = (data: Prisma.MultiplierOutputUpdateManyMutationInput) => {
-        const result = leaseOperation.then(() => prisma.multiplierOutput.updateMany({
-          where: { id: candidate.id, status: "RENDERING", renderLeaseId },
-          data,
+        const result = leaseOperation.then(() => prisma.$transaction(async tx => {
+          const changed = await tx.multiplierOutput.updateMany({
+            where: { id: candidate.id, status: "RENDERING", renderLeaseId }, data,
+          });
+          // Keep the durable Mixer usage ledger in the same transaction as
+          // completion. Cancellation cannot release a successfully used recipe.
+          if (changed.count && (data.status === "COMPLETED" || data.status === "FAILED")) {
+            await tx.mixerRecipe.updateMany({ where: { outputId: candidate.id }, data: {
+              status: data.status, ...(data.status === "COMPLETED" ? { completedAt: new Date() } : {}),
+            } });
+          }
+          return changed;
         }));
         leaseOperation = result.then(() => undefined, () => undefined);
         return result;
@@ -1089,16 +1114,21 @@ async function renderWorkerLoop(workerId: number) {
             group: true,
             variation: true,
             hook: true,
+            mixerRecipe: true,
           },
         });
         if (!output || leaseLost) continue;
 
         let stillPath = "";
         try {
-          await prisma.multiplierGroup.update({
-            where: { id: output.groupId },
+          await prisma.multiplierGroup.updateMany({
+            where: { id: output.groupId, ...(output.group.sourceKind === "mixer" ? { status: { notIn: ["PAUSED", "CANCELED", "CLEARED"] } } : {}) },
             data: { status: "RENDERING" },
           });
+          if (output.group.sourceKind === "mixer") {
+            await prisma.mixerBatch.updateMany({ where: { groupId: output.groupId, status: { in: ["QUEUED", "RENDERING"] } }, data: { status: "RENDERING" } });
+            await prisma.mixerRecipe.updateMany({ where: { outputId: output.id, status: "PENDING" }, data: { status: "RENDERING" } });
+          }
           if (leaseLost) continue;
 
           const settings = typeof output.group.settings === "string"
@@ -1107,7 +1137,20 @@ async function renderWorkerLoop(workerId: number) {
 
           const hookText = output.hook.text.trim();
           let relativeVideoUrl: string;
-          if (hookText) {
+          if (output.group.sourceKind === "mixer") {
+            if (!output.mixerRecipe) throw new Error("Mixer recipe is missing. Restore the batch data before retrying.");
+            const { renderMixerRecipe } = await import("./campaign-mixer/render");
+            const { MixerError } = await import("@/lib/campaign-mixer/schema");
+            try {
+              relativeVideoUrl = await renderMixerRecipe(output.mixerRecipe.snapshot as unknown as import("@/lib/campaign-mixer/schema").MixerRecipeSnapshot, output.id, renderLeaseId);
+            } catch (error) {
+              if (error instanceof MixerError && error.code === "STORAGE_LOW") {
+                const { controlBatch } = await import("./campaign-mixer/data");
+                await controlBatch(output.mixerRecipe.batchId, "pause");
+              }
+              throw error;
+            }
+          } else if (hookText) {
             // 1. Render transparent PNG still in Remotion
             // Per-variation preset (multi-preset split) wins over the group style.
             const outputStyleId = output.variation.styleId || output.group.styleId;
@@ -1132,7 +1175,7 @@ async function renderWorkerLoop(workerId: number) {
           // 3. Auto-upload to Google Drive if connected
           let driveFolderId: string | null = null;
           const finalFolderId = output.driveFolderId || settings?.driveFolderId || null;
-          if (finalFolderId && !leaseLost) {
+          if (finalFolderId && !leaseLost && output.group.sourceKind !== "mixer") {
             try {
               const drive = await getMultiplierDriveClient();
               if (drive && !leaseLost) {
@@ -1174,6 +1217,7 @@ async function renderWorkerLoop(workerId: number) {
             await updateParentGroupStatus(output.groupId);
           } else {
             reportLeaseLost("completion");
+            if (output.group.sourceKind === "mixer") deleteLocalUpload(relativeVideoUrl);
           }
         } catch (err: any) {
           console.error(`[Multiplier Worker] Output ${output.id} failed:`, err);
@@ -1206,12 +1250,33 @@ async function renderWorkerLoop(workerId: number) {
 }
 
 async function updateParentGroupStatus(groupId: string) {
+  const existingBatch = await prisma.mixerBatch.findUnique({ where: { groupId }, select: { workspaceId: true } });
+  if (existingBatch) {
+    await prisma.$transaction(async tx => {
+      await tx.$queryRaw`SELECT 1 AS locked FROM pg_advisory_xact_lock(hashtextextended(${`mixer:${existingBatch.workspaceId}`}, 0))`;
+      const batch = await tx.mixerBatch.findUnique({ where: { groupId } });
+      if (!batch) return;
+      if (["PAUSED", "CANCELED", "CLEARED"].includes(batch.status)) return;
+      const outputs = await tx.multiplierOutput.findMany({ where: { groupId }, select: { status: true } });
+      if (!outputs.length || outputs.some(o => ["PENDING", "RENDERING", "PAUSED"].includes(o.status))) return;
+      const failed = outputs.some(o => o.status === "FAILED");
+      const status = failed ? (outputs.some(o => o.status === "COMPLETED") ? "PARTIAL" : "FAILED") : "COMPLETED";
+      await tx.mixerBatch.update({ where: { id: batch.id }, data: { status } });
+      await tx.multiplierGroup.update({ where: { id: groupId }, data: { status: failed ? "FAILED" : "COMPLETED" } });
+    });
+    return;
+  }
   const allOutputs = await prisma.multiplierOutput.findMany({
     where: { groupId },
     select: { status: true },
   });
 
   const allDone = allOutputs.every((o: any) => o.status === "COMPLETED" || o.status === "FAILED");
+  const mixerBatch = await prisma.mixerBatch.findUnique({ where: { groupId } });
+  if (mixerBatch && ["PAUSED", "CANCELED"].includes(mixerBatch.status)) {
+    await prisma.multiplierGroup.update({ where: { id: groupId }, data: { status: mixerBatch.status } });
+    return;
+  }
   if (allDone) {
     const hasFailed = allOutputs.some((o: any) => o.status === "FAILED");
     await prisma.multiplierGroup.update({
@@ -1220,6 +1285,7 @@ async function updateParentGroupStatus(groupId: string) {
         status: hasFailed ? "FAILED" : "COMPLETED",
       },
     });
+    if (mixerBatch) await prisma.mixerBatch.update({ where: { id: mixerBatch.id }, data: { status: hasFailed ? (allOutputs.some(o => o.status === "COMPLETED") ? "PARTIAL" : "FAILED") : "COMPLETED" } });
   }
 }
 
@@ -1233,6 +1299,7 @@ export async function startGroupRender(groupId: string, opts?: { fresh?: boolean
   });
 
   if (!group) throw new Error("Group not found");
+  if (group.sourceKind === "mixer") throw new Error("Use Campaign Mixer to retry or resume this batch. Its approved recipes are preserved.");
   if (group.variations.length === 0) throw new Error("Add at least one video variation to render");
   if (group.hooks.length === 0) throw new Error("Add at least one hook to render");
 
@@ -1303,6 +1370,22 @@ export async function startGroupRender(groupId: string, opts?: { fresh?: boolean
 }
 
 export async function retryOutput(outputId: string) {
+  const mixerRecipe = await prisma.mixerRecipe.findUnique({ where: { outputId }, include: { output: true, batch: true } });
+  if (mixerRecipe) {
+    if (mixerRecipe.output?.status !== "FAILED" || !mixerRecipe.activeKey || mixerRecipe.batch.status === "CANCELED") throw new Error("Only failed, uncanceled Mixer outputs can be retried.");
+    await prisma.$transaction(async tx => {
+      await tx.$queryRaw`SELECT 1 AS locked FROM pg_advisory_xact_lock(hashtextextended(${`mixer:${mixerRecipe.workspaceId}`}, 0))`;
+      const fresh = await tx.mixerRecipe.findUnique({ where: { id: mixerRecipe.id }, include: { batch: true } });
+      if (!fresh?.activeKey || ["CANCELED", "CLEARED", "PAUSED"].includes(fresh.batch.status)) throw new Error("Resume the batch before retrying. Canceled or cleared batches cannot be retried.");
+      const changed = await tx.multiplierOutput.updateMany({ where: { id: outputId, status: "FAILED" }, data: { status: "PENDING", errorMessage: null, renderLeaseId: null, renderHeartbeatAt: null } });
+      if (!changed.count) throw new Error("This output is already being retried.");
+      await tx.mixerRecipe.update({ where: { id: mixerRecipe.id }, data: { status: "PENDING" } });
+      await tx.mixerBatch.update({ where: { id: mixerRecipe.batchId }, data: { status: "QUEUED" } });
+      await tx.multiplierGroup.update({ where: { id: mixerRecipe.output!.groupId }, data: { status: "QUEUED" } });
+    });
+    void triggerQueueWorker();
+    return prisma.multiplierOutput.findUnique({ where: { id: outputId } });
+  }
   const output = await prisma.multiplierOutput.update({
     where: { id: outputId },
     data: {
@@ -1826,20 +1909,23 @@ function deleteLocalUpload(relativeRef: string | null | undefined) {
 export async function clearGroupOutputs(groupIds: string[]): Promise<{ clearedGroups: number; deletedOutputs: number }> {
   const groups = await prisma.multiplierGroup.findMany({
     where: { id: { in: groupIds } },
-    include: { outputs: { select: { id: true, outputRef: true } } },
+    include: { outputs: { select: { id: true, outputRef: true, status: true, exportStatus: true } } },
   });
 
   let deletedOutputs = 0;
   for (const g of groups) {
+    if (g.sourceKind === "mixer" && g.outputs.some(o => ["PENDING", "RENDERING", "PAUSED"].includes(o.status) || o.exportStatus === "exporting")) throw new Error("Finish or cancel this Mixer batch and its exports before clearing files.");
     for (const o of g.outputs) {
       deleteLocalUpload(o.outputRef);
       deletedOutputs++;
     }
     await prisma.multiplierOutput.deleteMany({ where: { groupId: g.id } });
+    if (g.sourceKind === "mixer") await prisma.mixerRecipe.updateMany({ where: { batch: { groupId: g.id }, completedAt: null }, data: { status: "CANCELED", activeKey: null } });
     await prisma.multiplierGroup.update({
       where: { id: g.id },
       data: { status: "DRAFT", errorMessage: null },
     });
+    if (g.sourceKind === "mixer") await prisma.mixerBatch.updateMany({ where: { groupId: g.id }, data: { status: "CLEARED" } });
   }
 
   return { clearedGroups: groups.length, deletedOutputs };
@@ -1856,15 +1942,16 @@ export async function deleteGroups(groupIds: string[]): Promise<{ deletedGroups:
     where: { id: { in: groupIds } },
     include: {
       variations: { select: { videoRef: true } },
-      outputs: { select: { outputRef: true } },
+      outputs: { select: { outputRef: true, exportStatus: true } },
     },
   });
 
   const busy = (g: (typeof groups)[number]) =>
-    g.transcriptStatus === "TRANSCRIBING" || g.status === "QUEUED" || g.status === "RENDERING";
+    g.transcriptStatus === "TRANSCRIBING" || g.status === "QUEUED" || g.status === "RENDERING" || (g.sourceKind === "mixer" && (g.status === "PAUSED" || g.outputs.some(o => o.exportStatus === "exporting")));
   const deletable = groups.filter((g) => !busy(g));
 
   for (const g of deletable) {
+    if (g.sourceKind === "mixer") await prisma.mixerRecipe.updateMany({ where: { batch: { groupId: g.id }, completedAt: null }, data: { status: "CANCELED", activeKey: null } });
     for (const v of g.variations) deleteLocalUpload(v.videoRef);
     for (const o of g.outputs) deleteLocalUpload(o.outputRef);
     await prisma.multiplierGroup.delete({ where: { id: g.id } });

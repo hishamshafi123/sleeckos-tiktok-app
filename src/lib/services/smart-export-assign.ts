@@ -40,7 +40,8 @@ export function assignVideosFairRoundRobin(
   groupIds: string[],
   videoIdsByGroup: Record<string, string[]>,
   folders: SmartExportFolderRequest[],
-  priorGroupsByFolder: Record<string, string[]> = {}
+  priorGroupsByFolder: Record<string, string[]> = {},
+  mixerPolicy: { groupIds: string[]; blockedVideosByFolder?: Record<string, string[]>; clipByVideo?: Record<string, string> } = { groupIds: [] }
 ): {
   assignments: SmartExportAssignmentResult[];
   unfulfillable: SmartExportUnfulfillable[];
@@ -49,7 +50,10 @@ export function assignVideosFairRoundRobin(
     folder,
     videoIds: [] as string[],
     usedGroupIds: new Set<string>(priorGroupsByFolder[folder.id] ?? []),
+    blockedVideos: new Set(mixerPolicy.blockedVideosByFolder?.[folder.id] ?? []),
+    clipUses: new Map<string, number>(),
   }));
+  const mixerGroups = new Set(mixerPolicy.groupIds);
 
   for (const groupId of groupIds) {
     const videoIds = videoIdsByGroup[groupId] || [];
@@ -59,15 +63,19 @@ export function assignVideosFairRoundRobin(
       let target: (typeof state)[number] | null = null;
       for (const s of state) {
         if (s.videoIds.length >= s.folder.count) continue;
-        if (s.usedGroupIds.has(groupId)) continue;
-        if (!target || s.videoIds.length < target.videoIds.length) {
+        if (!mixerGroups.has(groupId) && s.usedGroupIds.has(groupId)) continue;
+        if (s.blockedVideos.has(videoId)) continue;
+        const clip = mixerPolicy.clipByVideo?.[videoId] || videoId;
+        if (!target || s.videoIds.length < target.videoIds.length || (s.videoIds.length === target.videoIds.length && (s.clipUses.get(clip) || 0) < (target.clipUses.get(clip) || 0))) {
           target = s;
         }
       }
       // No eligible folder left for this group — remaining videos stay unassigned.
-      if (!target) break;
+      if (!target) { if (mixerGroups.has(groupId)) continue; break; }
       target.videoIds.push(videoId);
       target.usedGroupIds.add(groupId);
+      const clip = mixerPolicy.clipByVideo?.[videoId] || videoId;
+      target.clipUses.set(clip, (target.clipUses.get(clip) || 0) + 1);
     }
   }
 

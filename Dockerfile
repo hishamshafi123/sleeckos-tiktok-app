@@ -101,7 +101,7 @@ COPY --from=builder --chown=nextjs:nodejs /app/src/remotion/content-clips ./src/
 COPY --from=builder --chown=nextjs:nodejs /app/src/lib/content-clips ./src/lib/content-clips
 
 # Ensure uploads, fonts, and scripts directories exist and have proper permissions
-RUN mkdir -p public/uploads public/fonts data/content-clips && \
+RUN mkdir -p public/uploads public/fonts data/content-clips data/campaign-mixer && \
     chown -R nextjs:nodejs public scripts data
 
 # Prisma: config + schema + migrations + generated client

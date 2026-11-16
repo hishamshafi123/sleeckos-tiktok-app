@@ -3,7 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/db";
 import { getSession } from "@/lib/session";
 import { can } from "@/lib/services/permissions";
-import { createGroup } from "@/lib/services/multiplier";
+import { createGroup, deleteGroups } from "@/lib/services/multiplier";
 import fs from "fs";
 import path from "path";
 import { deleteFromR2 } from "@/lib/services/storage";
@@ -51,6 +51,7 @@ export async function GET(req: NextRequest) {
     const select = {
       id: true,
       name: true,
+      sourceKind: true,
       campaignId: true,
       transcriptStatus: true,
       caption: true,
@@ -194,7 +195,12 @@ export async function DELETE(req: NextRequest) {
       const publicDir = path.join(process.cwd(), "public");
       const outputs = await prisma.multiplierOutput.findMany({
         where: { id: { in: ids } },
+        include: { mixerRecipe: { select: { id: true } } },
       });
+      if (outputs.some(out => out.mixerRecipe && (["PENDING", "RENDERING", "PAUSED"].includes(out.status) || out.exportStatus === "exporting"))) {
+        return NextResponse.json({ error: "Finish or cancel the Mixer batch and its exports before deleting its outputs." }, { status: 409 });
+      }
+      await prisma.mixerRecipe.updateMany({ where: { outputId: { in: ids }, completedAt: null }, data: { activeKey: null, status: "CANCELED" } });
 
       for (const out of outputs) {
         // Delete local file
@@ -234,6 +240,10 @@ export async function DELETE(req: NextRequest) {
       const groups = await prisma.multiplierGroup.findMany({
         include: { variations: true, outputs: true },
       });
+      if (groups.some(g => g.sourceKind === "mixer" && (g.outputs.some(o => ["PENDING", "RENDERING", "PAUSED"].includes(o.status) || o.exportStatus === "exporting")))) {
+        return NextResponse.json({ error: "Finish or cancel active Mixer batches and exports before deleting all groups." }, { status: 409 });
+      }
+      await prisma.mixerRecipe.updateMany({ where: { batch: { groupId: { in: groups.filter(g => g.sourceKind === "mixer").map(g => g.id) } }, completedAt: null }, data: { activeKey: null, status: "CANCELED" } });
       for (const g of groups) {
         for (const v of g.variations) {
           const vPath = path.join(publicDir, v.videoRef);
@@ -276,6 +286,11 @@ export async function DELETE(req: NextRequest) {
     });
 
     if (group) {
+      if (group.sourceKind === "mixer") {
+        if (group.outputs.some(o => o.exportStatus === "exporting")) return NextResponse.json({ error: "Wait for this batch's exports to finish before deleting it." }, { status: 409 });
+        const result = await deleteGroups([group.id]);
+        return NextResponse.json(result.skippedBusy ? { error: "Finish or cancel this Mixer batch before deleting its outputs." } : { success: true }, { status: result.skippedBusy ? 409 : 200 });
+      }
       // Clean up variations files
       for (const v of group.variations) {
         const vPath = path.join(publicDir, v.videoRef);
