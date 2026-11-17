@@ -886,6 +886,11 @@ export default function ClientPage() {
                   const row = today.accounts.find(
                     (r) => r.accountId === a.accountId,
                   );
+                  const replacementDay =
+                    !!a.replacementOfAccountId &&
+                    today.accounts.some(
+                      (r) => r.accountId === a.replacementOfAccountId,
+                    );
                   return (
                     <Fragment key={a.accountId}>
                       <tr>
@@ -932,10 +937,19 @@ export default function ClientPage() {
                                 toggleActivity(a.accountId, "posts")
                               }
                             >
-                              <Progress
-                                value={row.posts}
-                                target={row.postsTarget}
-                              />
+                              {replacementDay ? (
+                                <span className="block text-xs text-zinc-300">
+                                  {row.posts} post{row.posts === 1 ? "" : "s"}
+                                  <span className="mt-1 block text-[11px] text-zinc-500">
+                                    Targets resume tomorrow
+                                  </span>
+                                </span>
+                              ) : (
+                                <Progress
+                                  value={row.posts}
+                                  target={row.postsTarget}
+                                />
+                              )}
                               <span className="text-[11px] text-blue-300">
                                 Posts ▾
                               </span>
@@ -966,6 +980,13 @@ export default function ClientPage() {
                                 Sessions ▾
                               </span>
                             </button>
+                          ) : replacementDay && a.guardianProfileId ? (
+                            <span className="block text-xs text-teal-300">
+                              Phone linked
+                              <span className="mt-1 block text-[11px] text-zinc-500">
+                                Warm-up tracking resumes tomorrow
+                              </span>
+                            </span>
                           ) : (
                             <span className="text-xs text-amber-300">
                               Link Guardian phone
@@ -1029,7 +1050,8 @@ export default function ClientPage() {
         <p className="mt-3 text-xs text-zinc-500">
           Warm-up minutes come from Guardian’s observed phone runtime. Targets
           and assignment changes take effect next reporting day; first-time
-          assignments start today.
+          assignments start today. Replacement accounts resume targets and phone
+          credit tomorrow so the previous login is not counted twice.
         </p>
       </section>
       <Dialog
