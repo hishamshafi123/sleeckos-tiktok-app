@@ -4,6 +4,7 @@ import prisma from "@/lib/db";
 import { getSession } from "@/lib/session";
 import { can } from "@/lib/services/permissions";
 import { validatePostPeerAccount } from "@/lib/services/accounts";
+import { preserveAccountPerformance } from "@/lib/services/analytics/account-view-history";
 
 // PATCH /api/managed/accounts/[id] — update account settings
 export async function PATCH(
@@ -157,9 +158,10 @@ export async function DELETE(
     console.warn(`[Accounts] Force-deleting @${account.tiktokUsername} which held Google OAuth tokens`);
   }
 
-  // Preserve the state identity/history before removing its replaceable login.
+  // Preserve state and performance history before removing the replaceable login.
   await prisma.$transaction(async tx => {
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(893271)`;
+    await preserveAccountPerformance(tx, account);
     await tx.stateAccount.updateMany({
       where: { managedAccountId: id },
       data: {

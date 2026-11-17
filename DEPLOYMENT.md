@@ -229,6 +229,25 @@ tail -f /var/log/sleeckos-cron.log
 - The app port (3000) is bound to `127.0.0.1` only — it is not reachable from the internet directly; all traffic goes through nginx.
 - `DATABASE_URL` uses `db` as the hostname, which resolves to the postgres container inside docker-compose. Do not change this to `localhost`.
 
+## Account Performance view history
+
+`/admin/account-performance` includes all-time tracked views, current and previous
+month totals, monthly bars and per-account monthly contributions. The read API
+aggregates `AccountDailyStat` and its deleted-account archive; it does not scan raw
+video snapshots or make provider calls. Missing months are shown as unavailable,
+and the current month is marked partial.
+
+Migration `20261117172031_preserve_account_performance_history` adds the archive.
+The managed-account DELETE route copies daily totals and account naming metadata
+before deleting the login. This preserves existing rollups; it cannot reconstruct
+history already removed by an older deletion. Replacement logins keep separate
+account IDs and view contributions.
+
+Run `DATABASE_URL=postgresql://hishamshafi@localhost:5432/sleeckos_state_accounts_verify npx tsx scripts/test_account_view_history.ts`.
+The isolated test covers access, repeated rollups, month boundaries, missing data,
+deletion archives and replacements. `prisma.config.ts` respects an explicitly
+supplied `DATABASE_URL` before loading local `.env` values.
+
 ## State Accounts and team KPIs
 
 Hourly state syncing and other account analytics use **TikLiveAPI only**.

@@ -20,6 +20,8 @@ import {
   Play,
 } from "lucide-react";
 import { toast } from "sonner";
+import ViewHistory from "./ViewHistory";
+import type { AccountViewHistory } from "@/lib/services/analytics/account-view-history";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import {
   labelBadgeClass,
@@ -350,6 +352,7 @@ export default function ClientPage() {
     "/api/admin/account-performance/fed-silent"
   );
   const trajectory = useResource<Trajectory>("/api/admin/account-performance/trajectory");
+  const viewHistory = useResource<AccountViewHistory>("/api/admin/account-performance/view-history");
 
   const openDetail = useCallback((id: string) => setDetailId(id), []);
 
@@ -415,6 +418,14 @@ export default function ClientPage() {
           </div>
         )}
       </section>
+
+      {viewHistory.error ? (
+        <SectionError message={viewHistory.error} onRetry={viewHistory.reload} />
+      ) : viewHistory.loading || !viewHistory.data ? (
+        <div className="h-72 animate-pulse rounded-lg bg-zinc-900" />
+      ) : (
+        <ViewHistory data={viewHistory.data} />
+      )}
 
       {/* ── Account health scan ────────────────────────────────────────── */}
       <HealthScanSection />

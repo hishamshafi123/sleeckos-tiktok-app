@@ -534,6 +534,31 @@ model AccountDailyStat {
   @@index([date])
 }
 
+// Durable Account Performance identity and daily totals retained when the
+// replaceable managed login is deleted. The original account ID remains the key.
+model AccountPerformanceArchive {
+  accountId       String                       @id
+  username        String
+  driveFolderName String?
+  archivedAt      DateTime                     @default(now())
+  createdAt       DateTime                     @default(now())
+  days            AccountPerformanceArchiveDay[]
+}
+
+model AccountPerformanceArchiveDay {
+  id          String                    @id @default(uuid())
+  accountId   String
+  account     AccountPerformanceArchive @relation(fields: [accountId], references: [accountId], onDelete: Cascade)
+  date        DateTime
+  postsCount  Int                       @default(0)
+  viewsGained Int                       @default(0)
+  likesGained Int                       @default(0)
+  createdAt   DateTime                  @default(now())
+
+  @@unique([accountId, date])
+  @@index([date])
+}
+
 // One run of the Account Health Scan (shadowban detection). Triggered manually
 // from the Account Performance page; entries are written once the background
 // pass finishes. accountId on entries is a plain scalar so history survives
