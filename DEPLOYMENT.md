@@ -417,6 +417,27 @@ limits response sizes, and times out slow requests. A web-page source watches
 that page's title/description; use RSS to discover new articles from a website.
 Existing data and briefs are retained on collection/generation failures.
 
+Tracked TikTok and Instagram profiles use the same public-post collectors but also
+retain every normalized post in `ContentTrackedPost`. Keyword-filtered profiles
+show nonmatching posts under **Latest videos & posts** without promoting them to
+editorial stories. **Promote every post** bypasses only the location-keyword check;
+normal editorial review remains required. Repeated checks upsert stable platform
+post IDs and update metrics without duplicating stories. Full footage is downloaded
+only when selected for Clip Studio.
+
+Migration `20261118064741_tracked_social_profiles` adds monitored posts and profile
+metadata. Moving a profile changes future post attribution and preserves historical
+state records. Remove tracking archives and disables the source, detaches any pending
+provider run from future collection, and retains existing posts/stories. Re-adding
+the same normalized profile restores the archived source. The worker excludes
+archived sources. Public-profile availability, Reel/video coverage and provider
+quotas must still be verified with real provider responses.
+
+Run `scripts/test_content_desk.ts` and `scripts/test_tracked_profiles.ts` against the
+isolated verification database. The latter covers monitored posts, metadata,
+deduplication, manual promotion, state moves, removal/restoration and both social
+platforms using mocked provider responses.
+
 Validation on the isolated migration database:
 
 ```sh

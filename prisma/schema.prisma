@@ -2476,6 +2476,7 @@ model ContentState {
   dailyTarget Int @default(6)
   sources ContentSource[]
   stories ContentStory[]
+  trackedPosts ContentTrackedPost[]
 }
 
 model ContentSource {
@@ -2489,6 +2490,11 @@ model ContentSource {
   intervalMinutes Int @default(60)
   category String @default("AUTO")
   createdBy String?
+  profileHandle String?
+  includeAllPosts Boolean @default(false)
+  archivedAt DateTime?
+  trackedPostCount Int @default(0)
+  lastPostAt DateTime?
   lastAttemptAt DateTime?
   lastSuccessAt DateTime?
   nextRunAt DateTime @default(now())
@@ -2500,8 +2506,10 @@ model ContentSource {
   createdAt DateTime @default(now())
   items ContentItem[]
   runs ContentRun[]
+  trackedPosts ContentTrackedPost[]
   @@unique([stateCode, kind, url])
   @@index([enabled, nextRunAt])
+  @@index([archivedAt, enabled, nextRunAt])
 }
 
 model ContentStory {
@@ -2533,8 +2541,37 @@ model ContentStory {
   clips ContentClip[]
   items ContentItem[]
   events ContentEvent[]
+  trackedPosts ContentTrackedPost[]
   @@index([stateCode, status, createdAt])
   @@index([teamId, status])
+}
+
+model ContentTrackedPost {
+  id String @id @default(uuid())
+  sourceId String
+  source ContentSource @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  stateCode String
+  state ContentState @relation(fields: [stateCode], references: [code], onDelete: Cascade)
+  platform String
+  platformPostId String
+  url String
+  caption String @db.Text
+  thumbnailUrl String?
+  mediaType String @default("VIDEO")
+  duration Float?
+  publishedAt DateTime?
+  views BigInt?
+  likes BigInt?
+  comments BigInt?
+  shares BigInt?
+  storyId String?
+  story ContentStory? @relation(fields: [storyId], references: [id], onDelete: SetNull)
+  firstSeenAt DateTime @default(now())
+  lastSeenAt DateTime @default(now())
+  lastMetricsAt DateTime?
+  @@unique([sourceId, platformPostId])
+  @@index([stateCode, platform, publishedAt])
+  @@index([storyId])
 }
 
 model ContentItem {

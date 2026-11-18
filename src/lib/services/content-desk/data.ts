@@ -212,6 +212,7 @@ export async function deskData(params: URLSearchParams, actor: Actor) {
     shortlist,
     actorUser,
     counts,
+    profilePosts,
   ] = await Promise.all([
     prisma.contentStory.findMany({
       where,
@@ -227,6 +228,7 @@ export async function deskData(params: URLSearchParams, actor: Actor) {
     prisma.contentStory.count({ where }),
     prisma.contentState.findMany({ orderBy: { name: "asc" } }),
     prisma.contentSource.findMany({
+      where: { archivedAt: null },
       orderBy: [{ stateCode: "asc" }, { name: "asc" }],
     }),
     prisma.contentRun.findMany({
@@ -262,6 +264,22 @@ export async function deskData(params: URLSearchParams, actor: Actor) {
       select: { name: true },
     }),
     prisma.contentStory.groupBy({ by: ["status"], _count: true }),
+    params.get("profile")
+      ? prisma.contentTrackedPost.findMany({
+          where: {
+            sourceId: params.get("profile")!,
+            source: { archivedAt: null },
+          },
+          include: {
+            story: { select: { id: true, title: true, status: true } },
+          },
+          orderBy: [
+            { publishedAt: { sort: "desc", nulls: "last" } },
+            { firstSeenAt: "desc" },
+          ],
+          take: 60,
+        })
+      : Promise.resolve([]),
   ]);
   const today = await businessStart();
   const usage = await prisma.contentRun.groupBy({
@@ -291,6 +309,7 @@ export async function deskData(params: URLSearchParams, actor: Actor) {
     shortlist: shortlist ? JSON.parse(shortlist.value) : null,
     user: { ...actor, name: actorUser?.name },
     counts,
+    profilePosts,
     usage,
     providers: {
       youtube: !!process.env.YOUTUBE_API_KEY,
@@ -322,7 +341,7 @@ function admin(actor: Actor) {
 }
 export async function mutateDesk(body: Record<string, unknown>, actor: Actor) {
   await ensureDesk();
-  const action = body.action;
+  const action = typeof body.action === "string" ? body.action : "";
   if (action === "ranking.start") return queueRanking(body, actor);
   if (action === "source.save") {
     const state = await knownState(body.stateCode),
@@ -339,6 +358,26 @@ export async function mutateDesk(body: Record<string, unknown>, actor: Actor) {
       kind === "TIKTOK" || kind === "INSTAGRAM" ? 240 : 30,
       10080,
     );
+    if (
+      body.includeAllPosts !== undefined &&
+      typeof body.includeAllPosts !== "boolean"
+    )
+      throw new DeskError("INVALID", "Post filtering must be true or false.");
+    const social = kind === "TIKTOK" || kind === "INSTAGRAM";
+    const details = {
+      name,
+      url,
+      kind,
+      stateCode: state.code,
+      category,
+      intervalMinutes,
+      profileHandle: social
+        ? new URL(url).pathname.replace(/^\/@?/, "").replace(/\/$/, "")
+        : null,
+      ...(body.includeAllPosts !== undefined
+        ? { includeAllPosts: body.includeAllPosts as boolean }
+        : {}),
+    };
     if (body.id) {
       const id = required(body.id, 100, "Source ID"),
         old = await prisma.contentSource.findUnique({ where: { id } });
@@ -359,12 +398,7 @@ export async function mutateDesk(body: Record<string, unknown>, actor: Actor) {
       await prisma.contentSource.update({
         where: { id },
         data: {
-          name,
-          url,
-          kind,
-          stateCode: state.code,
-          category,
-          intervalMinutes,
+          ...details,
           nextRunAt: new Date(),
           errorCode: null,
           errorMessage: null,
@@ -372,32 +406,62 @@ export async function mutateDesk(body: Record<string, unknown>, actor: Actor) {
         },
       });
     } else {
-      if (
-        (await prisma.contentSource.count({
-          where: { stateCode: state.code },
-        })) >= 100
-      )
-        throw new DeskError(
-          "LIMIT",
-          "This state already has 100 sources. Pause or edit an existing source first.",
-        );
-      await prisma.contentSource.create({
-        data: {
-          name,
-          url,
-          kind,
-          stateCode: state.code,
-          category,
-          intervalMinutes,
-          createdBy: actor.userId,
-        },
+      const existing = await prisma.contentSource.findUnique({
+        where: { stateCode_kind_url: { stateCode: state.code, kind, url } },
       });
+      if (existing && !existing.archivedAt)
+        throw new DeskError(
+          "DUPLICATE",
+          "This profile or source is already tracked for this state.",
+          409,
+        );
+      if (existing) {
+        if (actor.role !== "admin" && existing.createdBy !== actor.userId)
+          throw new DeskError(
+            "FORBIDDEN",
+            "Only the source owner or an admin can restore this source.",
+            403,
+          );
+        await prisma.contentSource.update({
+          where: { id: existing.id },
+          data: {
+            ...details,
+            archivedAt: null,
+            enabled: true,
+            pendingRunId: null,
+            pendingSince: null,
+            nextRunAt: new Date(),
+            errorCode: null,
+            errorMessage: null,
+            failureCount: 0,
+          },
+        });
+      } else {
+        if (
+          (await prisma.contentSource.count({
+            where: { stateCode: state.code, archivedAt: null },
+          })) >= 100
+        )
+          throw new DeskError(
+            "LIMIT",
+            "This state already has 100 sources. Pause or edit an existing source first.",
+          );
+        await prisma.contentSource.create({
+          data: {
+            ...details,
+            includeAllPosts: body.includeAllPosts === true,
+            createdBy: actor.userId,
+          },
+        });
+      }
     }
     return {
-      message: "Source saved. It is queued for the next collection cycle.",
+      message: social
+        ? "Profile saved. Its first public-post check is queued."
+        : "Source saved. It is queued for the next collection cycle.",
     };
   }
-  if (action === "source.toggle" || action === "source.retry") {
+  if (["source.toggle", "source.retry", "source.remove"].includes(action)) {
     const id = required(body.id, 100, "Source ID"),
       source = await prisma.contentSource.findUnique({ where: { id } });
     if (!source) throw new DeskError("NOT_FOUND", "Source not found.", 404);
@@ -412,18 +476,75 @@ export async function mutateDesk(body: Record<string, unknown>, actor: Actor) {
     await prisma.contentSource.update({
       where: { id },
       data:
-        action === "source.toggle"
-          ? { enabled: body.enabled as boolean, nextRunAt: new Date() }
-          : { nextRunAt: new Date(), failureCount: 0 },
+        action === "source.remove"
+          ? {
+              archivedAt: new Date(),
+              enabled: false,
+              pendingRunId: null,
+              pendingSince: null,
+              nextRunAt: new Date(),
+            }
+          : action === "source.toggle"
+            ? {
+                enabled: body.enabled as boolean,
+                nextRunAt: new Date(),
+                ...(body.enabled ? { archivedAt: null } : {}),
+              }
+            : {
+                nextRunAt: new Date(),
+                failureCount: 0,
+                errorCode: null,
+                errorMessage: null,
+              },
     });
     return {
       message:
-        action === "source.retry"
-          ? "Retry queued. Collection runs every five minutes."
-          : body.enabled
-            ? "Source resumed."
-            : "Source paused. Existing content is retained.",
+        action === "source.remove"
+          ? "Tracking removed. Existing videos and stories are retained."
+          : action === "source.retry"
+            ? "Check queued. Collection runs every five minutes."
+            : body.enabled
+              ? "Source resumed."
+              : "Source paused. Existing content is retained.",
     };
+  }
+  if (action === "profile.promote") {
+    const id = required(body.id, 100, "Tracked post ID");
+    const post = await prisma.contentTrackedPost.findUnique({
+      where: { id },
+      include: { source: true, state: true },
+    });
+    if (!post) throw new DeskError("NOT_FOUND", "Tracked post not found.", 404);
+    const storyId = await ingest(
+      {
+        url: post.url,
+        title:
+          post.caption.slice(0, 180) || `${post.source.name} posted an update`,
+        excerpt: post.caption,
+        publisher: post.source.name,
+        platform: post.platform,
+        publishedAt: post.publishedAt,
+        coverage: "SOCIAL_CAPTION",
+        views: post.views,
+        likes: post.likes,
+        comments: post.comments,
+        shares: post.shares,
+        platformPostId: post.platformPostId,
+        thumbnailUrl: post.thumbnailUrl,
+        mediaType: post.mediaType,
+        duration: post.duration,
+      },
+      post.state,
+      post.source,
+      true,
+    );
+    if (!storyId)
+      throw new DeskError("INVALID", "This post could not be added.");
+    await prisma.contentTrackedPost.update({
+      where: { id: post.id },
+      data: { storyId },
+    });
+    return { message: "Post added to the editorial review queue.", storyId };
   }
   if (action === "manual.add") {
     const state = await knownState(body.stateCode),

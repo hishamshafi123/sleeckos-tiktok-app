@@ -9,6 +9,7 @@ export async function ingest(
   state: ContentState,
   source: ContentSource | null,
   manual = false,
+  ignoreRelevance = false,
 ): Promise<string | null> {
   const url = publicUrl(candidate.url);
   const now = new Date();
@@ -21,6 +22,7 @@ export async function ingest(
     return null;
   if (
     !manual &&
+    !ignoreRelevance &&
     !relevant(
       candidate.title,
       candidate.excerpt,

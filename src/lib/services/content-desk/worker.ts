@@ -1,5 +1,5 @@
 import { resumeRankings } from "./ranking";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { Prisma, type ContentSource } from "@prisma/client";
 import prisma from "@/lib/db";
 import { formatInTimeZone } from "date-fns-tz";
@@ -160,8 +160,74 @@ export async function processSource(source: ContentSource, now = new Date()) {
       });
     } else candidates = await collect(source);
     let accepted = 0;
-    for (const item of candidates)
-      if (await ingest(item, state, source)) accepted++;
+    for (const item of candidates) {
+      const storyId = await ingest(
+        item,
+        state,
+        source,
+        false,
+        social(source) && source.includeAllPosts,
+      );
+      if (social(source)) {
+        const platformPostId =
+          item.platformPostId && item.platformPostId !== item.url
+            ? item.platformPostId
+            : createHash("sha256").update(item.url).digest("hex");
+        const hasMetrics = [
+          item.views,
+          item.likes,
+          item.comments,
+          item.shares,
+        ].some((value) => value != null);
+        await prisma.contentTrackedPost.upsert({
+          where: {
+            sourceId_platformPostId: { sourceId: source.id, platformPostId },
+          },
+          create: {
+            sourceId: source.id,
+            stateCode: state.code,
+            platform: item.platform,
+            platformPostId,
+            url: item.url,
+            caption: item.excerpt,
+            thumbnailUrl: item.thumbnailUrl,
+            mediaType: item.mediaType || "VIDEO",
+            duration: item.duration,
+            publishedAt: item.publishedAt,
+            views: item.views,
+            likes: item.likes,
+            comments: item.comments,
+            shares: item.shares,
+            storyId,
+            lastMetricsAt: hasMetrics ? now : null,
+          },
+          update: {
+            caption: item.excerpt,
+            thumbnailUrl: item.thumbnailUrl ?? undefined,
+            mediaType: item.mediaType || "VIDEO",
+            duration: item.duration ?? undefined,
+            publishedAt: item.publishedAt ?? undefined,
+            views: item.views ?? undefined,
+            likes: item.likes ?? undefined,
+            comments: item.comments ?? undefined,
+            shares: item.shares ?? undefined,
+            lastSeenAt: now,
+            lastMetricsAt: hasMetrics ? now : undefined,
+            ...(storyId ? { storyId } : {}),
+          },
+        });
+      }
+      if (storyId) accepted++;
+    }
+    const [trackedPostCount, latestPost] = social(source)
+      ? await Promise.all([
+          prisma.contentTrackedPost.count({ where: { sourceId: source.id } }),
+          prisma.contentTrackedPost.aggregate({
+            where: { sourceId: source.id },
+            _max: { publishedAt: true },
+          }),
+        ])
+      : [null, null];
     await prisma.contentSource.update({
       where: { id: source.id },
       data: {
@@ -170,20 +236,29 @@ export async function processSource(source: ContentSource, now = new Date()) {
         failureCount: 0,
         errorCode: null,
         errorMessage: null,
+        ...(trackedPostCount !== null
+          ? {
+              trackedPostCount,
+              lastPostAt: latestPost?._max.publishedAt ?? null,
+            }
+          : {}),
       },
     });
+    const stored = social(source) ? candidates.length : accepted;
     await prisma.contentRun.update({
       where: { id: run.id },
       data: {
-        status: accepted ? "SUCCESS" : "EMPTY",
-        items: accepted,
+        status: stored ? "SUCCESS" : "EMPTY",
+        items: stored,
         finishedAt: new Date(),
-        message: accepted
-          ? `${accepted} relevant items checked; duplicates were updated, not added again.`
-          : `${candidates.length} items returned; none matched the state's locations and seven-day window. Check keywords if this is unexpected.`,
+        message: social(source)
+          ? `${stored} latest posts saved under this profile; ${accepted} promoted to editorial stories. Duplicates were updated.`
+          : accepted
+            ? `${accepted} relevant items checked; duplicates were updated, not added again.`
+            : `${candidates.length} items returned; none matched the state's locations and seven-day window. Check keywords if this is unexpected.`,
       },
     });
-    return { failed: false, pending: false, items: accepted };
+    return { failed: false, pending: false, items: stored };
   } catch (error) {
     const feedback = errorFeedback(error);
     if (feedback.code === "UNEXPECTED")
@@ -500,6 +575,7 @@ export async function runDesk() {
     await resumeRankings();
     const sources = await prisma.contentSource.findMany({
       where: {
+        archivedAt: null,
         OR: [
           { enabled: true, state: { enabled: true }, nextRunAt: { lte: now } },
           { pendingRunId: { not: null }, nextRunAt: { lte: now } },

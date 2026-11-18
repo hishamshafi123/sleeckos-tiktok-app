@@ -9,6 +9,7 @@ import {
 } from "react";
 import Link from "next/link";
 import ClipStudio from "./ClipStudio";
+import ProfileManager, { type TrackedProfile } from "./ProfileManager";
 import {
   AlertCircle,
   ArrowUpRight,
@@ -119,6 +120,8 @@ const blankSource = {
   url: "",
   category: "AUTO",
   intervalMinutes: 60,
+  includeAllPosts: false,
+  profileMode: false,
 };
 export default function ClientPage() {
   const [data, setData] = useState<Data | null>(null),
@@ -332,6 +335,8 @@ export default function ClientPage() {
   const currentState = data?.states.find((s) => s.code === state);
   const sources =
     data?.sources.filter((s) => !state || s.stateCode === state) || [];
+  const profiles = sources.filter((s) => ["TIKTOK", "INSTAGRAM"].includes(s.kind));
+  const feeds = sources.filter((s) => !["TIKTOK", "INSTAGRAM"].includes(s.kind));
   const errors = sources.filter((s) => s.enabled && s.errorMessage);
   let heartbeat: { at: string; failed: number } | null = null;
   try {
@@ -347,6 +352,13 @@ export default function ClientPage() {
     detail &&
     (isAdmin || !detail.teamId || myTeams.some((t) => t.id === detail.teamId));
   const brief = detail?.brief as unknown as Brief | null;
+  const storyStep = detail?.status === "POSTED"
+    ? 4
+    : detail?.status === "APPROVED"
+      ? 3
+      : detail?.status === "SELECTED"
+        ? 2
+        : 1;
   return (
     <div className="space-y-6 text-zinc-100">
       <header className="flex flex-wrap items-start justify-between gap-4">
@@ -378,11 +390,17 @@ export default function ClientPage() {
             className={button}
             onClick={() => {
               setFormError("");
-              setSourceForm({ ...blankSource, stateCode: state || "SC" });
+              setSourceForm({
+                ...blankSource,
+                stateCode: state || "SC",
+                kind: "TIKTOK",
+                intervalMinutes: 240,
+                profileMode: true,
+              });
             }}
           >
             <Plus size={16} />
-            Track a source
+            Track profile
           </button>
           <button
             className={primary}
@@ -392,7 +410,7 @@ export default function ClientPage() {
             }}
           >
             <Plus size={16} />
-            Add content
+            Add one link
           </button>
         </div>
       </header>
@@ -419,26 +437,27 @@ export default function ClientPage() {
       ) : (
         data && (
           <>
-            <nav aria-label="State" className="flex flex-wrap gap-2">
-              <button
-                onClick={() => filter(setState, "")}
-                className={`${button} ${!state ? "border-blue-500 bg-blue-500/15" : ""}`}
-              >
-                All states
-              </button>
-              {data.states.map((s) => (
-                <button
-                  key={s.code}
-                  onClick={() => filter(setState, s.code)}
-                  className={`${button} ${state === s.code ? "border-blue-500 bg-blue-500/15" : ""}`}
+            <div className="flex flex-wrap items-end justify-between gap-3">
+              <label className="grid gap-1.5 text-sm text-zinc-300">
+                <span>State</span>
+                <select
+                  aria-label="State"
+                  className={`${field} min-w-56`}
+                  value={state}
+                  onChange={(event) => filter(setState, event.target.value)}
                 >
-                  {s.name}
-                  {!s.enabled && (
-                    <span className="text-xs text-amber-300">Paused</span>
-                  )}
-                </button>
-              ))}
-            </nav>
+                  <option value="">All states</option>
+                  {data.states.map((s) => (
+                    <option key={s.code} value={s.code}>
+                      {s.name}{!s.enabled ? " (collection paused)" : ""}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <p className="text-xs text-zinc-500">
+                Review evidence → create a video → post → track results
+              </p>
+            </div>
             <div className="flex flex-wrap items-center justify-between gap-3 border-b border-zinc-800">
               <nav
                 aria-label="Content Desk sections"
@@ -456,7 +475,15 @@ export default function ClientPage() {
                     onClick={() => setTab(t)}
                     className={`border-b-2 py-3 text-sm ${tab === t ? "border-blue-400 text-blue-200" : "border-transparent text-zinc-400 hover:text-white"}`}
                   >
-                    {label(t)}
+                    {t === "stories"
+                      ? "Review stories"
+                      : t === "shortlist"
+                        ? "Today"
+                        : t === "sources"
+                          ? "Profiles & sources"
+                          : t === "activity"
+                            ? "System activity"
+                            : "Settings"}
                     {t === "sources" && errors.length > 0 && (
                       <span className="ml-2 text-amber-300">
                         {errors.length} issues
@@ -968,9 +995,20 @@ export default function ClientPage() {
                           <X size={16} />
                         </button>
                       </div>
-                      <div className="border-b border-zinc-800 pb-4">
-                        <ClipStudio key={detail.id} story={detail} />
-                      </div>
+                      <ol aria-label="Story workflow" className="grid grid-cols-4 gap-2 border-y border-zinc-800 py-4">
+                        {["Review", "Create", "Post", "Results"].map((step, index) => (
+                          <li
+                            key={step}
+                            className={`text-center text-xs ${storyStep === index + 1 ? "text-blue-200" : storyStep > index + 1 ? "text-teal-300" : "text-zinc-600"}`}
+                            aria-current={storyStep === index + 1 ? "step" : undefined}
+                          >
+                            <span className={`mx-auto mb-1 flex h-6 w-6 items-center justify-center rounded-full border ${storyStep === index + 1 ? "border-blue-400 bg-blue-950" : storyStep > index + 1 ? "border-teal-500" : "border-zinc-700"}`}>
+                              {index + 1}
+                            </span>
+                            {step}
+                          </li>
+                        ))}
+                      </ol>
                       {detail.needsReview && (
                         <p
                           role="status"
@@ -1155,6 +1193,11 @@ export default function ClientPage() {
                           <ArrowUpRight className="inline" size={12} />
                         </a>
                       </div>
+                      <section className="space-y-3 border-t border-zinc-700 pt-4">
+                        <h3 className="font-medium">Create a video</h3>
+                        <p className="text-xs text-zinc-500">Review the evidence above, then prepare footage, a hook, and branding.</p>
+                        <ClipStudio key={detail.id} story={detail} />
+                      </section>
                       <section className="space-y-3 border-t border-zinc-700 pt-4">
                         <h3 className="font-medium">Team selection</h3>
                         {detail.selectedBy && (
@@ -1396,18 +1439,61 @@ export default function ClientPage() {
               </section>
             )}
             {tab === "sources" && (
+              <div className="space-y-8">
+              <ProfileManager
+                profiles={profiles}
+                states={data.states}
+                generatedAt={data.generatedAt}
+                timezone={timezone}
+                userId={data.user.userId}
+                isAdmin={isAdmin}
+                busy={busy}
+                onSave={save}
+                onOpenStory={openStory}
+                onAdd={() => {
+                  setFormError("");
+                  setSourceForm({
+                    ...blankSource,
+                    stateCode: state || "SC",
+                    kind: "TIKTOK",
+                    intervalMinutes: 240,
+                    profileMode: true,
+                  });
+                }}
+                onEdit={(profile: TrackedProfile) => {
+                  setFormError("");
+                  setSourceForm({
+                    id: profile.id,
+                    name: profile.name,
+                    stateCode: profile.stateCode,
+                    kind: profile.kind,
+                    url: profile.url,
+                    category: profile.category,
+                    intervalMinutes: profile.intervalMinutes,
+                    includeAllPosts: profile.includeAllPosts,
+                    profileMode: true,
+                  });
+                }}
+              />
               <section className="space-y-4">
-                <div>
-                  <h2 className="text-xl font-semibold">
-                    Sources & tracked accounts
-                  </h2>
-                  <p className="mt-1 text-sm text-zinc-400">
-                    Add public profiles, channels, RSS feeds, or individual web
-                    pages. Web pages track changes to that URL; RSS discovers
-                    new articles.
-                  </p>
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <h2 className="text-xl font-semibold">Feeds, channels & pages</h2>
+                    <p className="mt-1 text-sm text-zinc-400">
+                      YouTube channels and RSS feeds discover new content. A watched page tracks changes to one URL.
+                    </p>
+                  </div>
+                  <button
+                    className={button}
+                    onClick={() => {
+                      setFormError("");
+                      setSourceForm({ ...blankSource, stateCode: state || "SC" });
+                    }}
+                  >
+                    <Plus size={15} /> Add feed or channel
+                  </button>
                 </div>
-                {sources.map((source) => {
+                {feeds.map((source) => {
                   const canEdit =
                     isAdmin || source.createdBy === data.user.userId;
                   return (
@@ -1487,6 +1573,8 @@ export default function ClientPage() {
                                 url: source.url,
                                 category: source.category,
                                 intervalMinutes: source.intervalMinutes,
+                                includeAllPosts: source.includeAllPosts,
+                                profileMode: false,
                               });
                             }}
                           >
@@ -1540,13 +1628,13 @@ export default function ClientPage() {
                     </article>
                   );
                 })}
-                {!sources.length && (
-                  <p className="text-zinc-400">
-                    No sources yet. Add a public account or feed to start
-                    tracking.
+                {!feeds.length && (
+                  <p className="rounded-lg border border-dashed border-zinc-800 p-5 text-zinc-400">
+                    No feeds or channels here. Add one above, or use tracked profiles for TikTok and Instagram.
                   </p>
                 )}
               </section>
+              </div>
             )}
             {tab === "activity" && (
               <section className="space-y-5">
@@ -1809,9 +1897,13 @@ export default function ClientPage() {
         <DialogContent className="max-h-[90vh] overflow-y-auto border-zinc-700 bg-zinc-900 text-zinc-100">
           <DialogHeader>
             <DialogTitle>
-              {sourceForm?.id
-                ? "Edit tracked source"
-                : "Track a source or account"}
+              {sourceForm?.profileMode
+                ? sourceForm.id
+                  ? "Edit tracked profile"
+                  : "Track a public profile"
+                : sourceForm?.id
+                  ? "Edit tracked source"
+                  : "Track a feed, channel, or page"}
             </DialogTitle>
           </DialogHeader>
           {sourceForm && (
@@ -1819,7 +1911,13 @@ export default function ClientPage() {
               className="space-y-4"
               onSubmit={async (e: FormEvent) => {
                 e.preventDefault();
-                if (await save({ action: "source.save", ...sourceForm }, true))
+                const handle =
+                  sourceForm.url.match(/(?:tiktok\.com\/@|instagram\.com\/)([\w.]+)/i)?.[1] ||
+                  sourceForm.url.trim().replace(/^@/, "");
+                const name =
+                  sourceForm.name.trim() ||
+                  (sourceForm.profileMode && handle ? `@${handle}` : sourceForm.name);
+                if (await save({ action: "source.save", ...sourceForm, name }, true))
                   setSourceForm(null);
               }}
             >
@@ -1843,7 +1941,7 @@ export default function ClientPage() {
                   ))}
                 </select>
               </Field>
-              <Field title="Source type">
+              <Field title={sourceForm.profileMode ? "Platform" : "Source type"}>
                 <select
                   className={field}
                   value={sourceForm.kind}
@@ -1859,14 +1957,17 @@ export default function ClientPage() {
                     })
                   }
                 >
-                  {SOURCE_KINDS.map((k) => (
+                  {(sourceForm.profileMode
+                    ? ["TIKTOK", "INSTAGRAM"]
+                    : SOURCE_KINDS
+                  ).map((k) => (
                     <option key={k} value={k}>
                       {k === "WEBPAGE" ? "Web page (watch changes)" : label(k)}
                     </option>
                   ))}
                 </select>
               </Field>
-              <Field title="Display name">
+              <Field title={sourceForm.profileMode ? "Display name (optional)" : "Display name"}>
                 <input
                   className={field}
                   value={sourceForm.name}
@@ -1874,14 +1975,13 @@ export default function ClientPage() {
                     setSourceForm({ ...sourceForm, name: e.target.value })
                   }
                   maxLength={120}
-                  required
-                  placeholder="Local news channel or creator"
+                  required={!sourceForm.profileMode}
+                  placeholder={sourceForm.profileMode ? "Use the profile handle" : "Local news channel or creator"}
                 />
               </Field>
               <Field
                 title={
-                  sourceForm.kind === "TIKTOK" ||
-                  sourceForm.kind === "INSTAGRAM"
+                  sourceForm.profileMode
                     ? "Public profile URL or @username"
                     : "Feed, channel, playlist, or page URL"
                 }
@@ -1889,51 +1989,82 @@ export default function ClientPage() {
                 <input
                   className={field}
                   value={sourceForm.url}
-                  onChange={(e) =>
-                    setSourceForm({ ...sourceForm, url: e.target.value })
-                  }
+                  onChange={(e) => {
+                    const url = e.target.value;
+                    const kind = /(^|\.)instagram\.com\//i.test(url)
+                      ? "INSTAGRAM"
+                      : /(^|\.)tiktok\.com\//i.test(url)
+                        ? "TIKTOK"
+                        : sourceForm.kind;
+                    setSourceForm({ ...sourceForm, url, kind });
+                  }}
                   maxLength={2000}
                   required
-                  placeholder="https://…"
+                  placeholder={sourceForm.profileMode ? "https://www.tiktok.com/@username" : "https://…"}
                 />
               </Field>
-              <Field title="Category">
-                <select
-                  className={field}
-                  value={sourceForm.category}
-                  onChange={(e) =>
-                    setSourceForm({ ...sourceForm, category: e.target.value })
-                  }
-                >
-                  {CATEGORIES.map((c) => (
-                    <option key={c} value={c}>
-                      {c === "AUTO" ? "Detect from content" : label(c)}
-                    </option>
-                  ))}
-                </select>
-              </Field>
-              <Field title="Check every (minutes)">
-                <input
-                  className={field}
-                  type="number"
-                  min={
-                    ["TIKTOK", "INSTAGRAM"].includes(sourceForm.kind) ? 240 : 30
-                  }
-                  max={10080}
-                  value={sourceForm.intervalMinutes}
-                  onChange={(e) =>
-                    setSourceForm({
-                      ...sourceForm,
-                      intervalMinutes: Number(e.target.value),
-                    })
-                  }
-                  required
-                />
-              </Field>
+              <details open={!sourceForm.profileMode} className="rounded-lg border border-zinc-800 p-3">
+                {sourceForm.profileMode && (
+                  <summary className="cursor-pointer text-sm text-zinc-300">Advanced settings</summary>
+                )}
+                <div className="mt-3 space-y-4">
+                  <Field title="Category">
+                    <select
+                      className={field}
+                      value={sourceForm.category}
+                      onChange={(e) =>
+                        setSourceForm({ ...sourceForm, category: e.target.value })
+                      }
+                    >
+                      {CATEGORIES.map((c) => (
+                        <option key={c} value={c}>
+                          {c === "AUTO" ? "Detect from content" : label(c)}
+                        </option>
+                      ))}
+                    </select>
+                  </Field>
+                  <Field title="Check every (minutes)">
+                    <input
+                      className={field}
+                      type="number"
+                      min={
+                        ["TIKTOK", "INSTAGRAM"].includes(sourceForm.kind) ? 240 : 30
+                      }
+                      max={10080}
+                      value={sourceForm.intervalMinutes}
+                      onChange={(e) =>
+                        setSourceForm({
+                          ...sourceForm,
+                          intervalMinutes: Number(e.target.value),
+                        })
+                      }
+                      required
+                    />
+                  </Field>
+                </div>
+              </details>
+              {sourceForm.profileMode && (
+                <label className="flex items-start gap-3 rounded-lg border border-zinc-800 p-3 text-sm">
+                  <input
+                    type="checkbox"
+                    className="mt-1"
+                    checked={sourceForm.includeAllPosts}
+                    onChange={(e) =>
+                      setSourceForm({ ...sourceForm, includeAllPosts: e.target.checked })
+                    }
+                  />
+                  <span>
+                    Promote every post to Review stories
+                    <span className="mt-1 block text-xs text-zinc-500">
+                      Leave off to monitor all posts under this profile but promote only state-relevant captions.
+                    </span>
+                  </span>
+                </label>
+              )}
               <p className="text-xs text-zinc-400">
-                Only public content is collected. Posts must match the state’s
-                location keywords. Social tracking uses your Apify account and
-                respects the daily run limit.
+                {sourceForm.profileMode
+                  ? "Only public content is collected. The first check is queued after saving; social tracking uses the configured provider and daily limit."
+                  : "Only public content is collected. Social tracking uses the configured provider and daily run limit."}
               </p>
               <button className={primary} disabled={busy}>
                 {busy ? (
@@ -1941,7 +2072,11 @@ export default function ClientPage() {
                 ) : (
                   <Plus size={16} />
                 )}
-                Save source
+                {sourceForm.profileMode
+                  ? sourceForm.id
+                    ? "Save profile"
+                    : "Track profile"
+                  : "Save source"}
               </button>
             </form>
           )}

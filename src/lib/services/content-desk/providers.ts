@@ -13,6 +13,12 @@ export type Candidate = {
   coverage: string;
   views?: bigint | null;
   likes?: bigint | null;
+  platformPostId?: string;
+  thumbnailUrl?: string | null;
+  mediaType?: string;
+  duration?: number | null;
+  comments?: bigint | null;
+  shares?: bigint | null;
 };
 type Obj = Record<string, unknown>;
 const obj = (v: unknown): Obj => (v && typeof v === "object" ? (v as Obj) : {});
@@ -272,6 +278,13 @@ export function socialItems(raw: unknown, source: ContentSource): Candidate[] {
       return [];
     }
     const caption = plain(v.text || v.caption || "", 3500);
+    const thumbnail =
+      v.videoCoverUrl ||
+      v.coverUrl ||
+      v.thumbnailUrl ||
+      v.displayUrl ||
+      v.imageUrl;
+    const duration = Number(v.videoDuration ?? v.duration);
     return [
       {
         url,
@@ -283,6 +296,21 @@ export function socialItems(raw: unknown, source: ContentSource): Candidate[] {
         coverage: "SOCIAL_CAPTION",
         views: counter(v.playCount ?? v.videoViewCount ?? v.videoPlayCount),
         likes: counter(v.diggCount ?? v.likesCount),
+        comments: counter(v.commentCount ?? v.commentsCount),
+        shares: counter(v.shareCount),
+        platformPostId: String(
+          v.id || v.awemeId || v.aweme_id || v.shortCode || v.videoId || url,
+        ).slice(0, 300),
+        thumbnailUrl:
+          typeof thumbnail === "string" ? thumbnail.slice(0, 2000) : null,
+        mediaType: String(
+          v.type ||
+            v.mediaType ||
+            (v.isVideo === true || source.kind === "TIKTOK" ? "VIDEO" : "POST"),
+        )
+          .slice(0, 30)
+          .toUpperCase(),
+        duration: Number.isFinite(duration) && duration >= 0 ? duration : null,
       },
     ];
   });
