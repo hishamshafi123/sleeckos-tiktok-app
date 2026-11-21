@@ -2213,13 +2213,14 @@ model CampaignShare {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 model ApiClient {
-  id        String              @id @default(uuid())
-  name      String
-  notes     String?
-  createdAt DateTime            @default(now())
-  revokedAt DateTime?
-  keys      ApiClientKey[]
-  campaigns ApiClientCampaign[]
+  id          String                @id @default(uuid())
+  name        String
+  notes       String?
+  createdAt   DateTime              @default(now())
+  revokedAt   DateTime?
+  keys        ApiClientKey[]
+  campaigns   ApiClientCampaign[]
+  stateAccess ApiClientStateAccess?
 }
 
 model ApiClientKey {
@@ -2243,6 +2244,33 @@ model ApiClientCampaign {
   createdAt  DateTime  @default(now())
   @@unique([clientId, campaignId])
   @@index([campaignId])
+}
+
+model ApiClientStateAccess {
+  id         String    @id @default(uuid())
+  clientId   String    @unique
+  client     ApiClient @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  allStates  Boolean   @default(true)
+  stateNames String[]  @default([])
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+}
+
+/// Shareable client portal code for State Accounts (/state-accounts#<code>).
+/// Code is the secret (stored plain text for admin copy/revoke).
+/// Also accepted as `x-api-key` on /api/public/v1/state-accounts/*.
+model StateAccountShare {
+  id         String    @id @default(uuid())
+  code       String    @unique
+  title      String
+  label      String?
+  allStates  Boolean   @default(true)
+  stateNames String[]  @default([])
+  createdBy  String?
+  createdAt  DateTime  @default(now())
+  expiresAt  DateTime?
+  revokedAt  DateTime?
+  @@index([revokedAt])
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

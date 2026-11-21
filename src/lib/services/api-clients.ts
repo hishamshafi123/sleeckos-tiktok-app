@@ -52,6 +52,7 @@ export async function listApiClients() {
         },
       },
       campaigns: { orderBy: { createdAt: "asc" } },
+      stateAccess: true,
     },
   });
 
@@ -82,6 +83,12 @@ export async function listApiClients() {
       campaignId: g.campaignId,
       campaignTitle: titleById.get(g.campaignId) ?? "(deleted campaign)",
     })),
+    stateAccess: c.stateAccess
+      ? {
+          allStates: c.stateAccess.allStates,
+          stateNames: c.stateAccess.stateNames,
+        }
+      : null,
   }));
 }
 
@@ -137,6 +144,28 @@ export async function grantCampaignAccess(clientId: string, campaignId: string) 
 
 export async function revokeCampaignAccess(clientId: string, campaignId: string) {
   await prisma.apiClientCampaign.deleteMany({ where: { clientId, campaignId } });
+}
+
+export async function setApiClientStateAccess(
+  clientId: string,
+  input: { allStates: boolean; stateNames?: string[] }
+) {
+  const allStates = Boolean(input.allStates);
+  const stateNames = allStates
+    ? []
+    : [...new Set((input.stateNames || []).map((s) => s.trim()).filter(Boolean))];
+  if (!allStates && stateNames.length === 0) {
+    throw new Error("Select at least one state or grant access to all states.");
+  }
+  await prisma.apiClientStateAccess.upsert({
+    where: { clientId },
+    create: { clientId, allStates, stateNames },
+    update: { allStates, stateNames },
+  });
+}
+
+export async function revokeApiClientStateAccess(clientId: string) {
+  await prisma.apiClientStateAccess.deleteMany({ where: { clientId } });
 }
 
 // ─── Public validation ───────────────────────────────────────────────────────

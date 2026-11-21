@@ -8,10 +8,12 @@ import {
   Settings2,
   AlertCircle,
   Clock3,
+  Share2,
 } from "lucide-react";
 import { toast } from "sonner";
 import GrowthPanel from "./GrowthPanel";
 import AccountActivity from "./AccountActivity";
+import ClientAccessDialog from "./ClientAccessDialog";
 import {
   Dialog,
   DialogContent,
@@ -385,6 +387,7 @@ export default function ClientPage() {
   const [linkState, setLinkState] = useState<string | null>(null);
   const [accountEdit, setAccountEdit] = useState<Account | null>(null);
   const [timezoneOpen, setTimezoneOpen] = useState(false);
+  const [clientAccessOpen, setClientAccessOpen] = useState(false);
   const load = useCallback(async () => {
     try {
       const res = await fetch("/api/admin/state-accounts", {
@@ -539,6 +542,13 @@ export default function ClientPage() {
           </button>
           {data.isAdmin && (
             <>
+              <button
+                className={button}
+                onClick={() => setClientAccessOpen(true)}
+              >
+                <Share2 size={15} className="text-rose-400" />
+                Client Portal
+              </button>
               <button
                 className={button}
                 onClick={() => setLinkState(data.missingStates[0] || "Georgia")}
@@ -1254,6 +1264,18 @@ export default function ClientPage() {
           </form>
         </DialogContent>
       </Dialog>
+      {data.isAdmin && (
+        <ClientAccessDialog
+          open={clientAccessOpen}
+          onOpenChange={setClientAccessOpen}
+          availableStates={[
+            ...new Set([
+              ...data.accounts.map((a) => a.stateName),
+              ...data.missingStates,
+            ]),
+          ].sort((a, b) => a.localeCompare(b))}
+        />
+      )}
     </div>
   );
 }

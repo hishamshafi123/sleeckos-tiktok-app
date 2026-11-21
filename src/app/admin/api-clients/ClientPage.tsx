@@ -12,7 +12,9 @@ import {
   Users,
   FolderOpen,
   X,
+  Globe2,
 } from "lucide-react";
+import { STATES } from "@/lib/services/content-desk/rules";
 
 interface ApiKeyRow {
   id: string;
@@ -29,6 +31,11 @@ interface ClientCampaign {
   campaignTitle: string;
 }
 
+interface ClientStateAccess {
+  allStates: boolean;
+  stateNames: string[];
+}
+
 interface ApiClientRow {
   id: string;
   name: string;
@@ -37,6 +44,7 @@ interface ApiClientRow {
   revokedAt: string | null;
   keys: ApiKeyRow[];
   campaigns: ClientCampaign[];
+  stateAccess: ClientStateAccess | null;
 }
 
 interface CampaignOption {
@@ -44,6 +52,8 @@ interface CampaignOption {
   title: string;
   status?: string;
 }
+
+const KNOWN_STATE_NAMES = STATES.map((s) => s.name);
 
 export default function ClientPage() {
   const [clients, setClients] = useState<ApiClientRow[]>([]);
@@ -58,6 +68,10 @@ export default function ClientPage() {
   const [newRawKey, setNewRawKey] = useState<{ clientName: string; rawKey: string } | null>(null);
   const [generatingFor, setGeneratingFor] = useState<string | null>(null);
   const [grantPickerFor, setGrantPickerFor] = useState<string | null>(null);
+  const [stateEditorFor, setStateEditorFor] = useState<string | null>(null);
+  const [stateDraftAll, setStateDraftAll] = useState(true);
+  const [stateDraftNames, setStateDraftNames] = useState<string[]>([]);
+  const [savingStateAccess, setSavingStateAccess] = useState(false);
   const [copied, setCopied] = useState(false);
 
   const fetchAll = async () => {
@@ -77,7 +91,26 @@ export default function ClientPage() {
   };
 
   useEffect(() => {
-    fetchAll();
+    let active = true;
+    (async () => {
+      try {
+        const [clientsRes, campaignsRes] = await Promise.all([
+          fetch("/api/api-clients"),
+          fetch("/api/campaigns"),
+        ]);
+        if (!active) return;
+        if (clientsRes.ok) setClients((await clientsRes.json()).clients || []);
+        if (campaignsRes.ok) setCampaigns(await campaignsRes.json());
+      } catch (err) {
+        console.error("Failed to load API clients:", err);
+        if (active) toast.error("Failed to load API clients");
+      } finally {
+        if (active) setLoading(false);
+      }
+    })();
+    return () => {
+      active = false;
+    };
   }, []);
 
   const handleCreate = async (e: React.FormEvent) => {
@@ -95,8 +128,8 @@ export default function ClientPage() {
       setNotes("");
       toast.success("Client created — now generate a key for them");
       await fetchAll();
-    } catch (err: any) {
-      toast.error(err.message || "Failed to create client");
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : "Failed to create client");
     } finally {
       setCreating(false);
     }
@@ -114,8 +147,8 @@ export default function ClientPage() {
       const data = await res.json();
       setNewRawKey({ clientName: client.name, rawKey: data.rawKey });
       await fetchAll();
-    } catch (err: any) {
-      toast.error(err.message || "Failed to generate key");
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : "Failed to generate key");
     } finally {
       setGeneratingFor(null);
     }
@@ -161,6 +194,55 @@ export default function ClientPage() {
     }
   };
 
+  const openStateEditor = (client: ApiClientRow) => {
+    if (stateEditorFor === client.id) {
+      setStateEditorFor(null);
+      return;
+    }
+    setStateEditorFor(client.id);
+    setStateDraftAll(client.stateAccess ? client.stateAccess.allStates : true);
+    setStateDraftNames(client.stateAccess ? client.stateAccess.stateNames : []);
+  };
+
+  const handleSaveStateAccess = async (clientId: string) => {
+    if (!stateDraftAll && stateDraftNames.length === 0) {
+      toast.error("Select at least one state or grant all states");
+      return;
+    }
+    setSavingStateAccess(true);
+    try {
+      const res = await fetch(`/api/api-clients/${clientId}/state-access`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          allStates: stateDraftAll,
+          stateNames: stateDraftAll ? [] : stateDraftNames,
+        }),
+      });
+      if (!res.ok) throw new Error((await res.json()).error || "Failed");
+      toast.success("State Accounts API access saved");
+      setStateEditorFor(null);
+      await fetchAll();
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : "Failed to save State Accounts access");
+    } finally {
+      setSavingStateAccess(false);
+    }
+  };
+
+  const handleRevokeStateAccess = async (clientId: string) => {
+    const res = await fetch(`/api/api-clients/${clientId}/state-access`, {
+      method: "DELETE",
+    });
+    if (res.ok) {
+      toast.success("State Accounts access removed");
+      setStateEditorFor(null);
+      await fetchAll();
+    } else {
+      toast.error("Failed to remove State Accounts access");
+    }
+  };
+
   const copyRawKey = () => {
     if (!newRawKey) return;
     navigator.clipboard.writeText(newRawKey.rawKey);
@@ -176,11 +258,14 @@ export default function ClientPage() {
           API Clients
         </h1>
         <p className="text-xs text-zinc-500 mt-1">
-          One API key per client, valid for every campaign you grant them. The client swaps the
-          campaign ID in the URL — their key never changes. Raw keys are shown once at creation;
-          only a hash is stored. Docs:{" "}
+          One API key per client, valid for every campaign and state account you grant them.
+          Raw keys are shown once at creation; only a hash is stored. Docs:{" "}
           <a href="/docs/campaign-client-api.md" download className="underline hover:text-zinc-300">
             campaign-client-api.md
+          </a>
+          {" · "}
+          <a href="/docs/state-accounts-client-api.md" download className="underline hover:text-zinc-300">
+            state-accounts-client-api.md
           </a>
         </p>
       </div>
@@ -404,6 +489,125 @@ export default function ClientPage() {
                         </option>
                       ))}
                   </select>
+                )}
+              </div>
+
+              {/* State Accounts API access */}
+              <div className="space-y-1.5 pt-2 border-t border-[#27272a]/70">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider">
+                    State Accounts API access
+                  </span>
+                  {!client.revokedAt && (
+                    <button
+                      onClick={() => openStateEditor(client)}
+                      className="flex items-center gap-1 text-[10px] font-semibold text-zinc-400 hover:text-zinc-200 transition"
+                    >
+                      <Globe2 size={10} />
+                      {client.stateAccess ? "Edit access" : "Grant state access"}
+                    </button>
+                  )}
+                </div>
+
+                {!client.stateAccess ? (
+                  <p className="text-[11px] text-zinc-600 italic">
+                    No state accounts access — /api/public/v1/state-accounts returns 404.
+                  </p>
+                ) : (
+                  <div className="flex items-center justify-between bg-zinc-950/40 border border-[#27272a] rounded px-2.5 py-1.5">
+                    <span className="text-[11px] text-zinc-300 flex items-center gap-1.5 min-w-0">
+                      <Globe2 size={11} className="text-emerald-400 flex-shrink-0" />
+                      <span className="truncate">
+                        {client.stateAccess.allStates
+                          ? "All active state accounts"
+                          : client.stateAccess.stateNames.join(", ")}
+                      </span>
+                    </span>
+                    {!client.revokedAt && (
+                      <button
+                        onClick={() => handleRevokeStateAccess(client.id)}
+                        className="text-[10px] font-semibold text-red-400 hover:text-red-300 flex-shrink-0 ml-2"
+                      >
+                        Remove
+                      </button>
+                    )}
+                  </div>
+                )}
+
+                {stateEditorFor === client.id && (
+                  <div className="bg-zinc-950/70 border border-[#27272a] rounded p-3 space-y-2.5">
+                    <div className="flex items-center gap-2 text-[11px]">
+                      <button
+                        type="button"
+                        onClick={() => setStateDraftAll(true)}
+                        className={`rounded border px-2 py-1 font-medium transition ${
+                          stateDraftAll
+                            ? "border-blue-500/50 bg-blue-500/15 text-blue-200"
+                            : "border-zinc-700 text-zinc-400 hover:text-zinc-200"
+                        }`}
+                      >
+                        All states
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setStateDraftAll(false)}
+                        className={`rounded border px-2 py-1 font-medium transition ${
+                          !stateDraftAll
+                            ? "border-blue-500/50 bg-blue-500/15 text-blue-200"
+                            : "border-zinc-700 text-zinc-400 hover:text-zinc-200"
+                        }`}
+                      >
+                        Specific states
+                      </button>
+                    </div>
+
+                    {!stateDraftAll && (
+                      <div className="flex flex-wrap gap-1.5">
+                        {KNOWN_STATE_NAMES.map((st) => {
+                          const checked = stateDraftNames.includes(st);
+                          return (
+                            <button
+                              key={st}
+                              type="button"
+                              onClick={() =>
+                                setStateDraftNames((prev) =>
+                                  prev.includes(st)
+                                    ? prev.filter((x) => x !== st)
+                                    : [...prev, st],
+                                )
+                              }
+                              className={`rounded-full border px-2.5 py-0.5 text-[10px] font-medium transition ${
+                                checked
+                                  ? "border-emerald-500/50 bg-emerald-500/15 text-emerald-200"
+                                  : "border-zinc-700 bg-zinc-900 text-zinc-400 hover:text-zinc-200"
+                              }`}
+                            >
+                              {checked ? "✓ " : ""}
+                              {st}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+
+                    <div className="flex items-center gap-2 pt-1">
+                      <button
+                        type="button"
+                        disabled={savingStateAccess}
+                        onClick={() => handleSaveStateAccess(client.id)}
+                        className="rounded bg-zinc-100 hover:bg-zinc-200 text-zinc-950 text-[11px] font-semibold px-3 py-1 transition disabled:opacity-50"
+                      >
+                        {savingStateAccess ? "Saving…" : "Save access"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setStateEditorFor(null)}
+                        className="text-[11px] text-zinc-400 hover:text-zinc-200 px-2 py-1"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
                 )}
               </div>
             </div>
