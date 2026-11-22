@@ -43,9 +43,10 @@ import ApiQuickstartModal from "./ApiQuickstartModal";
 type Timeframe = 7 | 14 | 30 | "all";
 type AccountViewMode = "cards" | "table";
 type AccountSortKey =
+  | "totalVideoViews"
   | "periodViews"
   | "followers"
-  | "periodLikes"
+  | "totalVideoLikes"
   | "periodPosts"
   | "stateName";
 type VideoSortKey = "views" | "publishedAt" | "likes" | "engagementRate";
@@ -496,7 +497,7 @@ function ExecutiveDashboard({
   const [accountSort, setAccountSort] = useState<{
     key: AccountSortKey;
     dir: "asc" | "desc";
-  }>({ key: "periodViews", dir: "desc" });
+  }>({ key: "totalVideoViews", dir: "desc" });
   const [apiModalOpen, setApiModalOpen] = useState(false);
 
   const effectiveSlug = isSingleAccountShare
@@ -633,6 +634,14 @@ function ExecutiveDashboard({
 
   // Hero KPI rollup
   const hero = useMemo(() => {
+    const totalVideoViews = scopedAccounts.reduce(
+      (s, a) => s + a.totalVideoViews,
+      0,
+    );
+    const totalVideoLikes = scopedAccounts.reduce(
+      (s, a) => s + a.totalVideoLikes,
+      0,
+    );
     const trackedVideos = scopedAccounts.reduce(
       (s, a) => s + a.trackedVideos,
       0,
@@ -652,15 +661,19 @@ function ExecutiveDashboard({
     const periodPosts = scopedAccounts.reduce((s, a) => s + a.periodPosts, 0);
     const todayViews = scopedAccounts.reduce((s, a) => s + a.todayViews, 0);
     const todayPosts = scopedAccounts.reduce((s, a) => s + a.todayPosts, 0);
-    const periodEngagementRate =
-      periodViews > 0
-        ? Math.round((periodLikes / periodViews) * 10000) / 100
+    const engagementRate =
+      totalVideoViews > 0
+        ? Math.round((totalVideoLikes / totalVideoViews) * 10000) / 100
         : 0;
+    const avgViewsPerVideo =
+      trackedVideos > 0 ? Math.round(totalVideoViews / trackedVideos) : 0;
     const dailyAvgViews =
       chartDaily.length > 0 ? Math.round(periodViews / chartDaily.length) : 0;
     const wowPct = computeWindowWoW(fullScopedDaily, currentDayDate);
 
     return {
+      totalVideoViews,
+      totalVideoLikes,
       trackedVideos,
       followersKnown,
       followers,
@@ -671,7 +684,8 @@ function ExecutiveDashboard({
       periodPosts,
       todayViews,
       todayPosts,
-      periodEngagementRate,
+      engagementRate,
+      avgViewsPerVideo,
       dailyAvgViews,
       wowPct,
     };
@@ -705,13 +719,16 @@ function ExecutiveDashboard({
     });
   }, [enrichedAccounts, accountSort]);
 
-  // Top states leaderboard (sorted by views gained in active timeframe)
+  // Top states leaderboard (ranked by cumulative views across all tracked videos)
   const leaderboard = useMemo(() => {
     const ranked = [...enrichedAccounts].sort(
-      (a, b) => b.periodViews - a.periodViews || (b.followers ?? 0) - (a.followers ?? 0),
+      (a, b) =>
+        b.totalVideoViews - a.totalVideoViews ||
+        b.periodViews - a.periodViews ||
+        (b.followers ?? 0) - (a.followers ?? 0),
     );
-    const maxVal = Math.max(1, ...ranked.map((r) => r.periodViews));
-    const totalSum = ranked.reduce((s, r) => s + r.periodViews, 0);
+    const maxVal = Math.max(1, ...ranked.map((r) => r.totalVideoViews));
+    const totalSum = ranked.reduce((s, r) => s + r.totalVideoViews, 0);
     return { ranked, maxVal, totalSum };
   }, [enrichedAccounts]);
 
@@ -723,8 +740,6 @@ function ExecutiveDashboard({
     );
   };
 
-  const timeframeTitle =
-    timeframe === "all" ? "All-Time" : `${timeframe}-Day`;
   const timeframeShort =
     timeframe === "all" ? "All" : `${timeframe}D`;
   const timeframeLabel =
@@ -916,7 +931,7 @@ function ExecutiveDashboard({
                       </span>
                       <span>{acc.stateName}</span>
                       <span className="font-mono text-[10px] text-zinc-500 tabular-nums">
-                        {formatCompact(acc.periodViews)}
+                        {formatCompact(acc.totalVideoViews)}
                       </span>
                     </button>
                   );
@@ -983,6 +998,14 @@ function ExecutiveDashboard({
                   <div className="flex flex-wrap items-center gap-6 border-t border-white/[0.06] pt-3 sm:border-t-0 sm:pt-0">
                     <div>
                       <p className="text-[10px] font-medium uppercase tracking-wider text-zinc-500">
+                        Avg / Video
+                      </p>
+                      <p className="mt-0.5 font-mono text-base font-semibold text-zinc-100 tabular-nums">
+                        {formatCompact(activeAccount.avgViewsPerVideo)}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-[10px] font-medium uppercase tracking-wider text-zinc-500">
                         Daily Avg ({timeframeShort})
                       </p>
                       <p className="mt-0.5 font-mono text-base font-semibold text-zinc-100 tabular-nums">
@@ -1026,27 +1049,27 @@ function ExecutiveDashboard({
               aria-label="Key performance indicators"
               className="grid grid-cols-1 gap-3.5 sm:grid-cols-2 lg:grid-cols-4"
             >
-              {/* Primary featured metric: Period Views Gained */}
+              {/* Primary featured metric: Cumulative Views across all unique videos */}
               <div className="relative overflow-hidden rounded-2xl border border-rose-500/25 bg-gradient-to-b from-rose-500/[0.08] via-[#0c0c10] to-[#0c0c10] p-5">
                 <div className="flex items-center justify-between gap-2">
                   <span className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-widest text-rose-300/90">
                     <Eye size={12} />
-                    {timeframeTitle} Views
+                    Cumulative Views
                   </span>
                   <MomentumPill pct={hero.wowPct} />
                 </div>
                 <p
                   className="mt-3 font-mono text-3xl font-bold tracking-tight text-white tabular-nums"
-                  title={hero.periodViews.toLocaleString("en-US")}
+                  title={`${hero.totalVideoViews.toLocaleString("en-US")} cumulative views across ${hero.trackedVideos.toLocaleString("en-US")} unique videos`}
                 >
-                  {formatCompact(hero.periodViews)}
+                  {formatCompact(hero.totalVideoViews)}
                 </p>
                 <p className="mt-2 text-[11px] text-zinc-400">
-                  <span className="font-mono text-zinc-200 tabular-nums">
-                    {formatCompact(hero.dailyAvgViews)}
-                  </span>
-                  /day avg ·{" "}
                   <span className="font-mono text-emerald-300 tabular-nums">
+                    +{formatCompact(hero.periodViews)}
+                  </span>{" "}
+                  in {timeframeLabel.toLowerCase()} ·{" "}
+                  <span className="font-mono text-zinc-200 tabular-nums">
                     +{formatCompact(hero.todayViews)}
                   </span>{" "}
                   today
@@ -1089,35 +1112,38 @@ function ExecutiveDashboard({
               />
 
               <KpiCard
-                label={`${timeframeTitle} Likes`}
+                label="Cumulative Likes"
                 icon={<Heart size={12} className="text-violet-400" />}
-                value={formatCompact(hero.periodLikes)}
-                exact={hero.periodLikes.toLocaleString("en-US")}
-                prefix={hero.periodLikes > 0 ? "+" : ""}
+                value={formatCompact(hero.totalVideoLikes)}
+                exact={hero.totalVideoLikes.toLocaleString("en-US")}
                 sub={
                   <>
                     <span className="font-mono text-zinc-200 tabular-nums">
-                      {hero.periodEngagementRate.toFixed(2)}%
+                      {hero.engagementRate.toFixed(2)}%
                     </span>{" "}
-                    like rate in {timeframeLabel.toLowerCase()}
+                    like rate ·{" "}
+                    <span className="font-mono text-violet-300 tabular-nums">
+                      +{formatCompact(hero.periodLikes)}
+                    </span>{" "}
+                    ({timeframeShort})
                   </>
                 }
               />
 
               <KpiCard
-                label={`${timeframeTitle} Posts`}
+                label="Published Videos"
                 icon={<Video size={12} className="text-blue-400" />}
-                value={hero.periodPosts.toLocaleString("en-US")}
+                value={hero.trackedVideos.toLocaleString("en-US")}
                 sub={
                   <>
+                    <span className="font-mono text-zinc-200 tabular-nums">
+                      {hero.periodPosts}
+                    </span>{" "}
+                    in {timeframeLabel.toLowerCase()} ·{" "}
                     <span className="font-mono text-blue-300 tabular-nums">
                       {hero.todayPosts}
                     </span>{" "}
-                    today ·{" "}
-                    <span className="font-mono text-zinc-300 tabular-nums">
-                      {hero.trackedVideos.toLocaleString("en-US")}
-                    </span>{" "}
-                    tracked
+                    today
                   </>
                 }
               />
@@ -1150,7 +1176,7 @@ function ExecutiveDashboard({
                     ranked={leaderboard.ranked}
                     maxVal={leaderboard.maxVal}
                     totalSum={leaderboard.totalSum}
-                    timeframeTitle={timeframeTitle}
+                    timeframeShort={timeframeShort}
                     onSelectState={(slug) => setSelectedSlug(slug)}
                   />
                 )}
@@ -1264,6 +1290,17 @@ function ExecutiveDashboard({
                           <div className="mt-4 grid grid-cols-3 gap-2 border-t border-white/[0.06] pt-3.5">
                             <div>
                               <p className="text-[10px] text-zinc-500">
+                                Cumulative Views
+                              </p>
+                              <p
+                                className="mt-0.5 font-mono text-sm font-semibold text-white tabular-nums"
+                                title={acc.totalVideoViews.toLocaleString("en-US")}
+                              >
+                                {formatCompact(acc.totalVideoViews)}
+                              </p>
+                            </div>
+                            <div>
+                              <p className="text-[10px] text-zinc-500">
                                 Followers
                               </p>
                               <p className="mt-0.5 font-mono text-sm font-semibold text-zinc-100 tabular-nums">
@@ -1272,18 +1309,10 @@ function ExecutiveDashboard({
                             </div>
                             <div>
                               <p className="text-[10px] text-zinc-500">
-                                Likes ({timeframeShort})
+                                Videos
                               </p>
                               <p className="mt-0.5 font-mono text-sm font-semibold text-zinc-100 tabular-nums">
-                                +{formatCompact(acc.periodLikes)}
-                              </p>
-                            </div>
-                            <div>
-                              <p className="text-[10px] text-zinc-500">
-                                Posts ({timeframeShort})
-                              </p>
-                              <p className="mt-0.5 font-mono text-sm font-semibold text-zinc-100 tabular-nums">
-                                {acc.periodPosts}
+                                {acc.trackedVideos.toLocaleString("en-US")}
                               </p>
                             </div>
                           </div>
@@ -1294,7 +1323,7 @@ function ExecutiveDashboard({
                 ) : (
                   <div className="overflow-hidden rounded-2xl border border-white/[0.07] bg-[#0c0c10]">
                     <div className="overflow-x-auto">
-                      <table className="w-full min-w-[740px] text-left text-xs">
+                      <table className="w-full min-w-[820px] text-left text-xs">
                         <thead>
                           <tr className="border-b border-white/[0.06] bg-white/[0.02] text-[10px] uppercase tracking-wider text-zinc-500">
                             <SortableTh
@@ -1304,7 +1333,14 @@ function ExecutiveDashboard({
                               onClick={() => toggleAccountSort("stateName")}
                             />
                             <SortableTh
-                              label={`${timeframeTitle} Views`}
+                              label="Cumulative Views"
+                              alignRight
+                              active={accountSort.key === "totalVideoViews"}
+                              dir={accountSort.dir}
+                              onClick={() => toggleAccountSort("totalVideoViews")}
+                            />
+                            <SortableTh
+                              label={`New Views (${timeframeShort})`}
                               alignRight
                               active={accountSort.key === "periodViews"}
                               dir={accountSort.dir}
@@ -1318,11 +1354,11 @@ function ExecutiveDashboard({
                               onClick={() => toggleAccountSort("followers")}
                             />
                             <SortableTh
-                              label={`Likes (${timeframeShort})`}
+                              label="Likes"
                               alignRight
-                              active={accountSort.key === "periodLikes"}
+                              active={accountSort.key === "totalVideoLikes"}
                               dir={accountSort.dir}
-                              onClick={() => toggleAccountSort("periodLikes")}
+                              onClick={() => toggleAccountSort("totalVideoLikes")}
                             />
                             <SortableTh
                               label={`Posts (${timeframeShort})`}
@@ -1366,7 +1402,10 @@ function ExecutiveDashboard({
                                   </div>
                                 </td>
                                 <td className="px-4 py-3.5 text-right font-mono font-semibold text-white tabular-nums">
-                                  {acc.periodViews.toLocaleString("en-US")}
+                                  {acc.totalVideoViews.toLocaleString("en-US")}
+                                </td>
+                                <td className="px-4 py-3.5 text-right font-mono text-emerald-300 tabular-nums">
+                                  +{acc.periodViews.toLocaleString("en-US")}
                                 </td>
                                 <td className="px-4 py-3.5 text-right font-mono text-zinc-200 tabular-nums">
                                   {acc.followers !== null
@@ -1374,7 +1413,7 @@ function ExecutiveDashboard({
                                     : "—"}
                                 </td>
                                 <td className="px-4 py-3.5 text-right font-mono text-zinc-300 tabular-nums">
-                                  +{acc.periodLikes.toLocaleString("en-US")}
+                                  {acc.totalVideoLikes.toLocaleString("en-US")}
                                 </td>
                                 <td className="px-4 py-3.5 text-right font-mono text-zinc-300 tabular-nums">
                                   {acc.periodPosts}
@@ -1487,13 +1526,13 @@ function StateLeaderboardPanel({
   ranked,
   maxVal,
   totalSum,
-  timeframeTitle,
+  timeframeShort,
   onSelectState,
 }: {
   ranked: (ClientPortalAccount & { periodViews: number })[];
   maxVal: number;
   totalSum: number;
-  timeframeTitle: string;
+  timeframeShort: string;
   onSelectState: (slug: string) => void;
 }) {
   return (
@@ -1504,7 +1543,7 @@ function StateLeaderboardPanel({
             Reach by State
           </h2>
           <p className="mt-1 text-xs text-zinc-500">
-            Ranked by {timeframeTitle.toLowerCase()} views
+            Ranked by cumulative views
           </p>
         </div>
         <Sparkles size={15} className="text-rose-400/80" />
@@ -1512,7 +1551,7 @@ function StateLeaderboardPanel({
 
       <div className="mt-4 flex-1 space-y-3 overflow-y-auto pr-0.5 max-h-[310px]">
         {ranked.map((acc, idx) => {
-          const val = acc.periodViews;
+          const val = acc.totalVideoViews;
           const pct = val > 0 ? Math.max(3, (val / maxVal) * 100) : 0;
           const share = totalSum > 0 ? Math.round((val / totalSum) * 100) : 0;
           const accent = stateAccent(acc.slug);
@@ -1521,6 +1560,7 @@ function StateLeaderboardPanel({
               key={acc.id}
               type="button"
               onClick={() => onSelectState(acc.slug)}
+              title={`${val.toLocaleString("en-US")} cumulative views (+${acc.periodViews.toLocaleString("en-US")} in ${timeframeShort})`}
               className="group block w-full rounded-xl p-2 text-left transition hover:bg-white/[0.04]"
             >
               <div className="flex items-center justify-between gap-2">
