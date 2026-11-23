@@ -71,6 +71,61 @@ export async function ingestDriveFiles(accountId: string) {
       console.log(`[Ingestion] Retired ${vanished.length} job(s) whose Drive file was deleted (account ${accountId})`);
     }
 
+    // Recover jobs that were falsely retired as vanished (e.g. when a folder
+    // exceeded the old 100-file listing cap) if their Drive file is actually
+    // still present and they were never published.
+    if (liveFileIds.size > 0) {
+      const falselyVanished = await prisma.postJob.findMany({
+        where: {
+          accountId: account.id,
+          state: "DELETED",
+          failureReason: "Source file removed from Google Drive",
+          publishedAt: null,
+          tiktokPublishId: null,
+          driveFileId: { in: [...liveFileIds] },
+        },
+        select: { id: true, driveFileId: true, driveFileName: true },
+      });
+
+      if (falselyVanished.length > 0) {
+        const publishedJobs = await prisma.postJob.findMany({
+          where: {
+            accountId: account.id,
+            OR: [
+              { publishedAt: { not: null } },
+              { state: { in: ["PUBLISHED", "PENDING_DELETION"] } },
+            ],
+          },
+          select: { driveFileName: true },
+        });
+        const publishedNames = new Set(
+          publishedJobs.map((j) => canonicalDriveFileName(j.driveFileName))
+        );
+        const toRestore = falselyVanished.filter(
+          (j) => !publishedNames.has(canonicalDriveFileName(j.driveFileName))
+        );
+
+        if (toRestore.length > 0) {
+          await prisma.postJob.updateMany({
+            where: { id: { in: toRestore.map((j) => j.id) } },
+            data: { state: "AVAILABLE", failureReason: null, lockedAt: null, lockedBy: null },
+          });
+          await prisma.scheduledPost.updateMany({
+            where: {
+              accountId: account.id,
+              driveFileId: { in: toRestore.map((j) => j.driveFileId) },
+              status: "SKIPPED",
+              errorMessage: "Source file removed from Google Drive",
+            },
+            data: { status: "QUEUED", errorMessage: null },
+          });
+          console.log(
+            `[Ingestion] Restored ${toRestore.length} falsely-retired job(s) with live Drive files (account ${accountId})`
+          );
+        }
+      }
+    }
+
     // Requeue retryable FAILED jobs whose file is still in the folder. An
     // infra outage (PostPeer credits, transient network/5xx) burns a job's
     // 3 attempts and lands it in terminal FAILED with the file untouched —

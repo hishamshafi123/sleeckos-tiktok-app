@@ -1,4 +1,4 @@
-import { google } from "googleapis";
+import { google, type drive_v3 } from "googleapis";
 import prisma from "./db";
 
 // ── Helper: extract folder ID from a Drive URL or raw ID ─────────────────────
@@ -113,17 +113,32 @@ export async function getServiceAccountDriveClient() {
 }
 
 // ── List video files in a Drive folder (sorted by name ascending) ─────────────
-export async function listVideoFilesInFolder(folderId: string, accountId?: string, useServiceAccount = true) {
+export async function listVideoFilesInFolder(
+  folderId: string,
+  accountId?: string,
+  useServiceAccount = true
+): Promise<drive_v3.Schema$File[]> {
   const drive = await getDriveClient(accountId, useServiceAccount);
-  const res = await drive.files.list({
-    q: `'${folderId}' in parents and mimeType contains 'video/' and trashed = false`,
-    orderBy: "name",
-    fields: "files(id,name,size,mimeType,createdTime)",
-    pageSize: 100,
-    supportsAllDrives: true,
-    includeItemsFromAllDrives: true,
-  });
-  return res.data.files ?? [];
+  const allFiles: drive_v3.Schema$File[] = [];
+  let pageToken: string | undefined;
+
+  do {
+    const res: { data: drive_v3.Schema$FileList } = await drive.files.list({
+      q: `'${folderId}' in parents and mimeType contains 'video/' and trashed = false`,
+      orderBy: "name",
+      fields: "nextPageToken, files(id,name,size,mimeType,createdTime)",
+      pageSize: 1000,
+      pageToken,
+      supportsAllDrives: true,
+      includeItemsFromAllDrives: true,
+    });
+    if (res.data.files?.length) {
+      allFiles.push(...res.data.files);
+    }
+    pageToken = res.data.nextPageToken ?? undefined;
+  } while (pageToken);
+
+  return allFiles;
 }
 
 // ── Get folder metadata (name, existence check) ───────────────────────────────
